@@ -1,8 +1,21 @@
 {
   "name": "tiny-image-star",
+  "description": "Private browser-based image editing for one image or a set.",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appunni-m/tiny-image-star.git"
+  },
+  "bugs": {
+    "url": "https://github.com/appunni-m/tiny-image-star/issues"
+  },
+  "homepage": "https://appunni-m.github.io/tiny-image-star/",
   "scripts": {
+    "test": "npm run verify",
     "verify": "node scripts/verify.mjs",
     "verify:watch": "node scripts/watch-verify.mjs",
     "verify:browser": "node scripts/browser-smoke.mjs",

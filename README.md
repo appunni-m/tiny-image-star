@@ -1,191 +1,174 @@
 # Tiny Image Star
 
-Tiny Image Star is a privacy-first browser image editor intended for
-open-source distribution on GitHub Pages. It opens one image or a set of local
-images into one recipe workflow: direct framing, rotation, resizing,
-comparison, conversion, and save. A set stays attached to the canvas in an
-image tray; the single **Add images** action uses that same workspace for one or
-many files, and **Results** opens a contextual output drawer once a set is active.
-Image data is not sent to a server. In an image set, the selected recipe is a
-shared layer and a manual canvas correction is a per-image layer, so
-changing the destination does not silently replace that correction.
+Tiny Image Star is a private, browser-based image editor for quickly framing,
+resizing, converting, and saving one image or a whole set. Images stay on your
+device: there is no account, upload service, analytics endpoint, or application
+backend.
 
-## Current status
+> **Pre-release status:** the current verified export format is PNG. Additional
+> formats appear only after the checked-in image engine proves that it can
+> produce valid output bytes. The project does not yet have a chosen software
+> license, so reuse rights remain pending; see [License status](#license-status).
 
-The first browser slice is intentionally small: it supports a single-image
-canvas, pan and zoom, crop framing, keep-whole-image versus fill-frame resizing,
-rotate/flip, adjustments, undo/redo/reset, local preset recipes, direct Save
-when one verified format is available (or a compact metadata-only sheet when
-choices are needed), and the same recipe applied to an image set with an
-original/result grid. One selected result saves directly. In browsers that
-allow a page to choose and write a folder, several selected results are written
-straight into one uniquely named folder. Other browsers show a short save queue:
-each click starts exactly one selected file in the browser's normal Downloads
-location, avoiding blocked automatic downloads. No archive is created. New files can
-be added without losing completed previews; each card
-shows the destination, output dimensions, file size, and size change. An item
-can be corrected on the canvas as a marked local override without changing the
-shared recipe. Cancelled or failed updates can be retried, completed previews
-can be cleared without losing unresolved cards. Saved images include a UTC
-date/time in their name; a multi-image save uses one unique date/time and
-destination name for its folder. The
-edited canvas switches to the generated result when it is ready, and Download
-is disabled while an edit is still catching up. Format conversion and
-the optional **Smaller file (lossy)**
-toggle are capability-driven: they appear only after the browser adapter has
-verified the corresponding output bytes. Unsupported formats—including AVIF
-today—are not silently converted or shown as available. Image-set jobs use a
- bounded, pixel-aware pool of browser workers so several small files can update
- at once without blocking the canvas, while large inputs reduce concurrency to
- protect memory. Requested output dimensions are bounded by the same per-image
-safety budget, and a batch’s compressed byte total is rejected before the app
-reads an oversized set into memory.
+## What works today
 
-For very large folders, the app uses a separate execution path behind the same
-recipe workflow. It discovers up to 100,000 supported images into a durable
-metadata-only manifest, processes a bounded number at a time, and writes every
-completed result directly to the chosen folder. It does not keep collection
-bytes or previews in memory, build an archive, or add 100,000 result cards to
-the page. The job can be paused, resumed after refresh, retried, and forgotten
-without deleting already-saved output files. This path is shown only in current
-desktop browsers that provide direct folder access; other browsers retain the
-smaller one-or-many workflow instead of making an unsafe scale claim.
+- One canvas for one image or an image set—there is no separate batch editor.
+- Pan, zoom, visual crop handles, aspect presets, fit or fill resizing,
+  rotate, flip, brightness, contrast, and grayscale.
+- Immediate original/edited comparison, undo, redo, reset, and dirty-state
+  feedback.
+- Destination-based recipes, custom local presets, per-image corrections, and
+  explicit apply-to-all/selected/this-image scope.
+- Worker-backed processing, responsive result selection, direct single-image
+  save, and folder-based multi-image save where the browser supports it.
+- A bounded-memory large-folder path with pause, resume, and retry. It avoids
+  retaining the entire collection or creating thousands of preview cards.
+- Browser-local recovery for active work and a visible control for clearing
+  saved recipes and recovery data.
 
-Images can enter through the chooser, drag/drop, or clipboard paste; image
-paste leaves normal text fields alone. When several images are open, the tray
-starts with **Apply changes to: All images**. After a direct canvas correction,
-one visible action applies only the changes made in that editing session to all
-images, selected images, or this image. Relative crops scale to each source;
-existing per-image corrections remain separate and are not silently replaced.
-The tray can also apply a human-readable destination
-to all, selected, or the active image without leaving the canvas. Scoped choices
-are marked on affected cards and remain separate from manual canvas corrections.
-**Results** opens the active set as a contextual result drawer, with an explicit
-Back to editor action; clearing the last reviewed result returns to the canvas
-automatically. When there is no active set, **Add images** keeps the user on the
-calm editor start screen and opens the collection file chooser, so a one-image
-import and a multi-image import take the same path.
-Format is always discoverable once an image is open. Compression quality is
-presented as **Low (80)**, **Medium (95, default)**, or **High (100)** only when
-the verified output encoder supports it; exact custom quality remains in
-Advanced. Opening one tray item preserves its image-set context; changing the shared
-destination refreshes that canvas while retaining the item’s marked local
-correction. The active set also has a browser-local recovery snapshot: a
-refresh offers Restore, Clear saved session, or Not now. One image uses the same
-collection recovery model as many images, restoring its source plus latest
-operations. Only source bytes and recipe/selection/override metadata are
-retained under a 64 MiB budget; outputs are
-regenerated locally after restore, and in-memory history is intentionally not
-persisted. The **Local data** control in the footer shows the saved recipe and
-recovery-copy counts and can clear those stored records without closing the
-image currently open.
+The detailed implemented/blocked boundary is in
+[the verification matrix](VERIFICATION_MATRIX.md). In particular, AVIF,
+animation preservation, and non-PNG output are not currently claimed.
 
-On narrow screens, the same workspace keeps five primary tools in a fixed
-bottom bar, puts rotate/flip/zoom/Fit screen in a compact quick-action row, and opens
-detailed controls as a bottom sheet. Pinch and double-tap Fit are wired for
-touch-capable browsers; real-device accessibility and text-zoom validation
-remain part of release QA.
+## Run it locally
 
-The planned product contract and dependency findings are in:
-
-- [`PRODUCT_UX_AUDIT.md`](PRODUCT_UX_AUDIT.md) — complete feature, interface,
-  architecture, market-pattern, and redesign review
-- [`LARGE_FOLDER_PLAN.md`](LARGE_FOLDER_PLAN.md) — bounded-memory 100,000-file
-  execution and recovery contract
-- [`SCOPE.md`](SCOPE.md)
-- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
-- [`EDITOR_REDESIGN.md`](EDITOR_REDESIGN.md)
-- [`PILLOW_RS_ISSUES.md`](PILLOW_RS_ISSUES.md)
-
-## Run locally
-
-The initial slice is a static site and needs no development server framework:
+Tiny Image Star is a static site. From the repository root, start any local
+HTTP server; Python's built-in server is enough:
 
 ```bash
-python3 -m http.server 0 --bind 127.0.0.1
+python3 -m http.server 8000 --bind 127.0.0.1
 ```
 
-The terminal prints the randomly selected port; open that local URL. The page
-must be served over HTTP because browser workers and the image engine are not
-reliable from `file://` URLs. Random-port URLs are temporary and change whenever
-the server is restarted.
+Open <http://127.0.0.1:8000/>. Do not open `index.html` through a `file://` URL:
+browser workers and the image engine require an HTTP origin.
 
-The included `.github/workflows/pages.yml` assembles the static files and
-deploys them through GitHub Pages after the repository's Pages source is set to
-GitHub Actions.
+For a random free port, replace `8000` with `0` and open the port printed by
+Python.
 
-## Verification
+## First image in four steps
 
-Run the immediate regression contract after any change:
+1. Choose, drop, or paste one or more images.
+2. Drag the image or crop frame and choose a familiar destination or shape.
+3. Compare the original with the edited result and apply the change to this
+   image, selected images, or all images.
+4. Save the selected result. Multiple results use a folder when the browser
+   offers direct folder access; otherwise the app presents an explicit
+   one-file-at-a-time save queue.
+
+Presets and recovery copies are stored only in this browser. A per-image
+correction remains separate from the shared recipe, so later set-wide changes
+do not silently erase it.
+
+## Large folders
+
+The large-folder path is shown only when the browser provides direct folder
+read/write access. It discovers supported files into an IndexedDB metadata
+manifest, processes a bounded number in parallel, and writes completed files
+straight to the selected destination.
+
+The code and regression suite model up to 100,000 manifest entries without
+retaining source or output bytes for the collection. That is a design and
+automated-contract result—not a claim that every browser/device has completed
+a 100,000-image production run. See [the large-folder plan](LARGE_FOLDER_PLAN.md)
+for memory boundaries, recovery semantics, and the dated benchmark method.
+
+## Privacy and local data
+
+The application source contains no network request for image processing,
+telemetry, remote fonts, or analytics. The static host still receives normal
+web requests for the HTML, JavaScript, CSS, and image-engine files.
+
+Local state may include:
+
+- recipes in browser local storage;
+- active-session source bytes and operation metadata in IndexedDB, within the
+  documented recovery budget; and
+- large-folder manifest metadata plus browser-granted directory handles.
+
+Use **Local data** in the application footer to inspect and clear saved recipes
+and recovery records. Already downloaded files and files written to a chosen
+output folder are outside that browser-local cleanup.
+
+## Browser and format boundaries
+
+The app needs JavaScript modules, Web Workers, WebAssembly, Canvas, Blob/Object
+URL support, and IndexedDB. It detects optional capabilities at runtime instead
+of inferring them from a browser name. Direct large-folder input/output needs a
+browser-provided directory picker; the smaller one-or-many workflow remains
+available when that feature is absent.
+
+Verified still-image inputs have fixtures for JPEG, PNG, GIF, BMP, WebP, TIFF,
+ICO, and EXIF-oriented JPEG. Animated GIF/WebP is rejected explicitly because
+animation preservation is not implemented. SVG, HEIC/HEIF, JPEG XL, PSD, PDF,
+camera RAW, and AVIF are outside the current verified contract.
+
+## Development and verification
+
+Contributors need Node.js 20 or newer. Install the locked development
+dependency and the Chromium browser used by the smoke suite:
 
 ```bash
-npm run verify
+npm ci
+npx playwright install chromium
 ```
 
-For local save-triggered reruns of that same fast suite:
-
-```bash
-npm run verify:watch
-```
-
-The slower browser interaction smoke is separate from the fast watcher. Its
-Playwright development dependency is declared in `package.json`; install the
-project dependencies once with `npm install`. It checks responsive control
-geometry at desktop and 390px widths, failing on overlap or horizontal
-overflow:
-
-```bash
-npm run verify:browser
-```
-
-To run the byte-level and browser checks together:
+Run the complete local/CI gate:
 
 ```bash
 npm run verify:all
 ```
 
-To profile a real local folder without retaining generated benchmark outputs:
+Useful narrower commands:
 
-```bash
-npm run profile:folder -- /path/to/images 64
-```
+| Command | Purpose |
+| --- | --- |
+| `npm test` | Fast deterministic checks using real fixture bytes. |
+| `npm run verify:watch` | Rerun the fast checks after relevant files change. |
+| `npm run verify:browser` | Browser interactions, responsive layout, output bytes, and console errors. |
+| `npm run profile:folder -- /path/to/images 64` | Profile an evenly distributed local sample without retaining benchmark outputs. |
 
-The final number is the evenly distributed sample count. The report separates
-folder discovery, reads, image opening, PNG encoding, output verification, and
-temporary output writing. See [`LARGE_FOLDER_PLAN.md`](LARGE_FOLDER_PLAN.md#measured-performance)
-for the current 8,192-file baseline.
+`npm run verify:all` returns nonzero if either layer fails; it does not silently
+skip the browser test. [CONTRIBUTING.md](CONTRIBUTING.md) explains repository
+structure, generated files, and pull-request expectations.
 
-`verify:all` intentionally fails when project dependencies have not been
-installed; this prevents a claimed full check from silently becoming only a
-static check.
+GitHub Actions runs the same complete gate for pull requests and before a main
+branch deployment. The Pages workflow publishes only `index.html`,
+`styles.css`, `src/`, and `wasm/` after verification passes.
 
-See [`VERIFICATION_MATRIX.md`](VERIFICATION_MATRIX.md) for feature coverage,
-the deterministic fixture, and the browser-download boundary.
+## Documentation map
 
-## Privacy
+- [Scope](SCOPE.md) — current product contract and explicit non-goals.
+- [Verification matrix](VERIFICATION_MATRIX.md) — feature-by-feature automated
+  evidence and residual browser boundaries.
+- [Large-folder plan](LARGE_FOLDER_PLAN.md) — streaming-style collection model,
+  recovery, and measured performance.
+- [Engine evaluation](ENGINE_EVALUATION.md) and
+  [Pillow-RS issues](PILLOW_RS_ISSUES.md) — dependency boundary and known
+  binding gaps; this project does not edit Pillow-RS.
+- [Implementation plan](IMPLEMENTATION_PLAN.md) and
+  [editor redesign](EDITOR_REDESIGN.md) — delivery history and design intent.
+- [Product UX audit](PRODUCT_UX_AUDIT.md) — detailed product research and
+  follow-on opportunities, not a list of already-shipped promises.
 
-There is no application backend, account system, analytics requirement, upload
-endpoint, or paid service. The browser loads the static application and WASM
-artifact; image bytes are processed locally.
+## Help, contributions, and security
 
-## Boundaries
+- Use [GitHub Issues](https://github.com/appunni-m/tiny-image-star/issues) for
+  reproducible bugs and focused feature proposals. Read
+  [SUPPORT.md](SUPPORT.md) before sharing diagnostics or image samples.
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change.
+- Do not disclose an unpatched vulnerability in a public issue. Follow
+  [SECURITY.md](SECURITY.md) for the private-reporting route and current support
+  scope.
 
-The currently verified operational output is PNG. The input contract has real
-fixtures for JPEG, PNG, GIF, BMP, WebP, TIFF, ICO, and EXIF-JPEG; browser-
-unfriendly still inputs can use a local PNG display proxy while the original
-bytes remain the source for processing. Animated GIF/WebP inputs are detected
-and rejected with an explicit message; animation preservation, color-profile
-preservation, and additional output formats remain gated on end-to-end
-fixtures. The UI is ready to surface another output format only when the
-browser adapter reports a working encoder and the saved bytes pass those
-checks. AVIF remains unavailable until its decode/encode path is verified end
-to end. SVG, HEIC/HEIF, JPEG XL, PSD, PDF, camera RAW, and animation editing
-are not part of the current still-image contract.
+## License status
 
-The checked-in generated artifact is treated as the source of truth at runtime.
-The external Pillow-RS checkout is intentionally left untouched by this project;
-when a newer generated artifact is copied in, `npm run verify:all` probes its
-encoders and exposes only formats whose emitted bytes pass the full checks.
+No license has been selected for the application code yet. Public source alone
+does not grant permission to copy, modify, or redistribute it. A project owner
+must add a recognized open-source license before describing a release as
+open-source or accepting reusable contributions.
 
-Before public reuse, add the project's chosen `LICENSE`, contribution guide,
-and private security-reporting route; they are not present in this checkout yet.
+The checked-in generated Pillow-RS runtime has separate MIT-CMU terms; see
+[the vendored runtime notice](wasm/README.md) and
+[license text](wasm/PILLOW_RS_LICENSE.txt). Known direct development/runtime
+notices and remaining provenance work are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

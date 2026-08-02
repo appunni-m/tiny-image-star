@@ -24,9 +24,9 @@ npm run verify:watch
 ```
 
 This is an opt-in local command, not a scheduled job or hook. It watches the
-current source and test files with low-overhead polling. CI can call
-`npm run verify` later; this checkout is not a Git repository, so no hook or CI
-promise is made here.
+current source and test files with low-overhead polling. GitHub Actions runs
+the complete `npm run verify:all` gate for pull requests and before Pages
+deployment from `main`.
 
 The slower browser interaction layer is separate from the save watcher:
 
@@ -40,7 +40,7 @@ not installed. It checks actual page state, worker-backed previews,
 interaction transitions, and console errors; it is intentionally not part of
 the save watcher.
 
-For a complete local/CI gate after `npm install`, run:
+For a complete local/CI gate after `npm ci`, run:
 
 ```bash
 npm run verify:all
@@ -55,14 +55,9 @@ fail rather than silently skip the browser half when Playwright is absent.
 browser smoke; `M` is the equivalent in-app browser check when a headless
 browser cannot be launched.
 
-Latest registered evidence: the combined `npm run verify:all` gate
-`fb944f00-936b-481c-9fc7-c4b2e7829426` passed in 21.735 seconds, with both
-subcommands reporting PASS. The dedicated browser run
-`76c72686-48fa-41dc-9caf-3c56032d9799` passed in 19.128 seconds, and the latest
-dedicated fast run `ffbb9f5c-097f-4e8e-9a89-3f0f8385b3d5` passed in 237 ms.
-Coverage MCP has no
-configured line/branch snapshot for this project, so these are behavior-gate
-results, not line-coverage claims.
+The gate validates behavior and real output bytes. The project does not
+currently produce a line/branch coverage artifact, so a passing run is not a
+line-coverage percentage claim.
 
 | User-visible feature | Check | Evidence / boundary |
 | --- | --- | --- |

@@ -1,0 +1,65 @@
+name: Bug report
+description: Report a reproducible Tiny Image Star failure.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Tiny Image Star. Do not upload a private image or disclose a vulnerability here; use SECURITY.md for security reports.
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What happened?
+      description: Include the exact visible error and what you expected instead.
+      placeholder: The app showed… I expected…
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Smallest reproduction
+      description: List the actions from opening the app to seeing the problem.
+      placeholder: |
+        1. Open…
+        2. Choose…
+        3. See…
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and operating system
+      placeholder: Chromium 140 on macOS 16
+    validations:
+      required: true
+
+  - type: input
+    id: input
+    attributes:
+      label: Input characteristics
+      description: Give format, dimensions, approximate size, and one/set/large-folder path—without attaching private content.
+      placeholder: PNG, 4000 × 3000, 8 MB, 12-image set
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Safe diagnostics
+      description: Add sanitized screenshots, console errors, or test output. Remove names, local paths, metadata, and personal content.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Privacy and duplicate checks
+      options:
+        - label: I checked existing issues for the same problem.
+          required: true
+        - label: I removed private images, personal data, credentials, and sensitive local paths.
+          required: true
+        - label: This is not an undisclosed security vulnerability.
+          required: true

@@ -1,25 +1,52 @@
-name: Deploy Tiny Image Star
+name: Verify and deploy Tiny Image Star
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: tiny-image-star-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the app
+        uses: actions/checkout@v6
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Run deterministic and browser checks
+        run: npm run verify:all
+
   build:
+    if: github.event_name != 'pull_request'
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Check out the app
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
 
       - name: Assemble the static site
         run: |
@@ -28,12 +55,17 @@ jobs:
           cp -R src wasm _site/
 
       - name: Upload the Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -2,10 +2,11 @@
 
 ## Product posture
 
-Tiny Image Star is an editor for one image at a time, with a first-class batch
-workflow beside it. The primary action is opening an image and manipulating
-it on a central stage. Batch import and ZIP export reuse the same verified
-recipe and engine boundary without turning the editor into a settings form.
+Tiny Image Star is one editor for an image or an image set. The primary action
+is opening an image and manipulating it on a central stage; additional images
+remain attached in the same tray and share the same verified recipe/engine
+boundary. Multi-file save uses a chosen folder where the browser supports it,
+or an explicit save queue, without turning the editor into a settings form.
 
 The main interaction should feel like a small, calm Figma canvas:
 

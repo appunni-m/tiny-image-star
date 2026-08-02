@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a user outcome or workflow improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the user and desired result before suggesting controls or implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What do you do today?
+      description: Explain the current workaround and why it is slow, confusing, or unreliable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: success
+    attributes:
+      label: What would a successful experience look like?
+      description: Mention the smallest number of decisions/clicks that would feel natural.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Canvas editing
+        - Image sets and shared changes
+        - Presets
+        - Format or compression
+        - Saving and folders
+        - Large-folder processing
+        - Accessibility or mobile
+        - Documentation or contributor experience
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: This can work without accounts, uploads, paid services, or a required backend.
+          required: true

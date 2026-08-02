@@ -50,8 +50,10 @@ developer diagnostics, not in the main interface.
    Original and After, the destination name, dimensions, size, and status while
    results are produced locally.
 4. Select one, several, or all completed results. A single result saves in the
-   active operational format; multiple selected results save as one ZIP. Outputs remain cached in memory
-   only for the active image set.
+   active operational format. Multiple selected results are written into one
+   uniquely named folder where the browser supports direct folder access;
+   other browsers use an explicit one-file-at-a-time save queue. Outputs remain
+   cached in memory only for the active image set.
 5. Open any result in the same editor for a local correction. Returning to the
    image grid records a per-item override, visibly marks it, and never changes
    the shared recipe. The override can be reset or saved as a new preset.
@@ -148,7 +150,7 @@ image files + shared preset + per-item override
                          v
                  worker revisions
                          |
-             original / after grid + ZIP writer
+             original / after grid + direct save
 ```
 
 The canonical state is original input bytes plus a serializable operation list.
@@ -159,16 +161,15 @@ output, metadata}`. All `ArrayBuffer`s crossing the worker boundary should be
 transferred where possible. Old object URLs and engine image handles must be
 released after replacement.
 
-The first worker implementation should coalesce slider events to at most one
-job per animation frame, skip queued stale jobs, and expose cooperative
-cancellation when the engine supports it. ZIP creation belongs on the main
-thread or a second worker and must only include export-ready results.
+The worker implementation coalesces or supersedes stale work, rejects stale
+results, and exposes cancellation at the app protocol boundary. Multiple
+results must be written or queued only after each selected item is export-ready.
 
 ## Performance and safety gates
 
 These are targets to measure, not current claims:
 
-- no visible main-thread blocking during processing or ZIP creation;
+- no visible main-thread blocking during processing or multi-file save setup;
 - preview updates at up to 30 revisions per second on ordinary images;
 - no stale download after a control change;
 - bounded input bytes, pixel count, frame count, and decoded memory;
