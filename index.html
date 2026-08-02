@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101828" />
+    <title>Tiny Image Star — private image editor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23101828'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='42' fill='%23a7f36e'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css?v=20260802-large-folders-1" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <p class="eyebrow">Tiny Image Star</p>
+          <span id="engine-status" class="status-pill" data-state="starting">Starting…</span>
+        </div>
+        <div class="topbar-center">
+          <span id="file-name" class="file-name">Open an image to begin</span>
+          <span id="dirty-state-slot" class="dirty-state-slot" hidden><span id="dirty-state" class="dirty-state" hidden>Unsaved changes</span></span>
+          <div id="history-actions" class="history-actions top-history" aria-label="History" hidden>
+            <button id="undo-button" class="button secondary" type="button" disabled title="Undo (Cmd/Ctrl+Z)" aria-keyshortcuts="Meta+Z Control+Z">Undo</button>
+            <button id="redo-button" class="button secondary" type="button" disabled title="Redo (Cmd/Ctrl+Shift+Z)" aria-keyshortcuts="Meta+Shift+Z Control+Shift+Z Control+Y">Redo</button>
+            <button id="reset-button" class="button secondary" type="button" disabled>Reset</button>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <nav class="workspace-nav" aria-label="Workspace">
+            <button id="presets-button" class="button secondary" type="button" aria-expanded="false">Presets</button>
+            <button id="batch-button" class="button secondary" type="button" aria-label="View results" title="View all results" hidden>Results</button>
+            <button id="folder-job-button" class="button secondary" type="button" aria-label="View folder job" hidden>Folder progress</button>
+          </nav>
+          <button id="save-preset-button" class="button secondary" type="button" disabled>Save recipe</button>
+          <button id="open-button" class="button secondary" type="button">Add images</button>
+          <button id="save-button" class="button primary" type="button" disabled aria-label="Download PNG" aria-keyshortcuts="Meta+S Control+S" title="Download PNG (Cmd/Ctrl+S)">Download current</button>
+          <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,image/tiff,image/x-icon,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff,.ico" multiple />
+        </div>
+      </header>
+
+      <aside id="session-recovery" class="session-recovery" hidden aria-live="polite" aria-label="Recover your last work">
+        <div>
+          <strong>Continue where you left off?</strong>
+          <p id="session-recovery-message">Your last work is still on this device.</p>
+        </div>
+        <div class="session-recovery-actions">
+          <button id="session-restore-button" class="button primary" type="button">Restore</button>
+          <button id="session-clear-button" class="button secondary" type="button">Clear saved session</button>
+          <button id="session-later-button" class="button secondary" type="button">Not now</button>
+        </div>
+      </aside>
+
+      <section id="editor-view" class="editor-view" aria-label="Image editor">
+        <section id="editor-workspace" class="editor-workspace" data-empty="true">
+        <aside id="image-tray" class="image-tray" hidden aria-label="Images in this set">
+          <div class="tray-heading">
+            <div>
+              <p class="eyebrow">Images</p>
+              <strong id="tray-count">0 images</strong>
+            </div>
+            <div class="tray-heading-actions">
+              <button id="tray-cancel-button" class="button secondary" type="button" hidden>Cancel updates</button>
+              <button id="tray-select-all-button" class="button secondary" type="button" disabled>Select all</button>
+              <button id="tray-add-button" class="button secondary" type="button">+ Add</button>
+            </div>
+          </div>
+          <label id="tray-scope-control" class="tray-recipe tray-scope-control">
+            <span>Apply changes to</span>
+            <select id="tray-scope-select" aria-label="Apply changes to">
+              <option value="all">All images</option>
+              <option value="selected">Selected images</option>
+              <option value="this">This image</option>
+            </select>
+          </label>
+          <button id="tray-apply-edits-button" class="button primary tray-apply-edits" type="button" disabled>Apply current edits to all images</button>
+          <label class="tray-recipe">
+            <span>Destination</span>
+            <select id="tray-preset-picker" aria-label="Destination for current recipe scope"></select>
+          </label>
+          <div class="tray-output-controls" aria-label="Output settings for all images">
+            <label id="tray-format-control" class="tray-output-control"><span>All images format</span><select id="tray-format-select" aria-label="Output format for all images"></select></label>
+            <label id="tray-lossy-control" class="tray-output-control tray-lossy-control" hidden><input id="tray-lossy-toggle" type="checkbox" /><span>Smaller file</span></label>
+            <label id="tray-quality-control" class="tray-output-control" hidden><span>All images quality</span><select id="tray-quality-select" aria-label="Quality for all images"><option value="80">Low</option><option value="95">Medium</option><option value="100">High</option></select></label>
+          </div>
+          <div id="tray-list" class="tray-list" aria-live="polite"></div>
+          <div id="tray-footer" class="tray-footer">
+            <span id="tray-selection">Select images to download</span>
+            <button id="tray-save-button" class="button primary" type="button" disabled>Save selected</button>
+          </div>
+        </aside>
+        <aside class="tool-rail" aria-label="Editing tools">
+          <div class="tool-group tool-primary-group">
+          <button id="move-tool" class="tool-button active" type="button" aria-pressed="true" title="Move and pan">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg><span>Move</span>
+          </button>
+          <button id="crop-tool" class="tool-button" type="button" aria-pressed="false" aria-keyshortcuts="C" title="Crop with handles (C)">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3H3v4M17 3h4v4M21 17v4h-4M3 17v4h4M3 3l7 7M21 3l-7 7M3 21l7-7M21 21l-7-7" /></svg><span>Crop</span>
+          </button>
+          <button id="size-tool" class="tool-button" type="button" aria-pressed="false" title="Choose the output size">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M4 4l6 6M20 4l-6 6M4 20l6-6M20 20l-6-6" /></svg><span>Size</span>
+          </button>
+          <button id="adjust-tool" class="tool-button" type="button" aria-pressed="false" title="Adjust brightness, contrast, or color">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16M8 4v4M16 10v4M10 16v4" /></svg><span>Adjust</span>
+          </button>
+          <button id="format-tool" class="tool-button" type="button" aria-pressed="false" title="Choose the download format" hidden>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14M8 4v3M16 9v3M10 14v3" /></svg><span>Format</span>
+          </button>
+          <button id="export-tool" class="tool-button" type="button" aria-pressed="false" title="Download settings" hidden>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg><span>Download</span>
+          </button>
+          </div>
+          <div class="tool-group tool-secondary-group" aria-label="Canvas actions">
+          <span class="tool-divider" aria-hidden="true"></span>
+          <button id="rotate-left" class="tool-button" type="button" title="Rotate left" disabled>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8H4V3M4 8a8 8 0 1 1 2 9" /></svg><span>Rotate left</span>
+          </button>
+          <button id="rotate-right" class="tool-button" type="button" title="Rotate right" disabled>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 8h5V3M20 8a8 8 0 1 0-2 9" /></svg><span>Rotate right</span>
+          </button>
+          <button id="flip-horizontal" class="tool-button" type="button" title="Flip horizontally" disabled>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4M12 3v18" /></svg><span>Flip horizontal</span>
+          </button>
+          <button id="flip-vertical" class="tool-button" type="button" title="Flip vertically" disabled>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4M3 12h18" /></svg><span>Flip vertical</span>
+          </button>
+          <span class="tool-divider" aria-hidden="true"></span>
+          <button id="zoom-out" class="tool-button icon-tool" type="button" aria-label="Zoom out" aria-keyshortcuts="-" title="Zoom out (−)" disabled><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" /></svg></button>
+          <button id="fit-view" class="tool-button" type="button" aria-keyshortcuts="F" title="Fit image on screen (F)" disabled>
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5M4 4l6 6M20 4l-6 6M4 20l6-6M20 20l-6-6" /></svg><span>Fit screen</span>
+          </button>
+          <button id="zoom-in" class="tool-button icon-tool" type="button" aria-label="Zoom in" aria-keyshortcuts="+" title="Zoom in (+)" disabled><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14" /></svg></button>
+          </div>
+        </aside>
+
+        <section class="stage-panel" aria-label="Canvas stage">
+          <div class="stage-toolbar">
+            <div class="stage-heading">
+              <h1>Canvas</h1>
+              <span id="processing-indicator" class="processing-indicator" hidden aria-live="polite">
+                <span class="spinner" aria-hidden="true"></span> Updating preview
+              </span>
+            </div>
+            <div class="comparison-toggle" role="group" aria-label="Preview comparison">
+              <button id="show-original" type="button" aria-pressed="false">Original</button>
+              <button id="show-edited" type="button" aria-pressed="true">Edited</button>
+            </div>
+          </div>
+
+          <div id="canvas-shell" class="canvas-shell" data-empty="true">
+            <div id="empty-editor" class="empty-editor">
+              <span class="drop-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span>
+              <h2>Open an image to start</h2>
+              <p>Private, offline editing in your browser.</p>
+              <div id="empty-editor-actions" class="empty-editor-actions">
+                <button id="empty-open-button" class="button primary" type="button">Choose images</button>
+                <button id="empty-folder-button" class="button secondary" type="button">Choose a folder</button>
+              </div>
+            <p id="drop-help" class="drop-help">Drop images here, paste an image, or choose files or a folder to begin.</p>
+            </div>
+            <canvas id="editor-canvas" aria-label="Image canvas. In Crop, use arrow keys to move the frame; press Enter to apply or Escape to cancel." tabindex="0" hidden></canvas>
+            <div id="crop-hint" class="crop-hint" hidden>Drag the handles, or use arrow keys, to choose a frame. Press Enter to apply or Escape to cancel.</div>
+          </div>
+
+            <div class="stage-footer">
+              <span id="canvas-status" aria-live="polite">Open an image to begin.</span>
+              <span id="zoom-value">No image</span>
+              <button id="compare-hold-button" class="button secondary compare-hold-button" type="button" disabled>Hold to see original</button>
+              <button id="mobile-inspector-toggle" class="button secondary mobile-inspector-toggle" type="button" hidden>Controls</button>
+              <div id="mobile-canvas-actions" class="mobile-canvas-actions" aria-label="Quick image actions">
+                <button id="mobile-rotate-left" class="button secondary" type="button" title="Rotate left" disabled>↶ <span>Rotate</span></button>
+                <button id="mobile-rotate-right" class="button secondary" type="button" title="Rotate right" disabled>↷ <span>Rotate</span></button>
+                <button id="mobile-flip-horizontal" class="button secondary" type="button" title="Flip horizontally" disabled>↔ <span>Flip</span></button>
+                <button id="mobile-flip-vertical" class="button secondary" type="button" title="Flip vertically" disabled>↕ <span>Flip</span></button>
+                <button id="mobile-zoom-out" class="button secondary" type="button" aria-label="Zoom out" title="Zoom out" disabled>−</button>
+                <button id="mobile-fit-view" class="button secondary" type="button" title="Fit image on screen" disabled>Fit screen</button>
+                <button id="mobile-zoom-in" class="button secondary" type="button" aria-label="Zoom in" title="Zoom in" disabled>+</button>
+              </div>
+            </div>
+        </section>
+
+        <aside class="inspector" aria-label="Inspector">
+          <section class="inspector-section crop-section" id="crop-panel" hidden>
+            <div class="inspector-heading">
+              <h2>Crop</h2>
+              <span class="small-label">Frame</span>
+            </div>
+            <div id="crop-presets" class="choice-grid" role="group" aria-label="Crop shape"></div>
+            <details class="advanced-details crop-advanced">
+              <summary>Fine-tune frame</summary>
+              <div class="crop-fields" aria-label="Crop frame position and size">
+                <label><span>Left</span><input id="crop-x-input" type="number" min="0" step="1" inputmode="numeric" disabled /></label>
+                <label><span>Top</span><input id="crop-y-input" type="number" min="0" step="1" inputmode="numeric" disabled /></label>
+                <label><span>Width</span><input id="crop-width-input" type="number" min="1" step="1" inputmode="numeric" disabled /></label>
+                <label><span>Height</span><input id="crop-height-input" type="number" min="1" step="1" inputmode="numeric" disabled /></label>
+              </div>
+            </details>
+            <div class="inspector-actions">
+              <button id="cancel-crop" class="button secondary" type="button">Cancel</button>
+              <button id="apply-crop" class="button primary" type="button">Done</button>
+            </div>
+          </section>
+
+          <section id="resize-panel" class="inspector-section" aria-labelledby="resize-heading">
+            <div class="inspector-heading">
+              <h2 id="resize-heading">Resize</h2>
+              <span id="resize-mode-label" class="small-label">Fit</span>
+            </div>
+            <div class="destination-quick-section">
+              <span class="control-label">Choose a destination</span>
+              <div id="destination-picker" class="destination-picker" role="group" aria-label="Image destination"></div>
+            </div>
+            <div class="segmented-control" role="group" aria-label="Resize behavior">
+              <button id="resize-fit" type="button" aria-pressed="true">Keep whole image</button>
+              <button id="resize-crop" type="button" aria-pressed="false">Fill frame</button>
+            </div>
+            <details class="advanced-details resize-advanced">
+              <summary>Advanced sizing</summary>
+              <div class="size-fields">
+                <label><span>Width</span><input id="width-input" type="number" min="1" step="1" inputmode="numeric" disabled /></label>
+                <span class="size-times" aria-hidden="true">×</span>
+                <label><span>Height</span><input id="height-input" type="number" min="1" step="1" inputmode="numeric" disabled /></label>
+              </div>
+              <label class="check-row"><input id="aspect-lock" type="checkbox" checked disabled /><span>Lock aspect ratio</span></label>
+            </details>
+            <p class="hint">Keep whole image preserves every edge. Fill frame reaches the exact size and may trim the edges.</p>
+          </section>
+
+          <section id="adjust-panel" class="inspector-section" aria-labelledby="adjust-heading">
+            <div class="inspector-heading"><h2 id="adjust-heading">Adjust</h2></div>
+            <div class="range-row"><div class="range-label"><button id="brightness-reset" class="range-reset" type="button" aria-label="Reset brightness">Brightness</button><output id="brightness-value">0</output></div><input id="brightness-input" type="range" min="0.5" max="1.5" step="0.01" value="1" disabled /></div>
+            <div class="range-row"><div class="range-label"><button id="contrast-reset" class="range-reset" type="button" aria-label="Reset contrast">Contrast</button><output id="contrast-value">0</output></div><input id="contrast-input" type="range" min="0.5" max="1.5" step="0.01" value="1" disabled /></div>
+            <label class="check-row"><input id="grayscale-input" type="checkbox" disabled /><span>Grayscale</span></label>
+          </section>
+
+          <section id="output-section" class="inspector-section output-section" aria-labelledby="output-heading">
+            <div class="inspector-heading"><h2 id="output-heading">Format &amp; quality</h2><span id="output-format-label" class="small-label">PNG</span></div>
+            <dl id="output-summary" class="output-summary">
+              <dt>Result</dt><dd>Not ready</dd>
+              <dt>Size</dt><dd>—</dd>
+            </dl>
+            <p id="processing-status" class="hint" aria-live="polite">Open an image to begin.</p>
+            <details id="output-format-details" class="advanced-details output-format-details" open>
+              <summary>Format</summary>
+              <label class="dialog-field"><span>Format</span><select id="output-format-select" disabled></select></label>
+              <p id="format-help" class="hint">Only formats supported by this app appear here.</p>
+            </details>
+            <div id="compression-options" hidden>
+              <label class="check-row"><input id="lossy-toggle" type="checkbox" disabled /><span>Smaller file (lossy)</span></label>
+              <div id="quality-presets" class="quality-presets" role="group" aria-label="Output quality">
+                <button type="button" data-quality-preset="80" aria-pressed="false"><strong>Low</strong><small>80 · smallest</small></button>
+                <button type="button" data-quality-preset="95" aria-pressed="true"><strong>Medium</strong><small>95 · recommended</small></button>
+                <button type="button" data-quality-preset="100" aria-pressed="false"><strong>High</strong><small>100 · largest</small></button>
+              </div>
+              <details id="quality-details" class="advanced-details quality-details">
+                <summary>Custom quality</summary>
+                <label class="range-row"><span>Quality <output id="quality-value">95</output></span><input id="quality-input" type="range" min="1" max="100" step="1" value="95" disabled /></label>
+              </details>
+            </div>
+            <p class="export-help">Changes update the preview. <strong>Download</strong> creates the file.</p>
+            <button id="inspector-save-button" class="button primary full-button" type="button" disabled hidden>Download PNG</button>
+          </section>
+        </aside>
+        </section>
+      </section>
+
+      <section id="presets-view" class="secondary-view presets-drawer" hidden role="dialog" aria-modal="true" aria-labelledby="presets-heading">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Your recipes</p>
+            <h1 id="presets-heading">Choose the result you want.</h1>
+            <p class="view-lede">Start with a familiar destination, or save a visual recipe from the canvas. Your recipes stay in this browser.</p>
+          </div>
+          <div class="drawer-actions">
+            <button id="preset-start-button" class="button primary" type="button" title="Open an image, then save its recipe">Create a preset</button>
+            <button id="close-presets-button" class="button secondary" type="button">Close</button>
+          </div>
+        </div>
+        <div id="preset-list" class="preset-list"></div>
+      </section>
+
+      <dialog id="export-dialog" class="export-dialog" aria-labelledby="export-dialog-heading">
+        <form method="dialog" id="export-form">
+          <div class="dialog-topline">
+            <div>
+              <p class="eyebrow">Ready to download</p>
+              <h2 id="export-dialog-heading">Download your image</h2>
+            </div>
+            <button id="export-cancel-button" class="button secondary" value="cancel" type="submit">Close</button>
+          </div>
+          <div class="export-dialog-summary">
+            <span><strong id="export-dimensions">—</strong><small>dimensions</small></span>
+            <span><strong id="export-filesize">—</strong><small>file size</small></span>
+            <span><strong id="export-format">PNG</strong><small>format</small></span>
+          </div>
+          <p id="export-dialog-status" class="hint">Your image stays on this device. The downloaded file uses the generated result above.</p>
+          <button id="export-download-button" class="button primary export-download-button" value="download" type="submit" disabled>Download PNG</button>
+        </form>
+      </dialog>
+
+      <section id="batch-view" class="secondary-view" hidden aria-labelledby="batch-heading">
+        <div class="view-heading batch-heading">
+          <div>
+            <p class="eyebrow">Your images</p>
+            <h1 id="batch-heading">Edit one image or many.</h1>
+            <p class="view-lede">Use the same visual recipe for one image or a whole set. Each result stays on this device until you download it.</p>
+          </div>
+          <div class="batch-actions">
+            <button id="batch-close-button" class="button secondary" type="button" hidden>Back to editor</button>
+            <button id="batch-open-button" class="button secondary" type="button">Choose images</button>
+            <button id="batch-folder-button" class="button secondary" type="button">Choose folder</button>
+            <input id="batch-file-input" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,image/tiff,image/x-icon,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff,.ico" multiple />
+            <input id="batch-folder-input" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,image/tiff,image/x-icon,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff,.ico" multiple webkitdirectory />
+          </div>
+        </div>
+        <section id="folder-job-panel" class="folder-job-panel" hidden aria-labelledby="folder-job-heading">
+          <div class="folder-job-intro">
+            <div>
+              <p class="eyebrow">Large folder</p>
+              <h2 id="folder-job-heading">Process directly into a folder.</h2>
+              <p>No archive and no upload. Each completed image is saved immediately, so the collection is never held in memory.</p>
+            </div>
+            <span class="folder-job-local">Private and local</span>
+          </div>
+          <div class="folder-job-setup">
+            <div class="folder-job-step">
+              <span class="folder-job-step-number">1</span>
+              <div><strong>Source folder</strong><span id="folder-job-source-name">No folder chosen</span></div>
+              <button id="folder-job-source-button" class="button secondary" type="button">Choose source</button>
+            </div>
+            <div class="folder-job-step">
+              <span class="folder-job-step-number">2</span>
+              <div><strong>Save results to</strong><span id="folder-job-output-name">No save folder chosen</span></div>
+              <button id="folder-job-output-button" class="button secondary" type="button">Choose save folder</button>
+            </div>
+            <label class="folder-job-step folder-job-recipe-step">
+              <span class="folder-job-step-number">3</span>
+              <span><strong>Recipe</strong><small id="folder-job-recipe-summary">Choose a recipe.</small></span>
+              <select id="folder-job-recipe" aria-label="Recipe for this folder"></select>
+            </label>
+          </div>
+          <details class="advanced-details folder-job-advanced">
+            <summary>Performance</summary>
+            <label><span>Parallel processing</span><select id="folder-job-performance"><option value="safe">Safe</option><option value="balanced" selected>Balanced</option><option value="fast">Fast</option></select></label>
+            <p>Balanced is recommended. Large images automatically remain bounded by the small worker pool.</p>
+          </details>
+          <div class="folder-job-actions">
+            <button id="folder-job-start-button" class="button primary" type="button" disabled>Start processing</button>
+            <button id="folder-job-pause-button" class="button secondary" type="button" hidden>Pause after active images</button>
+            <button id="folder-job-retry-button" class="button secondary" type="button" hidden>Retry failed images</button>
+            <button id="folder-job-forget-button" class="button secondary" type="button" disabled>Forget job</button>
+          </div>
+          <div class="folder-job-progress-card">
+            <div class="folder-job-progress-heading"><strong id="folder-job-status" aria-live="polite">Choose a source folder.</strong><span id="folder-job-progress-text">0 of 0</span></div>
+            <progress id="folder-job-progress" max="1" value="0">0%</progress>
+            <dl class="folder-job-stats">
+              <div><dt>Found</dt><dd id="folder-job-discovered">0</dd></div>
+              <div><dt>Saved</dt><dd id="folder-job-completed">0</dd></div>
+              <div><dt>Needs attention</dt><dd id="folder-job-failed">0</dd></div>
+              <div><dt>Source size</dt><dd id="folder-job-source-bytes">0 B</dd></div>
+              <div><dt>Result size</dt><dd id="folder-job-output-bytes">0 B</dd></div>
+            </dl>
+          </div>
+          <div class="folder-job-results-heading"><strong>File status</strong><span>Only visible rows are loaded.</span></div>
+          <div id="folder-job-results" class="folder-job-results" tabindex="0" aria-label="Folder processing results">
+            <p id="folder-job-results-empty" class="folder-job-results-empty">Files appear here as the folder is scanned.</p>
+            <div id="folder-job-results-layer" class="folder-job-results-layer"></div>
+          </div>
+        </section>
+        <div class="batch-preset-bar">
+          <span class="control-label">Destination</span>
+          <div id="batch-preset-picker" class="preset-picker" role="group" aria-label="Image recipe"></div>
+          <span id="batch-preset-name" class="batch-preset-name">Choose a destination recipe</span>
+          <label id="batch-scope-control" class="batch-format-control batch-scope-control"><span>Apply changes to</span><select id="batch-scope-select" aria-label="Apply changes to"><option value="all">All images</option><option value="selected">Selected images</option><option value="this">This image</option></select></label>
+          <label id="batch-format-control" class="batch-format-control"><span>All images format</span><select id="batch-format-select" aria-label="Batch output format"></select></label>
+          <label id="batch-lossy-control" class="batch-format-control batch-lossy-control" hidden><input id="batch-lossy-toggle" type="checkbox" /><span>Smaller file</span></label>
+          <label id="batch-quality-control" class="batch-format-control" hidden><span>All images quality</span><select id="batch-quality-select" aria-label="Batch output quality"><option value="80">Low</option><option value="95">Medium</option><option value="100">High</option></select></label>
+          <button id="batch-format-reset" class="button secondary batch-format-reset" type="button" hidden>Use recipe format</button>
+        </div>
+        <p id="batch-framing-notice" class="batch-framing-notice" role="status" hidden></p>
+        <div id="batch-drop-zone" class="batch-drop-zone" role="button" tabindex="0" aria-label="Add images">
+          <span class="drop-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></span>
+          <strong id="batch-drop-title">Drop images here</strong>
+          <span id="batch-drop-description">Paste or drop more images and see each result as it updates.</span>
+        </div>
+        <div class="batch-toolbar">
+          <span id="batch-status" aria-live="polite">Add images, make an edit, then download the results.</span>
+          <div class="batch-selection-actions">
+            <button id="batch-cancel-button" class="button secondary" type="button" hidden>Cancel updates</button>
+            <button id="batch-clear-completed-button" class="button secondary" type="button" disabled>Clear completed</button>
+            <button id="batch-save-button" class="button primary" type="button" disabled aria-keyshortcuts="Meta+S Control+S">Save selected</button>
+            <button id="batch-select-all" class="button secondary" type="button" disabled>Select all</button>
+            <button id="batch-clear-button" class="button secondary" type="button" disabled>New set</button>
+            <span id="batch-selection-count">0 selected</span>
+          </div>
+        </div>
+        <div id="batch-grid" class="batch-grid">
+          <div class="empty-state"><span class="empty-star" aria-hidden="true">✦</span><p>Your image previews will appear here.</p></div>
+        </div>
+      </section>
+
+      <dialog id="preset-dialog" class="preset-dialog">
+        <form method="dialog" id="preset-form">
+          <p class="eyebrow">Save a recipe</p>
+          <h2 id="preset-dialog-heading">Save as preset</h2>
+          <p class="dialog-lede">This saves the visible crop, whole-image/fill-frame choice, and verified output format as a reusable local recipe.</p>
+          <label class="dialog-field"><span>Name</span><input id="preset-name-input" type="text" maxlength="60" placeholder="My profile photo" required /></label>
+          <label class="dialog-field"><span>Destination</span><select id="preset-destination-input"></select></label>
+          <label class="dialog-field"><span>How should it fit?</span><select id="preset-resize-mode-input"><option value="fit">Keep whole image</option><option value="crop">Fill frame</option></select></label>
+          <details class="advanced-details">
+            <summary>Advanced details</summary>
+            <p id="preset-advanced-summary" class="hint"></p>
+            <div class="advanced-fields">
+              <label><span>Output width</span><input id="preset-width-input" type="number" min="1" /></label>
+              <label><span>Output height</span><input id="preset-height-input" type="number" min="1" /></label>
+              <label><span>Final format</span><select id="preset-format-input"></select></label>
+              <label id="preset-compression-options" class="check-row" hidden><input id="preset-lossy-input" type="checkbox" /><span>Smaller file (lossy)</span></label>
+              <label id="preset-quality-control" hidden><span>Quality</span><select id="preset-quality-input"><option value="80">Low (80)</option><option value="95">Medium (95)</option><option value="100">High (100)</option></select></label>
+            </div>
+          </details>
+          <div class="dialog-actions"><button id="preset-cancel-button" class="button secondary" value="cancel" type="submit">Cancel</button><button id="preset-save-button" class="button primary" value="save" type="submit">Save preset</button></div>
+        </form>
+      </dialog>
+
+      <footer>
+        <p>Private, open-source, and free to use.</p>
+        <div class="footer-actions">
+          <p>Your image stays on this device.</p>
+          <button id="local-data-button" class="button secondary" type="button">Local data</button>
+        </div>
+      </footer>
+    </main>
+
+    <dialog id="individual-save-dialog" class="individual-save-dialog" aria-labelledby="individual-save-heading">
+      <form method="dialog">
+        <p class="eyebrow">Save selected</p>
+        <h2 id="individual-save-heading">Save images one by one</h2>
+        <p class="dialog-lede">This browser cannot create an output folder for the page. Start each file separately below; your browser will place it in its normal Downloads location.</p>
+        <div class="individual-save-file">
+          <span id="individual-save-progress">0 downloads started</span>
+          <strong id="individual-save-name"></strong>
+        </div>
+        <progress id="individual-save-meter" max="1" value="0"></progress>
+        <p id="individual-save-status" class="hint" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="individual-save-close" class="button secondary" value="cancel" type="submit">Close</button>
+          <button id="individual-save-next" class="button primary" type="button">Save next image</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="local-data-dialog" class="local-data-dialog" aria-labelledby="local-data-heading">
+      <form method="dialog">
+        <p class="eyebrow">Private by default</p>
+        <h2 id="local-data-heading">Your local data</h2>
+        <p class="dialog-lede">Tiny Image Star keeps recipes and recovery copies in this browser. Images are not uploaded. The image currently open stays available when you clear saved data.</p>
+        <dl class="local-data-summary">
+          <dt>Recipes</dt><dd id="local-data-preset-count">0 saved recipes</dd>
+          <dt>Recovery copies</dt><dd id="local-data-recovery-count">0 recovery copies</dd>
+          <dt>Recovery storage</dt><dd id="local-data-recovery-size">0 B</dd>
+        </dl>
+        <p id="local-data-status" class="hint" aria-live="polite">Only recipes and recovery copies are stored here.</p>
+        <div class="dialog-actions">
+          <button id="local-data-clear-button" class="button secondary" type="button">Clear saved data</button>
+          <button id="local-data-close-button" class="button primary" value="cancel" type="submit">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="./src/main.js?v=20260802-large-folders-1"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "tiny-image-star",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "node scripts/verify.mjs",
+    "verify:watch": "node scripts/watch-verify.mjs",
+    "verify:browser": "node scripts/browser-smoke.mjs",
+    "verify:all": "npm run verify && npm run verify:browser",
+    "profile:folder": "node scripts/profile-folder.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}
