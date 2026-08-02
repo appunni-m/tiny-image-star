@@ -6,9 +6,16 @@ export function createEditor(elements) {
   const editor = { elements, state };
 
   editor.cloneRect = (rect) => rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+  editor.cloneTextLayers = (layers) => Array.isArray(layers)
+    ? layers.map((layer) => layer && typeof layer === "object" ? { ...layer } : null).filter(Boolean)
+    : [];
   editor.cloneOperations = (operations = state.operations) => {
     if (!operations) return null;
-    return { ...operations, crop: editor.cloneRect(operations.crop) };
+    return {
+      ...operations,
+      crop: editor.cloneRect(operations.crop),
+      textLayers: editor.cloneTextLayers(operations.textLayers),
+    };
   };
   editor.sameOperations = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   editor.formatBytes = (value) => {
@@ -38,6 +45,7 @@ export function createEditor(elements) {
       brightness: 1,
       contrast: 1,
       grayscale: false,
+      textLayers: [],
       lossy: false,
       quality: DEFAULT_QUALITY,
       format: state.capabilities.outputFormats[0] ?? "png",

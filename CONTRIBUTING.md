@@ -14,7 +14,16 @@ Prerequisites:
 
 - Node.js 20 or newer;
 - npm, using the committed `package-lock.json`;
+- GNU Make 3.81 or newer for the optional `make` command interface; and
 - Python 3 or another static HTTP server for manual browser checks.
+
+```bash
+make install
+make setup-browser
+make verify
+```
+
+The equivalent native npm commands are:
 
 ```bash
 npm ci
@@ -32,15 +41,23 @@ command shown above.
 Serve the repository instead of opening `index.html` directly:
 
 ```bash
-python3 -m http.server 8000 --bind 127.0.0.1
+make serve
 ```
 
-Then open <http://127.0.0.1:8000/>. A random port can be selected by replacing
-`8000` with `0`.
+Then open <http://127.0.0.1:8000/>. Override `PORT` and `HOST` when needed;
+`make serve PORT=0` asks Python for a free port.
 
-Use `npm run verify:watch` for fast checks while editing. Run
-`npm run verify:all` before submitting a change. The complete feature-to-test
-contract is in [VERIFICATION_MATRIX.md](VERIFICATION_MATRIX.md).
+Use `make verify-watch` for fast checks while editing. Run `make verify` before
+submitting a change. To inspect the exact GitHub Pages payload locally, run
+`make package-pages`; it recreates the repository-owned `_site/` directory and
+rejects unexpected files. The complete feature-to-test contract is in
+[VERIFICATION_MATRIX.md](VERIFICATION_MATRIX.md).
+
+`make` is a thin GNU Make 3.81+ wrapper; npm remains the source of truth for
+JavaScript dependency and test behavior. `make setup-browser` downloads the
+Chromium test browser. CI adds `--with-deps` for Linux system packages.
+The Pages checker is also available as `npm run check:pages -- _site` when a
+directory has already been assembled.
 
 ## Repository map
 
@@ -53,6 +70,10 @@ contract is in [VERIFICATION_MATRIX.md](VERIFICATION_MATRIX.md).
 | `src/worker.js` | Interactive image processing off the main thread. |
 | `scripts/verify.mjs` | Fast deterministic byte/state contract. |
 | `scripts/browser-smoke.mjs` | Headless browser interaction and output checks. |
+| `scripts/assemble-pages.mjs` | Safe local assembly of the GitHub Pages payload. |
+| `scripts/check-pages-artifact.mjs` | Read-only allowlist and required-file check for that payload. |
+| `scripts/check-doc-links.mjs` | Read-only check for broken repository-local Markdown links. |
+| `Makefile` | Thin contributor aliases; it is not a second build system. |
 | `wasm/` | Generated Pillow-RS JavaScript/WASM runtime and its notice. |
 
 The application modules are internal implementation, not a published JavaScript
@@ -83,7 +104,7 @@ and must never be hand-edited independently. A change that replaces them must:
 1. identify the exact Pillow-RS source revision and build command;
 2. update `wasm/README.md` with new checksums and provenance;
 3. retain the upstream license text; and
-4. pass `npm run verify:all` before the artifact is committed.
+4. pass `make verify` before the artifact is committed.
 
 The current artifact predates a recorded source revision. That known provenance
 debt is stated in `wasm/README.md`; do not invent a revision for it.
@@ -99,6 +120,10 @@ Keep the title and description user-focused. Include:
 - added or changed deterministic coverage;
 - browser/platform boundaries that were not exercised; and
 - any change to local storage, permissions, memory limits, or output bytes.
+
+CI runs `make verify` on Node.js 20 and 24, then builds and checks the Pages
+artifact. A pull request must pass both verification matrix entries; a main
+branch deployment is only attempted after the artifact job succeeds.
 
 There is currently no CLA or DCO sign-off requirement. Contribution licensing
 cannot be finalized until the project owner selects the repository license;

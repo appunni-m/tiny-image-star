@@ -3,6 +3,7 @@ import { createEditor } from "./editor/core.js";
 import { attachEditorView } from "./editor/view.js";
 import { attachEditorCanvas } from "./editor/canvas.js";
 import { attachEditorOperations } from "./editor/operations.js";
+import { attachEditorText } from "./editor/text.js";
 import { attachEditorProcessing } from "./editor/processing.js";
 import { bindEditorEvents } from "./editor/events.js";
 import { attachLocalDataControls } from "./local-data.js";
@@ -14,6 +15,7 @@ const editor = createEditor(getEditorElements());
 attachEditorView(editor);
 attachEditorCanvas(editor);
 attachEditorOperations(editor);
+attachEditorText(editor);
 attachEditorProcessing(editor);
 bindEditorEvents(editor);
 attachLocalDataControls();
@@ -57,6 +59,7 @@ window.tinyImageStarEditor = {
   // Kept as a small composition bridge for capability-aware browser checks
   // and host integrations; the worker remains the production source of truth.
   setCapabilities: (raw) => editor.setCapabilities(raw),
+  composeTextOutput: (result, operations) => editor.composeTextOutput?.(result, operations),
   showEditor: () => window.dispatchEvent(new CustomEvent("tinystar:show-editor")),
   clearContext: () => {
     editor.state.editorContext = null;
@@ -74,6 +77,7 @@ window.tinyImageStarEditor = {
       ...editor.cloneOperations(operations),
       crop: editor.cloneRect(operations.crop),
     };
+    editor.syncActiveText?.();
     editor.state.savedOperations = editor.cloneOperations();
     editor.state.history = [];
     editor.state.future = [];

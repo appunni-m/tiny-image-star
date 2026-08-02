@@ -92,6 +92,9 @@
           <button id="move-tool" class="tool-button active" type="button" aria-pressed="true" title="Move and pan">
             <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" /></svg><span>Move</span>
           </button>
+          <button id="text-tool" class="tool-button" type="button" aria-pressed="false" aria-keyshortcuts="T" title="Add and edit text (T)">
+            <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M12 5v14M8 19h8M7 5l5 14 5-14" /></svg><span>Text</span>
+          </button>
           <button id="crop-tool" class="tool-button" type="button" aria-pressed="false" aria-keyshortcuts="C" title="Crop with handles (C)">
             <svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3H3v4M17 3h4v4M21 17v4h-4M3 17v4h4M3 3l7 7M21 3l-7 7M3 21l7-7M21 21l-7-7" /></svg><span>Crop</span>
           </button>
@@ -229,6 +232,31 @@
             <div class="range-row"><div class="range-label"><button id="brightness-reset" class="range-reset" type="button" aria-label="Reset brightness">Brightness</button><output id="brightness-value">0</output></div><input id="brightness-input" type="range" min="0.5" max="1.5" step="0.01" value="1" disabled /></div>
             <div class="range-row"><div class="range-label"><button id="contrast-reset" class="range-reset" type="button" aria-label="Reset contrast">Contrast</button><output id="contrast-value">0</output></div><input id="contrast-input" type="range" min="0.5" max="1.5" step="0.01" value="1" disabled /></div>
             <label class="check-row"><input id="grayscale-input" type="checkbox" disabled /><span>Grayscale</span></label>
+          </section>
+
+          <section id="text-panel" class="inspector-section text-section" aria-labelledby="text-heading" hidden>
+            <div class="inspector-heading"><h2 id="text-heading">Text</h2><span class="small-label">On image</span></div>
+            <button id="add-text-button" class="button primary full-button" type="button">+ Add text</button>
+            <p id="text-panel-empty" class="hint">Add a text layer, then drag it on the canvas. Your words are included when you download.</p>
+            <div id="text-layer-list" class="text-layer-list" aria-label="Text layers"></div>
+            <div id="text-controls" hidden>
+              <label class="dialog-field"><span>Words</span><textarea id="text-content" rows="3" maxlength="5000" placeholder="Type something"></textarea></label>
+              <div class="text-font-row">
+                <label class="dialog-field"><span>Font</span><select id="text-font" aria-label="Text font"></select></label>
+                <button id="import-font-button" class="button secondary" type="button">Add font</button>
+                <input id="font-file-input" type="file" accept=".ttf,.otf,.woff,.woff2,.sfnt,font/ttf,font/otf,font/woff,font/woff2" hidden />
+              </div>
+              <div id="font-drop-zone" class="font-drop-zone" tabindex="0" role="button" aria-label="Drop a local font file">Drop a font file here<br /><small>TTF, OTF, WOFF, or WOFF2 · <a href="https://fonts.google.com/" target="_blank" rel="noreferrer">Find one on Google Fonts</a></small></div>
+              <div class="text-control-grid">
+                <label class="dialog-field"><span>Size <output id="text-size-value">—</output></span><input id="text-size" type="range" min="0.015" max="0.7" step="0.005" value="0.12" /></label>
+                <label class="dialog-field"><span>Color</span><input id="text-color" type="color" value="#ffffff" /></label>
+                <label class="dialog-field"><span>Align</span><select id="text-align"><option value="left">Left</option><option value="center" selected>Center</option><option value="right">Right</option></select></label>
+                <label class="dialog-field"><span>Weight</span><select id="text-weight"><option value="400">Regular</option><option value="600">Semibold</option><option value="700" selected>Bold</option><option value="800">Heavy</option></select></label>
+                <label class="dialog-field"><span>Style</span><select id="text-style"><option value="normal" selected>Normal</option><option value="italic">Italic</option></select></label>
+              </div>
+              <button id="remove-text-button" class="button secondary full-button" type="button">Remove selected text</button>
+              <p class="hint text-help">Drag the text to move it. Drag the green corner to resize. Switch to Move when you want to pan the image.</p>
+            </div>
           </section>
 
           <section id="output-section" class="inspector-section output-section" aria-labelledby="output-heading">
@@ -451,13 +479,14 @@
       <form method="dialog">
         <p class="eyebrow">Private by default</p>
         <h2 id="local-data-heading">Your local data</h2>
-        <p class="dialog-lede">Tiny Image Star keeps recipes and recovery copies in this browser. Images are not uploaded. The image currently open stays available when you clear saved data.</p>
+        <p class="dialog-lede">Tiny Image Star keeps recipes, custom fonts, and recovery copies in this browser. Images are not uploaded. The image currently open stays available when you clear saved data.</p>
         <dl class="local-data-summary">
           <dt>Recipes</dt><dd id="local-data-preset-count">0 saved recipes</dd>
+          <dt>Custom fonts</dt><dd id="local-data-font-count">0 saved fonts</dd>
           <dt>Recovery copies</dt><dd id="local-data-recovery-count">0 recovery copies</dd>
           <dt>Recovery storage</dt><dd id="local-data-recovery-size">0 B</dd>
         </dl>
-        <p id="local-data-status" class="hint" aria-live="polite">Only recipes and recovery copies are stored here.</p>
+        <p id="local-data-status" class="hint" aria-live="polite">Recipes, custom fonts, and recovery copies stay in this browser.</p>
         <div class="dialog-actions">
           <button id="local-data-clear-button" class="button secondary" type="button">Clear saved data</button>
           <button id="local-data-close-button" class="button primary" value="cancel" type="submit">Close</button>

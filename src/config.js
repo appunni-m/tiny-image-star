@@ -14,6 +14,7 @@ export const OVERRIDE_OPERATION_KEYS = Object.freeze([
   "brightness",
   "contrast",
   "grayscale",
+  "textLayers",
   "lossy",
   "quality",
   "format",

@@ -15,6 +15,9 @@ backend.
 - One canvas for one image or an image set—there is no separate batch editor.
 - Pan, zoom, visual crop handles, aspect presets, fit or fill resizing,
   rotate, flip, brightness, contrast, and grayscale.
+- Add, move, resize, and style text directly on the canvas. Use built-in fonts
+  or drop a local font file; the words are included in verified browser-format
+  output.
 - Immediate original/edited comparison, undo, redo, reset, and dirty-state
   feedback.
 - Destination-based recipes, custom local presets, per-image corrections, and
@@ -24,7 +27,7 @@ backend.
 - A bounded-memory large-folder path with pause, resume, and retry. It avoids
   retaining the entire collection or creating thousands of preview cards.
 - Browser-local recovery for active work and a visible control for clearing
-  saved recipes and recovery data.
+  saved recipes, custom fonts, and recovery data.
 
 The detailed implemented/blocked boundary is in
 [the verification matrix](VERIFICATION_MATRIX.md). In particular, AVIF,
@@ -84,10 +87,12 @@ Local state may include:
 - active-session source bytes and operation metadata in IndexedDB, within the
   documented recovery budget; and
 - large-folder manifest metadata plus browser-granted directory handles.
+- locally added font files in the browser's font store.
 
-Use **Local data** in the application footer to inspect and clear saved recipes
-and recovery records. Already downloaded files and files written to a chosen
-output folder are outside that browser-local cleanup.
+Use **Local data** in the application footer to inspect and clear saved recipes,
+custom font files, and recovery records. Fonts already loaded into the current
+page can remain usable until refresh; downloaded files and files written to a
+chosen output folder are outside that browser-local cleanup.
 
 ## Browser and format boundaries
 
@@ -102,20 +107,27 @@ ICO, and EXIF-oriented JPEG. Animated GIF/WebP is rejected explicitly because
 animation preservation is not implemented. SVG, HEIC/HEIF, JPEG XL, PSD, PDF,
 camera RAW, and AVIF are outside the current verified contract.
 
+Text layers are composed locally after the verified image transform. PNG is the
+current verified text-export path in the checked-in runtime; JPEG and WebP are
+accepted only when the runtime capability probe verifies those encoders. A
+Google Fonts page is a discovery link, not a remote font dependency: download
+the font file and drop it into the editor.
+
 ## Development and verification
 
 Contributors need Node.js 20 or newer. Install the locked development
-dependency and the Chromium browser used by the smoke suite:
+dependency and the Chromium browser used by the smoke suite. GNU Make 3.81+
+is an optional convenience interface over the same npm scripts:
 
 ```bash
-npm ci
-npx playwright install chromium
+make install
+make setup-browser
 ```
 
 Run the complete local/CI gate:
 
 ```bash
-npm run verify:all
+make verify
 ```
 
 Useful narrower commands:
@@ -125,15 +137,26 @@ Useful narrower commands:
 | `npm test` | Fast deterministic checks using real fixture bytes. |
 | `npm run verify:watch` | Rerun the fast checks after relevant files change. |
 | `npm run verify:browser` | Browser interactions, responsive layout, output bytes, and console errors. |
+| `npm run check:docs` | Check repository-local Markdown links. |
+| `npm run check:pages -- _site` | Validate an already assembled Pages directory. |
 | `npm run profile:folder -- /path/to/images 64` | Profile an evenly distributed local sample without retaining benchmark outputs. |
+| `make verify-fast` / `make verify-browser` | Make aliases for the two verification layers. |
+| `make package-pages` | Assemble and validate the exact static artifact used by Pages in `_site/`. |
+
+Run `make help` for the complete contributor command list. `make package-pages`
+is a local filesystem mutation; `make verify`, `npm test`, and the two verify
+layers are read-only apart from normal temporary test data.
 
 `npm run verify:all` returns nonzero if either layer fails; it does not silently
 skip the browser test. [CONTRIBUTING.md](CONTRIBUTING.md) explains repository
 structure, generated files, and pull-request expectations.
 
-GitHub Actions runs the same complete gate for pull requests and before a main
-branch deployment. The Pages workflow publishes only `index.html`,
-`styles.css`, `src/`, and `wasm/` after verification passes.
+GitHub Actions runs the same complete gate on Node.js 20 and 24 for pull
+requests and before a main branch deployment. It then assembles and validates
+the Pages artifact on every event; deployment is enabled only for non-PR
+events. The artifact contains only `index.html`, `styles.css`, `src/`, and
+`wasm/`. See [RELEASING.md](RELEASING.md) and [MAINTAINERS.md](MAINTAINERS.md)
+for the maintainer workflow.
 
 ## Documentation map
 
@@ -149,6 +172,10 @@ branch deployment. The Pages workflow publishes only `index.html`,
   [editor redesign](EDITOR_REDESIGN.md) — delivery history and design intent.
 - [Product UX audit](PRODUCT_UX_AUDIT.md) — detailed product research and
   follow-on opportunities, not a list of already-shipped promises.
+- [Maintainer guide](MAINTAINERS.md) — triage, CI, dependency, and artifact
+  ownership boundaries.
+- [Release guide](RELEASING.md) — pre-release gate, Pages artifact, provenance,
+  and rollback checklist.
 
 ## Help, contributions, and security
 

@@ -85,6 +85,7 @@ export function bindEditorEvents(editor) {
   }, { passive: false });
 
   elements.moveTool.addEventListener("click", () => editor.setTool("move"));
+  elements.textTool.addEventListener("click", () => editor.setTool("text"));
   elements.cropTool.addEventListener("click", () => editor.setTool("crop"));
   elements.sizeTool.addEventListener("click", () => editor.setTool("size"));
   elements.adjustTool.addEventListener("click", () => editor.setTool("adjust"));
@@ -154,6 +155,40 @@ export function bindEditorEvents(editor) {
     editor.renderCanvas();
     editor.scheduleProcessing();
   });
+  elements.addTextButton.addEventListener("click", editor.addTextLayer);
+  elements.removeTextButton.addEventListener("click", editor.removeActiveText);
+  elements.importFontButton.addEventListener("click", () => elements.fontFileInput.click());
+  elements.fontFileInput.addEventListener("change", () => {
+    const file = elements.fontFileInput.files?.[0];
+    if (file) void editor.importFont(file);
+    elements.fontFileInput.value = "";
+  });
+  elements.fontDropZone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    elements.fontDropZone.dataset.dragging = "true";
+  });
+  elements.fontDropZone.addEventListener("dragleave", () => delete elements.fontDropZone.dataset.dragging);
+  elements.fontDropZone.addEventListener("drop", editor.onFontDrop);
+  elements.fontDropZone.addEventListener("click", (event) => {
+    if (event.target.closest("a")) return;
+    elements.fontFileInput.click();
+  });
+  elements.fontDropZone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      elements.fontFileInput.click();
+    }
+  });
+  elements.textContent.addEventListener("input", () => editor.updateActiveText("text", elements.textContent.value));
+  elements.textContent.addEventListener("change", () => editor.finishTextEdit());
+  elements.textFont.addEventListener("change", () => editor.updateActiveText("fontId", elements.textFont.value));
+  elements.textSize.addEventListener("input", () => editor.updateActiveText("fontSize", elements.textSize.value));
+  elements.textSize.addEventListener("change", () => editor.finishTextEdit());
+  elements.textColor.addEventListener("input", () => editor.updateActiveText("color", elements.textColor.value));
+  elements.textColor.addEventListener("change", () => editor.finishTextEdit());
+  elements.textAlign.addEventListener("change", () => editor.updateActiveText("align", elements.textAlign.value));
+  elements.textWeight.addEventListener("change", () => editor.updateActiveText("weight", elements.textWeight.value));
+  elements.textStyle.addEventListener("change", () => editor.updateActiveText("style", elements.textStyle.value));
   elements.outputFormatSelect.addEventListener("change", () => editor.setFormat(elements.outputFormatSelect.value));
   elements.lossyToggle.addEventListener("change", () => editor.setLossy(elements.lossyToggle.checked));
   elements.quality.addEventListener("input", () => editor.updateQuality(elements.quality.value));
@@ -204,6 +239,9 @@ export function bindEditorEvents(editor) {
     } else if (hasNoCommandModifiers(event) && key === "c") {
       event.preventDefault();
       editor.setTool("crop");
+    } else if (hasNoCommandModifiers(event) && key === "t") {
+      event.preventDefault();
+      editor.setTool("text");
     } else if (event.key === "Escape" && state.tool === "crop") {
       event.preventDefault();
       editor.cancelCrop();

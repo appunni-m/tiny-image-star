@@ -169,6 +169,7 @@ export function attachEditorCanvas(editor) {
     if (operations.flipX) changes.push("flipped horizontally");
     if (operations.flipY) changes.push("flipped vertically");
     if (operations.grayscale) changes.push("grayscale on");
+    if (operations.textLayers?.length) changes.push(`${operations.textLayers.length} text layer${operations.textLayers.length === 1 ? "" : "s"}`);
     const brightness = Math.round(((Number(operations.brightness) || 1) - 1) * 100);
     const contrast = Math.round(((Number(operations.contrast) || 1) - 1) * 100);
     if (brightness) changes.push(`brightness ${brightness > 0 ? "+" : ""}${brightness}%`);
@@ -221,6 +222,7 @@ export function attachEditorCanvas(editor) {
     );
     ctx.restore();
     ctx.filter = "none";
+    if (state.tool !== "crop" && state.preview === "edited") editor.drawTextOnCanvas?.(ctx, layout, state.tool === "text");
     if (state.tool === "crop" && state.preview === "edited") drawCropOverlay(ctx, layout);
     elements.zoomValue.textContent = `${Math.round(state.zoom * 100)}%`;
     updateCanvasLabel();
@@ -360,7 +362,40 @@ export function attachEditorCanvas(editor) {
       elements.canvas.setPointerCapture?.(event.pointerId);
       return;
     }
-    if (state.tool === "crop" && state.preview === "edited" && !state.spacePressed) {
+    if (state.tool === "text" && state.preview === "edited" && !state.spacePressed) {
+      const resizeBox = editor.textResizeHandleAtPoint?.(point, layout);
+      const hit = editor.textLayerAtPoint?.(point, layout);
+      if (resizeBox && resizeBox.id === state.activeTextId) {
+        const outputPoint = editor.textPointToNormalized(point, layout);
+        const layer = editor.activeTextLayer?.();
+        const frame = editor.textFrame?.(layout);
+        state.drag = {
+          kind: "text-resize",
+          layerId: resizeBox.id,
+          left: (resizeBox.left - frame.left) / frame.width,
+          top: (resizeBox.top - frame.top) / frame.height,
+          startWidth: layer?.width ?? Math.max(.08, outputPoint.x),
+          startFontSize: layer?.fontSize ?? .12,
+        };
+        editor.beginControlEdit?.();
+      } else if (hit) {
+        state.activeTextId = hit.id;
+        const outputPoint = editor.textPointToNormalized(point, layout);
+        state.drag = {
+          kind: "text-move",
+          layerId: hit.id,
+          start: point,
+          offsetX: outputPoint.x - (editor.activeTextLayer?.()?.x ?? outputPoint.x),
+          offsetY: outputPoint.y - (editor.activeTextLayer?.()?.y ?? outputPoint.y),
+          moved: false,
+        };
+        editor.beginControlEdit?.();
+        editor.renderTextPanel?.();
+      } else {
+        state.activeTextId = null;
+        editor.renderTextPanel?.();
+      }
+    } else if (state.tool === "crop" && state.preview === "edited" && !state.spacePressed) {
       const selection = state.cropDraft ?? editor.fullRect();
       const box = selectionBox(selection, layout);
       const source = canvasToSource(point, layout);
@@ -393,7 +428,28 @@ export function attachEditorCanvas(editor) {
       renderCanvas();
       return;
     }
-    if (state.drag.kind === "pan") {
+    if (state.drag.kind === "text-move") {
+      const outputPoint = editor.textPointToNormalized(point, layout);
+      const layer = state.operations?.textLayers?.find((candidate) => candidate.id === state.drag.layerId);
+      if (layer) {
+        layer.x = Math.max(0, Math.min(1, outputPoint.x - state.drag.offsetX));
+        layer.y = Math.max(0, Math.min(1, outputPoint.y - state.drag.offsetY));
+        state.drag.moved = state.drag.moved || Math.hypot(point.x - state.drag.start.x, point.y - state.drag.start.y) > 4;
+      }
+      editor.renderTextPanel?.();
+      editor.scheduleProcessing?.();
+    } else if (state.drag.kind === "text-resize") {
+      const outputPoint = editor.textPointToNormalized(point, layout);
+      const layer = state.operations?.textLayers?.find((candidate) => candidate.id === state.drag.layerId);
+      if (layer) {
+        const nextWidth = Math.max(0.08, Math.min(1.5, outputPoint.x - state.drag.left));
+        const scale = nextWidth / Math.max(.08, state.drag.startWidth);
+        layer.width = nextWidth;
+        layer.fontSize = Math.max(.015, Math.min(.7, state.drag.startFontSize * scale));
+      }
+      editor.renderTextPanel?.();
+      editor.scheduleProcessing?.();
+    } else if (state.drag.kind === "pan") {
       state.panX = state.drag.panX + point.x - state.drag.start.x;
       state.panY = state.drag.panY + point.y - state.drag.start.y;
       state.drag.moved = state.drag.moved || Math.hypot(point.x - state.drag.start.x, point.y - state.drag.start.y) > 6;
@@ -418,6 +474,9 @@ export function attachEditorCanvas(editor) {
     const drag = state.drag;
     pointers.delete(event.pointerId);
     if (!drag) return;
+    if (drag.kind === "text-move" || drag.kind === "text-resize") {
+      editor.finishTextEdit?.("Text updated. Updating preview…");
+    }
     if (drag.kind === "pan" && !drag.moved && Date.now() - drag.startedAt < 320) {
       const now = Date.now();
       if (now - lastTapAt < 320) fitView();
@@ -431,7 +490,7 @@ export function attachEditorCanvas(editor) {
   function setTool(tool) {
     if (!state.image) return;
     state.tool = tool;
-    if (["crop", "adjust", "format", "export"].includes(tool)) state.preview = "edited";
+    if (["text", "crop", "adjust", "format", "export"].includes(tool)) state.preview = "edited";
     if (tool === "crop") {
       state.preview = "edited";
       state.cropDraft = editor.cloneRect(state.operations.crop ?? editor.fullRect());

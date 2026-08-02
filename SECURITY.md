@@ -41,10 +41,11 @@ Security still depends on:
 - explicit browser permission for source/destination directory handles; and
 - users reviewing the chosen destination before writing output files.
 
-Local recipes, recovery data, and large-job metadata may persist in browser
-storage until cleared. The app's **Local data** control removes those records;
-it does not delete downloaded files or output already written to a selected
-folder.
+Local recipes, custom font files, recovery data, and large-job metadata may
+persist in browser storage until cleared. The app's **Local data** control
+removes those saved records. A font already loaded into the current page can
+remain usable until refresh; the control does not delete downloaded files or
+output already written to a selected folder.
 
 Automated regression checks are evidence for specified behavior, not a claim
 that the application or its dependencies are vulnerability-free.

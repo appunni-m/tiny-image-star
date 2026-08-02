@@ -171,7 +171,8 @@ export function attachLargeFolderJobs({
       ? `${operations.resizeWidth} × ${operations.resizeHeight}`
       : "original dimensions";
     const fit = operations.resizeMode === "crop" ? "Fill frame" : "Keep whole image";
-    elements.recipeSummary.textContent = `${fit} · ${dimensions} · ${formatLabel(operations.format)}`;
+    const textNote = operations.textLayers?.length ? " · Text is available in regular editing" : "";
+    elements.recipeSummary.textContent = `${fit} · ${dimensions} · ${formatLabel(operations.format)}${textNote}`;
   }
 
   function setStatus(message, { error = false } = {}) {
@@ -217,6 +218,8 @@ export function attachLargeFolderJobs({
 
     const progress = jobProgress(job);
     const actions = largeJobActionState(job);
+    const selected = job?.recipe ?? selectedRecipe();
+    const textUnsupported = Boolean(selected?.operations?.textLayers?.length);
     if (elements.sourceName) elements.sourceName.textContent = job?.sourceName ?? "No folder chosen";
     if (elements.outputName) elements.outputName.textContent = job?.outputFolderName ?? "No save folder chosen";
     if (elements.discovered) elements.discovered.textContent = (job?.discovered ?? 0).toLocaleString();
@@ -238,7 +241,8 @@ export function attachLargeFolderJobs({
     if (elements.performance) elements.performance.disabled = ["running", "pausing"].includes(job?.status);
     if (elements.start) {
       elements.start.hidden = actions.startHidden;
-      elements.start.disabled = !supported || !job?.sourceHandle || !job?.outputHandle || !job?.scanComplete || job?.status === "complete";
+      elements.start.disabled = textUnsupported || !supported || !job?.sourceHandle || !job?.outputHandle || !job?.scanComplete || job?.status === "complete";
+      elements.start.title = textUnsupported ? "Text layers are not supported in large-folder save yet. Use the regular editor or remove the text layer." : "";
       elements.start.textContent = actions.startLabel;
     }
     if (elements.pause) elements.pause.hidden = job?.status !== "running";

@@ -8,6 +8,7 @@ import * as pillowApi from "../wasm/pillow_rs_js.js";
 import { CAPABILITIES, exifOrientationFromBytes, previewWithApi, renderWithApi, runtimeCapabilities } from "../src/engine/pillow.js";
 import { formatAccept, formatLabel, normalizeCapabilities } from "../src/formats.js";
 import { CROP_PRESETS, createEditorState } from "../src/editor/state.js";
+import { createTextLayer, normalizeTextLayers } from "../src/editor/text.js";
 import { DESTINATION_PRESETS, settingsForPreset } from "../src/presets.js";
 import {
   downloadedFileName,
@@ -690,6 +691,12 @@ async function run() {
     "keep-whole recipes never create a framing warning",
   );
 
+  const textLayer = createTextLayer(800, 600);
+  const normalizedText = normalizeTextLayers([{ ...textLayer, text: "Hello", x: 2, color: "not-a-color" }]);
+  assert.equal(normalizedText[0].text, "Hello", "text layers preserve user words");
+  assert.equal(normalizedText[0].x, 1, "text layer position is bounded");
+  assert.equal(normalizedText[0].color, "#ffffff", "text layer colors stay valid");
+
   const mainSource = await readFile(join(projectRoot, "src/main.js"), "utf8");
   const indexSource = await readFile(join(projectRoot, "index.html"), "utf8");
   const stylesSource = await readFile(join(projectRoot, "styles.css"), "utf8");
@@ -697,6 +704,8 @@ async function run() {
   const eventsSource = await readFile(join(projectRoot, "src/editor/events.js"), "utf8");
   const canvasSource = await readFile(join(projectRoot, "src/editor/canvas.js"), "utf8");
   const processingSource = await readFile(join(projectRoot, "src/editor/processing.js"), "utf8");
+  const textSource = await readFile(join(projectRoot, "src/editor/text.js"), "utf8");
+  const fontsSource = await readFile(join(projectRoot, "src/editor/fonts.js"), "utf8");
   const operationsSource = await readFile(join(projectRoot, "src/editor/operations.js"), "utf8");
   const workerSource = await readFile(join(projectRoot, "src/worker.js"), "utf8");
   const batchSource = await readFile(join(projectRoot, "src/batch.js"), "utf8");
@@ -714,6 +723,12 @@ async function run() {
   const qualitySource = await readFile(join(projectRoot, "src/quality.js"), "utf8");
   const scopedEditsSource = await readFile(join(projectRoot, "src/scoped-edits.js"), "utf8");
   const namesSource = await readFile(join(projectRoot, "src/names.js"), "utf8");
+  const packageSource = await readFile(join(projectRoot, "package.json"), "utf8");
+  const makeSource = await readFile(join(projectRoot, "Makefile"), "utf8");
+  const workflowSource = await readFile(join(projectRoot, ".github/workflows/pages.yml"), "utf8");
+  const docsCheckerSource = await readFile(join(projectRoot, "scripts/check-doc-links.mjs"), "utf8");
+  const pagesCheckerSource = await readFile(join(projectRoot, "scripts/check-pages-artifact.mjs"), "utf8");
+  const pagesAssemblerSource = await readFile(join(projectRoot, "scripts/assemble-pages.mjs"), "utf8");
   const browserSmokeSource = await readFile(join(projectRoot, "scripts/browser-smoke.mjs"), "utf8");
   assert.ok(mainSource.split("\n").length <= 100, "main.js remains a small composition entry point");
   assert.doesNotMatch(indexSource, /id="editor-button"/, "the editor is the one primary workspace, not a competing mode");
@@ -724,6 +739,10 @@ async function run() {
   assert.match(indexSource, /id="export-tool"[^>]*hidden/);
   assert.match(indexSource, /id="format-tool"[^>]*hidden/);
   assert.match(indexSource, /id="size-tool"/);
+  assert.match(indexSource, /id="text-tool"/);
+  assert.match(indexSource, /id="add-text-button"/);
+  assert.match(indexSource, /id="font-drop-zone"/);
+  assert.match(indexSource, /fonts\.google\.com/);
   assert.match(indexSource, /<h2 id="output-heading">Format &amp; quality<\/h2>/);
   assert.match(indexSource, /Keep whole image/);
   assert.match(indexSource, /Fill frame/);
@@ -787,6 +806,7 @@ async function run() {
   assert.match(indexSource, /Recover your last work/);
   assert.match(indexSource, /id="local-data-button"/);
   assert.match(indexSource, /id="local-data-clear-button"/);
+  assert.match(indexSource, /id="local-data-font-count"/);
   assert.match(indexSource, /id="local-data-recovery-size"/);
   assert.match(indexSource, /id="mobile-canvas-actions"/);
   assert.match(indexSource, /id="mobile-rotate-right"/);
@@ -814,11 +834,12 @@ async function run() {
   assert.match(stylesSource, /\.topbar \{ position: relative; z-index: 30;/, "topbar stays clickable above the review drawer");
   assert.match(stylesSource, /\.presets-drawer \{ position: fixed; z-index: 35;/, "preset drawer stays above the review drawer");
   assert.match(stylesSource, /\.tool-button\[hidden\] \{ display: none; \}/, "hidden legacy tool controls cannot reappear from display rules");
-  assert.match(stylesSource, /\.tool-primary-group \{ display: grid; grid-template-columns: repeat\(auto-fit, minmax\(52px, 1fr\)\)/, "mobile primary tools adapt when Format becomes available");
+  assert.match(stylesSource, /\.tool-primary-group \{ display: grid; grid-template-columns: repeat\(auto-fit, minmax\(44px, 1fr\)\)/, "mobile primary tools adapt when Text and Format are available");
   assert.match(stylesSource, /flex: 1 0 44px/);
   assert.match(mainSource, /attachEditorCanvas/);
   assert.match(mainSource, /attachEditorProcessing/);
   assert.match(mainSource, /setCapabilities: \(raw\) => editor\.setCapabilities\(raw\)/);
+  assert.match(mainSource, /composeTextOutput:/, "batch composition can use the editor text compositor");
   assert.match(viewSource, /function setEngineStatus/);
   assert.match(viewSource, /function setProcessingStatus/);
   assert.match(viewSource, /function setInspectorOpen/);
@@ -829,7 +850,7 @@ async function run() {
   assert.match(viewSource, /elements\.outputFormatDetails\.hidden = false/);
   assert.match(viewSource, /state\.operations\.lossy = false/, "capability downgrade clears stale compression state");
   assert.match(viewSource, /elements\.resizePanel\.hidden = state\.tool !== "size"/);
-  assert.match(viewSource, /\["move", "size", "adjust", "format", "export"\]/);
+  assert.match(viewSource, /\["move", "text", "size", "adjust", "format", "export"\]/);
   assert.match(viewSource, /formatCanBeLossy/);
   assert.doesNotMatch(viewSource, /exportPreview/);
   assert.match(viewSource, /\["Change", result && state\.file\?\.bytes/);
@@ -858,6 +879,8 @@ async function run() {
   assert.match(canvasSource, /function updateCropDraftField/);
   assert.match(canvasSource, /function nudgeCrop/);
   assert.match(canvasSource, /function pointerDistance/);
+  assert.match(canvasSource, /kind: "text-move"/);
+  assert.match(canvasSource, /kind: "text-resize"/);
   assert.match(canvasSource, /lastTapAt/);
   assert.match(processingSource, /setEngineStatus\("Ready", "ready"\)/);
   assert.match(processingSource, /state\.processingError = message\.message/);
@@ -867,6 +890,7 @@ async function run() {
   assert.match(processingSource, /function requestPreviewProxy/);
   assert.match(processingSource, /function openExportDialog/);
   assert.match(processingSource, /function saveOrOpenExport/);
+  assert.match(processingSource, /composeTextOutput/);
   assert.match(browserSmokeSource, /async function assertPreviewMatchesGeneratedBytes/);
   assert.match(browserSmokeSource, /async function readLatestGeneratedBytes/);
   assert.match(browserSmokeSource, /direct single-format Download downloads the current preview bytes/);
@@ -874,11 +898,19 @@ async function run() {
   assert.match(browserSmokeSource, /each explicit fallback click starts exactly one download/);
   assert.match(browserSmokeSource, /getImageData\(0, 0, canvas\.width, canvas\.height\)/, "browser smoke compares rendered pixels");
   assert.match(browserSmokeSource, /differingPixels/, "browser smoke fails on preview/output pixel differences");
+  assert.match(browserSmokeSource, /adding text changes the generated PNG bytes/);
+  assert.match(browserSmokeSource, /moving text marks the image as changed/);
+  assert.match(browserSmokeSource, /async function seedStoredFontRecord/);
   assert.match(browserSmokeSource, /Editor navigation reopens the active restored image/);
   assert.match(operationsSource, /function setFormat/);
   assert.match(operationsSource, /next\.lossy = Boolean\(next\.lossy &&/);
   assert.match(operationsSource, /function applyDestination/);
   assert.match(operationsSource, /next\.lossy = Boolean\(next\.lossy && state\.capabilities\.compression\.lossyFormats\.includes\(format\)\)/);
+  assert.match(textSource, /export async function composeTextOutput/);
+  assert.match(textSource, /Download the font file from Google Fonts/);
+  assert.match(fontsSource, /new FontFace/);
+  assert.match(fontsSource, /indexedDB\.open/);
+  assert.match(fontsSource, /export async function clearStoredFonts/);
   assert.match(workerSource, /type: "cancelled", revision, jobId/);
   assert.match(workerSource, /newestRevision/);
   assert.match(workerSource, /type: "preview-result"/);
@@ -1067,6 +1099,20 @@ async function run() {
   assert.match(localDataSource, /export async function readLocalDataSummary/);
   assert.match(localDataSource, /export async function clearStoredLocalData/);
   assert.match(localDataSource, /tinystar:local-data-cleared/);
+  assert.match(packageSource, /"verify:all": "npm run verify && npm run verify:browser && npm run check:docs"/, "the full npm gate includes documentation links");
+  assert.match(makeSource, /\.DEFAULT_GOAL := help/);
+  assert.match(makeSource, /package-pages:/);
+  assert.match(makeSource, /check-docs:/);
+  assert.match(workflowSource, /make verify/);
+  assert.match(workflowSource, /make package-pages PAGES_DIR=_site/);
+  assert.match(workflowSource, /actions\/checkout@v7/);
+  assert.match(workflowSource, /actions\/setup-node@v7/);
+  assert.match(workflowSource, /actions\/configure-pages@v6/);
+  assert.match(workflowSource, /if: github\.event_name != 'pull_request'\s+uses: actions\/upload-pages-artifact@v5/);
+  assert.match(workflowSource, /actions\/deploy-pages@v5/);
+  assert.match(docsCheckerSource, /Broken local documentation links/);
+  assert.match(pagesCheckerSource, /pillow_rs_js_bg\.wasm/);
+  assert.match(pagesAssemblerSource, /must be a child of the repository/);
 
   console.log("verify: PASS");
   console.log("  real WASM transforms: PNG fit/crop/rotate/flip/adjustments, exact decoded pixels, PNG bytes, decoded dimensions, output-size guard");

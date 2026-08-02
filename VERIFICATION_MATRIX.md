@@ -6,6 +6,9 @@ The immediate regression command is:
 npm run verify
 ```
 
+The equivalent contributor entry point is `make verify`; Make delegates to the
+same npm scripts and also exposes the Pages artifact checks.
+
 It is dependency-light, returns nonzero on failure, and exercises the copied
 fixture through the actual Pillow-RS adapter path. It checks transformed PNG
 bytes, decoded dimensions, exact crop/rotate/flip pixel rows, all eight EXIF
@@ -59,6 +62,10 @@ The gate validates behavior and real output bytes. The project does not
 currently produce a line/branch coverage artifact, so a passing run is not a
 line-coverage percentage claim.
 
+The full gate also runs `npm run check:docs`, which validates repository-local
+Markdown targets. External URL availability and anchor semantics remain a
+manual/release-review boundary.
+
 | User-visible feature | Check | Evidence / boundary |
 | --- | --- | --- |
 | Fresh Ready state | A + B/M | Worker reaches the internal `Ready` state; the healthy badge stays hidden in the empty UI and processing text is separate. |
@@ -73,6 +80,7 @@ line-coverage percentage claim.
 | Fit resize and exact Crop resize | A + B | Real 4×4 fit and exact crop output dimensions; browser deliberately opens Size, verifies locked and unlocked width/height behavior, changes Advanced sizing and both modes, then verifies the generated preview. |
 | Rotate and flip | A + B | Real rotated dimensions and changed flip bytes; browser invokes the controls. |
 | Brightness, contrast, grayscale | A + B | Real adjusted PNG bytes differ; browser drives the controls, checks signed percentage labels (`+25%`, `+20%`), and resets brightness to `0`. |
+| Text layers and local fonts | A + B/M | Fast checks validate the serializable text-layer model and source wiring. Browser smoke adds real text, changes the generated PNG bytes, checks the visible font controls and download-then-drop guidance, moves text with a real canvas pointer drag, asserts dirty state, and verifies Reset removes it. Built-in fonts are deterministic; a bundled third-party font fixture is intentionally not shipped, so successful custom-font decoding remains a manual/browser-file boundary. Google Fonts is never fetched by the app. |
 | Undo, redo, Reset, dirty state | B/M | Browser transition sequence asserts dirty visibility and history behavior. |
 | Destination presets and scope | A + B/M | Preset names/dimensions are data-tested; browser selects outcome-named quick choices, opens More destinations, uses Website Banner in the tray, and exercises explicit All/Selected/This scope with per-item destination markers. The no-resize utility is named `Edit without resizing` and is not a primary destination. |
 | Custom save/edit/duplicate/delete | B/M | Browser saves a named canvas recipe with final format and capability-gated lossy choice, verifies the stored recipe, applies that complete recipe into the active tray, exercises the currently unavailable JPEG path as an honest failed output rather than claiming success, restores the original shared destination, duplicates it, and deletes both local copies. |
@@ -89,7 +97,7 @@ line-coverage percentage claim.
 | Keyboard shortcuts and ownership | B/M | Browser exercises unmodified Fit/Crop/zoom, Cmd/Ctrl+Z and redo, text-entry isolation, and Cmd/Ctrl+S. Results owns its save shortcut exclusively and invokes exactly one selected folder save; editor shortcuts yield to Results, Presets, open dialogs, browser Find/Copy, and native text-field undo. |
 | Apply current edits and per-item override merge | A + B/M | Fast checks prove relative crop scaling, shared-edit merging, removal of only the applied override keys, and preservation of unrelated per-image corrections. Browser rotates one image, applies that change to all, opens another image to verify the shared rotation, then adds a local flip and confirms later destination/format changes do not silently replace it. |
 | Active-set refresh recovery | A + B/M | Fast checks validate the versioned source-byte snapshot schema, shared override, quality, recipe scope, per-item destination, and override metadata. Browser proves one-image and multi-image restoration opens the canvas only after true source dimensions are known, preventing a no-resize recipe from becoming 1×1; generated outputs are rebuilt, not restored as truth. |
-| Local data summary and clear | A + B/M | Fast checks cover the shared recipe key and byte formatting; browser creates a local recipe and recovery copy, opens the footer summary, verifies both counts and storage size, clears saved data with confirmation, keeps the open image usable, and refreshes without a stale recovery offer. |
+| Local data summary and clear | A + B/M | Fast checks cover the shared recipe key and byte formatting; browser creates a local recipe and recovery copy, opens the footer summary, verifies recipe/font/recovery counts and storage size, clears saved data with confirmation, keeps the open image usable, and refreshes without a stale recovery offer. Custom-font byte decoding remains a file-fixture boundary. |
 | Hold-to-compare | B/M | Browser dispatches pointer down/up on the editor comparison control and asserts Original is active only while held; image-set cards expose the same press-to-see-original pattern. |
 | Private/offline processing | B/M | The compound browser journey records every request and fails if any request has a body or leaves the local test origin; in-memory `blob:` preview URLs are explicitly allowed. Run `fb944f00-936b-481c-9fc7-c4b2e7829426` passed this check. This proves the current app flow does not upload image bytes, not that a future deployment can never add a third-party asset. |
 | No console errors | B | Headless smoke collects console/page errors across the compound journey; run `fb944f00-936b-481c-9fc7-c4b2e7829426` passed with no console/page errors. |
@@ -104,6 +112,8 @@ line-coverage percentage claim.
 | Large-folder discovery, direct output, pause/retry, and recovery | A + B/M | Start stays unavailable until metadata discovery is complete. Browser smoke chooses source/output directories, pauses and resumes pending work, creates a real failed input, proves the failed terminal state shows only `Retry N failed` rather than an ineffective Resume, repairs and retries it, reads direct results back, checks PNG signatures/dimensions, proves no archive exists, bounds result DOM rows, and reloads a saved discovered job. Interrupted processing entries reset to pending; interrupted discovery is cleared and restarted from the durable source handle. Browser permission can still require a person to approve access again after restart. |
 | Contextual inspector and mobile controls sheet | B/M | Browser checks Move/Size/Adjust/Format panel switching, the top-bar Download path, the mobile Controls toggle, and the hidden legacy rail trigger; responsive layout checks the fixed primary bar, quick-action row, stage footer, bounded bottom sheet, and narrow batch comparison control. Reduced-motion, forced-colors, and high-contrast media emulation are also checked. Real-device touch/accessibility validation remains the boundary. |
 | Accessible canvas state | A + B/M | Source checks require a dynamic canvas label; browser smoke verifies it names the current image, output size, and Keep whole image behavior. Keyboard crop movement, Enter/Escape, focus-visible styling, reduced-motion, forced-colors, and high-contrast emulation are covered. Screen-reader, real touch, RTL, and 200% text-zoom validation remain open. |
+| Contributor command and CI contract | A + CI | The fast contract checks the Make targets, npm gate, Pages assembly/checker, and current workflow action versions. `make package-pages` builds the exact allowlisted artifact; the registered `make verify` command runs the full byte/browser/documentation gate. A hosted GitHub Actions run is environment-dependent and remains a deployment-system boundary. |
+| Documentation navigation | A | `npm run check:docs` scans repository Markdown and rejects missing local link targets. External URL availability, anchor semantics, and rendered publication layout remain manual/release-review boundaries. |
 
 ## Known automation boundary
 

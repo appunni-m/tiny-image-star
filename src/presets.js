@@ -26,6 +26,7 @@ export const PRESETS = DESTINATION_PRESETS.map((preset) => ({
     brightness: 1,
     contrast: 1,
     grayscale: false,
+    textLayers: [],
     lossy: false,
     quality: DEFAULT_QUALITY,
     format: "png",

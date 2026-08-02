@@ -58,6 +58,7 @@ export function attachEditorView(editor) {
     elements.mobileInspectorToggle.hidden = !enabled;
     for (const control of [
       elements.moveTool,
+      elements.textTool,
       elements.cropTool,
       elements.sizeTool,
       elements.adjustTool,
@@ -178,9 +179,10 @@ export function attachEditorView(editor) {
       elements.aspectLock.checked = true;
       elements.grayscale.checked = false;
       elements.resizeModeLabel.textContent = "Keep whole image";
-      renderDestinationPicker();
-      updateCropFields();
-      return;
+    renderDestinationPicker();
+    editor.renderTextPanel?.();
+    updateCropFields();
+    return;
     }
     elements.width.value = String(Math.max(1, Math.round(operations.resizeWidth)));
     elements.height.value = String(Math.max(1, Math.round(operations.resizeHeight)));
@@ -198,6 +200,7 @@ export function attachEditorView(editor) {
     }
     updateCropFields();
     renderDestinationPicker();
+    editor.renderTextPanel?.();
   }
 
   function renderDestinationPicker() {
@@ -291,7 +294,7 @@ export function attachEditorView(editor) {
   }
 
   function renderToolState() {
-    for (const [button, tool] of [[elements.moveTool, "move"], [elements.cropTool, "crop"], [elements.sizeTool, "size"], [elements.adjustTool, "adjust"], [elements.formatTool, "format"], [elements.exportTool, "export"]]) {
+    for (const [button, tool] of [[elements.moveTool, "move"], [elements.textTool, "text"], [elements.cropTool, "crop"], [elements.sizeTool, "size"], [elements.adjustTool, "adjust"], [elements.formatTool, "format"], [elements.exportTool, "export"]]) {
       const active = state.tool === tool;
       button.classList.toggle("active", active);
       button.setAttribute("aria-pressed", String(active));
@@ -299,7 +302,8 @@ export function attachEditorView(editor) {
     elements.cropPanel.hidden = state.tool !== "crop" || !state.image;
     elements.resizePanel.hidden = state.tool !== "size" || !state.image;
     elements.adjustPanel.hidden = state.tool !== "adjust" || !state.image;
-    elements.outputSection.hidden = !state.image || !["move", "size", "adjust", "format", "export"].includes(state.tool);
+    elements.textPanel.hidden = state.tool !== "text" || !state.image;
+    elements.outputSection.hidden = !state.image || !["move", "text", "size", "adjust", "format", "export"].includes(state.tool);
     if (state.tool === "format") elements.outputFormatDetails.open = true;
     elements.cropHint.hidden = elements.cropPanel.hidden;
     elements.canvas.style.cursor = state.tool === "crop" && !state.spacePressed ? "crosshair" : "grab";
@@ -319,6 +323,7 @@ export function attachEditorView(editor) {
     elements.fileName.textContent = state.file?.name ?? "Open an image to begin";
     renderToolState();
     updateInspector();
+    editor.renderTextPanel?.();
     renderOutputSummary();
     renderDirtyAndHistory();
     setInspectorOpen(state.inspectorOpen);

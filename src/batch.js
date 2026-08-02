@@ -359,6 +359,7 @@ function allPresets() {
       brightness: 1,
       contrast: 1,
       grayscale: false,
+      textLayers: [],
       lossy: false,
       quality: DEFAULT_QUALITY,
       format: state.capabilities.outputFormats[0] ?? "png",
@@ -407,6 +408,7 @@ function normalizePresetOperations(operations, width, height) {
   next.format = state.capabilities.outputFormats.includes(normalizeFormat(next.format))
     ? normalizeFormat(next.format)
     : state.capabilities.outputFormats[0] ?? "png";
+  next.textLayers = Array.isArray(next.textLayers) ? next.textLayers : [];
   return next;
 }
 
@@ -428,6 +430,7 @@ function relativePresetOperations(operations, width, height) {
   next.format = state.capabilities.outputFormats.includes(normalizeFormat(next.format))
     ? normalizeFormat(next.format)
     : state.capabilities.outputFormats[0] ?? "png";
+  next.textLayers = Array.isArray(next.textLayers) ? next.textLayers : [];
   return next;
 }
 
@@ -1516,7 +1519,7 @@ async function runBatch(items = state.batch.files) {
     const bytes = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
     return { id: item.id, name: item.name, bytes, settings };
   });
-  state.batch.job = { revision: state.batch.revision, total: queue.length, queue, active: 0, completed: 0 };
+  state.batch.job = { revision: state.batch.revision, total: queue.length, queue, active: 0, completed: 0, pendingCompositions: 0 };
   elements.batchStatus.textContent = `Updating ${readyItems.length} preview${readyItems.length === 1 ? "" : "s"}…`;
   elements.batchCancel.hidden = false;
   const workerCount = processingWorkerCount(
@@ -1717,6 +1720,35 @@ function dispatchBatchWork(worker) {
   worker.postMessage({ type: "process", jobId: "batch", revision: job.revision, files: [file], settings: null }, [file.bytes]);
 }
 
+async function commitBatchResult(item, message, bytes, settings, job) {
+  if (job.revision !== state.batch.revision || !state.batch.files.includes(item)) return;
+  let result = { ...message, output: bytes };
+  if (settings.textLayers?.length) {
+    try {
+      result = await window.tinyImageStarEditor.composeTextOutput(result, settings);
+    } catch (error) {
+      item.status = "error";
+      item.error = error?.userMessage ?? "The text could not be included in this image.";
+      item.retryable = true;
+      renderBatchGrid();
+      return;
+    }
+  }
+  if (job.revision !== state.batch.revision || !state.batch.files.includes(item)) return;
+  const previous = state.batch.results.get(item.id);
+  if (previous?.url) URL.revokeObjectURL(previous.url);
+  state.batch.results.set(item.id, {
+    ...result,
+    output: result.output instanceof Uint8Array ? result.output : new Uint8Array(result.output),
+    outputBytes: result.outputBytes ?? result.output.byteLength,
+    url: URL.createObjectURL(new Blob([result.output], { type: result.mime })),
+  });
+  item.status = "ready";
+  item.retryable = false;
+  if (!state.batch.selectionTouched) state.batch.selected.add(item.id);
+  renderBatchGrid();
+}
+
 function handleBatchWorkerMessage(worker, message, job) {
   if (!message || job.revision !== state.batch.revision) return;
   if (message.type === "fatal-error") {
@@ -1730,17 +1762,12 @@ function handleBatchWorkerMessage(worker, message, job) {
     const item = state.batch.files.find((candidate) => candidate.id === message.fileId) ?? current?.item;
     if (!item) return;
     const bytes = new Uint8Array(message.output);
-    const previous = state.batch.results.get(item.id);
-    if (previous?.url) URL.revokeObjectURL(previous.url);
-    state.batch.results.set(item.id, {
-      ...message,
-      output: bytes,
-      url: URL.createObjectURL(new Blob([bytes], { type: message.mime })),
+    const settings = current?.file?.settings ?? effectiveOperationsForItem(item);
+    job.pendingCompositions = (job.pendingCompositions ?? 0) + 1;
+    void commitBatchResult(item, message, bytes, settings, job).finally(() => {
+      job.pendingCompositions = Math.max(0, (job.pendingCompositions ?? 1) - 1);
+      finishBatchJobIfReady();
     });
-    item.status = "ready";
-    item.retryable = false;
-    if (!state.batch.selectionTouched) state.batch.selected.add(item.id);
-    renderBatchGrid();
     return;
   }
   if (message.type === "file-error") {
@@ -1766,7 +1793,7 @@ function handleBatchWorkerMessage(worker, message, job) {
 
 function finishBatchJobIfReady() {
   const job = state.batch.job;
-  if (!job || job.active || job.queue.length) return;
+  if (!job || job.active || job.queue.length || job.pendingCompositions) return;
   state.batch.processing = false;
   const ready = state.batch.files.filter((item) => state.batch.results.has(item.id)).length;
   const errors = state.batch.files.filter((item) => item.status === "error").length;

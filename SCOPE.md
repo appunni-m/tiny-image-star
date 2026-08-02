@@ -35,6 +35,28 @@ developer diagnostics, not in the main interface.
 4. Undo, redo, reset, and save the latest verified output in the selected format.
 5. Click **Save as preset** to name the visible recipe for later reuse.
 
+### Text on the image
+
+Text is an editor-owned layer rather than a dependency on a server or remote
+font service. Add one or more text layers, type the words, choose a built-in
+font, and drag the selected layer on the canvas. The green corner resizes it;
+the small panel controls size, color, alignment, weight, and italic style.
+Text layers are part of undo/reset, saved recipes, active-set overrides, and
+the next generated output.
+
+Custom fonts can be added by choosing or dropping a local `.ttf`, `.otf`,
+`.woff`, or `.woff2` file. Google Fonts pages do not provide a dependable
+browser contract for dragging a font binary directly into another site, so the
+editor links there and asks the user to download the font file first. The font
+bytes stay in this browser's local font store; the app does not fetch fonts or
+send image/text data to Google.
+
+When text is present, the browser-composition export path is verified for PNG,
+JPEG, and WebP where the image engine has also verified that output format.
+Other formats remain visibly unavailable for text rather than silently losing
+the layer. Large-folder direct-save jobs are currently blocked when a recipe
+contains text because that path has no text compositor yet.
+
 ### Presets and image sets
 
 1. Open **Presets** and choose a human-readable destination such as **Instagram
@@ -59,8 +81,8 @@ developer diagnostics, not in the main interface.
    the shared recipe. The override can be reset or saved as a new preset.
 
 The initial product handles one still-image result per input. Animated
-GIF/WebP, multi-frame editing, layered formats, text/layers, drawing, advanced
-filters, metadata policy, persistent output caching, accounts, uploads,
+GIF/WebP, multi-frame editing, layered formats, drawing, advanced filters,
+metadata policy, persistent output caching, accounts, uploads,
 monetization, server processing, GPU processing, and PWA installation are later
 scopes.
 

@@ -3,4 +3,5 @@ node_modules/
 dist/
 coverage/
 .coverage-mcp/
+_site/
 /tiny-image-star-*/

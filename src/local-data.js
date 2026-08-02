@@ -4,6 +4,7 @@ import {
   readEditorSession,
   readSession,
 } from "./session.js";
+import { clearStoredFonts, countStoredFonts } from "./editor/fonts.js";
 
 export const PRESETS_STORAGE_KEY = "tiny-image-star.presets.v1";
 
@@ -23,10 +24,11 @@ function recoveryBytes(record) {
 }
 
 export async function readLocalDataSummary() {
-  const [active, editor] = await Promise.all([readSession(), readEditorSession()]);
+  const [active, editor, fontCount] = await Promise.all([readSession(), readEditorSession(), countStoredFonts()]);
   const records = [active, editor].filter(Boolean);
   return {
     presetCount: safePresetCount(),
+    fontCount,
     recoveryCount: records.length,
     recoveryBytes: records.reduce((total, record) => total + recoveryBytes(record), 0),
   };
@@ -39,7 +41,7 @@ export async function clearStoredLocalData() {
     // Private browsing can deny localStorage writes. The IndexedDB cleanup
     // still runs and the summary reports what remains available.
   }
-  await Promise.all([clearSession(), clearEditorSession()]);
+  await Promise.all([clearSession(), clearEditorSession(), clearStoredFonts()]);
   return readLocalDataSummary();
 }
 
@@ -56,6 +58,7 @@ export function attachLocalDataControls() {
   const closeButton = document.querySelector("#local-data-close-button");
   const clearButton = document.querySelector("#local-data-clear-button");
   const presetCount = document.querySelector("#local-data-preset-count");
+  const fontCount = document.querySelector("#local-data-font-count");
   const recoveryCount = document.querySelector("#local-data-recovery-count");
   const recoverySize = document.querySelector("#local-data-recovery-size");
   const status = document.querySelector("#local-data-status");
@@ -64,9 +67,10 @@ export function attachLocalDataControls() {
   async function renderSummary(message = "") {
     const summary = await readLocalDataSummary();
     if (presetCount) presetCount.textContent = `${summary.presetCount} saved recipe${summary.presetCount === 1 ? "" : "s"}`;
+    if (fontCount) fontCount.textContent = `${summary.fontCount} saved font${summary.fontCount === 1 ? "" : "s"}`;
     if (recoveryCount) recoveryCount.textContent = `${summary.recoveryCount} recovery cop${summary.recoveryCount === 1 ? "y" : "ies"}`;
     if (recoverySize) recoverySize.textContent = formatLocalBytes(summary.recoveryBytes);
-    if (status) status.textContent = message || "Only recipes and recovery copies are stored here. Open images and generated results remain in memory.";
+    if (status) status.textContent = message || "Recipes, custom fonts, and recovery copies stay in this browser. Open images and generated results remain in memory.";
     return summary;
   }
 
@@ -78,11 +82,11 @@ export function attachLocalDataControls() {
   });
   closeButton?.addEventListener("click", () => dialog.close());
   clearButton.addEventListener("click", async () => {
-    if (!window.confirm("Clear saved recipes and recovery copies from this browser? The image currently open will stay available.")) return;
+    if (!window.confirm("Clear saved recipes, custom fonts, and recovery copies from this browser? The image currently open will stay available.")) return;
     clearButton.disabled = true;
     const summary = await clearStoredLocalData();
     clearButton.disabled = false;
-    await renderSummary(`Cleared saved data. ${summary.presetCount} recipes and ${summary.recoveryCount} recovery copies remain.`);
+    await renderSummary(`Cleared saved data. ${summary.presetCount} recipes, ${summary.fontCount} fonts, and ${summary.recoveryCount} recovery copies remain.`);
     window.dispatchEvent(new CustomEvent("tinystar:local-data-cleared"));
   });
 }

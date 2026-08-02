@@ -93,6 +93,7 @@ h1, h2, h3, p { margin: 0; }
 .tool-button { display: grid; min-width: 68px; min-height: 54px; place-items: center; gap: 3px; padding: 6px 5px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--muted); font-size: .82rem; font-weight: 800; }
 .tool-button[hidden] { display: none; }
 .tool-button .tool-icon { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; color: var(--text); }
+.tool-button > span { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-button:hover, .tool-button.active, .tool-button[aria-pressed="true"] { border-color: #496331; background: #1c3420; color: var(--accent); }
 .tool-button:disabled { opacity: .35; }
 .tool-button.icon-tool { min-height: 42px; font-size: 1.2rem; }
@@ -187,6 +188,21 @@ output { color: var(--accent); font-variant-numeric: tabular-nums; }
 .quality-details { margin-top: 10px; }
 .quality-details .range-row { margin-top: 10px; }
 .full-button { width: 100%; margin-top: 12px; }
+.text-layer-list { display: grid; gap: 5px; max-height: 148px; margin-top: 10px; overflow: auto; }
+.text-layer-item { min-width: 0; overflow: hidden; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: #0e1628; color: var(--muted); font-size: .75rem; font-weight: 800; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.text-layer-item[aria-pressed="true"] { border-color: var(--accent); background: #1c3420; color: var(--accent); }
+.text-font-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; align-items: end; margin-top: 11px; }
+.text-font-row .dialog-field { min-width: 0; }
+.text-font-row .button { min-height: 36px; padding: 7px 9px; }
+.font-drop-zone { min-height: 58px; display: grid; place-content: center; margin-top: 8px; padding: 8px; border: 1px dashed var(--line-strong); border-radius: 9px; background: #0e1628; color: var(--muted); font-size: .72rem; line-height: 1.45; text-align: center; cursor: pointer; }
+.font-drop-zone[data-dragging="true"], .font-drop-zone:hover { border-color: var(--accent); background: #14231b; color: var(--text); }
+.font-drop-zone small { font-size: .65rem; }
+.font-drop-zone a { color: var(--accent); }
+.text-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 11px; }
+.text-control-grid .dialog-field { min-width: 0; }
+.text-control-grid input[type="color"] { width: 100%; height: 36px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: #0e1628; }
+.text-control-grid select, .text-font-row select { width: 100%; min-width: 0; padding: 8px 7px; border: 1px solid var(--line); border-radius: 7px; background: #0e1628; color: var(--text); }
+.text-help { margin-top: 9px !important; }
 .export-help { margin-top: 12px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
 .export-help strong { color: var(--text); }
 .history-actions { flex-wrap: wrap; gap: 6px; padding: 12px 16px; }
@@ -515,9 +531,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .tray-footer { flex-wrap: wrap; margin-top: 0; padding-top: 6px; }
   .tray-footer > span { min-width: 0; flex: 1 1 120px; }
   .tool-rail { order: 2; position: fixed; z-index: 30; right: 8px; bottom: 8px; left: 8px; display: grid; grid-template-columns: 1fr; gap: 5px; overflow: visible; padding: 6px; border-color: var(--line-strong); background: #121a2df2; backdrop-filter: blur(12px); }
-  .tool-primary-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)); gap: 5px; }
+  .tool-primary-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 5px; }
   .tool-secondary-group { display: none; }
-  .tool-button { min-width: 0; min-height: 54px; }
+  .tool-button { min-width: 0; min-height: 54px; padding-inline: 1px; font-size: .68rem; }
   .tool-divider { display: none; }
   .inspector { order: 3; position: fixed; z-index: 29; right: 8px; bottom: 78px; left: 8px; display: none; max-height: 58vh; border-color: var(--line-strong); box-shadow: 0 16px 50px #02050ecc; }
   .editor-workspace[data-inspector-open="true"] .inspector { display: block; }

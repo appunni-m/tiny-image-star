@@ -11,6 +11,39 @@ function assertPngBytes(bytes, label) {
   assert.deepEqual(Array.from(bytes.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10], `${label} is PNG`);
 }
 
+async function seedStoredFontRecord(page) {
+  await page.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open("tiny-image-star-fonts", 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains("fonts")) request.result.createObjectStore("fonts", { keyPath: "id" });
+    };
+    request.onerror = () => reject(request.error ?? new Error("font test store could not open"));
+    request.onsuccess = () => {
+      const database = request.result;
+      const transaction = database.transaction("fonts", "readwrite");
+      transaction.objectStore("fonts").put({
+        id: "browser-smoke-font",
+        name: "Browser smoke font",
+        fileName: "browser-smoke.ttf",
+        family: "BrowserSmokeFont",
+        bytes: new ArrayBuffer(1),
+      });
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error ?? new Error("font test record could not be stored"));
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error ?? new Error("font test record was aborted"));
+      };
+    };
+  }));
+}
+
 async function readLatestGeneratedBytes(page, label) {
   const payload = await page.evaluate(async () => {
     const candidate = window.__tinystarImageBlobUrls?.at(-1);
@@ -316,7 +349,7 @@ async function assertEditorResponsiveGeometry(page, label) {
       rightOutside: rects.filter(({ rect }) => rect.right > innerWidth + 1).map(({ name, rect }) => `${name} (${Math.round(rect.right)})`),
     };
   });
-  assert.deepEqual(report.buttonIds, ["move-tool", "crop-tool", "size-tool", "adjust-tool", "format-tool"], `${label}: the intentional editor tools, including discoverable Format, remain visible`);
+  assert.deepEqual(report.buttonIds, ["move-tool", "text-tool", "crop-tool", "size-tool", "adjust-tool", "format-tool"], `${label}: the intentional editor tools, including Text and discoverable Format, remain visible`);
   assert.equal(report.mobileActionCount, 7, `${label}: mobile quick actions remain present`);
   assert.deepEqual(report.overlaps, [], `${label}: editor buttons overlap: ${report.overlaps.join(", ")}`);
   assert.equal(report.railOverflow, false, `${label}: tool rail has hidden horizontal overflow`);
@@ -928,6 +961,40 @@ async function main() {
     await assertPreviewMatchesGeneratedBytes(page, "compound rotate-flip-adjust preview");
     await page.getByRole("button", { name: "Reset", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#dirty-state")?.hidden && document.querySelector("#output-summary")?.textContent?.includes("8 × 8"));
+
+    // Text is a browser-owned composition layer: the worker still produces the
+    // image transform, then the final downloadable PNG is composed with the
+    // same visible text. Prove the output bytes change and exercise direct
+    // canvas movement rather than checking labels alone.
+    const textBaselineBytes = await readLatestGeneratedBytes(page, "text baseline");
+    await tools.getByRole("button", { name: "Text", exact: true }).click();
+    assert.equal(await page.locator("#text-panel").isVisible(), true, "Text panel opens as a contextual tool");
+    await page.locator("#add-text-button").click();
+    await page.waitForFunction(() => document.querySelectorAll("#text-layer-list .text-layer-item").length === 1);
+    await page.locator("#text-content").fill("Tiny Image Star");
+    await page.waitForFunction(() => document.querySelector("#output-summary")?.textContent?.includes("Ready"));
+    const textBytes = await readLatestGeneratedBytes(page, "text output");
+    assert.notDeepEqual(textBytes, textBaselineBytes, "adding text changes the generated PNG bytes");
+    assert.equal(await page.locator("#text-font").isVisible(), true, "built-in font choices are visible");
+    assert.ok((await page.locator("#text-font option").count()) >= 4, "text has friendly built-in font choices");
+    assert.equal(await page.locator("#font-drop-zone").getAttribute("role"), "button", "font drop zone is keyboard-addressable");
+    assert.match(await page.locator("#font-drop-zone").textContent(), /Google Fonts/, "font drop explains the download-then-drop path");
+    const textSnapshotBeforeMove = await page.evaluate(() => window.tinyImageStarEditor.getSnapshot().operations.textLayers[0]);
+    const textCanvasBox = await page.locator("#editor-canvas").boundingBox();
+    assert.ok(textCanvasBox, "text canvas has geometry for direct manipulation");
+    await page.mouse.move(textCanvasBox.x + textCanvasBox.width / 2, textCanvasBox.y + textCanvasBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(textCanvasBox.x + textCanvasBox.width / 2 + 42, textCanvasBox.y + textCanvasBox.height / 2 + 18);
+    await page.mouse.up();
+    await page.waitForFunction((before) => {
+      const layer = window.tinyImageStarEditor.getSnapshot().operations.textLayers[0];
+      return layer && (layer.x !== before.x || layer.y !== before.y);
+    }, textSnapshotBeforeMove);
+    assert.equal(await page.locator("#dirty-state").isVisible(), true, "moving text marks the image as changed");
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#output-summary")?.textContent?.includes("8 × 8") && document.querySelector("#dirty-state")?.hidden);
+    assert.equal(await page.evaluate(() => window.tinyImageStarEditor.getSnapshot().operations.textLayers.length), 0, "Reset removes the local text layer");
+    await tools.getByRole("button", { name: "Move", exact: true }).click();
 
     const directSaveDownloadPromise = page.waitForEvent("download", { timeout: 3000 }).catch(() => null);
     const directPreviewBytes = await readLatestGeneratedBytes(page, "direct single-image preview");
@@ -1618,22 +1685,29 @@ async function main() {
     await page.getByRole("textbox", { name: "Name", exact: true }).fill("Local data recipe");
     await page.getByRole("button", { name: "Save preset", exact: true }).click();
     await page.waitForTimeout(500);
+    // Seed only the storage record so the cleanup contract has a non-zero
+    // custom-font case without pretending that a bundled third-party font is
+    // a portable decode fixture.
+    await seedStoredFontRecord(page);
     await page.getByRole("button", { name: "Local data", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#local-data-dialog")?.open);
     await page.setViewportSize({ width: 390, height: 844 });
     await assertNoLayoutCollisions(page, "local data dialog mobile", ["#local-data-dialog .local-data-summary", "#local-data-dialog .dialog-actions .button"]);
     await page.setViewportSize({ width: 1280, height: 720 });
     assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved recipes", "local data reports both saved recipes");
+    assert.equal(await page.locator("#local-data-font-count").textContent(), "1 saved font", "local data reports saved custom fonts");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "1 recovery copy", "local data reports one recovery copy");
     assert.match(await page.locator("#local-data-recovery-size").textContent(), /B|KB|MB/, "local data reports recovery storage");
     page.once("dialog", (dialog) => dialog.dismiss());
     await page.getByRole("button", { name: "Clear saved data", exact: true }).click();
     assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved recipes", "cancelled local-data clear keeps both recipes");
+    assert.equal(await page.locator("#local-data-font-count").textContent(), "1 saved font", "cancelled local-data clear keeps saved font count");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "1 recovery copy", "cancelled local-data clear keeps recovery");
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Clear saved data", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#local-data-status")?.textContent?.includes("Cleared saved data"));
     assert.equal(await page.locator("#local-data-preset-count").textContent(), "0 saved recipes", "clearing local data removes recipes");
+    assert.equal(await page.locator("#local-data-font-count").textContent(), "0 saved fonts", "clearing local data removes saved fonts");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "0 recovery copies", "clearing local data removes recovery copies");
     assert.equal(await page.locator("#local-data-recovery-size").textContent(), "0 B", "clearing local data removes stored bytes");
     assert.equal(await page.locator("#file-name").textContent(), "one.png", "clearing local data keeps the open image available");

@@ -19,7 +19,9 @@
     "verify": "node scripts/verify.mjs",
     "verify:watch": "node scripts/watch-verify.mjs",
     "verify:browser": "node scripts/browser-smoke.mjs",
-    "verify:all": "npm run verify && npm run verify:browser",
+    "verify:all": "npm run verify && npm run verify:browser && npm run check:docs",
+    "check:docs": "node scripts/check-doc-links.mjs",
+    "check:pages": "node scripts/check-pages-artifact.mjs",
     "profile:folder": "node scripts/profile-folder.mjs"
   },
   "devDependencies": {
