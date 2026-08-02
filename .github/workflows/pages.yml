@@ -57,8 +57,22 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
 
+      - name: Install release optimization tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y binaryen
+
+      - name: Install locked build dependencies
+        run: make install
+
       - name: Assemble and validate the static site
-        run: make package-pages PAGES_DIR=_site
+        run: WASM_OPT_REQUIRED=1 make package-pages PAGES_DIR=_site
+
+      - name: Install Chromium and system dependencies for release smoke
+        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium"
+
+      - name: Smoke-test the optimized Pages artifact
+        run: TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser
 
       - name: Upload the Pages artifact
         if: github.event_name != 'pull_request'

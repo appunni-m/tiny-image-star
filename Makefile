@@ -32,7 +32,7 @@ help:
 		'  make check-docs       Check local Markdown links.' \
 		'  make serve             Serve the static app (PORT=8000, HOST=127.0.0.1).' \
 		'  make profile-folder FOLDER=... [WORKERS=64]  Measure a local sample.' \
-		'  make package-pages    Build and validate the local _site artifact.' \
+			'  make package-pages    Build, optimize, and validate the local _site artifact.' \
 		'  make check-pages      Validate an existing Pages directory.' \
 		'' \
 		'Network or filesystem side effects: install, setup-browser, serve, and package-pages.'

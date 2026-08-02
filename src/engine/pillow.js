@@ -15,10 +15,29 @@ export const CAPABILITIES = Object.freeze({
 
 let apiPromise;
 
+async function fetchBrotliWasm() {
+  if (typeof DecompressionStream !== "function") return null;
+  const wasmUrl = new URL("../../wasm/pillow_rs_js_bg.wasm", import.meta.url);
+  const compressedUrl = new URL("pillow_rs_js_bg.wasm.br", wasmUrl);
+  try {
+    const response = await fetch(compressedUrl);
+    if (!response.ok || !response.body?.pipeThrough) return null;
+    const decompressed = response.body.pipeThrough(new DecompressionStream("brotli"));
+    return new Uint8Array(await new Response(decompressed).arrayBuffer());
+  } catch {
+    // Development and older browsers may not have the release sidecar or
+    // Brotli decompression. The generated binding's normal .wasm path remains
+    // the compatibility fallback.
+    return null;
+  }
+}
+
 function loadApi() {
   if (!apiPromise) {
     apiPromise = import("../../wasm/pillow_rs_js.js").then(async (api) => {
-      await api.default();
+      // Passing undefined preserves the generated binding's normal URL-based
+      // loader when the release sidecar is unavailable.
+      await api.default((await fetchBrotliWasm()) ?? undefined);
       return api;
     });
   }

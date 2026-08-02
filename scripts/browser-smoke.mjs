@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { join, extname, dirname } from "node:path";
+import { join, extname, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const serverRoot = resolve(process.env.TINY_IMAGE_STAR_BROWSER_ROOT ?? projectRoot);
 
 function assertPngBytes(bytes, label) {
   assert.deepEqual(Array.from(bytes.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10], `${label} is PNG`);
@@ -154,8 +155,8 @@ function startStaticServer() {
     try {
       const requestPath = decodeURIComponent(new URL(request.url, "http://127.0.0.1").pathname);
       const relativePath = requestPath === "/" ? "index.html" : requestPath.replace(/^\/+/, "");
-      const filePath = join(projectRoot, relativePath);
-      if (!filePath.startsWith(`${projectRoot}/`)) {
+      const filePath = join(serverRoot, relativePath);
+      if (!filePath.startsWith(`${serverRoot}/`)) {
         response.writeHead(403);
         response.end();
         return;
@@ -336,10 +337,17 @@ async function assertEditorResponsiveGeometry(page, label) {
       const rect = button.getBoundingClientRect();
       return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
     });
+    const clippedLabels = buttons
+      .map((button) => button.querySelector("span"))
+      .filter((label) => label && label.scrollWidth > label.clientWidth + 1)
+      .map((label) => label.textContent?.trim());
     return {
       buttonCount: buttons.length,
       buttonIds: buttons.map((button) => button.id),
       mobileActionCount: mobileActions.length,
+      clippedLabels,
+      footerPosition: footer ? getComputedStyle(footer).position : "",
+      railPosition: rail ? getComputedStyle(rail).position : "",
       overlaps,
       railOverflow: Boolean(rail && rail.scrollWidth > rail.clientWidth + 1),
       pageOverflow: document.body.scrollWidth > innerWidth + 1,
@@ -351,11 +359,80 @@ async function assertEditorResponsiveGeometry(page, label) {
   });
   assert.deepEqual(report.buttonIds, ["move-tool", "text-tool", "crop-tool", "size-tool", "adjust-tool", "format-tool"], `${label}: the intentional editor tools, including Text and discoverable Format, remain visible`);
   assert.equal(report.mobileActionCount, 7, `${label}: mobile quick actions remain present`);
+  assert.deepEqual(report.clippedLabels, [], `${label}: mobile editor labels are readable: ${report.clippedLabels.join(", ")}`);
+  assert.equal(report.footerPosition, "static", `${label}: stage footer stays in document flow`);
+  assert.equal(report.railPosition, "static", `${label}: editing rail stays in document flow`);
   assert.deepEqual(report.overlaps, [], `${label}: editor buttons overlap: ${report.overlaps.join(", ")}`);
   assert.equal(report.railOverflow, false, `${label}: tool rail has hidden horizontal overflow`);
   assert.equal(report.pageOverflow, false, `${label}: page has horizontal overflow`);
   assert.equal(report.footerRailOverlap, false, `${label}: stage footer overlaps the tool rail (footer=${JSON.stringify(report.footerRect)}, rail=${JSON.stringify(report.railRect)})`);
   assert.deepEqual(report.rightOutside, [], `${label}: editor buttons escape viewport: ${report.rightOutside.join(", ")}`);
+}
+
+async function assertEmptyEditorResponsiveGeometry(page, label) {
+  for (const width of [320, 375, 390, 768, 1024, 1440]) {
+    const height = width <= 1024 ? 844 : 720;
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await assertNoLayoutCollisions(page, `${label} ${width}px`, ["#empty-editor-actions .button"]);
+    const report = await page.evaluate(() => {
+      const visible = (selector) => {
+        const node = document.querySelector(selector);
+        if (!node) return false;
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      return {
+        emptyVisible: visible("#empty-editor"),
+        footerVisible: visible(".stage-footer"),
+        quickActionsVisible: visible("#mobile-canvas-actions"),
+        railVisible: visible(".tool-rail"),
+        inspectorVisible: visible(".inspector"),
+        bodyOverflow: document.body.scrollWidth > innerWidth + 1,
+      };
+    });
+    assert.equal(report.emptyVisible, true, `${label} ${width}px: empty editor remains visible`);
+    assert.equal(report.footerVisible, false, `${label} ${width}px: empty editor has no disabled floating footer`);
+    assert.equal(report.quickActionsVisible, false, `${label} ${width}px: empty editor has no disabled quick actions`);
+    assert.equal(report.railVisible, false, `${label} ${width}px: empty editor has no editing rail`);
+    assert.equal(report.inspectorVisible, false, `${label} ${width}px: empty editor has no inspector`);
+    assert.equal(report.bodyOverflow, false, `${label} ${width}px: page has horizontal overflow`);
+  }
+}
+
+async function assertTabletEditorResponsiveGeometry(page, label) {
+  const report = await page.evaluate(() => {
+    const workspace = document.querySelector("#editor-workspace");
+    const tray = document.querySelector("#image-tray");
+    const stage = document.querySelector(".stage-panel");
+    const toolRail = document.querySelector(".tool-rail");
+    const inspector = document.querySelector(".inspector");
+    const rect = (node) => node?.getBoundingClientRect().toJSON();
+    const workspaceRect = rect(workspace);
+    const trayRect = rect(tray);
+    const stageRect = rect(stage);
+    const toolRailRect = rect(toolRail);
+    const inspectorRect = rect(inspector);
+    return {
+      columns: workspace ? getComputedStyle(workspace).gridTemplateColumns : "",
+      bodyOverflow: document.body.scrollWidth > innerWidth + 1,
+      workspaceRect,
+      trayRect,
+      stageRect,
+      toolRailRect,
+      inspectorRect,
+    };
+  });
+  assert.equal(report.bodyOverflow, false, `${label}: page has horizontal overflow`);
+  assert.ok(!report.columns.includes("220px 420px 300px"), `${label}: desktop tray columns leaked into tablet layout (${report.columns})`);
+  assert.ok(report.stageRect?.width > 600, `${label}: canvas remains wide enough for tablet editing (${JSON.stringify(report.stageRect)})`);
+  assert.ok(report.trayRect?.width > 600, `${label}: image tray spans the tablet workspace (${JSON.stringify(report.trayRect)})`);
+  assert.equal(Math.round(report.stageRect?.left ?? -1), Math.round(report.trayRect?.left ?? -2), `${label}: tray and canvas do not share the tablet column`);
+  assert.equal(Math.round(report.stageRect?.right ?? -1), Math.round(report.trayRect?.right ?? -2), `${label}: tray and canvas widths differ on tablet`);
+  for (const [name, bounds] of [["canvas", report.stageRect], ["tools", report.toolRailRect], ["inspector", report.inspectorRect]]) {
+    assert.ok(bounds && bounds.left >= (report.workspaceRect?.left ?? 0) - 1 && bounds.right <= (report.workspaceRect?.right ?? innerWidth) + 1, `${label}: ${name} escapes the workspace (${JSON.stringify(bounds)})`);
+  }
 }
 
 async function assertViewportMatrix(page, label, selectors, editor = false) {
@@ -368,6 +445,7 @@ async function assertViewportMatrix(page, label, selectors, editor = false) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await assertNoLayoutCollisions(page, `${label} ${width}px`, selectors);
     if (editor && width <= 650) await assertEditorResponsiveGeometry(page, `${label} editor controls ${width}px`);
+    if (editor && width === 768) await assertTabletEditorResponsiveGeometry(page, `${label} tablet editor`);
   }
 }
 
@@ -521,6 +599,8 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
     assert.equal(await page.locator("#engine-status").textContent(), "Ready", "fresh readiness");
     assert.equal(await page.locator("#engine-status").isVisible(), false, "healthy readiness badge stays quiet");
+    assert.equal(await page.locator(".github-link").getAttribute("href"), "https://github.com/appunni-m/tiny-image-star", "footer links back to the project repository");
+    assert.equal(await page.locator(".github-link").isVisible(), true, "project repository link is visible");
     await page.emulateMedia({ reducedMotion: "reduce", forcedColors: "active", contrast: "more" });
     const accessibilityMedia = await page.evaluate(() => {
       const spinner = document.querySelector(".spinner");
@@ -548,6 +628,7 @@ async function main() {
     await page.emulateMedia({ reducedMotion: "no-preference", forcedColors: "none", contrast: "no-preference" });
     await assertViewportMatrix(page, "empty editor header", topActionSelectors);
     await assertViewportMatrix(page, "empty editor actions", ["#empty-editor-actions .button"]);
+    await assertEmptyEditorResponsiveGeometry(page, "empty editor chrome");
     await page.setViewportSize({ width: 390, height: 844 });
     const emptyMobileTargets = await page.evaluate(() => [...document.querySelectorAll("#empty-editor-actions .button, .workspace-nav .button:not([hidden]), .footer-actions .button")]
       .filter((button) => {

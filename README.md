@@ -141,22 +141,34 @@ Useful narrower commands:
 | `npm run check:pages -- _site` | Validate an already assembled Pages directory. |
 | `npm run profile:folder -- /path/to/images 64` | Profile an evenly distributed local sample without retaining benchmark outputs. |
 | `make verify-fast` / `make verify-browser` | Make aliases for the two verification layers. |
-| `make package-pages` | Assemble and validate the exact static artifact used by Pages in `_site/`. |
+| `make package-pages` | Build, optimize, Brotli-check, and validate the exact Pages artifact in `_site/`. |
 
 Run `make help` for the complete contributor command list. `make package-pages`
 is a local filesystem mutation; `make verify`, `npm test`, and the two verify
 layers are read-only apart from normal temporary test data.
 
 `npm run verify:all` returns nonzero if either layer fails; it does not silently
-skip the browser test. [CONTRIBUTING.md](CONTRIBUTING.md) explains repository
-structure, generated files, and pull-request expectations.
+skip the browser test. `make package-pages` is the release-style build: it
+minifies the served JavaScript and CSS, creates Brotli sidecars, and runs
+`wasm-opt -Oz --strip-debug` when that tool is available. CI installs Binaryen
+and makes that WASM optimization mandatory. The app can consume the Brotli
+WASM sidecar locally when the browser supports it, while retaining the normal
+WASM loader as a compatibility fallback.
+
+The release build uses identifier minification to reduce bytes; it is not
+security obfuscation and cannot hide source code in an open-source browser app.
+The checked artifact contains `index.html`, minified `styles.css`, `src/`, and
+`wasm/` files plus `.br` validation/consumption sidecars. GitHub Pages does
+not provide a project-controlled `Content-Encoding` header, so the JavaScript
+and CSS sidecars are retained for verifiable/precompressed hosting rather than
+claimed as automatically served by Pages. [CONTRIBUTING.md](CONTRIBUTING.md)
+explains repository structure, generated files, and pull-request expectations.
 
 GitHub Actions runs the same complete gate on Node.js 20 and 24 for pull
-requests and before a main branch deployment. It then assembles and validates
-the Pages artifact on every event; deployment is enabled only for non-PR
-events. The artifact contains only `index.html`, `styles.css`, `src/`, and
-`wasm/`. See [RELEASING.md](RELEASING.md) and [MAINTAINERS.md](MAINTAINERS.md)
-for the maintainer workflow.
+requests and before a main branch deployment. It then assembles, validates,
+and browser-smoke-tests the optimized Pages artifact on every event;
+deployment is enabled only for non-PR events. See [RELEASING.md](RELEASING.md)
+and [MAINTAINERS.md](MAINTAINERS.md) for the maintainer workflow.
 
 ## Documentation map
 

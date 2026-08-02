@@ -18,12 +18,22 @@ make package-pages
 ```
 
 `make verify` runs the real byte/state checks and the headless browser smoke
-suite. `make package-pages` recreates `_site/` inside the repository and then
-checks that the payload contains only:
+suite. `make package-pages` recreates `_site/` inside the repository, minifies
+the served JavaScript/CSS, emits Brotli sidecars, attempts `wasm-opt -Oz
+--strip-debug`, and then checks that the payload contains only:
 
-- `index.html` and `styles.css`;
+- `index.html` and optimized `styles.css` plus its Brotli sidecar;
 - the application `src/` tree; and
-- the generated `wasm/` runtime and notices.
+- the generated `wasm/` runtime, optimized JavaScript, notices, and Brotli
+  sidecars.
+
+CI sets `WASM_OPT_REQUIRED=1`, so a release build cannot silently ship without
+Binaryen's WASM pass. Local builds may omit that variable when Binaryen is not
+installed. The build minifies identifiers to reduce transfer size; it does not
+promise source secrecy. Brotli sidecars are byte-checked and the app consumes
+the WASM sidecar when supported. Pages cannot be configured here with custom
+`Content-Encoding` headers, so JS/CSS `.br` files are not described as
+automatically served by the Pages host.
 
 The package check must pass before a main-branch deployment. It does not copy
 README files, tests, `.github/`, `node_modules/`, local images, or development
@@ -45,9 +55,11 @@ repository.
 ## What GitHub Actions does
 
 Pull requests run the verification matrix on Node.js 20 and 24 and assemble
-the Pages payload, but do not deploy it. Pushes to `main` and manual workflow
-runs repeat the same gate; only after verification and artifact validation does
-the deploy job receive the Pages write and OIDC permissions.
+the Pages payload, then smoke-test that optimized directory with the headless
+browser; they do not deploy it. Pushes to `main` and manual workflow runs
+repeat the same gate; only after verification, artifact validation, and the
+optimized browser smoke does the deploy job receive the Pages write and OIDC
+permissions.
 
 ## Recovery from a bad deployment
 

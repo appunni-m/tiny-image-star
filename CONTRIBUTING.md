@@ -49,8 +49,11 @@ Then open <http://127.0.0.1:8000/>. Override `PORT` and `HOST` when needed;
 
 Use `make verify-watch` for fast checks while editing. Run `make verify` before
 submitting a change. To inspect the exact GitHub Pages payload locally, run
-`make package-pages`; it recreates the repository-owned `_site/` directory and
-rejects unexpected files. The complete feature-to-test contract is in
+`make package-pages`; it recreates the repository-owned `_site/` directory,
+minifies the served assets, creates Brotli sidecars, optionally runs
+`wasm-opt -Oz --strip-debug`, and rejects unexpected files. Set
+`WASM_OPT_REQUIRED=1` to make a local build fail when `wasm-opt` is unavailable.
+The complete feature-to-test contract is in
 [VERIFICATION_MATRIX.md](VERIFICATION_MATRIX.md).
 
 `make` is a thin GNU Make 3.81+ wrapper; npm remains the source of truth for
@@ -71,6 +74,7 @@ directory has already been assembled.
 | `scripts/verify.mjs` | Fast deterministic byte/state contract. |
 | `scripts/browser-smoke.mjs` | Headless browser interaction and output checks. |
 | `scripts/assemble-pages.mjs` | Safe local assembly of the GitHub Pages payload. |
+| `scripts/optimize-pages.mjs` | Release minification, WASM optimization, and Brotli sidecars. |
 | `scripts/check-pages-artifact.mjs` | Read-only allowlist and required-file check for that payload. |
 | `scripts/check-doc-links.mjs` | Read-only check for broken repository-local Markdown links. |
 | `Makefile` | Thin contributor aliases; it is not a second build system. |
@@ -121,9 +125,12 @@ Keep the title and description user-focused. Include:
 - browser/platform boundaries that were not exercised; and
 - any change to local storage, permissions, memory limits, or output bytes.
 
-CI runs `make verify` on Node.js 20 and 24, then builds and checks the Pages
-artifact. A pull request must pass both verification matrix entries; a main
-branch deployment is only attempted after the artifact job succeeds.
+CI runs `make verify` on Node.js 20 and 24, then installs Binaryen and builds
+the optimized Pages artifact with `WASM_OPT_REQUIRED=1`. A pull request must
+pass both verification matrix entries and the artifact build; a main branch
+deployment is only attempted after those gates succeed. Identifier
+minification is a byte-size optimization, not a security boundary or a way to
+hide source in this open-source browser application.
 
 There is currently no CLA or DCO sign-off requirement. Contribution licensing
 cannot be finalized until the project owner selects the repository license;

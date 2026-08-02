@@ -1,6 +1,7 @@
 import { cp, lstat, mkdir, rm } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { optimizePagesArtifact } from "./optimize-pages.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const requestedOutput = process.argv[2] ?? "_site";
@@ -23,5 +24,6 @@ await cp(`${projectRoot}/index.html`, `${output}/index.html`);
 await cp(`${projectRoot}/styles.css`, `${output}/styles.css`);
 await cp(`${projectRoot}/src`, `${output}/src`, { recursive: true });
 await cp(`${projectRoot}/wasm`, `${output}/wasm`, { recursive: true });
+await optimizePagesArtifact(output);
 
 console.log(`Pages artifact assembled at ${relativeOutput}/`);

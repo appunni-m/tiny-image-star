@@ -729,6 +729,7 @@ async function run() {
   const docsCheckerSource = await readFile(join(projectRoot, "scripts/check-doc-links.mjs"), "utf8");
   const pagesCheckerSource = await readFile(join(projectRoot, "scripts/check-pages-artifact.mjs"), "utf8");
   const pagesAssemblerSource = await readFile(join(projectRoot, "scripts/assemble-pages.mjs"), "utf8");
+  const pagesOptimizerSource = await readFile(join(projectRoot, "scripts/optimize-pages.mjs"), "utf8");
   const browserSmokeSource = await readFile(join(projectRoot, "scripts/browser-smoke.mjs"), "utf8");
   assert.ok(mainSource.split("\n").length <= 100, "main.js remains a small composition entry point");
   assert.doesNotMatch(indexSource, /id="editor-button"/, "the editor is the one primary workspace, not a competing mode");
@@ -805,6 +806,7 @@ async function run() {
   assert.match(indexSource, /id="session-clear-button"/);
   assert.match(indexSource, /Recover your last work/);
   assert.match(indexSource, /id="local-data-button"/);
+  assert.match(indexSource, /class="button secondary github-link" href="https:\/\/github\.com\/appunni-m\/tiny-image-star"/);
   assert.match(indexSource, /id="local-data-clear-button"/);
   assert.match(indexSource, /id="local-data-font-count"/);
   assert.match(indexSource, /id="local-data-recovery-size"/);
@@ -834,7 +836,11 @@ async function run() {
   assert.match(stylesSource, /\.topbar \{ position: relative; z-index: 30;/, "topbar stays clickable above the review drawer");
   assert.match(stylesSource, /\.presets-drawer \{ position: fixed; z-index: 35;/, "preset drawer stays above the review drawer");
   assert.match(stylesSource, /\.tool-button\[hidden\] \{ display: none; \}/, "hidden legacy tool controls cannot reappear from display rules");
-  assert.match(stylesSource, /\.tool-primary-group \{ display: grid; grid-template-columns: repeat\(auto-fit, minmax\(44px, 1fr\)\)/, "mobile primary tools adapt when Text and Format are available");
+  assert.match(stylesSource, /\.tool-primary-group \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/, "mobile primary tools keep labels readable when Text and Format are available");
+  assert.match(stylesSource, /\.editor-workspace\[data-has-tray="true"\] \{ grid-template-columns: minmax\(0, 1fr\); grid-template-rows: auto minmax\(420px, 1fr\)/, "tablet tray layout resets the desktop columns");
+  assert.match(stylesSource, /\.editor-workspace\[data-empty="true"\] \.stage-footer/, "empty editor hides disabled stage controls");
+  assert.match(stylesSource, /\.stage-footer \{ position: static;/, "mobile stage controls stay in document flow");
+  assert.match(stylesSource, /\.tool-rail \{ order: 2; position: static;/, "mobile editing tools stay in document flow");
   assert.match(stylesSource, /flex: 1 0 44px/);
   assert.match(mainSource, /attachEditorCanvas/);
   assert.match(mainSource, /attachEditorProcessing/);
@@ -1086,7 +1092,7 @@ async function run() {
   assert.match(stylesSource, /\.folder-job-results/);
   assert.match(stylesSource, /contain: strict/);
   assert.match(stylesSource, /\.mobile-canvas-actions/);
-  assert.match(stylesSource, /position: fixed; z-index: 30/);
+  assert.doesNotMatch(stylesSource, /\.tool-rail \{ order: 2; position: fixed;/, "mobile editing tools do not cover the canvas");
   assert.match(sessionSource, /indexedDB\.open/);
   assert.match(sessionSource, /lossyOverride/);
   assert.match(sessionSource, /qualityOverride/);
@@ -1100,10 +1106,14 @@ async function run() {
   assert.match(localDataSource, /export async function clearStoredLocalData/);
   assert.match(localDataSource, /tinystar:local-data-cleared/);
   assert.match(packageSource, /"verify:all": "npm run verify && npm run verify:browser && npm run check:docs"/, "the full npm gate includes documentation links");
+  assert.match(packageSource, /"esbuild": "\^0\.28\.1"/, "release optimization uses the locked minifier dependency");
   assert.match(makeSource, /\.DEFAULT_GOAL := help/);
   assert.match(makeSource, /package-pages:/);
   assert.match(makeSource, /check-docs:/);
   assert.match(workflowSource, /make verify/);
+  assert.match(workflowSource, /Install release optimization tools[\s\S]*apt-get install[\s\S]*binaryen/);
+  assert.match(workflowSource, /WASM_OPT_REQUIRED=1 make package-pages PAGES_DIR=_site/);
+  assert.match(workflowSource, /TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser/);
   assert.match(workflowSource, /make package-pages PAGES_DIR=_site/);
   assert.match(workflowSource, /actions\/checkout@v7/);
   assert.match(workflowSource, /actions\/setup-node@v7/);
@@ -1112,7 +1122,16 @@ async function run() {
   assert.match(workflowSource, /actions\/deploy-pages@v5/);
   assert.match(docsCheckerSource, /Broken local documentation links/);
   assert.match(pagesCheckerSource, /pillow_rs_js_bg\.wasm/);
+  assert.match(pagesCheckerSource, /brotliDecompressSync/);
+  assert.match(pagesCheckerSource, /styles\.css\.br/);
   assert.match(pagesAssemblerSource, /must be a child of the repository/);
+  assert.match(pagesAssemblerSource, /optimizePagesArtifact/);
+  assert.match(pagesOptimizerSource, /minifyIdentifiers: true/);
+  assert.match(pagesOptimizerSource, /BROTLI_PARAM_QUALITY.*11/);
+  assert.match(pagesOptimizerSource, /WASM_OPT_REQUIRED/);
+  assert.match(engineSource, /new DecompressionStream\("brotli"\)/);
+  assert.match(engineSource, /pillow_rs_js_bg\.wasm\.br/);
+  assert.match(browserSmokeSource, /TINY_IMAGE_STAR_BROWSER_ROOT/);
 
   console.log("verify: PASS");
   console.log("  real WASM transforms: PNG fit/crop/rotate/flip/adjustments, exact decoded pixels, PNG bytes, decoded dimensions, output-size guard");

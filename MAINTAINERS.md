@@ -29,8 +29,12 @@ make verify
 
 `make verify` delegates to the single project gate, `npm run verify:all`.
 GitHub Actions runs it on Node.js 20 and 24, with Chromium installed on Linux.
-The workflow then runs `make package-pages` and checks the output allowlist
-before uploading it. Only non-pull-request events may deploy to Pages.
+The workflow then installs Binaryen, runs
+`WASM_OPT_REQUIRED=1 make package-pages`, checks the optimized output
+allowlist and Brotli round trips, and runs the browser smoke against `_site`
+before uploading it. Only non-pull-request events may deploy to Pages. The
+release minifier reduces transfer size; it is not a security or source-hiding
+mechanism.
 
 Reviewers should ask for:
 
