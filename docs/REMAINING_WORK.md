@@ -1,9 +1,10 @@
 # Remaining migration work
 
-Checkpoint: 26 September 2026. The current source and optimized package pass
-the automated browser, security and recovery gates. Direct adapter parity is
-33/33 and coverage is 27/35 against its 70% threshold; those runs captured a
-dirty worktree and need a clean committed-tree rerun for release evidence. The
+Checkpoint: 26 September 2026. The current source and optimized Pages artifact
+pass the automated browser, security and recovery gates. Auto bulk scheduling
+now uses a resource-gated eight-worker start and grows beyond eight only when a
+full same-class wave is still queued. A focused small-image comparison meets
+the 1.10 Auto budget; the full matrix for this tuned revision remains open. The
 full [migration plan](../MIGRATION_PLAN.md) remains incomplete; automated checks
 do not establish production readiness.
 The original plan estimated 12–16 weeks with two experienced engineers, design
@@ -12,8 +13,13 @@ time remaining now.
 
 ## Verification and qualification still open
 
-The real collection benchmark was started but stopped before it wrote a complete
-report, so throughput budgets for this exact tree remain unproven. Integrate the
+The last full canonical collection matrix, on the clean pre-tuning revision,
+completed with 14 passing, 3 failing and 4 unproven budgets. Auto missed the
+small-collection comparison in both cold and warm blocks, and the engine PNG
+microbenchmark measured 1.726× against a 1.50× limit. The tuned scheduler's
+five-sample focused cold-small run passed at 1.051× fixed-eight latency; see the
+[dated record](research/2026-09-26/auto-concurrency/README.md). Re-run the full
+cold/warm small and camera matrix on the clean tuned revision. Integrate the
 maintained WebKit staged-export gate in CI and retain versioned release evidence.
 Real phones and share destinations are separate release gates. The tested
 WebKit private window cannot persist Blobs; the app explains the failure and
@@ -44,9 +50,10 @@ preserves prior data.
   complete EXIF, sRGB/P3/HDR/alpha and metadata/privacy policy qualification.
 - Offline and recovery: versioned PWA updates, offline packs, archive import,
   eviction/update handling, complete source/application identity and lifetime.
-- Performance and capacity: resolve the tiny-PNG timing failure, qualify the
-  current revision, heavy effects and complete retained/native memory, then run
-  sustained real collections at 100, 1,000 and 10,000 before advertising them.
+- Performance and capacity: resolve the tiny-PNG timing failure, run the full
+  canonical matrix on the committed tuned revision, qualify heavy effects and
+  complete retained/native memory, then run sustained real collections at 100,
+  1,000 and 10,000 before advertising them.
 
 ## Release work that needs people, devices or deployment access
 

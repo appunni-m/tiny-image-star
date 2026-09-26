@@ -9,20 +9,20 @@ and a mobile text-overlay sheet for independent batches (All/Selected/This
 image) and frozen large-folder recipes. The overlay includes four adjustable
 typography starters and can be saved as part of a reusable full image recipe.
 Standalone overlay-only presets and broader layered typography/layout,
-cutout presets and size variants remain open.
+cutout presets and size variants remain open. Auto batch scheduling now starts
+with up to eight workers on well-provisioned devices and requires a queued wave
+of comparable work before expanding further.
 
-Automated checks for the current tree pass: `npm run verify:all` (39 scheduler
-and 151 project/model tests, Chromium workflows, WebKit staged export, security,
+Automated checks for this tree pass: `npm run verify:all` (40 scheduler and
+151 project/model tests, Chromium workflows, WebKit staged export, security,
 folder recovery and documentation); `make package-pages` (251-file artifact);
-the optimized `_site` Chromium suite; optimized-package Chromium/WebKit security;
-`npm audit signatures`; migration parity (33/33); and adapter function coverage
-(27/35 against the 70% threshold). Those parity and coverage runs captured a
-dirty worktree, so the migration aggregate does not accept them as release
-evidence; rerun them on the committed tree before push. The real collection
-benchmark was started but stopped before it produced a complete report, so this
-revision has no complete performance evidence. Phone hardware, external share
-destinations, deployment headers, pilot results and final release-owner approval
-also remain unqualified.
+and the optimized `_site` Chromium suite. The last full canonical collection
+matrix completed on the preceding clean revision: 14 timing budgets passed, 3
+failed and 4 were not proven. The focused follow-up for the scheduler change
+passed all 19 small-cold reference, gate and measurement jobs, with Auto at
+1.051× fixed-eight latency. A full cold/warm small and camera matrix on the
+current committed revision remains open, as do phone hardware, external share
+destinations, deployment headers, pilot results and final release-owner approval.
 
 ## Previous checkpoint: mobile batch staging
 

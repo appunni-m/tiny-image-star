@@ -218,6 +218,23 @@ test("interleaved header inspection and mixed image sizes do not erase Auto cali
   for (const job of jobs) job.cancel(); await Promise.allSettled(jobs.map((j) => j.promise));
 });
 
+test("Auto probes eight workers before expanding beyond a short comparable backlog", async (t) => {
+  let time = 0;
+  const { pool, submit, active } = harness({ now: () => time, hints: { hardwareConcurrency: 12, deviceMemory: 16 } }); t.after(() => pool.close());
+  const jobs = Array.from({ length: 16 }, (_, i) => submit(i, { workClass: "same-render" }));
+  await tick();
+  assert.equal(pool.budget.cpu, 11);
+  while (pool.snapshot().active > 0) {
+    time += 100;
+    for (const worker of active()) worker.finish();
+    await tick();
+    assert.ok(pool.snapshot().limit <= 8);
+    assert.ok(active().length <= 8);
+  }
+  await Promise.all(jobs.map((job) => job.promise));
+  assert.equal(pool.snapshot().limit, 8, "a measured burst can still use the eight-worker probe");
+});
+
 test("header-only work does not calibrate image throughput", async (t) => {
   let time = 0;
   const { pool, submit, active } = harness({ now: () => time }); t.after(() => pool.close());

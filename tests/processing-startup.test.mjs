@@ -101,7 +101,8 @@ test("the initial eight-worker bound does not cap later measured concurrency on 
 });
 
 test("another work class cannot certify a lower-count trial, and pressure cancels its old baseline", async t => {
-  const { pool, add, active, advance, stop } = fixture(t);
+  // Keep this policy trace on the conservative start; it isolates class fencing.
+  const { pool, add, active, advance, stop } = fixture(t, { hints: { hardwareConcurrency: 12, deviceMemory: 8 } });
   add(100); await tick();
   for (let wave = 0; wave < 15 && !pool.downProbe; wave++) {
     const cohort = active(); advance(100 * cohort.length); for (const worker of cohort) worker.finish(); await tick();

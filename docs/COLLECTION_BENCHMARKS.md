@@ -294,3 +294,24 @@ run. Only light file/document work overlapped the timing interval. This is one
 headless desktop host with unknown power/thermal state, not physical-phone
 qualification. Complete memory accounting, UI/thermal limits and the heaviest
 scene family remain open; the target is dirty and nothing was deployed.
+
+## Auto batch concurrency follow-up: 26 September 2026
+
+The latest full canonical matrix is run
+`benchmark-a4bf24e1-d314-4475-8e23-998207832388` on clean baseline commit
+`dcafdf5a2aaaae0a94626671c54439355b971757`. It completed all nine workloads
+without infrastructure errors. Four fixed-16 comparisons were ineligible on
+the host. The full timing ledger had 14 passes, 3 failures and 4 unproven rows:
+Auto versus fixed eight missed the 1.10 target for small cold/warm collections
+(1.144 and 1.272), and the engine PNG microbenchmark remained at 1.726 against
+the 1.50 limit. Both camera Auto blocks passed.
+
+The follow-up adds a resource-gated eight-worker Auto start and requires at
+least eight queued, same-class tasks before Auto expands beyond eight. The
+[dated record](research/2026-09-26/auto-concurrency/README.md) contains the
+policy, all focused-run samples and their limits. In the five-sample targeted
+cold-small check, Auto's 5.818 s median was 1.051× fixed eight's 5.537 s median;
+all 19 reference, gate and measurement jobs produced byte-identical outputs and
+committed valid journals. This is a focused result, not a replacement for the
+four-block canonical matrix. Full performance qualification on the clean,
+committed tuned revision remains open.

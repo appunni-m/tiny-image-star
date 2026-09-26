@@ -1,6 +1,7 @@
 import { deviceBudget, INITIAL_HEAP_BYTES, MiB, normalizeEstimate } from "./policy.js";
 
 const abortError = () => Object.assign(new Error("Processing cancelled."), { name: "AbortError" });
+const AUTO_CONCURRENCY_PROBE_LIMIT = 8;
 
 // One admission ledger covers every worker kind. Clients own intent; physical
 // workers belong to this scheduler and can outlive a completed client/job.
@@ -281,7 +282,9 @@ export class ResourceScheduler {
       && time >= this.cooldownUntil && this.budget.cpu >= 3 && this.budget.memory >= 1024 * MiB) {
       const demand = [...this.queue, ...[...this.slots].map((slot) => slot.task).filter(Boolean)]
         .filter((task) => task.workClass !== "inspect" && task.workClass !== "startup" && task.state !== "finished");
-      const initial = Math.min(8, Math.max(2, Math.floor(this.budget.cpu / 2)), Math.floor(demand.length / 2));
+      const wellProvisioned = this.budget.cpu >= AUTO_CONCURRENCY_PROBE_LIMIT && this.budget.memory >= 2 * 1024 * MiB;
+      const startLimit = wellProvisioned ? Math.min(AUTO_CONCURRENCY_PROBE_LIMIT, this.budget.cpu) : Math.max(2, Math.floor(this.budget.cpu / 2));
+      const initial = Math.min(startLimit, Math.floor(demand.length / 2));
       if (demand.length >= 4 && initial > this.limit) {
         this.limit = initial;
         this.bootstrapStarted = true;
@@ -468,7 +471,15 @@ export class ResourceScheduler {
     } else {
       this.previousWindows.delete(key); this.previousWindows.set(key, measured);
       if (this.previousWindows.size > 16) this.previousWindows.delete(this.previousWindows.keys().next().value);
-      this.limit = Math.min(this.budget.cpu, this.limit * 2);
+      let nextLimit = Math.min(this.budget.cpu, this.limit * 2);
+      const comparableQueued = this.queue.filter((candidate) => candidate.state === "queued"
+        && candidate.kind === task.kind && candidate.workClass === task.workClass).length;
+      if (nextLimit > AUTO_CONCURRENCY_PROBE_LIMIT && comparableQueued < AUTO_CONCURRENCY_PROBE_LIMIT) {
+        // A short class can reach eight workers, but a larger pool only helps
+        // when at least one full comparable wave is still waiting to start.
+        nextLimit = this.limit < AUTO_CONCURRENCY_PROBE_LIMIT ? AUTO_CONCURRENCY_PROBE_LIMIT : this.limit;
+      }
+      this.limit = nextLimit;
     }
     this.windows.clear();
     this.pumpSoon();
