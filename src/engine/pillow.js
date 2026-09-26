@@ -175,16 +175,24 @@ function hasSignature(bytes, format) {
   return false;
 }
 
+function sameBytes(left, right) {
+  if (!(right instanceof Uint8Array) || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 function verifyEncodedOutput(api, bytes, format, width, height) {
   if (!hasSignature(bytes, format) || typeof api?.Image?.open !== "function") return false;
   let decoded;
   try {
     decoded = api.Image.open(bytes);
-    if (decoded?.width !== width || decoded?.height !== height) return false;
+    if (decoded?.width !== width || decoded?.height !== height || width <= 0 || height <= 0) return false;
     decoded.load();
-    // load() decodes the complete container. Inspect a pixel without copying
-    // the entire decoded image back across the WASM boundary just to validate.
-    return decoded.getpixel(0, 0).length > 0;
+    // load() decodes the complete container; matching positive dimensions
+    // make a separate pixel read unnecessary.
+    return true;
   } catch {
     return false;
   } finally {
@@ -210,8 +218,9 @@ function probeOutputFormat(api, format) {
 }
 
 // Consumes the image on success or failure. All render paths use this final
-// encoder; validation runs after releasing the working image.
-function encodeImage(api, image, format, background, diagnostics) {
+// encoder; unchanged PNG bytes are validated by fully loading their source,
+// while rewritten bytes are reopened and fully decoded before they escape.
+function encodeImage(api, image, format, background, diagnostics, sourceBytes = null) {
   const started = diagnostics ? performance.now() : 0;
   try {
     if (!findEncoder(image, format)) throw new Error("format unavailable");
@@ -221,9 +230,14 @@ function encodeImage(api, image, format, background, diagnostics) {
     const encoded = encoder();
     const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
     const rendered = { width: image.width, height: image.height, mode: image.mode };
-    image.free(); image = null;
     const validationStarted = diagnostics ? performance.now() : 0;
-    if (!verifyEncodedOutput(api, bytes, format, rendered.width, rendered.height)) throw new Error("format unavailable");
+    const unchangedSource = format === "png" && sameBytes(bytes, sourceBytes);
+    if (unchangedSource) {
+      try { image.load(); }
+      catch { throw new Error("format unavailable"); }
+    }
+    image.free(); image = null;
+    if (!unchangedSource && !verifyEncodedOutput(api, bytes, format, rendered.width, rendered.height)) throw new Error("format unavailable");
     if (diagnostics) {
       // Pillow evaluates lazy transforms inside save. This interval includes
       // materialization and encoding; it is not a decoder-only measurement.
@@ -401,9 +415,18 @@ export async function renderWithApi(api, file, settings, capabilities = CAPABILI
 
     if (settings.textLayers?.length) image = replaceImage(image, await compositeText(api, image, settings.textLayers, file.fontRecords));
 
+    const unchangedPngCandidate = format === "png"
+      && rawBytes.length <= 64 * 1024
+      && rawBytes.length >= 8
+      && rawBytes[0] === 137 && rawBytes[1] === 80 && rawBytes[2] === 78 && rawBytes[3] === 71
+      && rawBytes[4] === 13 && rawBytes[5] === 10 && rawBytes[6] === 26 && rawBytes[7] === 10
+      && !settings.crop && !settings.cropRelative && !transpose && !settings.flipX && !settings.flipY
+      && !settings.photoLook && !settings.grayscale && settings.brightness === 1 && settings.contrast === 1
+      && !settings.textLayers?.length && settings.resizeMode !== "crop" && scale === 1
+      && outputWidth === width && outputHeight === height;
     const completed = image; image = null;
     if (diagnostics) diagnostics.pipelineSetupMs = performance.now() - started;
-    return { ...encodeImage(api, completed, format, settings.jpegBackground, diagnostics),
+    return { ...encodeImage(api, completed, format, settings.jpegBackground, diagnostics, unchangedPngCandidate ? rawBytes : null),
       ...(diagnostics ? { diagnostics: { schema: "tinystar/render-timings@1", ...diagnostics } } : {}), inputBytes: file.bytes.byteLength,
       name: outputFileName(file.name, settings.presetName ?? settings.presetId, format) };
   } finally {
