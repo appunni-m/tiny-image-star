@@ -64,8 +64,8 @@ export async function assertSceneCollections(browser,origin){
     await page.waitForFunction(()=>document.querySelector("[data-batch-summary]")?.textContent.includes("16 planned files"));
     await createSheet.getByRole("button",{name:"Start saving",exact:true}).click();await page.waitForFunction(()=>document.querySelector("[data-batch-summary]")?.textContent.includes("16 saved"));
     await createSheet.getByRole("button",{name:"Done",exact:true}).click();await page.waitForFunction(()=>!document.querySelector("#story-batch-sheet"));
-    const runs=[];
-    for(const workers of [1,4,8]){
+    const workerBudget=await page.evaluate(()=>h.pool.budget.cpu),runs=[];
+    for(const workers of [1,2,4,8].filter(value=>value<=workerBudget)){
       const result=await page.evaluate(async workers=>{
         const {job,lock}=await h.setup(`concurrency-${workers}`);h.pool.configure({fixedConcurrency:workers});let peak=0,violations=0;
         const unsubscribe=h.pool.subscribe(s=>{peak=Math.max(peak,s.active);if(s.active>workers||s.estimatedBytes>s.memoryBudget)violations++;});

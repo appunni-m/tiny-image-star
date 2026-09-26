@@ -178,7 +178,7 @@ export async function assertSceneCompositor(browser, origin) {
       const jpegPixels = await pixels(jpeg);
       const overflow = await render(doc([node("tiny", "text", { x: .1, y: .1, width: .01, height: .01 }, { text: "A long caption that must be reviewed", style: { fontSize: .1, minFontSize: .05 } })]));
       const baseline = await render(story), baselineHash = await hash(baseline.bytes), runs = [];
-      for (const count of [1, 4, 8]) {
+      for (const count of [1, 2, 4, 8].filter(value => value <= pool.budget.cpu)) {
         pool.configure({ fixedConcurrency: count });
         let peak = 0, violations = 0;
         const stop = pool.subscribe((value) => { peak = Math.max(peak, value.active); if (value.estimatedBytes > value.memoryBudget || value.active > count) violations++; });

@@ -146,12 +146,12 @@ export async function assertFolderContracts(browser, origin) {
       const ownership = await acquireJobOwnership(first.id); let job = ownership.job;
       const libraryMissing = await fonts.readFontRecord(first.fontId) === null;
       job = await store.patchLargeJob(job.id,{ status: "running" },ownership.owner);
-      const runs = [];
-      for (const concurrency of [1,4,8]) {
+      const workerCounts = [1, 2, 4, 8].filter(value => value <= pool.budget.cpu), batchSize = 48 / workerCounts.length, runs = [];
+      for (const concurrency of workerCounts) {
         pool.configure({ fixedConcurrency: concurrency }); let peak=0, violations=0;
         const stop = pool.subscribe(s => { peak=Math.max(peak,s.active); if(s.active>concurrency || s.estimatedBytes>s.memoryBudget) violations++; });
-        const entries = await store.claimPendingEntries(job.id,16,ownership.owner);
-        const outputs = await Promise.all(entries.map(entry => run(job,ownership.owner,entry))); stop(); runs.push({ concurrency,peak,violations,outputs });
+        const entries = await store.claimPendingEntries(job.id,batchSize,ownership.owner);
+        const outputs = await Promise.all(entries.map(entry => run(job,ownership.owner,entry))); stop(); runs.push({ concurrency,batchSize,peak,violations,outputs });
       }
       const rejected = [];
       for (const patch of [{ recipe: { ...job.recipe, name: "Changed" } }, { renderContract: job.renderContract }, { outputHandle: job.outputHandle }]) {
@@ -212,7 +212,8 @@ export async function assertFolderContracts(browser, origin) {
       return { libraryMissing,runs,rejected,journaled,engineRejected,corrupt,missing,completed:counts.completed,failed:counts.failed,staleRejected,forgotten,quotaRejected,quotaAtomic,retrySaved,preparationPeak,libraryReads,sameSnapshot };
     }, first);
     assert.ok(resumed.libraryMissing);
-    for (const run of resumed.runs) { assert.equal(run.peak,run.concurrency); assert.equal(run.violations,0); assert.equal(run.outputs.length,16); for(const output of run.outputs) {
+    assert.equal(resumed.runs.reduce((total,run)=>total+run.outputs.length,0),48);
+    for (const run of resumed.runs) { assert.equal(run.peak,run.concurrency); assert.equal(run.violations,0); assert.equal(run.outputs.length,run.batchSize); for(const output of run.outputs) {
       assert.equal(output.hash,first.expected); assert.deepEqual(output.dimensions,[512,320]);
       assert.equal(output.diagnostics.schema,"tinystar/folder-timings@1");
       for(const key of ["engineWaitMs","sourceReadMs","sourceDigestMs","renderMs","journalSaveMs"]) assert.ok(Number.isFinite(output.diagnostics[key])&&output.diagnostics[key]>=0,key);

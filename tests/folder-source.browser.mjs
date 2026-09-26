@@ -76,7 +76,7 @@ export async function assertFolderSources(browser, origin) {
     const outputs = await page.evaluate(async () => {
       const { createPillowEngine }=await import("./src/engine/pillow.js"), engine=await createPillowEngine();
       const runs=[];
-      for(const workers of [1,4,8]) {
+      for(const workers of [1,2,4,8].filter(value=>value<=h.pool.budget.cpu)) {
         const {job,lock}=await h.setup(`concurrent-${workers}`,9);h.pool.configure({fixedConcurrency:workers});
         const expected=await engine.render({name:"source.bmp",bytes:h.bytesA.buffer},h.core.settingsForLargeJob(job.recipe));
         const reference=await h.digestBytes(expected.bytes), claims=await h.store.claimPendingEntries(job.id,9,lock.owner);

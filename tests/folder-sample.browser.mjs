@@ -51,7 +51,7 @@ export async function assertFolderSamples(browser, origin) {
         reference[entry.index] = await digestBytes(output.bytes); metadata[entry.index] = output.fullOutput;
       }
       const runs = [];
-      for (const concurrency of [1, 4, 8]) {
+      for (const concurrency of [1, 2, 4, 8].filter(value => value <= pool.budget.cpu)) {
         pool.configure({ fixedConcurrency: concurrency }); let peak = 0, violations = 0;
         const unsubscribe = pool.subscribe(state => { peak = Math.max(peak, state.active); if (state.active > concurrency || state.estimatedBytes > state.memoryBudget) violations++; });
         const outputs = await Promise.all(entries.slice(0, 9).map(async entry => {

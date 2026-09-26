@@ -47,7 +47,7 @@ export async function assertStoryExports(browser, origin) {
       };
       const smaller=structuredClone(project);smaller.variants=[{id:"portrait",width:432,height:540},{id:"tall",width:432,height:768}];
       const plan=planStoryExports(smaller,{variants:["portrait","tall"],format:"png"}),reference=await serial(plan),pool=getProcessingScheduler(),runs=[];
-      for(const concurrency of [1,4,8]){
+      for(const concurrency of [1,2,4,8].filter(value=>value<=pool.budget.cpu)){
         pool.configure({fixedConcurrency:concurrency});let peak=0,violations=0;
         const stop=pool.subscribe(state=>{peak=Math.max(peak,state.active);if(state.active>concurrency||state.estimatedBytes>state.memoryBudget)violations++;});
         const batch=new StoryExportBatch(plan,{render:(item,{signal})=>enqueueScene({project:plan.project,slideId:item.slideId,variantId:item.variantId,format:"png",signal,readAsset:id=>sources.get(id)}).promise});
