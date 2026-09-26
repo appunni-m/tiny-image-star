@@ -2,11 +2,21 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-export async function assertTextCompositor(browser, origin) {
+export function textCompositorWorkerCounts(cpuBudget) {
+  if (!Number.isSafeInteger(cpuBudget) || cpuBudget < 1) throw new RangeError("Text compositor CPU budget must be a positive integer");
+  const counts = [1, 4, 8].filter((count) => count <= cpuBudget);
+  if (cpuBudget > 1 && cpuBudget < 4) counts.push(cpuBudget);
+  return counts;
+}
+
+export async function assertTextCompositor(browser, origin, { hardwareConcurrency } = {}) {
   const fixture = await readFile(new URL("./fixtures/fonts/NotoSans.ttf", import.meta.url));
   const provenance = JSON.parse(await readFile(new URL("./fixtures/fonts/provenance.json", import.meta.url), "utf8"));
   assert.equal(createHash("sha256").update(fixture).digest("hex"), provenance.files[0].sha256, "pinned custom font fixture integrity");
   const context = await browser.newContext();
+  if (hardwareConcurrency !== undefined) {
+    await context.addInitScript((value) => Object.defineProperty(navigator, "hardwareConcurrency", { configurable: true, value: value }), hardwareConcurrency);
+  }
   const page = await context.newPage();
   const errors = [], external = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -14,7 +24,12 @@ export async function assertTextCompositor(browser, origin) {
   try {
     await page.goto(origin);
     await page.waitForFunction(() => window.tinyImageStarEditor && document.querySelector("#engine-status").textContent === "Ready");
-    const evidence = await page.evaluate(async (encodedFont) => {
+    const cpuBudget = await page.evaluate(async () => {
+      const { getProcessingScheduler } = await import("./src/processing/client.js");
+      return getProcessingScheduler().budget.cpu;
+    });
+    const workerCounts = textCompositorWorkerCounts(cpuBudget);
+    const evidence = await page.evaluate(async ({ encodedFont, workerCounts }) => {
       const { createPillowEngine } = await import("./src/engine/pillow.js");
       const { createProcessingClient, getProcessingScheduler } = await import("./src/processing/client.js");
       const { registerFontFile, readFontRecord, clearStoredFonts } = await import("./src/editor/fonts.js");
@@ -80,7 +95,7 @@ export async function assertTextCompositor(browser, origin) {
         } });
       });
       const runs = [];
-      for (const count of [1, 4, 8]) {
+      for (const count of workerCounts) {
         pool.configure({ fixedConcurrency: count });
         let peak = 0, violations = 0;
         const stop = pool.subscribe((value) => { peak = Math.max(peak, value.active); if (value.active > count || value.estimatedBytes > value.memoryBudget) violations++; });
@@ -144,7 +159,7 @@ export async function assertTextCompositor(browser, origin) {
       return { expected, changed: expected.png !== await digestBytes(plain.bytes), jpegHash, decoded, runs, folders, missing, bounded, corrupt, activeFontAfterClear,
         noFontLeak: document.fonts.size === faceCount,
         failedWorker: missingWorker.map(({ type, message }) => ({ type, message })), idle: pool.snapshot().active === 0 && pool.snapshot().queued === 0 };
-    }, fixture.toString("base64"));
+    }, { encodedFont: fixture.toString("base64"), workerCounts });
     assert.equal(evidence.changed, true, "text alters actual exported pixels");
     assert.equal(evidence.jpegHash, evidence.expected.jpeg, "final JPEG is encoded exactly once by Pillow after composition and alpha flattening");
     for (const output of evidence.decoded) {
@@ -164,6 +179,6 @@ export async function assertTextCompositor(browser, origin) {
     assert.equal(evidence.activeFontAfterClear, evidence.expected.png, "clearing saved fonts preserves the active edit's pinned font bytes");
     assert.equal(evidence.noFontLeak, true); assert.equal(evidence.idle, true);
     assert.deepEqual(errors, []); assert.deepEqual(external, [], "font shaping and text export make no external requests");
-    console.log("  shared text compositor: exact PNG/JPEG across editor engine, 1/4/8 workers and journaled folder output; custom-font integrity and bounded failure checks");
+    console.log(`  shared text compositor: exact PNG/JPEG across editor engine, ${evidence.runs.map((run) => run.count).join("/")} workers and journaled folder output; custom-font integrity and bounded failure checks`);
   } finally { await context.close(); }
 }

@@ -822,7 +822,9 @@ async function main() {
     await assertPublishedExports(page);
     await assertAppearance(page);
     await assertSharedScheduler(page, fixtureSource);
-    await assertTextCompositor(browser, page.url());
+    const textHardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);
+    await assertTextCompositor(browser, page.url(), Number.isSafeInteger(textHardwareConcurrencyOverride) && textHardwareConcurrencyOverride > 0
+      ? { hardwareConcurrency: textHardwareConcurrencyOverride } : undefined);
     await assertCreatorStamp(browser, page.url());
     await assertFolderContracts(browser, page.url());
     await assertFolderSamples(browser, page.url());

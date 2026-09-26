@@ -16,7 +16,7 @@ avoids decoding identical small PNG output twice while retaining full decode
 validation whenever rendered bytes differ.
 
 Automated checks for this tree pass: `npm run verify:all` (40 scheduler and
-155 project/model tests, Chromium workflows, WebKit staged export, security,
+156 project/model tests, Chromium workflows, WebKit staged export, security,
 folder recovery and documentation); `make package-pages` (251-file artifact);
 and the optimized `_site` Chromium suite. Parity passes 33/33 and the declared
 coverage slice passes 28/36 functions against its 70% threshold. Canonical run
