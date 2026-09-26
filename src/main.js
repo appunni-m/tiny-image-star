@@ -3,11 +3,14 @@ import { createEditor } from "./editor/core.js";
 import { attachEditorView } from "./editor/view.js";
 import { attachEditorCanvas } from "./editor/canvas.js";
 import { attachEditorOperations } from "./editor/operations.js";
+import { attachEditorProject } from "./editor/project.js";
 import { attachEditorText } from "./editor/text.js";
 import { attachEditorProcessing } from "./editor/processing.js";
 import { bindEditorEvents } from "./editor/events.js";
+import { attachMobileShell } from "./editor/mobile-shell.js";
+import { attachProcessingControls } from "./processing/controls.js";
 import { attachLocalDataControls } from "./local-data.js";
-import { buildEditorSessionSnapshot, clearEditorSession, writeEditorSession } from "./session.js";
+import { attachStoryWorkspace } from "./story/workspace.js";
 
 // Composition only: feature code lives under src/editor/ and the companion
 // batch surface remains in src/batch.js.
@@ -15,37 +18,21 @@ const editor = createEditor(getEditorElements());
 attachEditorView(editor);
 attachEditorCanvas(editor);
 attachEditorOperations(editor);
+attachEditorProject(editor);
 attachEditorText(editor);
 attachEditorProcessing(editor);
 bindEditorEvents(editor);
+attachMobileShell(editor);
+attachProcessingControls();
 attachLocalDataControls();
+attachStoryWorkspace();
 
 editor.setCapabilities(editor.state.capabilities);
 editor.renderAll();
 editor.startWorker();
 
-let editorSessionTimer = null;
-function scheduleEditorSessionSave() {
-  clearTimeout(editorSessionTimer);
-  editorSessionTimer = setTimeout(async () => {
-    editorSessionTimer = null;
-    const snapshot = window.tinyImageStarEditor?.getSnapshot?.();
-    if (!snapshot?.file?.bytes || snapshot.context?.kind === "batch") return;
-    const built = buildEditorSessionSnapshot({ file: snapshot.file, operations: snapshot.operations });
-    if (built.reason === "empty") {
-      await clearEditorSession();
-      return;
-    }
-    if (built.reason === "too-large") return;
-    await writeEditorSession(built.snapshot);
-  }, 150);
-}
-
-window.addEventListener("tinystar:editor-loaded", scheduleEditorSessionSave);
-window.addEventListener("tinystar:editor-changed", scheduleEditorSessionSave);
-
 window.tinyImageStarEditor = {
-  loadFile: (file, operations, context) => editor.importImage(file, operations, context),
+  loadFile: (file, operations, context, project) => editor.importImage(file, operations, context, project),
   clearFile: () => editor.clearImage(),
   getSnapshot: () => ({
     file: editor.state.file
@@ -55,17 +42,18 @@ window.tinyImageStarEditor = {
     imageWidth: editor.state.image?.naturalWidth ?? 0,
     imageHeight: editor.state.image?.naturalHeight ?? 0,
     context: editor.state.editorContext,
+    project: editor.projectSnapshot(),
   }),
   // Kept as a small composition bridge for capability-aware browser checks
   // and host integrations; the worker remains the production source of truth.
   setCapabilities: (raw) => editor.setCapabilities(raw),
-  composeTextOutput: (result, operations) => editor.composeTextOutput?.(result, operations),
   showEditor: () => window.dispatchEvent(new CustomEvent("tinystar:show-editor")),
   clearContext: () => {
     editor.state.editorContext = null;
     editor.state.savedOperations = editor.cloneOperations();
     editor.state.history = [];
     editor.state.future = [];
+    editor.resetProject();
     editor.updateEditorAvailability();
     editor.updateDirtyState();
     editor.updateHistoryButtons();
@@ -82,6 +70,7 @@ window.tinyImageStarEditor = {
     editor.state.history = [];
     editor.state.future = [];
     editor.state.editorContext = context;
+    editor.resetProject();
     editor.renderAll();
     editor.scheduleProcessing();
   },

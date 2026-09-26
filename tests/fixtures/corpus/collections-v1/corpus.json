@@ -1,0 +1,77 @@
+{
+  "schema": "tinystar/collection-corpus@1",
+  "assets": [
+    {
+      "id": "coast",
+      "path": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+      "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc",
+      "width": 4032,
+      "height": 3024,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "coast-small-jpg",
+      "path": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+      "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519",
+      "width": 1200,
+      "height": 900,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "coast-small-png",
+      "path": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+      "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9",
+      "width": 1200,
+      "height": 900,
+      "media_type": "image/png"
+    },
+    {
+      "id": "cat",
+      "path": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+      "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876",
+      "width": 6000,
+      "height": 4000,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "cat-small-jpg",
+      "path": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+      "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973",
+      "width": 1200,
+      "height": 800,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "cat-small-png",
+      "path": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+      "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d",
+      "width": 1200,
+      "height": 800,
+      "media_type": "image/png"
+    },
+    {
+      "id": "food",
+      "path": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+      "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651",
+      "width": 6000,
+      "height": 4000,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "food-small-jpg",
+      "path": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+      "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f",
+      "width": 1200,
+      "height": 800,
+      "media_type": "image/jpeg"
+    },
+    {
+      "id": "food-small-png",
+      "path": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+      "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22",
+      "width": 1200,
+      "height": 800,
+      "media_type": "image/png"
+    }
+  ]
+}

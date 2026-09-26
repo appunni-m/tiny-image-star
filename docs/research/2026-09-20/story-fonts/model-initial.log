@@ -1,0 +1,51 @@
+✔ three frozen story recipes remain separate from the existing color-look revisions (18.525917ms)
+✔ all recipes preserve every photo and caption across counts, orientations and both output shapes (2674.208208ms)
+✔ photo decorations follow manual frames and rotation using photo-relative geometry (10.463125ms)
+✔ recipe replacement removes only owned decorations and preserves local photo/word repairs through undo (54.958375ms)
+✔ Depth cover requires the cover mask, targets only that photo and preserves an existing title (12.314792ms)
+✔ Depth cover fills the available frame in both shapes while preserving editable source crop and mask (25.337041ms)
+✔ recipe color strength leaves layout, typography, captions and subject selection identical (58.0415ms)
+✔ new source reflow keeps decorations attached and old saved stories do not acquire a design (24.084ms)
+✖ untrusted designs and attachments cannot add executable fields, unbounded data or unrelated owners (1.229916ms)
+✔ style capture exports only chosen reusable settings, with no photos, masks, captions, crops or node IDs (9.142709ms)
+✔ single-slide layout styles cannot alter another slide's present or future reflow (15.031167ms)
+✔ look strength has deterministic endpoints and preserves source-specific edits (7.672417ms)
+✔ layout application keeps manual positions by default; explicit reset preserves crop/appearance/text overrides (28.477458ms)
+✔ style previews produce one undo and copy the immutable definition through serialization (21.796459ms)
+✔ custom fonts and unrecognized layouts require an explicit supported alternative when saving (1.562416ms)
+✔ unsupported requirements and engines import as identifiable styles but cannot be applied (2.292ms)
+✔ malformed imports reject executable, remote, private, oversized and out-of-range content (1.200958ms)
+✔ text-only styles reflow the selected slide while keeping old static stories static (8.399917ms)
+✔ depth styles capture bounded relative settings without private words, masks, identities or font assets (2.388834ms)
+✔ depth style applies once to selected masked photos, preserves words and repairs, and reports incompatible scope (5.413625ms)
+✔ depth styles keep existing words and positions by default, offer explicit reset, and undo as one change (8.860417ms)
+✔ depth style scope updates both halves of a connected subject and creates one shared title (5.783375ms)
+✔ depth style imports reject private fields, remote fonts, missing capabilities and invalid placement or type (2.20375ms)
+ℹ tests 23
+ℹ suites 0
+ℹ pass 22
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2935.264167
+
+✖ failing tests:
+
+test at tests/story-designs.test.mjs:146:1
+✖ untrusted designs and attachments cannot add executable fields, unbounded data or unrelated owners (1.229916ms)
+  AssertionError [ERR_ASSERTION]: Missing expected exception.
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/story-designs.test.mjs:150:77)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: undefined,
+    operator: 'throws',
+    diff: 'simple'
+  }

@@ -1,0 +1,49 @@
+{
+  "schema": "tinystar/heic-native-observations@1",
+  "browser_kind": "chromium",
+  "browser": "151.0.7922.34",
+  "executable_sha256": "a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+  "webkit_runtime": null,
+  "input_inventory_sha256": "acc08c8c24a659d2905db7d674f945a925b98257aa4d7663d1e6ba9ed4d90e3a",
+  "observations": [
+    {
+      "id": "opaque",
+      "bitmap": {
+        "status": "error",
+        "name": "InvalidStateError",
+        "message": "The source image could not be decoded."
+      },
+      "image_element": {
+        "status": "error",
+        "name": "EncodingError",
+        "message": "The source image cannot be decoded."
+      },
+      "worker": {
+        "status": "error",
+        "name": "InvalidStateError",
+        "message": "The source image could not be decoded."
+      }
+    },
+    {
+      "id": "alpha",
+      "bitmap": {
+        "status": "error",
+        "name": "InvalidStateError",
+        "message": "The source image could not be decoded."
+      },
+      "image_element": {
+        "status": "error",
+        "name": "EncodingError",
+        "message": "The source image cannot be decoded."
+      },
+      "worker": {
+        "status": "error",
+        "name": "InvalidStateError",
+        "message": "The source image could not be decoded."
+      }
+    }
+  ],
+  "external": [],
+  "errors": [],
+  "boundary": "Generated 256x192 basic fixtures; PNG comparison shares the browser stack. Not independent decoder quality, HDR, real picker, memory or physical-phone evidence."
+}

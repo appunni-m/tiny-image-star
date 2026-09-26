@@ -8,6 +8,15 @@
 > `README.md`, `IMPLEMENTATION_PLAN.md`, and `VERIFICATION_MATRIX.md` are the
 > current implementation contract.
 
+> Engine update, 20 September 2026: the historical PNG-only and local-build
+> limitations below have been superseded by the pinned published package and
+> verified fixed-setting PNG/JPEG integration. The old synthetic quality-control
+> checks do not establish adjustable quality in the deployed engine. Consult
+> [the current engine decision](ENGINE_EVALUATION.md),
+> [migration status](docs/MIGRATION_STATUS.md) and
+> [verification matrix](VERIFICATION_MATRIX.md) for current behavior; this audit
+> remains a record of its dated observations.
+
 > Review date: 2026-08-02  
 > Scope: the complete current browser application, source structure, documented
 > product contract, automated checks, live desktop and 390 px browser behavior,

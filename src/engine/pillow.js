@@ -1,11 +1,20 @@
 import { formatMime, normalizeCapabilities, normalizeFormat } from "../formats.js";
-import { MAX_IMAGE_PIXELS } from "../input.js";
+import { MAX_IMAGE_PIXELS, isAnimatedImage } from "../input.js";
 import { outputFileName } from "../names.js";
-import { DEFAULT_QUALITY } from "../quality.js";
+import { USE_BROTLI_WASM } from "./runtime-assets.js";
+import { preservePngPalette } from "./png.js";
+import { imageWork, workingCopyWork, deviceBudget } from "../processing/policy.js";
+import { fontDigest } from "../compositor/fonts.js";
+import { compositeText } from "../compositor/raster.js";
+import { renderScene } from "../compositor/scene.js";
+import { SCENE_VERSION, sceneError } from "../compositor/scene-spec.js";
+import { photoLookAppearance } from "../compositor/photo-look.js";
+import { ENGINE_IDENTITY } from "../project/model.js";
 
 const inputFormats = ["jpeg", "png", "gif", "bmp", "webp", "tiff", "ico"];
 const outputFormats = ["png"];
-const KNOWN_OUTPUT_FORMATS = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico", "avif"];
+// Additional codecs need independent output qualification before exposure.
+const QUALIFIED_OUTPUT_FORMATS = ["png", "jpeg"];
 
 export const CAPABILITIES = Object.freeze({
   inputFormats,
@@ -14,9 +23,10 @@ export const CAPABILITIES = Object.freeze({
 });
 
 let apiPromise;
+let wasmExports;
 
 async function fetchBrotliWasm() {
-  if (typeof DecompressionStream !== "function") return null;
+  if (!USE_BROTLI_WASM || typeof DecompressionStream !== "function") return null;
   const wasmUrl = new URL("../../wasm/pillow_rs_js_bg.wasm", import.meta.url);
   const compressedUrl = new URL("pillow_rs_js_bg.wasm.br", wasmUrl);
   try {
@@ -37,7 +47,8 @@ function loadApi() {
     apiPromise = import("../../wasm/pillow_rs_js.js").then(async (api) => {
       // Passing undefined preserves the generated binding's normal URL-based
       // loader when the release sidecar is unavailable.
-      await api.default((await fetchBrotliWasm()) ?? undefined);
+      const bytes = await fetchBrotliWasm();
+      wasmExports = await api.default(bytes ? { module_or_path: bytes } : undefined);
       return api;
     });
   }
@@ -47,6 +58,12 @@ function loadApi() {
 function replaceImage(current, next) {
   if (current !== next) current.free();
   return next;
+}
+
+function checkMemoryBudget(image, file, settings = {}, preview = false) {
+  if (!file.memoryEstimate) return;
+  const actual = imageWork({ width: image.width, height: image.height, encodedBytes: file.bytes.byteLength, settings, preview });
+  if (actual.heap > file.memoryEstimate.heap || actual.transient > file.memoryEstimate.transient) throw new Error("Source changed or exceeds the processing memory budget");
 }
 
 export function exifOrientationFromBytes(bytes) {
@@ -112,34 +129,36 @@ function applyExifOrientation(api, image, bytes) {
   return operation ? replaceImage(image, image.transpose(operation)) : image;
 }
 
-const ENCODER_METHODS = Object.freeze({
-  jpeg: ["saveJpeg", "saveJPEG", "encodeJpeg", "encodeJPEG", "toJpeg", "toJPEG", "save_jpeg", "encode_jpeg"],
-  gif: ["saveGif", "encodeGif", "toGif", "save_gif", "encode_gif"],
-  bmp: ["saveBmp", "encodeBmp", "toBmp", "save_bmp", "encode_bmp"],
-  webp: ["saveWebp", "encodeWebp", "toWebp", "save_webp", "encode_webp"],
-  tiff: ["saveTiff", "encodeTiff", "toTiff", "save_tiff", "encode_tiff"],
-  ico: ["saveIco", "encodeIco", "toIco", "save_ico", "encode_ico"],
-  avif: ["saveAvif", "encodeAvif", "toAvif", "save_avif", "encode_avif"],
-});
-
-function findEncoder(image, format, options = {}) {
+function findEncoder(image, format) {
+  if (!QUALIFIED_OUTPUT_FORMATS.includes(format)) return null;
+  // Pinned API: the second argument is an extension hint, never quality.
+  if (typeof image.saveWithInput === "function") return () => {
+    const bytes = image.saveWithInput(format.toUpperCase(), null);
+    return format === "png" && image.mode === "P"
+      ? preservePngPalette(bytes, image.getpalette("RGB")?.length)
+      : bytes;
+  };
   if (format === "png" && typeof image.save === "function") return () => image.save();
-  const quality = Number.isFinite(options.quality) ? Math.max(1, Math.min(100, Math.round(options.quality))) : null;
-  for (const method of ENCODER_METHODS[format] ?? []) {
-    if (typeof image[method] === "function") {
-      return () => (quality != null && image[method].length > 0 ? image[method](quality) : image[method]());
-    }
-  }
-  // A future binding may expose a single parameterized encoder. Do not call
-  // the current zero-argument save() with a format: that method always emits
-  // PNG and would make a JPEG/WebP label lie about the bytes.
-  if (typeof image.encode === "function" && image.encode.length > 0) {
-    return () => image.encode(format, ...(quality != null && image.encode.length > 1 ? [quality] : []));
-  }
-  if (typeof image.save === "function" && image.save.length > 0) {
-    return () => image.save(format, ...(quality != null && image.save.length > 1 ? [quality] : []));
-  }
   return null;
+}
+
+function flattenForJpeg(api, image, background = [255, 255, 255]) {
+  if (!Array.isArray(background) || background.length !== 3
+      || background.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    throw new Error("invalid JPEG background");
+  }
+  if (image.mode === "RGB") return image;
+  let rgba;
+  let canvas;
+  try {
+    rgba = image.convert("RGBA", null);
+    canvas = new api.Image("RGBA", image.width, image.height, ...background, 255);
+    canvas.alphaComposite(rgba);
+    return canvas.convert("RGB", null);
+  } finally {
+    rgba?.free();
+    canvas?.free();
+  }
 }
 
 function hasSignature(bytes, format) {
@@ -161,7 +180,11 @@ function verifyEncodedOutput(api, bytes, format, width, height) {
   let decoded;
   try {
     decoded = api.Image.open(bytes);
-    return decoded?.width === width && decoded?.height === height;
+    if (decoded?.width !== width || decoded?.height !== height) return false;
+    decoded.load();
+    // load() decodes the complete container. Inspect a pixel without copying
+    // the entire decoded image back across the WASM boundary just to validate.
+    return decoded.getpixel(0, 0).length > 0;
   } catch {
     return false;
   } finally {
@@ -173,8 +196,8 @@ function probeOutputFormat(api, format) {
   if (typeof api?.Image !== "function") return false;
   let image;
   try {
-    image = new api.Image("RGBA", 2, 2, 255, 0, 0, 255);
-    const encoder = findEncoder(image, format, { quality: DEFAULT_QUALITY });
+    image = new api.Image(format === "jpeg" ? "RGB" : "RGBA", 2, 2, 255, 0, 0, 255);
+    const encoder = findEncoder(image, format);
     if (!encoder) return false;
     const encoded = encoder();
     const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
@@ -186,19 +209,82 @@ function probeOutputFormat(api, format) {
   }
 }
 
-function encoderSupportsQuality(api, format) {
-  if (typeof api?.Image !== "function") return false;
+// Consumes the image on success or failure. All render paths use this final
+// encoder; validation runs after releasing the working image.
+function encodeImage(api, image, format, background, diagnostics) {
+  const started = diagnostics ? performance.now() : 0;
+  try {
+    if (!findEncoder(image, format)) throw new Error("format unavailable");
+    if (format === "jpeg") image = replaceImage(image, flattenForJpeg(api, image, background));
+    const encoder = findEncoder(image, format);
+    if (!encoder) throw new Error("format unavailable");
+    const encoded = encoder();
+    const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
+    const rendered = { width: image.width, height: image.height, mode: image.mode };
+    image.free(); image = null;
+    const validationStarted = diagnostics ? performance.now() : 0;
+    if (!verifyEncodedOutput(api, bytes, format, rendered.width, rendered.height)) throw new Error("format unavailable");
+    if (diagnostics) {
+      // Pillow evaluates lazy transforms inside save. This interval includes
+      // materialization and encoding; it is not a decoder-only measurement.
+      diagnostics.materializeEncodeMs = validationStarted - started;
+      diagnostics.outputValidationMs = performance.now() - validationStarted;
+    }
+    return { bytes, ...rendered, outputBytes: bytes.byteLength, mime: formatMime(format), format };
+  } finally { image?.free(); }
+}
+
+function openSceneImage(api, asset, bytes) {
   let image;
   try {
-    image = new api.Image("RGBA", 2, 2, 255, 0, 0, 255);
-    if ((ENCODER_METHODS[format] ?? []).some((method) => typeof image[method] === "function" && image[method].length > 0)) return true;
-    if (typeof image.encode === "function" && image.encode.length > 1) return true;
-    return typeof image.save === "function" && image.save.length > 1;
-  } catch {
-    return false;
-  } finally {
-    image?.free?.();
-  }
+    image = api.Image.open(bytes);
+    if (image.width * image.height !== asset.width * asset.height || image.width * image.height > MAX_IMAGE_PIXELS) throw sceneError("ASSET_CHANGED", "A story source no longer matches its declared dimensions.");
+    if (asset.orientation === "exif-to-upright") image = applyExifOrientation(api, image, bytes);
+    if (image.width !== asset.width || image.height !== asset.height) throw sceneError("ASSET_CHANGED", "A story source does not match its upright dimensions.");
+    const result = image; image = null; return result;
+  } catch (error) {
+    if (error?.code) throw error;
+    throw sceneError("DECODE_FAILED", "A story source could not be decoded.");
+  } finally { image?.free(); }
+}
+
+/** Resize an immutable upright image/mask source, without applying its edits. */
+export async function resampleSourceWithApi(api, { asset, bytes, width, height, memoryEstimate }) {
+  if (!asset || !["image", "mask"].includes(asset.kind) || !["upright", "exif-to-upright"].includes(asset.orientation)
+    || ![asset.width, asset.height, width, height].every(n => Number.isInteger(n) && n > 0)
+    || asset.width * asset.height > MAX_IMAGE_PIXELS || width * height > MAX_IMAGE_PIXELS
+    || !(bytes instanceof ArrayBuffer) || !/^[a-f0-9]{64}$/.test(asset.sha256) || bytes.byteLength !== asset.byteLength
+    || asset.kind === "mask" && asset.orientation !== "upright") throw sceneError("INVALID_SOURCE_COPY", "Invalid photo or cutout copy request.");
+  const settings = { resizeWidth: width, resizeHeight: height }, target = { width, height };
+  const estimate = workingCopyWork({ width: asset.width, height: asset.height, encodedBytes: asset.byteLength, settings, target });
+  if (memoryEstimate && ![memoryEstimate.heap, memoryEstimate.transient].every(n => Number.isFinite(n) && n >= 0))
+    throw sceneError("TOO_LARGE", "Invalid source-copy memory reservation.");
+  if (memoryEstimate ? estimate.heap > memoryEstimate.heap || estimate.transient > memoryEstimate.transient
+    : estimate.heap + estimate.transient > deviceBudget(globalThis.navigator ?? {}).memory)
+    throw sceneError("TOO_LARGE", "This source copy exceeds the processing memory budget. Choose a smaller photo.");
+  if (await fontDigest(bytes) !== asset.sha256) throw sceneError("ASSET_CHANGED", "A photo or cutout changed before conversion.");
+  const data = new Uint8Array(bytes);
+  if (isAnimatedImage(data)) throw sceneError("UNSUPPORTED_OPERATION", "Choose a still photo for this copy.");
+  if (asset.kind === "mask" && (![137,80,78,71,13,10,26,10].every((v,i) => data[i] === v) || data[24] !== 8 || data[25] !== 0))
+    throw sceneError("INVALID_MASK", "A saved cutout must be an 8-bit grayscale PNG.");
+  let image;
+  try {
+    image = openSceneImage(api, asset, data);
+    if (asset.kind === "mask" && image.mode !== "L") throw sceneError("INVALID_MASK", "A saved cutout must be grayscale.");
+    if (image.width !== width || image.height !== height) image = replaceImage(image, image.resize(width, height, "LANCZOS"));
+    const completed = image; image = null; return encodeImage(api, completed, "png");
+  } finally { image?.free(); }
+}
+
+/** @param {import('../compositor/contracts').SceneRequest} request
+ * @returns {Promise<import('../compositor/contracts').SceneResult>} */
+export async function renderSlideWithApi(api, request, capabilities = CAPABILITIES) {
+  const format = request.preview ? "png" : request.format ?? "png";
+  if (!capabilities.outputFormats.includes(format)) throw sceneError("UNSUPPORTED_OPERATION", "That story output format is unavailable.");
+  const result = await renderScene(api, request, { openImage: (asset, bytes) => openSceneImage(api, asset, bytes) });
+  return { ...encodeImage(api, result.image, format, request.jpegBackground),
+    projectId: result.plan.projectId, revision: result.plan.revision, slideId: result.plan.slideId, variantId: result.plan.variantId,
+    canonicalWidth: result.plan.width, canonicalHeight: result.plan.height, warnings: result.warnings, preview: result.plan.preview };
 }
 
 function bindingCapabilities(api) {
@@ -210,18 +296,16 @@ export function runtimeCapabilities(api) {
   const declared = normalizeCapabilities({
     ...CAPABILITIES,
     ...bindingCapabilities(api),
-    outputFormats: KNOWN_OUTPUT_FORMATS,
+    outputFormats: QUALIFIED_OUTPUT_FORMATS,
   });
   const outputFormats = declared.outputFormats.filter((format) => probeOutputFormat(api, format));
   if (!outputFormats.length) throw new Error("No verified output format is available.");
   const lossyFormats = outputFormats.filter((format) => ["jpeg", "webp", "avif"].includes(format));
-  const quality = Boolean(declared.compression?.quality)
-    || lossyFormats.some((format) => encoderSupportsQuality(api, format));
   return normalizeCapabilities({
     ...declared,
     outputFormats,
     avif: { input: declared.avif.input, output: outputFormats.includes("avif") },
-    compression: { lossy: lossyFormats.length > 0, lossyFormats, quality },
+    compression: { lossy: lossyFormats.length > 0, lossyFormats, quality: false },
   });
 }
 
@@ -239,14 +323,18 @@ function centerCropToAspect(image, aspect) {
 }
 
 export async function renderWithApi(api, file, settings, capabilities = CAPABILITIES) {
+  const started = file.diagnostics === true ? performance.now() : 0;
+  const diagnostics = file.diagnostics === true ? {} : null;
+  const look = settings.photoLook ? photoLookAppearance(settings.photoLook, ENGINE_IDENTITY) : null;
   const format = normalizeFormat(settings.format) ?? "png";
   if (!capabilities.outputFormats.includes(format)) throw new Error("format unavailable");
 
   const rawBytes = new Uint8Array(file.bytes);
   let image = api.Image.open(rawBytes);
   try {
-    image = applyExifOrientation(api, image, rawBytes);
     if (image.width * image.height > MAX_IMAGE_PIXELS) throw new Error("input too large");
+    checkMemoryBudget(image, file, settings);
+    image = applyExifOrientation(api, image, rawBytes);
     if (!settings.crop && settings.cropRelative) {
       settings = {
         ...settings,
@@ -301,28 +389,25 @@ export async function renderWithApi(api, file, settings, capabilities = CAPABILI
         image.resize(outputWidth, outputHeight, "LANCZOS"),
       );
     }
+    if (look) {
+      if (look.brightness != null && look.brightness !== 1) image = replaceImage(image, image.enhanceBrightness(look.brightness));
+      if (look.contrast != null && look.contrast !== 1) image = replaceImage(image, image.enhanceContrast(look.contrast));
+      const saturation = (look.saturation ?? 1) * (1 - (look.grayscaleMix ?? 0));
+      if (saturation !== 1) image = replaceImage(image, image.enhanceColor(saturation));
+    }
     if (settings.grayscale) image = replaceImage(image, image.convert("L", null));
     if (settings.brightness !== 1) image = replaceImage(image, image.enhanceBrightness(settings.brightness));
     if (settings.contrast !== 1) image = replaceImage(image, image.enhanceContrast(settings.contrast));
 
-    const encoder = findEncoder(image, format, { quality: settings.lossy ? settings.quality : null });
-    if (!encoder) throw new Error("format unavailable");
-    const encoded = encoder();
-    const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
-    if (!verifyEncodedOutput(api, bytes, format, image.width, image.height)) throw new Error("format unavailable");
-    return {
-      bytes,
-      width: image.width,
-      height: image.height,
-      mode: image.mode,
-      inputBytes: file.bytes.byteLength,
-      outputBytes: bytes.byteLength,
-      name: outputFileName(file.name, settings.presetName ?? settings.presetId, format),
-      mime: formatMime(format),
-      format,
-    };
+    if (settings.textLayers?.length) image = replaceImage(image, await compositeText(api, image, settings.textLayers, file.fontRecords));
+
+    const completed = image; image = null;
+    if (diagnostics) diagnostics.pipelineSetupMs = performance.now() - started;
+    return { ...encodeImage(api, completed, format, settings.jpegBackground, diagnostics),
+      ...(diagnostics ? { diagnostics: { schema: "tinystar/render-timings@1", ...diagnostics } } : {}), inputBytes: file.bytes.byteLength,
+      name: outputFileName(file.name, settings.presetName ?? settings.presetId, format) };
   } finally {
-    image.free();
+    image?.free();
   }
 }
 
@@ -330,31 +415,58 @@ export function previewWithApi(api, file) {
   const rawBytes = new Uint8Array(file.bytes);
   let image = api.Image.open(rawBytes);
   try {
+    if (image.width * image.height > MAX_IMAGE_PIXELS) throw new Error("input too large");
+    checkMemoryBudget(image, file, {}, true);
     image = applyExifOrientation(api, image, rawBytes);
-    const encoder = findEncoder(image, "png");
-    if (!encoder) throw new Error("format unavailable");
-    const encoded = encoder();
-    const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
-    if (!verifyEncodedOutput(api, bytes, "png", image.width, image.height)) throw new Error("format unavailable");
-    return {
-      bytes,
-      width: image.width,
-      height: image.height,
-      mime: "image/png",
-      format: "png",
-    };
+    const completed = image; image = null;
+    const { bytes, width, height, mime, format } = encodeImage(api, completed, "png");
+    return { bytes, width, height, mime, format };
   } finally {
-    image.free();
+    image?.free();
   }
 }
 
 export async function createPillowEngine() {
   const api = await loadApi();
-  const capabilities = runtimeCapabilities(api);
+  const capabilities = { ...runtimeCapabilities(api), scene: {
+    version: SCENE_VERSION, available: typeof OffscreenCanvas === "function",
+    nodeKinds: ["image", "shape", "text"], masks: "upright-8-bit-grayscale", depthTitles: "photo-relative-v1", connectedCutouts: "adjacent-pair-v1", cutoutEffects: "disk-outline-shadow-v1", previewLongEdge: 1280,
+  } };
+  let disposed = false;
+  const guard = () => { if (disposed) throw sceneError("DISPOSED", "This rendering handle has been closed."); };
   return {
     capabilities,
-    render: (file, settings) => renderWithApi(api, file, settings, capabilities),
-    preview: (file) => previewWithApi(api, file),
+    ready: async () => { guard(); return capabilities; },
+    dispose: () => { disposed = true; },
+    heapBytes: () => wasmExports?.memory?.buffer?.byteLength ?? 0,
+    inspect: (file) => {
+      guard();
+      const image = api.Image.open(new Uint8Array(file.bytes));
+      try {
+        if (image.width * image.height > MAX_IMAGE_PIXELS) throw new Error("input too large");
+        return { width: image.width, height: image.height, inputBytes: file.bytes.byteLength };
+      } finally { image.free(); }
+    },
+    render: (file, settings) => { guard(); return renderWithApi(api, file, settings, capabilities); },
+    renderImagePreview: async (file, settings, longEdge = 512) => {
+      guard();
+      if (!Number.isInteger(longEdge) || longEdge < 64 || longEdge > 1024) throw new Error("Invalid image preview size.");
+      const started = file.diagnostics === true ? performance.now() : 0;
+      const result = await renderWithApi(api, file, settings, capabilities);
+      const fullOutput = file.diagnostics === true ? { width: result.width, height: result.height, format: result.format, bytes: result.outputBytes, renderMs: performance.now() - started } : null;
+      let image = api.Image.open(result.bytes);
+      try {
+        const scale = Math.min(1, longEdge / Math.max(image.width, image.height));
+        if (scale < 1) image = replaceImage(image, image.resize(Math.max(1, Math.round(image.width * scale)), Math.max(1, Math.round(image.height * scale)), "LANCZOS"));
+        const completed = image; image = null;
+        return { ...encodeImage(api, completed, "png"), inputBytes: file.bytes.byteLength, name: result.name, ...(fullOutput ? { fullOutput } : {}) };
+      } finally { image?.free(); }
+    },
+    preview: (file) => { guard(); return previewWithApi(api, file); },
+    renderSlide: (request) => { guard(); return renderSlideWithApi(api, { ...request, preview: false }, capabilities); },
+    renderPreview: (request) => { guard(); return renderSlideWithApi(api, { ...request, preview: true }, capabilities); },
+    resampleSource: (request) => { guard(); return resampleSourceWithApi(api, request); },
+    editMask: async (request) => { guard(); const { editMask } = await import("../compositor/mask.js"); return editMask(api, request, { openImage: (asset, bytes) => openSceneImage(api, asset, bytes) }); },
   };
 }
 

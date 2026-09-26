@@ -27,14 +27,20 @@ make setup-browser
 make verify
 ```
 
-`make verify` delegates to the single project gate, `npm run verify:all`.
-GitHub Actions runs it on Node.js 20 and 24, with Chromium installed on Linux.
-The workflow then installs Binaryen, runs
-`WASM_OPT_REQUIRED=1 make package-pages`, checks the optimized output
-allowlist and Brotli round trips, and runs the browser smoke against `_site`
-before uploading it. Only non-pull-request events may deploy to Pages. The
-release minifier reduces transfer size; it is not a security or source-hiding
-mechanism.
+`make verify` delegates to `npm run verify:all`, including deterministic,
+source-browser, folder-recovery and documentation-link checks. The configured
+GitHub Actions workflow uses Node.js 20 and 24 with Chromium on Linux and also
+checks registry signatures and migration specification/parity/coverage.
+Its build runs `make package-pages`, checks the output allowlist and Brotli
+round trips, and runs the browser suite against `_site` before upload.
+The published Pillow JS/WASM pair stays unchanged; there is no Binaryen step.
+Only non-pull-request events may deploy to Pages. App minification reduces
+transfer size; it is not a security or source-hiding mechanism.
+
+This is the inspected workflow configuration, not proof of a successful remote
+run. The long collection benchmark, device/pilot evidence and remaining launch
+gates are separate. Use [RELEASING.md](RELEASING.md) for the complete local
+command sequence and the limits of the current deployment/recovery process.
 
 Reviewers should ask for:
 
@@ -54,11 +60,13 @@ versions current and review their release notes before updating a workflow.
 ## Generated image-engine artifacts
 
 `wasm/pillow_rs_js.js` and `wasm/pillow_rs_js_bg.wasm` are one generated pair.
-For an update, record the Pillow-RS source revision, complete build command,
-toolchain versions, both checksums, upstream license material, and the result
-of `make verify` in [wasm/README.md](wasm/README.md) and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Do not edit the external
-Pillow-RS checkout from this repository.
+The current app stages an exact published npm package. For an update, verify its
+registry integrity/provenance and source revision, update the dependency,
+lockfile and approved staging identity together, retain paired file/license
+hashes, and run source, adapter, packaged-artifact and performance checks.
+Record the results and actual toolchain. See [wasm/README.md](wasm/README.md),
+[RELEASING.md](RELEASING.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Do not edit the external Pillow-RS checkout or one generated member of the pair.
 
 ## Triage and recovery
 

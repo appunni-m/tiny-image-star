@@ -1,0 +1,26 @@
+{ before: 4, after: 2 }
+✖ an idle interval between collections must not manufacture a throughput regression (25.647083ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 75.332541
+
+✖ failing tests:
+
+test at docs/research/2026-09-17/collections/auto-idle-regression.test.mjs:6:1
+✖ an idle interval between collections must not manufacture a throughput regression (25.647083ms)
+  AssertionError [ERR_ASSERTION]: idle time was counted as slower processing
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/docs/research/2026-09-17/collections/auto-idle-regression.test.mjs:26:9)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

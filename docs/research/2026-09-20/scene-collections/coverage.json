@@ -1,0 +1,643 @@
+{
+  "schema": "migration-parity/coverage-result@1",
+  "identity": {
+    "run_id": "coverage-312ac370-e762-4af7-93d0-44abc2f8fcdc",
+    "started_at": "2026-09-20T14:43:10.270Z",
+    "finished_at": "2026-09-20T14:43:10.932Z",
+    "manifest": {
+      "path": "tests/fixtures/manifest.yaml",
+      "schema": "migration-parity/manifest@2",
+      "sha256": "5a6cd23b9deac2c795b89f9ced246938eb57d350353ef7120cf0e41973a1ee48"
+    },
+    "inputs": [
+      {
+        "path": "tests/fixtures/inputs/parity/engine.json",
+        "schema": "migration-parity/parity-input@1",
+        "sha256": "4620f41c763ac213209e22c81b45e37642d0d679e5a0e45048bf6d2dcb8b3879"
+      },
+      {
+        "path": "tests/fixtures/inputs/coverage/engine.json",
+        "schema": "migration-parity/coverage-input@1",
+        "sha256": "07c0c9f505a3f23cf2ee409f86951f2ea74e06217087927b57121674e014df89"
+      },
+      {
+        "path": "tests/fixtures/inputs/benchmark/engine.json",
+        "schema": "migration-parity/benchmark-input@1",
+        "sha256": "b2b60998aee91ec964c9879ed7a05cff719c0714ecf580d5a3d18896f2411e00"
+      },
+      {
+        "path": "tests/fixtures/inputs/benchmark/collections.json",
+        "schema": "migration-parity/benchmark-input@1",
+        "sha256": "63516d2e317e095b8fdaf88dc21f37b9c58e8c88aa1ef4c2364195f465323fdd"
+      }
+    ],
+    "assets": [
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      }
+    ],
+    "oracles": [
+      {
+        "oracle_id": "legacy",
+        "name": "Tiny Image Star legacy browser engine",
+        "version": "89cc88c",
+        "runtime": "v24.18.0"
+      }
+    ],
+    "targets": [
+      {
+        "target_profile": "node-wasm",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:178b550eb645e1df9c1dbcbf2dec19cfaa77276e8b13aaaa3f1578115d28c67f",
+        "dirty": true,
+        "runtime": "v24.18.0",
+        "backend": "wasm-cpu",
+        "features": [
+          "png"
+        ]
+      }
+    ],
+    "command": {
+      "command_id": "coverage",
+      "argv": [
+        "node",
+        "scripts/migration/run.mjs",
+        "coverage"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 300
+    }
+  },
+  "status": "completed",
+  "collector": {
+    "name": "V8 NODE_V8_COVERAGE",
+    "version": "13.6.233.17-node.50",
+    "snapshot_id": "coverage-312ac370-e762-4af7-93d0-44abc2f8fcdc",
+    "artifact_ingested": true
+  },
+  "summary": {
+    "plans_selected": 1,
+    "plans_executed": 1,
+    "plans_not_run": 0,
+    "tests_passed": 34,
+    "tests_failed": 0
+  },
+  "plans": [
+    {
+      "plan_id": "engine.public-and-regression",
+      "target_profile": "node-wasm",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.original",
+        "TinyImageStar.Engine.renderWithApi.fit",
+        "TinyImageStar.Engine.renderWithApi.fill",
+        "TinyImageStar.Engine.renderWithApi.crop",
+        "TinyImageStar.Engine.renderWithApi.crop-clamp",
+        "TinyImageStar.Engine.renderWithApi.relative-crop",
+        "TinyImageStar.Engine.renderWithApi.rotate90",
+        "TinyImageStar.Engine.renderWithApi.rotate180",
+        "TinyImageStar.Engine.renderWithApi.rotate270",
+        "TinyImageStar.Engine.renderWithApi.flip-x",
+        "TinyImageStar.Engine.renderWithApi.flip-y",
+        "TinyImageStar.Engine.renderWithApi.grayscale",
+        "TinyImageStar.Engine.renderWithApi.brightness",
+        "TinyImageStar.Engine.renderWithApi.contrast",
+        "TinyImageStar.Engine.renderWithApi.chain",
+        "TinyImageStar.Engine.renderWithApi.output-limit",
+        "TinyImageStar.Engine.renderWithApi.unsupported-output",
+        "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+      ],
+      "selected": {
+        "parity_case_ids": [
+          "TinyImageStar.Engine.renderWithApi.original",
+          "TinyImageStar.Engine.renderWithApi.fit",
+          "TinyImageStar.Engine.renderWithApi.fill",
+          "TinyImageStar.Engine.renderWithApi.crop",
+          "TinyImageStar.Engine.renderWithApi.crop-clamp",
+          "TinyImageStar.Engine.renderWithApi.relative-crop",
+          "TinyImageStar.Engine.renderWithApi.rotate90",
+          "TinyImageStar.Engine.renderWithApi.rotate180",
+          "TinyImageStar.Engine.renderWithApi.rotate270",
+          "TinyImageStar.Engine.renderWithApi.flip-x",
+          "TinyImageStar.Engine.renderWithApi.flip-y",
+          "TinyImageStar.Engine.renderWithApi.grayscale",
+          "TinyImageStar.Engine.renderWithApi.brightness",
+          "TinyImageStar.Engine.renderWithApi.contrast",
+          "TinyImageStar.Engine.renderWithApi.chain",
+          "TinyImageStar.Engine.renderWithApi.output-limit",
+          "TinyImageStar.Engine.renderWithApi.unsupported-output",
+          "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+        ],
+        "command_ids": [
+          "regression"
+        ]
+      },
+      "execution": {
+        "status": "completed",
+        "tests_passed": 34,
+        "tests_failed": 0
+      },
+      "components": [
+        {
+          "component_id": "engine-adapter",
+          "files": [
+            {
+              "path": "src/engine/pillow.js",
+              "dimensions": [
+                {
+                  "dimension": "function",
+                  "covered": 22,
+                  "total": 30,
+                  "uncovered": [
+                    "src/engine/pillow.js:1131:1903:fetchBrotliWasm",
+                    "src/engine/pillow.js:1905:2341:loadApi",
+                    "src/engine/pillow.js:6093:6111:",
+                    "src/engine/pillow.js:10180:10973:openSceneImage",
+                    "src/engine/pillow.js:11064:13392:resampleSourceWithApi",
+                    "src/engine/pillow.js:13541:14293:renderSlideWithApi",
+                    "src/engine/pillow.js:20886:23824:createPillowEngine",
+                    "src/engine/pillow.js:23833:23962:describeError"
+                  ]
+                }
+              ]
+            },
+            {
+              "path": "src/engine/png.js",
+              "dimensions": [
+                {
+                  "dimension": "function",
+                  "covered": 4,
+                  "total": 4,
+                  "uncovered": []
+                }
+              ]
+            },
+            {
+              "path": "src/engine/runtime-assets.js",
+              "dimensions": [
+                {
+                  "dimension": "function",
+                  "covered": 1,
+                  "total": 1,
+                  "uncovered": []
+                }
+              ]
+            }
+          ],
+          "thresholds": [
+            {
+              "dimension": "function",
+              "minimum_percent": 70,
+              "covered": 27,
+              "total": 35,
+              "outcome": "pass"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "infrastructure_errors": []
+}

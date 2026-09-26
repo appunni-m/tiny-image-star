@@ -3,6 +3,7 @@
 import { fileMatchesFormats, formatLabel, formatListLabel } from "../formats.js";
 import { inputProblem } from "../input.js";
 import { downloadedFileName } from "../names.js";
+import { createProcessingClient, getProcessingScheduler } from "../processing/client.js";
 
 export function attachEditorProcessing(editor) {
   const { elements, state } = editor;
@@ -29,8 +30,8 @@ export function attachEditorProcessing(editor) {
   }
 
   function invalidateResult() {
+    state.worker?.cancelPending();
     state.revision += 1;
-    state.textComposition = null;
     revokeResult();
     editor.renderOutputSummary();
   }
@@ -43,6 +44,7 @@ export function attachEditorProcessing(editor) {
   function scheduleProcessing() {
     clearTimeout(state.scheduleTimer);
     if (!state.file || !state.operations) return;
+    editor.syncProjectPreview();
     state.processingError = null;
     invalidateResult();
     window.dispatchEvent(new CustomEvent("tinystar:editor-changed"));
@@ -56,16 +58,24 @@ export function attachEditorProcessing(editor) {
 
   function processCurrent() {
     if (!state.file || !state.operations || state.enginePhase !== "ready") return;
-    const bytes = state.file.bytes.buffer.slice(state.file.bytes.byteOffset, state.file.bytes.byteOffset + state.file.bytes.byteLength);
-    const file = { id: state.file.id, name: state.file.name, bytes };
-    const settings = editor.cloneOperations();
+    const source = state.file;
+    const file = { id: source.id, name: source.name };
+    const settings = editor.projectOperations();
     // Batch recipes carry maxWidth/maxHeight for their fit pipeline. Once the
     // image is on the canvas, exact resize controls are authoritative and the
     // derived bounds must follow them or a 4 × 4 edit can export at the old
     // recipe size.
     settings.maxWidth = settings.resizeWidth;
     settings.maxHeight = settings.resizeHeight;
-    state.worker.postMessage({ type: "process", jobId: "editor", revision: state.revision, files: [file], settings }, [bytes]);
+    const message = { type: "process", jobId: "editor", revision: state.revision, files: [file], settings };
+    getProcessingScheduler().setRetainedBytes("editor", source.bytes.byteLength + state.image.naturalWidth * state.image.naturalHeight * 4);
+    state.worker.submit({ message,
+      source: { width: state.image.naturalWidth, height: state.image.naturalHeight, encodedBytes: source.bytes.byteLength },
+      prepare: () => {
+        const bytes = source.bytes.buffer.slice(source.bytes.byteOffset, source.bytes.byteOffset + source.bytes.byteLength);
+        return { message: { ...message, files: [{ ...file, bytes }] }, transfer: [bytes] };
+      },
+    });
   }
 
   function downloadResult() {
@@ -134,13 +144,17 @@ export function attachEditorProcessing(editor) {
   function postPreviewRequest() {
     const pending = state.previewRequest;
     if (!pending || pending.sent || !state.worker || state.enginePhase !== "ready" || !state.file?.bytes) return;
-    const bytes = state.file.bytes.buffer.slice(state.file.bytes.byteOffset, state.file.bytes.byteOffset + state.file.bytes.byteLength);
+    const source = state.file;
     pending.sent = true;
-    state.worker.postMessage({
+    const message = {
       type: "preview",
       revision: pending.revision,
-      file: { id: state.file.id, name: state.file.name, bytes },
-    }, [bytes]);
+      file: { id: source.id, name: source.name },
+    };
+    state.worker.submit({ message, source: { encodedBytes: source.bytes.byteLength }, prepare: () => {
+      const bytes = source.bytes.buffer.slice(source.bytes.byteOffset, source.bytes.byteOffset + source.bytes.byteLength);
+      return { message: { ...message, file: { ...message.file, bytes } }, transfer: [bytes] };
+    } });
   }
 
   function requestPreviewProxy(file, token) {
@@ -157,7 +171,7 @@ export function attachEditorProcessing(editor) {
     return error;
   }
 
-  function commitImportedImage(file, bytes, image, sourceUrl, token, incomingOperations, incomingContext) {
+  function commitImportedImage(file, bytes, image, sourceUrl, token, incomingOperations, incomingContext, incomingProject) {
     if (token !== state.loadToken) {
       URL.revokeObjectURL(sourceUrl);
       return false;
@@ -166,9 +180,9 @@ export function attachEditorProcessing(editor) {
     state.file.bytes = bytes;
     state.image = image;
     state.activeTextId = null;
-    state.textComposition = null;
     const defaults = editor.defaultOperations();
     state.operations = incomingOperations ? { ...defaults, ...editor.cloneOperations(incomingOperations), crop: editor.cloneRect(incomingOperations.crop) } : defaults;
+    editor.resetProject(incomingProject);
     editor.syncActiveText?.();
     state.savedOperations = editor.cloneOperations();
     editor.setProcessingStatus(state.enginePhase === "ready" ? "Image ready. Adjust it on the canvas." : "Image ready. The editor is still starting…", state.enginePhase !== "ready");
@@ -178,13 +192,14 @@ export function attachEditorProcessing(editor) {
     return true;
   }
 
-  async function importImage(file, incomingOperations = null, incomingContext = null) {
+  async function importImage(file, incomingOperations = null, incomingContext = null, incomingProject = null) {
     if (!file || file.size === 0) return;
     if (!isSupportedInput(file)) {
       editor.setProcessingStatus(unsupportedInputMessage(), false, true);
       return;
     }
     const token = ++state.loadToken;
+    state.worker?.cancelPending();
     rejectPreviewRequest(new Error("A newer image was opened."));
     state.revision += 1;
     revokeResult();
@@ -200,6 +215,7 @@ export function attachEditorProcessing(editor) {
     };
     state.image = null;
     state.operations = null;
+    state.projectHistory = null;
     state.savedOperations = null;
     state.processingError = null;
     state.history = [];
@@ -221,7 +237,7 @@ export function attachEditorProcessing(editor) {
         const image = await loadImage(sourceUrl);
         const dimensionProblem = inputProblem(bytes, { width: image.naturalWidth, height: image.naturalHeight });
         if (dimensionProblem) throw inputError(dimensionProblem);
-        commitImportedImage(file, bytes, image, sourceUrl, token, incomingOperations, incomingContext);
+        commitImportedImage(file, bytes, image, sourceUrl, token, incomingOperations, incomingContext, incomingProject);
       } catch (error) {
         if (error?.userMessage) throw error;
         URL.revokeObjectURL(sourceUrl);
@@ -236,7 +252,7 @@ export function attachEditorProcessing(editor) {
           URL.revokeObjectURL(proxy.url);
           throw inputError(proxyProblem);
         }
-        commitImportedImage(file, bytes, proxy.image, proxy.url, token, incomingOperations, incomingContext);
+        commitImportedImage(file, bytes, proxy.image, proxy.url, token, incomingOperations, incomingContext, incomingProject);
       }
     } catch (error) {
       if (token !== state.loadToken) return;
@@ -249,6 +265,8 @@ export function attachEditorProcessing(editor) {
   }
 
   function clearImage() {
+    state.worker?.cancelPending();
+    getProcessingScheduler().setRetainedBytes("editor", 0);
     state.loadToken += 1;
     state.revision += 1;
     clearTimeout(state.scheduleTimer);
@@ -258,13 +276,13 @@ export function attachEditorProcessing(editor) {
     state.file = null;
     state.image = null;
     state.operations = null;
+    state.projectHistory = null;
     state.savedOperations = null;
     state.processingError = null;
     state.history = [];
     state.future = [];
     state.editorContext = null;
     state.activeTextId = null;
-    state.textComposition = null;
     state.tool = "move";
     state.inspectorOpen = false;
     state.preview = "edited";
@@ -282,7 +300,7 @@ export function attachEditorProcessing(editor) {
     if (state.worker) state.worker.terminate();
     state.enginePhase = "starting";
     editor.setEngineStatus("Starting…", "starting");
-    state.worker = new Worker(new URL("../worker.js", import.meta.url), { type: "module" });
+    state.worker = createProcessingClient({ priority: 0, latestOnly: true });
     state.worker.addEventListener("message", (event) => {
       const message = event.data;
       if (message.type === "init-start") {
@@ -326,30 +344,6 @@ export function attachEditorProcessing(editor) {
       }
       if (message.type === "result" && message.revision === state.revision) {
         const bytes = new Uint8Array(message.output);
-        if (message.jobId === "text-reencode") {
-          state.textComposition = null;
-          acceptResult({ ...message, output: bytes });
-          return;
-        }
-        if (message.jobId === "editor" && state.operations?.textLayers?.length) {
-          state.textComposition = { revision: message.revision };
-          editor.setProcessingStatus("Placing text…", true);
-          void editor.composeTextOutput({ ...message, output: bytes }, state.operations)
-            .then((composed) => {
-              if (state.revision !== message.revision || state.textComposition?.revision !== message.revision) return;
-              state.textComposition = null;
-              acceptResult(composed);
-            })
-            .catch((error) => {
-              if (state.revision !== message.revision) return;
-              state.textComposition = null;
-              revokeResult();
-              state.processingError = error?.userMessage ?? "The text layer could not be included in the downloaded image.";
-              editor.setProcessingStatus(state.processingError, false, true);
-              editor.renderOutputSummary();
-            });
-          return;
-        }
         acceptResult({ ...message, output: bytes });
         return;
       }
@@ -361,7 +355,6 @@ export function attachEditorProcessing(editor) {
         return;
       }
       if (message.type === "done" && message.revision === state.revision) {
-        if (state.textComposition?.revision === message.revision) return;
         editor.setProcessingStatus(
           state.result ? "Ready to download." : state.processingError ?? "The preview could not be created.",
           false,
@@ -385,6 +378,8 @@ export function attachEditorProcessing(editor) {
   function acceptResult(message) {
     if (state.revision !== message.revision) return;
     revokeResult();
+    getProcessingScheduler().setRetainedBytes("editor", (state.file?.bytes?.byteLength ?? 0)
+      + (state.image?.naturalWidth ?? 0) * (state.image?.naturalHeight ?? 0) * 4 + message.output.byteLength * 2);
     const outputUrl = URL.createObjectURL(new Blob([message.output], { type: message.mime }));
     state.result = {
       ...message,

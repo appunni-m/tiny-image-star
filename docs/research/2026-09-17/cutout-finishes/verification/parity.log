@@ -1,0 +1,5 @@
+
+> migration:parity
+> node scripts/migration/run.mjs parity
+
+Parity 33/33 comparisons pass; run parity-f7798da3-1008-4c9e-9f4d-8cfac8392cc1

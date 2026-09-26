@@ -1,7 +1,9 @@
 import { formatExtension, normalizeFormat } from "../formats.js";
 import { exportFolderName, filenameStem, readableSlug } from "../names.js";
+import { legacyRecipeOperations, legacyRecipeProblem } from "../styles/legacy.js";
+import { pendingFolderContract } from "./render-contract.js";
 
-export const JOB_DB_VERSION = 1;
+export const JOB_DB_VERSION = 2;
 export const MAX_LARGE_FOLDER_FILES = 100_000;
 export const MANIFEST_WRITE_SIZE = 250;
 export const DEFAULT_ROW_HEIGHT = 68;
@@ -38,6 +40,21 @@ export function safeRelativeParts(value) {
       .replace(/[. ]+$/g, "") || "folder");
 }
 
+// Source paths identify real files. Reject traversal instead of silently
+// sanitizing it into a different source; keep valid platform filenames intact.
+export function sourceRelativeParts(value) {
+  if (typeof value !== "string" || value.includes("\u0000")) throw new Error("Invalid source path.");
+  const parts = value.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) throw new Error("Invalid source path.");
+  return parts;
+}
+
+export function validateSourceMetadata(entry, file) {
+  if (!entry.allowSourceChange && (entry.sourceBytes !== file.size || entry.lastModified !== file.lastModified)) {
+    throw new Error("This source changed after discovery. Check the image, then use Retry failed to accept the updated source.");
+  }
+}
+
 export function largeOutputFileName(relativePath, recipeName, format) {
   const parts = safeRelativeParts(relativePath);
   const sourceName = parts.at(-1) ?? "image";
@@ -55,7 +72,7 @@ export function outputRelativePath(relativePath, recipeName, format) {
 
 export function createLargeJob({ id, sourceHandle, sourceName, recipe, createdAt = Date.now() }) {
   const safeRecipe = clone(recipe) ?? {};
-  const format = normalizeFormat(safeRecipe.operations?.format) ?? "png";
+  const format = normalizeFormat(safeRecipe.operations?.format) ?? safeRecipe.operations?.format ?? "png";
   if (!safeRecipe.operations) safeRecipe.operations = {};
   safeRecipe.operations.format = format;
   return {
@@ -70,6 +87,7 @@ export function createLargeJob({ id, sourceHandle, sourceName, recipe, createdAt
     outputHandle: null,
     outputFolderName: exportFolderName(safeRecipe.name ?? "images", new Date(createdAt)),
     recipe: safeRecipe,
+    renderContract: pendingFolderContract(),
     discovered: 0,
     sourceBytes: 0,
     completed: 0,
@@ -85,7 +103,7 @@ export function createManifestEntry({ jobId, index, relativePath, file }) {
   return {
     jobId: String(jobId),
     index: safeInteger(index),
-    relativePath: safeRelativeParts(relativePath).join("/"),
+    relativePath: sourceRelativeParts(relativePath).join("/"),
     sourceName: String(file?.name ?? safeRelativeParts(relativePath).at(-1) ?? "image"),
     sourceBytes: safeInteger(file?.size),
     lastModified: safeInteger(file?.lastModified),
@@ -102,8 +120,13 @@ export function createManifestEntry({ jobId, index, relativePath, file }) {
 }
 
 export function settingsForLargeJob(recipe) {
-  const operations = clone(recipe?.operations) ?? {};
-  const format = normalizeFormat(operations.format) ?? "png";
+  if (recipe?.recovery) throw new Error("Recovered edits belong to one image. Save a reusable recipe before processing a folder.");
+  if (recipe?.style) {
+    const problem = legacyRecipeProblem(recipe); if (problem) throw new Error(problem);
+  }
+  const operations = recipe ? legacyRecipeOperations(recipe) ?? {} : {};
+  if (operations.format != null && !normalizeFormat(operations.format)) throw new Error(`Saved ${operations.format} output is unavailable. Choose a supported replacement.`);
+  const format = normalizeFormat(operations.format) ?? operations.format ?? "png";
   return {
     crop: null,
     cropRelative: operations.cropRelative ?? null,
@@ -119,6 +142,9 @@ export function settingsForLargeJob(recipe) {
     brightness: Number.isFinite(Number(operations.brightness)) ? Number(operations.brightness) : 1,
     contrast: Number.isFinite(Number(operations.contrast)) ? Number(operations.contrast) : 1,
     grayscale: Boolean(operations.grayscale),
+    ...(operations.photoLook ? { photoLook: clone(operations.photoLook) } : {}),
+    textLayers: operations.textLayers ?? [],
+    ...(operations.jpegBackground ? { jpegBackground: operations.jpegBackground } : {}),
     lossy: Boolean(operations.lossy),
     quality: Number.isFinite(Number(operations.quality)) ? Number(operations.quality) : 95,
     format,
@@ -155,14 +181,6 @@ export function largeJobActionState(job) {
     retryHidden: !retryOnly,
     retryLabel: `Retry ${failed.toLocaleString()} failed`,
   };
-}
-
-export function largeWorkerCount({ preference = "balanced", hardwareConcurrency = 2, deviceMemory = 4 } = {}) {
-  const hardware = Math.max(1, safeInteger(hardwareConcurrency, 2) - 1);
-  const memory = Math.max(1, Number(deviceMemory) || 4);
-  if (preference === "safe") return 1;
-  if (preference === "fast") return Math.min(4, hardware, memory >= 8 ? 4 : memory >= 4 ? 2 : 1);
-  return Math.min(2, hardware, memory >= 4 ? 2 : 1);
 }
 
 export function virtualWindow({ total, scrollTop, viewportHeight, rowHeight = DEFAULT_ROW_HEIGHT, overscan = DEFAULT_OVERSCAN_ROWS }) {

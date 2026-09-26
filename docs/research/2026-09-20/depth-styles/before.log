@@ -1,0 +1,94 @@
+✔ style capture exports only chosen reusable settings, with no photos, masks, captions, crops or node IDs (14.628417ms)
+✔ single-slide layout styles cannot alter another slide's present or future reflow (14.065709ms)
+✔ look strength has deterministic endpoints and preserves source-specific edits (6.791791ms)
+✔ layout application keeps manual positions by default; explicit reset preserves crop/appearance/text overrides (24.438708ms)
+✔ style previews produce one undo and copy the immutable definition through serialization (19.669208ms)
+✔ custom fonts and unrecognized layouts require an explicit supported alternative when saving (1.353125ms)
+✔ unsupported requirements and engines import as identifiable styles but cannot be applied (2.198584ms)
+✔ malformed imports reject executable, remote, private, oversized and out-of-range content (1.026375ms)
+✔ text-only styles reflow the selected slide while keeping old static stories static (7.600291ms)
+✖ depth styles capture bounded relative settings without private words, masks, identities or font assets (1.530208ms)
+✖ depth style applies once to selected masked photos, preserves words and repairs, and reports incompatible scope (1.132583ms)
+✖ depth styles keep existing words and positions by default, offer explicit reset, and undo as one change (1.280625ms)
+✖ depth style scope updates both halves of a connected subject and creates one shared title (1.117167ms)
+✖ depth style imports reject private fields, remote fonts, missing capabilities and invalid placement or type (1.214166ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 9
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 156.153542
+
+✖ failing tests:
+
+test at tests/styles.test.mjs:151:1
+✖ depth styles capture bounded relative settings without private words, masks, identities or font assets (1.530208ms)
+  Error: Choose at least one setting to save.
+      at check (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:13:117)
+      at validateStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:51:82)
+      at envelope (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:26:10)
+      at captureStoryStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:128:10)
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/styles.test.mjs:153:17)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+
+test at tests/styles.test.mjs:169:1
+✖ depth style applies once to selected masked photos, preserves words and repairs, and reports incompatible scope (1.132583ms)
+  Error: Choose at least one setting to save.
+      at check (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:13:117)
+      at validateStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:51:82)
+      at envelope (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:26:10)
+      at captureStoryStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:128:10)
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/styles.test.mjs:171:17)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+
+test at tests/styles.test.mjs:188:1
+✖ depth styles keep existing words and positions by default, offer explicit reset, and undo as one change (1.280625ms)
+  Error: Choose at least one setting to save.
+      at check (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:13:117)
+      at validateStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:51:82)
+      at envelope (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:26:10)
+      at captureStoryStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:128:10)
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/styles.test.mjs:190:17)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+
+test at tests/styles.test.mjs:212:1
+✖ depth style scope updates both halves of a connected subject and creates one shared title (1.117167ms)
+  Error: Choose at least one setting to save.
+      at check (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:13:117)
+      at validateStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:51:82)
+      at envelope (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:26:10)
+      at captureStoryStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:128:10)
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/styles.test.mjs:214:17)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)
+
+test at tests/styles.test.mjs:227:1
+✖ depth style imports reject private fields, remote fonts, missing capabilities and invalid placement or type (1.214166ms)
+  Error: Choose at least one setting to save.
+      at check (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:13:117)
+      at validateStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:51:82)
+      at envelope (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:26:10)
+      at captureStoryStyle (file:///Users/lazytrot/work/tiny-image-star/src/styles/model.js:128:10)
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/styles.test.mjs:229:17)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1325:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:911:18)
+      at Test.postRun (node:internal/test_runner/test:1465:19)
+      at Test.run (node:internal/test_runner/test:1390:12)

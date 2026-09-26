@@ -1,0 +1,297 @@
+--- a/src/processing/scheduler.js
++++ b/src/processing/scheduler.js
+@@ -16,6 +16,7 @@
+     this.limit = 1;
+     this.fixed = null;
+     this.bootstrapAvailable = true;
++    this.bootstrapStarted = false;
+     this.slots = new Set();
+     this.queue = [];
+     this.retained = new Map();
+@@ -31,6 +32,7 @@
+     this.startups = [];
+     this.windows = new Map();
+     this.previousWindows = new Map();
++    this.downProbe = null;
+     this.cooldownUntil = 0;
+     this.stats = { completed: 0, failed: 0, cancelled: 0, startedWorkers: 0, retiredWorkers: 0, limitingReason: "idle" };
+     this.admission = admissionFactory?.(this) ?? null;
+@@ -48,7 +50,9 @@
+     if (!["auto", "max-speed", "low-resource"].includes(mode)) throw new Error("Unknown processing mode.");
+     if (fixedConcurrency !== null && (!Number.isInteger(fixedConcurrency) || fixedConcurrency < 1 || fixedConcurrency > this.budget.cpu)) throw new Error("Worker count exceeds the reported CPU budget.");
+     const resetAuto = mode !== this.mode || fixedConcurrency !== this.fixed;
+-    if (resetAuto) this.bootstrapAvailable = true;
++    if (!resetAuto && this.downProbe) this.limit = this.downProbe.baseline.limit;
++    this.downProbe = null;
++    if (resetAuto) { this.bootstrapAvailable = true; this.bootstrapStarted = false; }
+     this.mode = mode;
+     this.fixed = fixedConcurrency;
+     this.limit = fixedConcurrency ?? (mode === "low-resource" ? 1 : mode === "max-speed" ? this.budget.cpu : resetAuto ? 1 : Math.min(this.limit, this.budget.cpu));
+@@ -132,7 +136,15 @@
+     // Partial throughput windows measure continuous demand. Once all work
+     // drains, their wall clock must not include the wait for another job.
+     // Keep completed measurements and the learned limit for the next job.
+-    if (!this.queue.length && ![...this.slots].some((slot) => slot.task && slot.task.state !== "finished")) this.windows.clear();
++    if (!this.queue.length && ![...this.slots].some((slot) => slot.task && slot.task.state !== "finished")) {
++      this.windows.clear();
++      if (this.bootstrapStarted) { this.bootstrapAvailable = false; this.bootstrapStarted = false; }
++      // A partial lower-count trial is not evidence for retaining that count.
++      if (this.downProbe) {
++        this.limit = this.downProbe.baseline.limit; this.downProbe = null;
++        this.cooldownUntil = this.now() + 30_000;
++      }
++    }
+     if (error) task.reject(error); else task.resolve(value);
+     this.syncOrigin();
+     this.pumpSoon();
+@@ -241,18 +253,20 @@
+     const time = this.now();
+     // One priority step every two seconds eventually admits background work.
+     this.queue.sort((a, b) => (a.priority - Math.floor((time - a.queuedAt) / 2000)) - (b.priority - Math.floor((time - b.queuedAt) / 2000)) || a.id - b.id);
+-    // A queued batch with a generous reported budget can begin with a small
+-    // two-worker probe. Four useful tasks provide at least two waves of work;
+-    // header reads alone cannot trigger it. An absent memory hint has only a
+-    // 512 MiB budget and keeps the serial start. These hints do not qualify a
+-    // device: all normal memory/origin admission and throughput gates still run.
+-    if (this.bootstrapAvailable && this.mode === "auto" && this.fixed === null && this.limit === 1
++    // Initial render requests arrive behind asynchronous inspection/claims.
++    // Until the first useful result, allow this one provisional cohort to grow
++    // with real demand: two waves, half the reported CPU budget (at least two),
++    // at most eight. Header-only work cannot trigger it. An absent memory hint
++    // keeps a serial start. Every admission still reserves memory and CPU;
++    // later changes require the normal comparable-throughput windows.
++    if (this.bootstrapAvailable && this.mode === "auto" && this.fixed === null
+       && time >= this.cooldownUntil && this.budget.cpu >= 3 && this.budget.memory >= 1024 * MiB) {
+       const demand = [...this.queue, ...[...this.slots].map((slot) => slot.task).filter(Boolean)]
+         .filter((task) => task.workClass !== "inspect" && task.workClass !== "startup" && task.state !== "finished");
+-      if (demand.length >= 4) {
+-        this.limit = 2;
+-        this.bootstrapAvailable = false;
++      const initial = Math.min(8, Math.max(2, Math.floor(this.budget.cpu / 2)), Math.floor(demand.length / 2));
++      if (demand.length >= 4 && initial > this.limit) {
++        this.limit = initial;
++        this.bootstrapStarted = true;
+         this.windows.clear();
+       }
+     }
+@@ -385,6 +399,9 @@
+ 
+   record(task) {
+     const time = this.now();
++    if (this.bootstrapStarted && !["inspect", "startup"].includes(task.workClass)) {
++      this.bootstrapAvailable = false; this.bootstrapStarted = false;
++    }
+     const sample = { kind: task.kind, workClass: task.workClass, elapsedMs: Math.max(0, time - task.startedAt), queueMs: Math.max(0, task.startedAt - task.queuedAt), limit: task.startedLimit };
+     this.samples.push(sample);
+     if (this.samples.length > 64) this.samples.shift();
+@@ -394,6 +411,9 @@
+     // Keep a bounded window per comparable class instead of erasing it at
+     // every class transition. Windows use wall time, including intervening work.
+     const key = `${task.kind}:${task.workClass}`;
++    // A lower-count trial must be compared with the same work family. Another
++    // class cannot certify or reverse a trial it has not measured.
++    if (this.downProbe && key !== this.downProbe.key) return;
+     let window = this.windows.get(key);
+     if (!window || window.limit !== this.limit) window = { workClass: task.workClass, limit: this.limit, startedAt: task.startedAt, completed: 0 };
+     this.windows.delete(key); this.windows.set(key, window);
+@@ -403,9 +423,30 @@
+     this.bootstrapAvailable = false;
+     const measured = { ...window, rate: window.completed / Math.max(1, time - window.startedAt) };
+     const previous = this.previousWindows.get(key);
+-    if (previous && previous.workClass === measured.workClass && measured.limit > previous.limit && measured.rate < previous.rate * 1.05) {
+-      this.limit = previous.limit;
+-      this.cooldownUntil = time + 30_000;
++    measured.floor = Math.min(measured.limit, previous?.floor ?? measured.limit);
++    if (this.downProbe) {
++      const { baseline } = this.downProbe;
++      if (measured.rate * 1.05 >= baseline.rate) {
++        this.previousWindows.set(key, measured);
++        this.limit = Math.max(1, Math.floor(measured.limit / 2));
++        this.downProbe = measured.limit > 1 ? { key, baseline: measured } : null;
++        if (!this.downProbe) this.cooldownUntil = time + 30_000;
++      } else {
++        this.limit = baseline.limit;
++        this.previousWindows.set(key, { ...baseline, floor: measured.floor });
++        this.downProbe = null; this.cooldownUntil = time + 30_000;
++      }
++    } else if (previous && previous.workClass === measured.workClass && measured.limit > previous.limit && measured.rate < previous.rate * 1.05) {
++      // A resource-based starting guess has no measured smaller baseline.
++      // When expansion fails, challenge that guess instead of permanently
++      // keeping extra workers on serialized/one-worker-optimal workloads.
++      if (previous.limit > 1 && previous.floor === previous.limit) {
++        this.downProbe = { key, baseline: previous };
++        this.limit = Math.max(1, Math.floor(previous.limit / 2));
++      } else {
++        this.limit = previous.limit;
++        this.cooldownUntil = time + 30_000;
++      }
+     } else {
+       this.previousWindows.delete(key); this.previousWindows.set(key, measured);
+       if (this.previousWindows.size > 16) this.previousWindows.delete(this.previousWindows.keys().next().value);
+@@ -416,7 +457,7 @@
+   }
+ 
+   pressure(reason = "interaction latency") {
+-    this.bootstrapAvailable = false;
++    this.bootstrapAvailable = false; this.bootstrapStarted = false; this.downProbe = null;
+     if (this.fixed === null) this.limit = Math.max(1, Math.floor(this.limit / 2));
+     this.cooldownUntil = this.now() + 30_000;
+     this.windows.clear(); this.previousWindows.clear();
+--- a/tests/processing.test.mjs
++++ b/tests/processing.test.mjs
+@@ -228,9 +228,9 @@
+   for (const job of jobs) job.cancel(); await Promise.allSettled(jobs.map((j) => j.promise));
+ });
+ 
+-test("Auto starts a backlogged render batch with two workers and still measures subsequent growth", async (t) => {
+-  let time = 0;
+-  const { pool, submit, active } = harness({ now: () => time }); t.after(() => pool.close());
++test("Auto keeps the eight-sample growth gate and checks whether fewer provisional workers suffice", async (t) => {
++  let time = 0;
++  const { pool, submit, active } = harness({ now: () => time, hints: { hardwareConcurrency: 5, deviceMemory: 16 } }); t.after(() => pool.close());
+   const jobs = Array.from({ length: 64 }, (_, i) => submit(i, { workClass: "same-render" }));
+   await tick();
+   assert.equal(active().length, 2, "a large queued batch can start a bounded two-worker probe");
+@@ -245,7 +245,9 @@
+   for (let round = 0; round < 2; round++) {
+     time += 200; for (const worker of active()) worker.finish(); await tick();
+   }
+-  assert.equal(pool.snapshot().limit, 2);
++  assert.equal(pool.snapshot().limit, 1, "failed expansion challenges the unmeasured initial two-worker guess");
++  for (let i = 0; i < 8; i++) { time += 100; active()[0].finish(); await tick(); }
++  assert.equal(pool.snapshot().limit, 2, "one worker is slower, so the measured two-worker limit is retained");
+   for (const job of jobs) job.cancel(); await Promise.allSettled(jobs.map((job) => job.promise));
+ });
+ 
+--- a/tests/processing-startup.test.mjs
++++ b/tests/processing-startup.test.mjs
+@@ -0,0 +1,118 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { setImmediate } from "node:timers/promises";
++import { ResourceScheduler } from "../src/processing/scheduler.js";
++import { MiB } from "../src/processing/policy.js";
++
++const tick = async () => { await setImmediate(); await setImmediate(); };
++const small = { cpu: 1, heap: 40 * MiB, transient: 8 * MiB, output: 2 * MiB };
++function fixture(t, options = {}) {
++  let now = 0, next = 0; const workers = [], tasks = [];
++  class Worker extends EventTarget {
++    constructor() { super(); queueMicrotask(() => this.send({ type: "ready", heapBytes: 32 * MiB })); }
++    send(data) { this.dispatchEvent(new MessageEvent("message", { data })); }
++    postMessage(data) { this.packet = data; }
++    terminate() { this.closed = true; }
++    finish() { const packet = this.packet; this.packet = null; this.send({ type: "done", revision: packet.revision, heapBytes: 40 * MiB }); }
++  }
++  const pool = new ResourceScheduler({ workerFactory: () => { const worker = new Worker(); workers.push(worker); return worker; },
++    now: () => now, hints: { hardwareConcurrency: 12, deviceMemory: 16 }, ...options });
++  t.after(() => pool.close());
++  const add = (count, extra = {}) => {
++    const added = Array.from({ length: count }, () => pool.enqueue({ kind: "image", estimate: small, workClass: "same-render",
++      prepare: () => ({ message: { type: "process", revision: ++next } }), ...extra })); tasks.push(...added); return added;
++  };
++  const active = () => workers.filter(w => w.packet && !w.closed);
++  const advance = milliseconds => { now += milliseconds; };
++  const stop = async () => { tasks.forEach(task => task.cancel()); await Promise.allSettled(tasks.map(task => task.promise)); await tick(); };
++  return { pool, add, active, advance, stop, tasks };
++}
++
++test("initial Auto admission follows real arrivals, then stops speculative growth at the first useful result", async t => {
++  const { pool, add, active, advance, stop } = fixture(t);
++  add(4); await tick(); assert.equal(active().length, 2);
++  add(6); await tick(); assert.equal(active().length, 5, "five workers fit two waves of substantive work and half the reported CPU budget");
++  advance(500); active()[0].finish(); await tick();
++  add(64); await tick(); assert.equal(pool.snapshot().limit, 5, "later growth still needs a completed throughput window");
++  await stop();
++});
++
++test("a completed short probe cannot be enlarged merely by later arrivals or header inspection", async t => {
++  const { pool, add, active, advance, stop } = fixture(t);
++  add(4); await tick(); advance(100); active()[0].finish(); await tick();
++  add(40, { workClass: "inspect" }); add(40); await tick();
++  assert.equal(pool.snapshot().limit, 2); await stop();
++});
++
++test("cancelled initial work and pressure do not reopen the speculative arrival phase", async t => {
++  const { pool, add, advance, stop } = fixture(t);
++  add(4); await tick(); await stop();
++  add(40); await tick(); assert.equal(pool.snapshot().limit, 2, "a cancelled initial probe is not restarted by another batch");
++  pool.pressure("interaction latency"); advance(31_000); pool.configure({ mode: "auto" });
++  add(40); await tick(); assert.equal(pool.snapshot().limit, 1); await stop();
++});
++
++test("a wider initial limit still counts retained sources, terminal outputs and actual reads against memory", async t => {
++  const { pool, add, active, stop } = fixture(t, { hints: { hardwareConcurrency: 12, deviceMemory: 8 } });
++  pool.setRetainedBytes("project", 200 * MiB); let reads = 0;
++  pool.subscribe(s => assert.ok(s.estimatedBytes <= s.memoryBudget));
++  add(10, { estimate: { cpu: 1, heap: 420 * MiB, transient: 80 * MiB, output: 40 * MiB }, prepare: () => { reads++; return { message: { type: "process" } }; } });
++  await tick(); assert.equal(active().length, 1); assert.equal(reads, 1);
++  const worker = active()[0]; worker.send({ type: "file-result", revision: worker.packet.revision }); await tick();
++  assert.equal(reads, 1, "an uncommitted output cannot release its reservation"); await stop();
++});
++
++for (const capacity of [1, 2]) {
++  test(`Auto challenges an unproven initial size when ${capacity} workers already saturate useful throughput`, async t => {
++    const { pool, add, active, advance, stop } = fixture(t);
++    add(200); await tick();
++    let reached = false;
++    for (let wave = 0; wave < 60 && active().length; wave++) {
++      const cohort = active(); advance(100 * Math.max(1, cohort.length / capacity));
++      for (const worker of cohort) worker.finish(); await tick();
++      if (pool.snapshot().limit === capacity && pool.cooldownUntil > 0) { reached = true; break; }
++    }
++    assert.ok(reached, `a resource hint must not permanently retain a needlessly large pool when only ${capacity} workers help`);
++    await stop();
++  });
++}
++
++for (const ending of ["cancel", "drain"]) test(`an unfinished downward probe restores the measured good limit on ${ending}`, async t => {
++  const { pool, add, active, advance, stop, tasks } = fixture(t);
++  add(100); await tick(); const initial = pool.snapshot().limit;
++  let lower = false;
++  for (let wave = 0; wave < 15 && active().length; wave++) {
++    const cohort = active(); advance(100 * cohort.length); for (const worker of cohort) worker.finish(); await tick();
++    if (pool.snapshot().limit < initial) { lower = true; break; }
++  }
++  assert.ok(lower, "failed expansion should test whether fewer than the provisional initial workers suffice");
++  if (ending === "cancel") await stop();
++  else { tasks.filter(task => task.state === "queued").forEach(task => task.cancel()); advance(100); for (const worker of active()) worker.finish(); await tick(); }
++  assert.equal(pool.snapshot().limit, initial, "no incomplete measurement becomes a retained concurrency choice");
++});
++
++test("the initial eight-worker bound does not cap later measured concurrency on a larger budget", async t => {
++  const { pool, add, active, advance, stop } = fixture(t, { hints: { hardwareConcurrency: 33, deviceMemory: 16 } });
++  add(80); await tick(); assert.equal(active().length, 8);
++  advance(300); for (const worker of active()) worker.finish(); await tick();
++  assert.equal(pool.snapshot().limit, 16); assert.equal(active().length, 16);
++  pool.subscribe(s => { assert.ok(s.estimatedBytes <= s.memoryBudget); assert.ok(s.active <= s.cpuBudget); });
++  await stop();
++});
++
++test("another work class cannot certify a lower-count trial, and pressure cancels its old baseline", async t => {
++  const { pool, add, active, advance, stop } = fixture(t);
++  add(100); await tick();
++  for (let wave = 0; wave < 15 && !pool.downProbe; wave++) {
++    const cohort = active(); advance(100 * cohort.length); for (const worker of cohort) worker.finish(); await tick();
++  }
++  assert.ok(pool.downProbe); const trial = pool.snapshot().limit;
++  // Keep this injected family ahead of already-aged queued work so the probe
++  // receives fewer than eight completions of its own class during this check.
++  add(20, { priority: -10, workClass: "different-render" });
++  for (let wave = 0; wave < 10; wave++) { advance(100); for (const worker of active()) worker.finish(); await tick(); }
++  assert.ok(pool.samples.filter(s => s.workClass === "different-render").length >= 8);
++  assert.equal(pool.snapshot().limit, trial); assert.ok(pool.downProbe);
++  pool.pressure("slow input"); assert.equal(pool.downProbe, null); const reduced = pool.snapshot().limit;
++  await stop(); assert.equal(pool.snapshot().limit, reduced, "draining cannot resurrect the pre-pressure baseline");
++});
+--- a/package.json
++++ b/package.json
+@@ -26,7 +26,7 @@
+     "preverify": "npm run check:runtime",
+     "verify": "node scripts/verify.mjs && npm run verify:scheduler && npm run verify:project-model",
+     "verify:project-model": "node --test tests/project.test.mjs tests/story-layout.test.mjs tests/story-designs.test.mjs tests/story-fonts.test.mjs tests/working-copies.test.mjs tests/source-resolution.test.mjs tests/styles.test.mjs tests/legacy-styles.test.mjs tests/recipe-catalog.test.mjs tests/recipe-selection.test.mjs tests/photo-look.test.mjs tests/masks.test.mjs tests/depth.test.mjs tests/connections.test.mjs tests/cutout-effects.test.mjs tests/render-diagnostics.test.mjs",
+-    "verify:scheduler": "node --test tests/processing.test.mjs",
++    "verify:scheduler": "node --test tests/processing.test.mjs tests/processing-startup.test.mjs",
+     "verify:watch": "node scripts/watch-verify.mjs",
+     "verify:browser": "node scripts/browser-smoke.mjs",
+     "verify:folder-recovery": "node scripts/verify-folder-recovery.mjs",

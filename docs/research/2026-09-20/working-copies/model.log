@@ -1,0 +1,13 @@
+✔ editing copies keep original identity and dimensions; invalid lineage and original deletion are atomic failures (20.39125ms)
+✔ reducing is explicit; original imports and already-small images keep their exact bytes (6.038542ms)
+✔ copy generation reserves the full source decode, rereads only after admission and transfers output ownership (2.919708ms)
+✔ memory rejection precedes the second source read; changed originals and malformed copy output cannot be accepted (6.54225ms)
+✔ cancelled imports drain all consumers before releasing retained originals and leave no partial project (1.973458ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 133.214417

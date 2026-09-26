@@ -1,0 +1,14 @@
+✔ one conversion preserves edited and connected scene metadata, parent masks and one-step undo (22.962417ms)
+✔ restoring after cutout painting resizes the current mask instead of restoring a stale parent (3.671041ms)
+✔ old copies remain readable, verified parent hashes control caching, and referenced masks cannot be deleted (4.38625ms)
+✔ admission includes full source and upscaled target before reads; malformed output never changes the input (2.687875ms)
+✔ partial failure and cancellation drain all copy tasks before releasing output ownership (3.273917ms)
+✔ conversion without a mask stays mask-free; copies reject invalid direction, geometry and reservations before decoding (2.11125ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 89.022208

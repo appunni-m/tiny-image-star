@@ -1,0 +1,252 @@
+Original repository path: docs/STYLE_LIBRARY_VERIFICATION.md
+
+# Reusable story styles
+
+Typography update, 20 September: [bundled story fonts](STORY_FONT_VERIFICATION.md)
+extend the parameter-only format with bounded, licensed font references. Text,
+depth and recipe styles retain those references; unknown editions are preserved
+but unavailable to apply. Font bytes remain in project assets, outside shared
+style files. Full per-image/folder composition remains open.
+
+Update, 20 September: **For this story** now presents the three
+[authored story recipes](STORY_RECIPE_VERIFICATION.md). **Photo looks** retains
+the original color-only catalog and its immutable revisions. Recipes introduce
+the bounded `storyDesign` component; Depth cover targets the cover photo and
+requires its subject mask. The original storage/file/privacy contracts below
+continue to apply.
+
+Recorded 2026-09-17. This implements the local story-style library from §5A of
+the [migration plan](../MIGRATION_PLAN.md). Finished launch recipes, asset packs,
+the remaining per-image/bulk story-style components remain required work. The
+[photo-look adapter](PHOTO_LOOK_EXECUTION_VERIFICATION.md) now applies frozen
+photo-color components to image sets and folder jobs, with own-photo previews,
+strength, scoped application and recovery. Typography, layout, cutouts and
+grouped story execution are still required. The later
+[legacy recipe migration](LEGACY_PRESET_MIGRATION.md) preserves flat recipes
+and destination definitions. The full preset and production gates remain open.
+
+## Mobile workflow
+
+**Look** has For this story, Saved and Recent views. Saved can filter Favorites
+or My styles. The three initial curated looks use previews of the current
+photos. Tap a card, adjust photo-color strength where meaningful, choose This
+slide or Whole story, then Apply. Multiple choices within the sheet produce
+one undo entry. Cancel restores its opening document.
+Apply stays disabled while the selected document is waiting for its preview
+or rendering has failed. The sheet exposes the error and Retry preview; failed
+previews do not enter project recovery as committed edits.
+
+A favorite is saved from its card without committing the image preview.
+Recent lists the last twelve applied revisions; browsing and saving alone do
+not count as an application. The library retains revisions explicitly and
+shows the selected revision. Removing a library entry leaves definitions
+already copied into projects intact.
+
+**Save my style** asks for a name and offers Look, Text style, Layout, Output,
+Cutout finish and Depth title.
+Look and Text style are selected initially. Color capture uses the current
+slide's first photo, including its resolved corrections. Text capture keeps
+typography and color. Layout captures supported photo-print constraints and
+arrangement rules. Output captures the selected shape and PNG/JPEG format.
+Cutout finish captures outline/shadow parameters from an explicitly chosen
+subject on the current slide. It applies to existing subject selections in the
+chosen scope, preserves their masks/crops and declares `cutout-effects-v1`.
+Photos without masks are unchanged; scopes with no selected subject are rejected.
+Connected copies change on both of their slides, as the preview sheet explains.
+See [finish rendering and verification](CUTOUT_EFFECTS_VERIFICATION.md).
+Depth title captures built-in type, color/shadow, photo-relative placement and
+the original-photo/page background choice from a selected title. It excludes
+the title's words and source-specific subject mask. See the
+[depth-style addition](#depth-style-addition-20-september-2026) below.
+Output settings affect the whole story even when appearance is scoped to a
+slide; the sheet says this before applying.
+
+The capture contains no original image, source identity/name, source-specific
+mask, caption text, focal point, exact crop or manually positioned photo frame. A
+depth style does include its title box relative to the photo. The
+style name is explicitly supplied by the user; it does not default to a
+private project title. Existing crops and mask repairs survive application.
+Layout replacements keep adjusted positions unless the user explicitly
+unchecks that choice. Save a project backup to retain private content.
+
+Scoped photo looks now have a separate `appearanceBase` in the image node.
+The resolver combines shared appearance, scoped look, manual node corrections,
+then local appearance overrides. Selecting a different scoped look changes
+its base without erasing manual corrections. **Use the story look** explicitly
+clears the scoped base and local color corrections, and is reversible.
+Optional per-slide layout constraints similarly prevent a style applied to one
+page from changing another page's later reflow.
+
+Style cards are loaded in groups of twelve. An intersection observer queues
+only nearby thumbnails, cancels work for departed cards and releases their
+object URLs and retained preview planes. Changing views or closing the sheet
+also releases those resources. The shared scheduler still admits and copies
+source data only when a worker has capacity, with active artwork ahead of
+these thumbnail jobs.
+
+## File and storage contracts
+
+[The style model](../src/styles/model.js) uses declarative
+`tiny-image-star/style` version 1 data: stable ID, immutable integer revision,
+name/description, engine-version and compositor allowlists, required
+capabilities, supported photo counts/output shapes, exposed strength control,
+project-seed policy and selected components. The current consumer accepts
+6–12-photo story projects with portrait/tall outputs.
+
+All fields, enums, numbers, typography and layout constraints are validated.
+Imports are at most 32 KiB; file size is checked before reading, and the parsed
+schema is checked before a preview is rendered.
+The schema has no executable expressions or remote-fetch fields. Version 1
+accepts an empty asset list and built-in font choices; custom fonts and other
+asset packs require a supported, licensed packaging path before export.
+Unknown required capabilities or engine versions can be stored as identifiable
+unavailable styles, but cannot be applied. Invalid schemas and unimplemented
+component types are rejected. The original file remains unchanged.
+
+**Export style** downloads the selected definition as `.tstyle` JSON.
+**Import style** validates and stores a file, then requires an explicit preview
+and Apply. The same ID/revision with different settings is a conflict, including
+across tabs. Imported files cannot replace an installed built-in revision.
+Exact duplicates are safe; a new revision coexists with the previous one.
+Applied definitions are copied into project history and recovery, rather than
+looked up dynamically during rendering.
+
+[The library store](../src/styles/store.js) uses strict IndexedDB transactions
+in `tiny-image-star.styles`, capped at 100 stored revisions and 2 MiB of library
+records. Definitions are copied before asynchronous storage. Favorite and
+recent-use metadata may change without mutating a definition. Recent-use order
+is monotonic even when two applications share a clock tick. BroadcastChannel
+notifies other app tabs to reread committed data.
+
+Quota failure leaves existing records untouched and can be retried. Clearing
+local data includes styles and prevents pending same-page saves from
+recreating the cleared library. Unknown/corrupt records are omitted from the
+usable list with a visible warning; their raw records remain available in the
+private `.tstar` backup. The private backup includes styles, original project
+assets and existing legacy recipes. Style-file sharing contains only the
+validated style definition.
+
+The existing image/set/folder recipes and destination choices now have a
+[private compatibility migration](LEGACY_PRESET_MIGRATION.md), preserving IDs,
+legacy operation order and originals through verified reopening. These use a
+separate execution format in the same store. The active legacy catalog now
+commits atomically with its definitions, rejects stale edits/deletes and retains
+conflicting drafts for a new-copy save. Future or malformed catalog records
+remain read-only and available in private backups. Story style files are not
+advertised as bulk-image presets until that consumer is implemented and verified.
+The private compatibility recipes now support [revision-specific image choices
+and recovery](RECIPE_SELECTION_VERIFICATION.md), including a folder selector
+that retains its saved version after library edits or removal.
+
+## Evidence
+
+[The original nine style-model tests](../tests/styles.test.mjs), alongside the 24 existing
+model/layout tests, cover selected-field capture, privacy exclusions, exact
+file roundtrips, scoped current/future reflow, strength endpoints, manual
+correction precedence, crop/mask preservation, explicit position reset,
+immutable copied definitions, multi-preview undo/cancel, missing fonts,
+unsupported requirements/engines, malformed files and old static layouts.
+
+[Real-browser storage checks](../tests/style-storage.browser.mjs) cover frozen
+submission, two-tab revision races and notifications, quota rollback/retry,
+duplicate/revision identity, built-in impersonation rejection, the 100-revision
+limit, unknown-data preservation, private backup equality, monotonic recent
+ordering and clearing during a pending save. A separate injected UI refusal
+checks that a failed preview does not replace the previous selection or enter
+Recent; that particular failure test uses thumbnail/preview doubles.
+
+[The mobile workflow](../tests/story-workspace.browser.mjs) uses the real
+published Pillow engine for favorite/save/export/remove/import/apply/undo,
+missing-requirement labels, applied-copy preservation, scoped corrections,
+and existing recovery/export paths. An 18-style library checks twelve-card
+paging, offscreen thumbnail release, retained-preview cleanup on close and
+200% text width. The actual `.tstyle` download is parsed and compared to the
+saved definition, including private-data exclusion assertions.
+Injected source-read and synchronous queue-admission failures go through the
+scene client, disable Apply, leave the stored caption unchanged, and support
+retry then cancel. This includes a failure before a worker task is created;
+the sheet must still expose its error and Retry action.
+The synchronous-admission regression was first run against the prior built
+artifact: it reproduced a hidden Retry action while the canvas reported the
+injected error. The corrected source passes the complete story workflow with
+both failure paths. This is a recovery regression, not a throughput benchmark.
+[The phone screenshot](research/2026-09-17/story-styles-phone.png) was inspected
+after previews decoded. These checks do not establish touch-device latency,
+screen-reader coverage, font licensing, perceptual recipe quality or sustained
+phone memory/thermal limits.
+
+Final verification for this step on 2026-09-17:
+
+- `npm run verify`: existing engine/application checks, eleven scheduler tests,
+  and all 33 project/layout/style tests passed.
+- The focused source story browser workflow passed with both preview failure
+  injections and the full style, layout, recovery and export sequence.
+- `node scripts/assemble-pages.mjs _site` and
+  `node scripts/check-pages-artifact.mjs _site`: passed, 125 packaged files.
+- `TINY_IMAGE_STAR_BROWSER_ROOT=_site npm run verify:browser`: passed against
+  the rebuilt artifact, including concurrent image/text/scene processing,
+  storage races and failures, story styles, existing image/batch/folder flows,
+  theme and 200% text checks. No unexpected external requests or page errors.
+- `npm run migration:check`: both inventoried endpoints and all 33 immutable
+  parity cases passed specification checks; this did not rerun performance
+  qualification or replace the recorded failing microbenchmark.
+- Documentation links and `git diff --check`: passed.
+
+The working tree remains uncommitted and the site has not been deployed by
+this step. Release-revision evidence and the remaining migration gates must
+still be completed.
+
+## Depth-style addition, 20 September 2026
+
+**Save my style → Depth title** records a `depthTitle` component with schema 1
+and the required `depth-title-v1` capability. The existing version-one style
+envelope, copied revisions, transactional library and bounded file workflow are
+retained. Readers that cannot handle this component reject it; they must not
+silently remove the effect. Custom fonts still require a licensed asset pack.
+
+Apply to **This slide** or **Whole story** affects only photos that already
+have a subject mask. The preview explains the eligible/skipped counts and
+shared connected subjects. A scope without any eligible photo is unavailable.
+Existing title words, captions, source photos, crops and mask repairs stay in
+place. New titles use the destination story's name and remain editable in Text.
+A style never supplies the author's private words or reuses their mask on a
+different photo.
+
+**Keep adjusted positions**, enabled initially, keeps all existing title
+frames and their output-specific/local overrides. Unchecking it applies the
+saved relative title box and removes position overrides on affected titles;
+local words and opacity stay intact. New titles always start in the saved box.
+Connected subjects get one shared title change across both neighboring slides.
+Depth settings are independent of photo-color strength.
+
+Five additional model tests cover privacy and JSON roundtrips; photo-relative
+capture with local overrides; source/crop/mask preservation; scoped and connected
+application; explicit reset; immutable revisions, undo and reload; custom-font
+refusal; and malformed/private/executable fields and numeric bounds. The mobile
+depth browser workflow now exercises capture and actual `.tstyle` download,
+cancel, reuse on existing/new titles, preserved words, keep/reset positions,
+undo/redo, exact rendered reload and no-mask availability. The existing depth
+export checks then compare the saved-document render with ordered PNG output.
+
+This completes reusable depth-title parameters inside stories. It does not
+finish the authored Depth cover recipe or enable depth styles in independent
+image/folder jobs. Their consumers, automatic selection, production fonts,
+real-photo quality and physical mobile qualification remain open.
+
+The [20 September verification record](research/2026-09-20/depth-styles/README.md)
+retains passing source and packaged Chromium suites, all 124 deterministic
+checks, 33/33 adapter comparisons, coverage, source/build inventories and the
+visually inspected phone screenshot. It records the dirty-worktree and prior
+benchmark identity limits separately from observed test outcomes.
+
+## Multiple export shapes — 20 September 2026
+
+Including Output now retains the explicit Portrait/Tall/Both export selection
+and format, separately from the shape currently being previewed. New definitions
+with a shapes array declare `export-variants-v1`. Their validated file roundtrip
+and actual mobile save/apply/reload workflow preserve both shapes without copying
+photos or changing source corrections. Legacy output styles keep their original
+single-shape semantics and replace a later multi-shape selection when applied.
+The [export verification](STORY_EXPORT_VERIFICATION.md) records the copied-plan,
+retry, cancellation and concurrency boundaries. Grouped collections and the
+complete independent-image/folder style consumers remain open.

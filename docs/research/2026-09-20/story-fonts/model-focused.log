@@ -1,0 +1,15 @@
+✔ the unmodified font pack binds four binaries, licenses, descriptors and coverage to pinned source hashes (7.429583ms)
+✔ revision-two recipes freeze licensed fonts while revision one remains independent and asset-free (76.909666ms)
+✔ saved text and depth styles share only pinned font references and preserve one-step undo (19.57425ms)
+✔ font declarations reject unsafe/private fields and preserve unavailable imports without substitution (12.314958ms)
+✔ unsupported glyphs and styles fail preflight; explicit device fallback keeps words and is reversible (15.673541ms)
+✔ font fetches are pinned, bounded, hash-checked, cancellable and never accept recipe URLs (19.997209ms)
+✔ shared font loading counts temporary bytes, cancels only the last consumer and reuses stored sources (0.723166ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 196.113875

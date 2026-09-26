@@ -1,0 +1,36 @@
+{
+  "schema": "tinystar/heic-spike-inputs@1",
+  "purpose": "Basic native decoder capability only",
+  "preparation": {
+    "python": "3.9.6",
+    "pillow": "11.3.0",
+    "os": "macOS-15.7.7-arm64-arm-64bit",
+    "sips": "sips-316"
+  },
+  "inputs": [
+    {
+      "id": "opaque",
+      "width": 256,
+      "height": 192,
+      "source": "inputs/opaque.png",
+      "source_sha256": "709a9fc9528b8d494d63afa980c9baf62f90f779ac3084e6d6011993c4af17cc",
+      "candidate": "inputs/opaque.heic",
+      "encoder_status": 0,
+      "encoder_log": "/Users/lazytrot/work/tiny-image-star/docs/research/2026-09-17/heic-native-spike/inputs/opaque.png\n  /Users/lazytrot/work/tiny-image-star/docs/research/2026-09-17/heic-native-spike/inputs/opaque.heic\n",
+      "sha256": "758706a245183ebe8d8270222b6eb853a41f6d78570956c7c65b119f86b043ff",
+      "bytes": 568
+    },
+    {
+      "id": "alpha",
+      "width": 256,
+      "height": 192,
+      "source": "inputs/alpha.png",
+      "source_sha256": "69a0e0587107b85ddab24db2752742eff628d64aafb4406c70a1c9857a1a8f6a",
+      "candidate": "inputs/alpha.heic",
+      "encoder_status": 0,
+      "encoder_log": "/Users/lazytrot/work/tiny-image-star/docs/research/2026-09-17/heic-native-spike/inputs/alpha.png\n  /Users/lazytrot/work/tiny-image-star/docs/research/2026-09-17/heic-native-spike/inputs/alpha.heic\n",
+      "sha256": "0b26b758ae6b09d1df3b421ce50c6d3099d2e8273ecc21444f5d41f37141252e",
+      "bytes": 957
+    }
+  ]
+}

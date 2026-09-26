@@ -1,0 +1,16 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: unbound stored font descriptors cannot alter rendering
+    at assertFolderContracts (file:///Users/lazytrot/work/tiny-image-star/tests/folder-contract.browser.mjs:138:12)
+    at async file:///private/tmp/tinystar-folder-contract-focused.mjs:19:6 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v24.18.0

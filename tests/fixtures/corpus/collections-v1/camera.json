@@ -1,0 +1,39 @@
+{
+  "schema": "tinystar/collection-input@1",
+  "corpus": "tests/fixtures/corpus/collections-v1/corpus.json",
+  "sequence": [
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food",
+    "coast",
+    "cat",
+    "food"
+  ],
+  "recipe": {
+    "name": "Collection benchmark",
+    "operations": {
+      "format": "jpeg",
+      "resizeWidth": 1920,
+      "resizeHeight": 1920
+    }
+  },
+  "random_seed": 20260917
+}

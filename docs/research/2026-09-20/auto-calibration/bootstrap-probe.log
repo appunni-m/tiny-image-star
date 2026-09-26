@@ -1,0 +1,10 @@
+baseline/1 reference 0: pass 23277.1 ms
+baseline/Auto development 0: pass 6949.8 ms
+half/Auto development 0: pass 6967.5 ms
+baseline/8 development 0: pass 4060.3 ms
+baseline/8 development 1: pass 4080.6 ms
+half/Auto development 1: pass 6918.8 ms
+baseline/Auto development 1: pass 6928.2 ms
+half/Auto development 2: pass 6945.1 ms
+baseline/Auto development 2: pass 6970.6 ms
+baseline/8 development 2: pass 4070.7 ms

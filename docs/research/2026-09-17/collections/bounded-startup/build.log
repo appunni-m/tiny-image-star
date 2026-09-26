@@ -1,0 +1,9 @@
+Pages optimization: JS 768050 -> 464170 bytes; Brotli sidecars 151433 bytes.
+Pages optimization: CSS 71486 -> 62679 bytes; Brotli sidecar 9837 bytes.
+Pages optimization: published WASM unchanged (4548741 bytes); Brotli sidecar 1170855 bytes.
+Pages artifact assembled at _site/
+
+> check:pages
+> node scripts/check-pages-artifact.mjs
+
+Pages artifact OK: 179 files under _site/

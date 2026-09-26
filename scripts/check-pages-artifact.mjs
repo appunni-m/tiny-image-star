@@ -4,6 +4,9 @@ import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliDecompressSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import { verifyRuntime } from "./stage-pillow-runtime.mjs";
+import { checkDocumentPolicy, securityHeadersFile } from "./security-policy.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const requestedOutput = process.argv[2] ?? "_site";
@@ -26,7 +29,15 @@ const outputInfo = await stat(output);
 if (!outputInfo.isDirectory()) throw new Error(`Pages artifact is not a directory: ${output}`);
 
 const files = await walk(output);
-const allowed = (path) => path === "index.html" || path === "styles.css" || path === "styles.css.br" || path.startsWith("src/") || path.startsWith("wasm/");
+await verifyRuntime(join(output, "wasm"));
+const fontDirectory = "src/assets/story-type-v1";
+const fontManifest = await readFile(join(projectRoot, fontDirectory, "provenance.json"));
+if (!fontManifest.equals(await readFile(join(output, fontDirectory, "provenance.json")))) throw new Error("Packaged font provenance differs from the pinned source.");
+for (const font of JSON.parse(fontManifest).fonts) for (const file of font.files) {
+  const bytes = await readFile(join(output, fontDirectory, file.path));
+  if (bytes.byteLength !== file.bytes || createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw new Error(`Packaged font/license metadata changed: ${file.path}`);
+}
+const allowed = (path) => path === "_headers" || path === "index.html" || path === "styles.css" || path === "styles.css.br" || path.startsWith("src/") || path.startsWith("wasm/");
 const unexpected = files.filter((path) => !allowed(path));
 if (unexpected.length) throw new Error(`Pages artifact contains unexpected files: ${unexpected.join(", ")}`);
 
@@ -50,6 +61,10 @@ for (const path of required) {
 }
 
 const index = await readFile(join(output, "index.html"), "utf8");
+checkDocumentPolicy(index);
+if (await readFile(join(output, "_headers"), "utf8") !== securityHeadersFile()) {
+  throw new Error("Pages artifact security headers differ from the reviewed policy.");
+}
 if (!index.includes("./styles.css") || !index.includes("./src/main.js")) {
   throw new Error("Pages artifact index.html does not reference the checked-in app entry files.");
 }

@@ -3,7 +3,7 @@
 ## Product goal
 
 Tiny Image Star is a static, client-only image editor hosted on GitHub Pages.
-The primary experience is a focused, Figma-like canvas for one image: open it,
+The image-editing experience is a focused canvas for one image: open it,
 pan and zoom, frame it, compare original and edited, then save. The same
 recipe, engine, output settings, and selection/export rules also accept an
 image set. One image is simply the one-item case; the result grid appears when
@@ -12,7 +12,13 @@ there is more than one item. Image bytes never leave the browser.
 The app is local-first and non-technical in its visible language. The canvas
 owns direct manipulation; the Images surface owns fast visual decisions across
 one or more results. They are two views of one workflow, not two processing
-products.
+products. **Make a story** now adds a photo-composition workspace on the shared
+renderer, scheduler and recovery store. It assembles 6–12 photos into 4–8
+slides and exposes editable looks, captions, crop zoom, slide order and adaptive
+portrait/tall photo-print layouts with per-shape positions. Manual cutouts,
+depth titles and connected cutouts are available. Automatic subject selection
+and the finished recipe catalog remain in progress; see
+[story evidence](docs/STORY_WORKSPACE_VERIFICATION.md).
 
 ## Product language rule
 
@@ -51,11 +57,13 @@ editor links there and asks the user to download the font file first. The font
 bytes stay in this browser's local font store; the app does not fetch fonts or
 send image/text data to Google.
 
-When text is present, the browser-composition export path is verified for PNG,
-JPEG, and WebP where the image engine has also verified that output format.
-Other formats remain visibly unavailable for text rather than silently losing
-the layer. Large-folder direct-save jobs are currently blocked when a recipe
-contains text because that path has no text compositor yet.
+Text presets work in the editor, image sets and large-folder direct-save jobs.
+Workers rasterize text with the same geometry as the editor, and Pillow
+composites it before final PNG/JPEG encoding. Custom font bytes are checked
+against their references; missing fonts stop the affected output. The shared
+scheduler budgets composition surfaces and font memory. See
+[text composition evidence](docs/TEXT_COMPOSITOR_VERIFICATION.md) for limits
+and the remaining physical-device and typography qualification.
 
 ### Presets and image sets
 
@@ -80,7 +88,8 @@ contains text because that path has no text compositor yet.
    image grid records a per-item override, visibly marks it, and never changes
    the shared recipe. The override can be reset or saved as a new preset.
 
-The initial product handles one still-image result per input. Animated
+The utility workflow handles one still-image result per input; the story
+workflow composes several inputs into ordered slides. Animated
 GIF/WebP, multi-frame editing, layered formats, drawing, advanced filters,
 metadata policy, persistent output caching, accounts, uploads,
 monetization, server processing, GPU processing, and PWA installation are later
@@ -88,12 +97,60 @@ scopes.
 
 ## Preset and override model
 
+Story photos now expose a **Cutout** tool with matching PNG mask import,
+transparency-to-mask conversion and soft Restore/Erase brushes. Masks use the
+full upright source and survive framing, look changes and saved recovery.
+Replacing the source removes its old mask. Source-pixel regions at 100–400%
+support fine repair, panning and keyboard navigation without changing history.
+See [manual-mask evidence](docs/MASK_EDITING_VERIFICATION.md).
+
+**Text → Depth title** places a photo-relative title behind the manually selected
+subject. The original-photo and page-background choices preserve source alpha.
+The words, placement and background choice survive mask removal or photo
+replacement: until a new mask is supplied, the title stays in front of the
+original photo with a visible explanation. Caption and title remain independent.
+See [depth-title evidence](docs/DEPTH_TITLE_VERIFICATION.md).
+
+**Cutout → Across slides** adds an independent subject copy across a neighboring
+pair. Both halves share crop, mask, color, rotation and optional depth text;
+position and size are saved per output shape. Joined pairs/chains reorder as
+blocks so their seams remain connected. See
+[connected-cutout evidence](docs/CONNECTED_CUTOUT_VERIFICATION.md). Automatic
+segmentation and the finished authored Depth cover recipe remain open.
+
+**Cutout → Outline & shadow** adds subject outlines, colored soft shadows and an
+own-slide preview. A finish scales across shapes, is shared by both halves of a
+connected copy and survives mask replacement as an inactive saved intent.
+**Save my style → Cutout finish** captures parameters from a chosen photo and
+reuses them on existing subject selections within the chosen scope. This does
+not copy masks or create automatic selections. See
+[cutout finish evidence and remaining gates](docs/CUTOUT_EFFECTS_VERIFICATION.md).
+
+The shared style library's photo-color component now applies to independent
+images and large-folder jobs through **Photo look**. It includes own-photo
+previews, strength, all/selected/this-image scope, a dedicated undo action and
+copied revision recovery. Folder look selection commits atomically before the
+save folder is chosen. Story typography, layout and cutout components still
+require separate integration into these workflows; see
+[photo look evidence](docs/PHOTO_LOOK_EXECUTION_VERIFICATION.md).
+
 Presets are local browser data, never account data. A saved recipe contains a
 human-readable destination, a small ordered operation chain, a crop frame
 relative to source dimensions, fit/crop behavior, and only verified output
 choices. The simple builder leads with destination, framing behavior, and a
 name; raw width, height, aspect lock, and output details remain under
 **Advanced**.
+
+The saved recipe catalog and immutable definitions commit together in IndexedDB.
+Independent creates can merge across tabs; a stale edit or delete is refused.
+Conflicting editor drafts offer a new-copy action. Legacy localStorage is kept
+as an unchanged migration source. Unknown or malformed catalogs are read-only
+and retained in private backups. Existing applied project/job copies do not
+follow later library edits. Separate image scopes can use different revisions
+of one recipe ID; new recovery copies carry exact references and definitions.
+Folder selectors retain the job's actual version after a library change or
+deletion. See [revision-selection evidence](docs/RECIPE_SELECTION_VERIFICATION.md)
+for the tested behavior and remaining historical-recovery boundaries.
 
 In the current reliable slice, the editor lets users compose crop, rotate,
 flip, resize, and the verified adjustments into one recipe. The adapter applies
@@ -129,16 +186,17 @@ arbitrarily large image or a slow lossy codec.
 ## Format contract
 
 The current browser contract is intentionally narrower than the future format
-matrix. The adapter exposes one validated output path today. Format conversion
+matrix. The adapter exposes PNG and fixed-setting JPEG. Format conversion
 is selected from this same output capability list; no conversion is faked by
-renaming a file. A lossy toggle and quality control remain hidden until a
-lossy encoder has passed the same runtime byte probe and fixture checks.
+renaming a file. Quality controls stay hidden because the pinned encoder has
+no quality argument. JPEG flattens transparency onto white.
 
 | Format | Input | Output | Acceptance status |
 | --- | --- | --- | --- |
 | PNG | yes | yes | current validated path |
-| JPEG, GIF, BMP, WebP, TIFF, ICO | adapter-listed | no | output stays hidden until an encoder is exposed and fixture-verified |
-| AVIF | no | no | not exposed by the current binding; release-blocking gate |
+| JPEG | yes | yes | fixed settings, RGB output, alpha flattening verified |
+| GIF, BMP, WebP, TIFF, ICO | adapter-listed | no | output stays hidden until deliberately qualified |
+| AVIF | no | no | codec disabled in the pinned package; outside the migration v1 export scope |
 
 SVG, HEIC/HEIF, JPEG XL, PSD, PDF, camera RAW, and other formats are outside
 the contract until a codec is deliberately added. The UI must expose the
@@ -147,17 +205,22 @@ of silently falling back to another format. “Adapter-listed” describes the
 current input capability metadata, not end-to-end support that has already
 passed the fixture matrix.
 
-AVIF is a hard acceptance gate: Tiny Image Star cannot claim complete format
-support until WASM still decode and encode are verified end to end.
+The authorized [migration plan](MIGRATION_PLAN.md) supersedes the earlier AVIF
+launch gate with a PNG/JPEG v1 scope. The app cannot claim complete format
+support; AVIF remains unavailable until verified end to end.
 
 ## Processing design
 
 The main thread owns the canvas, direct-manipulation state, preset library, and
 image-set selection state. A worker owns one image-engine instance and
-processing handles. A set uses a bounded pool (up to four workers, limited by
-the device's reported concurrency and the largest decoded image's pixel
-budget); each worker takes the next file as soon as it finishes. The active set
-keeps completed output bytes in memory only.
+processing handles. Editor previews, sets, and folder jobs now share one
+resource scheduler. It admits work against CPU and estimated memory budgets,
+reuses engine instances, and prepares source copies only after admission.
+Auto starts conservatively and samples comparable work; Max speed uses the
+reported CPU budget subject to memory admission; Low resource requests one
+worker. There is no fixed four-worker cap. Actual throughput qualification and
+complete memory accounting remain open in the migration ledger. The active set
+keeps completed output bytes in memory only. See [scheduler evidence and limits](docs/SHARED_SCHEDULER_VERIFICATION.md).
 
 ```text
 source bytes + operation list ──> image worker ──> latest output bytes

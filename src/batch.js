@@ -1,5 +1,6 @@
 import { diffOperationConfig, mergeOperationConfig, mergeOverridePatch } from "./config.js";
 import { attachLargeFolderJobs, supportsLargeFolderJobs } from "./jobs/controller.js";
+import { createProcessingClient, getProcessingScheduler } from "./processing/client.js";
 import {
   DEFAULT_CAPABILITIES,
   fileMatchesFormats,
@@ -16,9 +17,19 @@ import {
   duplicateKey,
   fingerprintBytes,
   inputProblem,
-  processingWorkerCount,
 } from "./input.js";
-import { DESTINATION_PRESETS } from "./presets.js";
+import { DESTINATION_PRESETS, PRESETS } from "./presets.js";
+import { canonicalJSON } from "./project/model.js";
+import { legacyRecipeOperations, legacyRecipeProblem, legacyStyleFromRecipe, originalRecipe, withLegacyStyle } from "./styles/legacy.js";
+import { mutateRecipeCatalog, readRecipeCatalog } from "./styles/catalog.js";
+import { catalogError, LEGACY_RECIPES_KEY, recipeCommand } from "./styles/catalog-model.js";
+import { STYLE_CHANGE_EVENT } from "./styles/store.js";
+import { recipeByReference, recipeChoices, recipeKey, recipeLabel, restoreRecipeReferences } from "./styles/selection.js";
+import { RecipeRecoveryChoice } from "./styles/session-recovery.js";
+import { openPhotoLookPanel } from "./styles/photo-look-panel.js";
+import { photoLookLabel } from "./compositor/photo-look.js";
+import { creatorStampLayers, openCreatorStampPanel } from "./styles/creator-stamp.js";
+import { applyPhotoLookEdit, photoLookTargets, undoPhotoLookEdit } from "./styles/photo-look-edits.js";
 import { framingReviewForItems } from "./framing.js";
 import {
   downloadedFileName,
@@ -31,7 +42,6 @@ import {
   relativeEditPatch,
   removeAppliedKeys,
 } from "./scoped-edits.js";
-import { PRESETS_STORAGE_KEY } from "./local-data.js";
 import {
   buildSessionSnapshot,
   clearEditorSession,
@@ -47,6 +57,9 @@ const elements = {
   sessionRecovery: document.querySelector("#session-recovery"),
   sessionRecoveryMessage: document.querySelector("#session-recovery-message"),
   sessionRestore: document.querySelector("#session-restore-button"),
+  sessionCurrentRecipes: document.querySelector("#session-current-recipes-button"),
+  sessionOriginals: document.querySelector("#session-originals-button"),
+  sessionBackup: document.querySelector("#session-backup-button"),
   sessionClear: document.querySelector("#session-clear-button"),
   sessionLater: document.querySelector("#session-later-button"),
   editorView: document.querySelector("#editor-view"),
@@ -74,6 +87,7 @@ const elements = {
   batchDropDescription: document.querySelector("#batch-drop-description"),
   batchPresetPicker: document.querySelector("#batch-preset-picker"),
   batchPresetName: document.querySelector("#batch-preset-name"),
+  batchTextStamp: document.querySelector("#batch-text-stamp"),
   batchScope: document.querySelector("#batch-scope-select"),
   batchScopeControl: document.querySelector("#batch-scope-control"),
   batchFormatControl: document.querySelector("#batch-format-control"),
@@ -94,6 +108,7 @@ const elements = {
   trayPresetPicker: document.querySelector("#tray-preset-picker"),
   trayScope: document.querySelector("#tray-scope-select"),
   trayScopeControl: document.querySelector("#tray-scope-control"),
+  trayTextStamp: document.querySelector("#tray-text-stamp"),
   trayApplyEdits: document.querySelector("#tray-apply-edits-button"),
   trayFormatControl: document.querySelector("#tray-format-control"),
   trayFormat: document.querySelector("#tray-format-select"),
@@ -130,10 +145,19 @@ const elements = {
   individualSaveClose: document.querySelector("#individual-save-close"),
 };
 
+const BUILTIN_OUTPUT_RECIPES = PRESETS.map((preset) => withLegacyStyle(legacyStyleFromRecipe({ ...preset, builtIn: true }, 1, "output")));
+const photoLookHistory = [];
 const state = {
   capabilities: normalizeCapabilities(window.tinyImageStarCapabilities ?? DEFAULT_CAPABILITIES),
   customPresets: [],
+  recipeCatalog: null,
+  catalogRead: 0,
+  catalogMutation: null,
+  catalogBusy: false,
+  failedCatalogCommand: null,
+  presetMigrationMessage: "",
   activePresetId: "keep-original",
+  activeRecipeKey: null,
   view: "editor",
   pendingPresetId: null,
   pendingSave: null,
@@ -143,9 +167,14 @@ const state = {
     batchPreviewWorkers: new Set(),
     saveInFlight: false,
     individualSave: null,
-    batch: {
+  batch: {
+    projectId: `project-${crypto.randomUUID()}`,
+    projectRevision: 0,
+    projectCreatedAt: Date.now(),
+    frozenRecipes: [],
     revision: 0,
     presetId: null,
+    recipeKey: null,
     recipeScope: "all",
     sharedOverride: null,
     formatOverride: null,
@@ -178,18 +207,58 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function readPresets() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PRESETS_STORAGE_KEY) ?? "[]");
-    return Array.isArray(saved) ? saved.filter((preset) => preset && preset.id && preset.operations) : [];
-  } catch {
-    return [];
-  }
+function acceptRecipeCatalog(snapshot, preserveExpanded = true) {
+  state.recipeCatalog = snapshot; state.customPresets = snapshot.recipes;
+  // Library refreshes never rebind a previously applied revision, including
+  // an older unversioned copy retained by recovery.
+  renderPresetList({ preserveExpanded }); renderBatchPresetPicker(); renderWorkspaceTray(); state.folderJobs?.refreshRecipes?.();
 }
-
-function writePresets() {
-  localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(state.customPresets));
-  state.folderJobs?.refreshRecipes?.();
+async function refreshRecipeCatalog() {
+  const sequence = ++state.catalogRead, snapshot = await readRecipeCatalog();
+  if (sequence !== state.catalogRead || state.session.suppress) return;
+  acceptRecipeCatalog(snapshot);
+}
+function catalogSelection(preset) {
+  const catalog = state.recipeCatalog, entry = catalog?.entries.find((entry) => entry.id === preset.id);
+  if (!entry || !preset.style || entry.styleKey !== `${preset.style.id}@${preset.style.revision}`) throw catalogError("This recipe changed in another tab. Reopen the current recipe or save a new copy.", "CATALOG_CONFLICT");
+  return { base: { generation: catalog.generation, revision: catalog.revision }, token: entry.token };
+}
+function presetEditContext(preset) {
+  return { kind: "preset-edit", presetId: preset.id, ...(preset.style ? { style: clone(preset.style) } : {}),
+    ...(!preset.builtIn ? { catalog: catalogSelection(preset), originalRecipe: originalRecipe(preset) } : {}) };
+}
+function catalogFailure(error, inDialog = false) {
+  if (error.name === "AbortError") return;
+  state.presetMigrationMessage = error.message;
+  if (inDialog) {
+    let notice = elements.presetForm.querySelector("[data-preset-save-error]");
+    if (!notice) { notice = document.createElement("div"); notice.dataset.presetSaveError = ""; notice.setAttribute("role", "alert"); elements.presetForm.querySelector(".dialog-actions").before(notice); }
+    notice.replaceChildren(document.createTextNode(error.message));
+    if (error.code === "CATALOG_CONFLICT") addButton(notice, "Save as new recipe", "button secondary", () => { void savePresetFromDialog({ asCopy: true }); });
+  }
+  renderPresetList({ preserveExpanded: true });
+}
+async function commitCatalog(command, { inDialog = false } = {}) {
+  if (state.catalogBusy) return null;
+  if (state.recipeCatalog?.readOnly) { catalogFailure(catalogError(state.recipeCatalog.issue), inDialog); return null; }
+  const controller = new AbortController(); state.catalogMutation = controller; state.catalogBusy = true;
+  const controls = inDialog ? [...elements.presetForm.querySelectorAll("input, select, #preset-save-button, [data-preset-save-error] button")].map((element) => [element, element.disabled]) : [];
+  for (const [element] of controls) element.disabled = true;
+  renderPresetList({ preserveExpanded: true });
+  try {
+    const outcome = await mutateRecipeCatalog(command, { signal: controller.signal });
+    if (controller.signal.aborted) return null;
+    state.catalogRead++; state.presetMigrationMessage = ""; state.failedCatalogCommand = null;
+    elements.presetForm.querySelector("[data-preset-save-error]")?.remove();
+    acceptRecipeCatalog(outcome.snapshot, false); return outcome;
+  } catch (error) {
+    if (error.name !== "AbortError") state.failedCatalogCommand = error.code === "CATALOG_CONFLICT" ? null : clone(command);
+    catalogFailure(error, inDialog); await refreshRecipeCatalog(); return null;
+  } finally {
+    state.catalogBusy = false; if (state.catalogMutation === controller) state.catalogMutation = null;
+    for (const [element, disabled] of controls) element.disabled = disabled;
+    renderPresetList({ preserveExpanded: true });
+  }
 }
 
 function setSessionRecoveryVisible(visible) {
@@ -210,7 +279,13 @@ async function saveActiveSession() {
     scheduleSessionSave();
     return;
   }
-  const built = buildSessionSnapshot({ batch: state.batch, activePresetId: state.activePresetId });
+  state.batch.projectRevision += 1;
+  const active = presetById(state.activePresetId, state.activeRecipeKey), shared = batchPreset();
+  const usedRecipes = recipeChoices([active, shared, ...state.batch.files.map((item) => recipeForItem(item))]);
+  const built = buildSessionSnapshot({ batch: state.batch, activePresetId: state.activePresetId,
+    recipes: usedRecipes, recipeReferences: { version: 1, active: recipeKey(active), shared: recipeKey(shared),
+      items: Object.fromEntries(state.batch.files.map((item) => [item.id, item.presetOverride ? recipeKey(recipeForItem(item)) : null])) },
+    operationsForItem: effectiveOperationsForItem });
   if (built.reason === "empty") {
     state.session.tooLarge = false;
     await clearSession();
@@ -234,6 +309,7 @@ async function offerSessionRecovery() {
   const record = await readSession() ?? await readEditorSession();
   if (!record || (!record.batch?.files?.length && !record.editor?.bytes)) return;
   state.session.pending = record;
+  if (elements.sessionRestore) { elements.sessionRestore.disabled = false; elements.sessionRestore.hidden = false; }
   if (elements.sessionRecoveryMessage) {
     if (record.kind === "editor") {
       elements.sessionRecoveryMessage.textContent = `Restore ${record.editor.name} from your last edit? Your file stays on this device.`;
@@ -247,11 +323,12 @@ async function offerSessionRecovery() {
 
 function forgetPendingSession() {
   state.session.pending = null;
+  for (const button of [elements.sessionCurrentRecipes, elements.sessionOriginals, elements.sessionBackup]) button.hidden = true;
   setSessionRecoveryVisible(false);
 }
 
-async function restoreSession() {
-  const record = state.session.pending;
+async function restoreSession(options) {
+  let record = state.session.pending;
   if (record?.kind === "editor") {
     const file = sessionFile(record.editor);
     if (!file) {
@@ -262,14 +339,31 @@ async function restoreSession() {
     }
     forgetPendingSession();
     showView("editor");
-    await window.tinyImageStarEditor?.loadFile(file, record.editor.operations, null);
+    await window.tinyImageStarEditor?.loadFile(file, record.editor.operations, null, record.project);
     return;
   }
   if (!record?.batch?.files?.length) return;
+  try { record = restoreRecipeReferences(record, libraryPresets(), options); }
+  catch (error) {
+    elements.sessionRecoveryMessage.textContent = error.message;
+    const choice = error instanceof RecipeRecoveryChoice;
+    elements.sessionRestore.hidden = choice;
+    elements.sessionCurrentRecipes.hidden = !choice;
+    elements.sessionCurrentRecipes.disabled = !error.currentAvailable;
+    elements.sessionCurrentRecipes.title = error.currentAvailable ? "The result may differ from the original edits." : "At least one original recipe is no longer in your library.";
+    elements.sessionOriginals.hidden = !choice;
+    elements.sessionBackup.hidden = false;
+    elements.sessionRestore.disabled = true; return;
+  }
   forgetPendingSession();
   state.session.suppress = true;
   clearBatchFiles({ skipSession: true });
   state.session.suppress = false;
+  state.batch.projectId = record.project?.id ?? `project-${crypto.randomUUID()}`;
+  state.batch.projectRevision = record.project?.revision ?? 0;
+  state.batch.projectCreatedAt = record.project?.createdAt ?? Date.now();
+  state.batch.revision = Math.max(state.batch.revision, Number(record.project?.revision) || 0);
+  state.batch.frozenRecipes = clone(record.frozenRecipes ?? []);
   const restored = [];
   for (const saved of record.batch.files) {
     const file = sessionFile(saved);
@@ -282,9 +376,8 @@ async function restoreSession() {
       bytes: new Uint8Array(saved.bytes),
       fingerprint: saved.fingerprint ?? null,
       duplicateKey: saved.duplicateKey ?? null,
-      presetOverride: saved.presetOverride && allPresets().some((preset) => preset.id === saved.presetOverride)
-        ? saved.presetOverride
-        : null,
+      presetOverride: saved.presetOverride ?? null,
+      recipeKeyOverride: record.recipeReferences.items[saved.id],
       image: null,
       width: 0,
       height: 0,
@@ -298,24 +391,19 @@ async function restoreSession() {
     elements.batchStatus.textContent = "The saved session could not be restored. Choose the images again.";
     return;
   }
-  const availablePreset = allPresets().some((preset) => preset.id === record.activePresetId)
-    ? record.activePresetId
-    : "keep-original";
-  state.activePresetId = availablePreset;
-  state.batch.presetId = allPresets().some((preset) => preset.id === record.batch.presetId)
-    ? record.batch.presetId
-    : availablePreset;
+  state.activePresetId = record.activePresetId;
+  state.activeRecipeKey = record.recipeReferences.active;
+  state.batch.presetId = record.batch.presetId;
+  state.batch.recipeKey = record.recipeReferences.shared;
   state.batch.recipeScope = ["all", "selected", "this"].includes(record.batch.recipeScope)
     ? record.batch.recipeScope
     : "all";
   state.batch.sharedOverride = clone(record.batch.sharedOverride);
-  state.batch.formatOverride = state.capabilities.outputFormats.includes(record.batch.formatOverride)
-    ? record.batch.formatOverride
-    : null;
+  state.batch.formatOverride = record.batch.formatOverride ?? null;
   state.batch.lossyOverride = typeof record.batch.lossyOverride === "boolean"
     ? record.batch.lossyOverride
     : null;
-  state.batch.qualityOverride = Number.isFinite(Number(record.batch.qualityOverride))
+  state.batch.qualityOverride = record.batch.qualityOverride != null && Number.isFinite(Number(record.batch.qualityOverride))
     ? normalizeQuality(record.batch.qualityOverride)
     : null;
   state.batch.activeId = restored.some((item) => item.id === record.batch.activeId) ? record.batch.activeId : restored[0].id;
@@ -323,7 +411,10 @@ async function restoreSession() {
   state.batch.selectionTouched = Boolean(record.batch.selectionTouched);
   state.batch.files = restored;
   state.batch.results.clear();
-  state.batch.importNotice = "Restored from your last session.";
+  state.batch.importNotice = (options?.missingRecipe === "current" ? "Restored using current recipes where original settings were missing; the older appearance may differ."
+    : options?.missingRecipe === "originals" ? "Restored originals and saved corrections. Missing recipe settings could not be recovered."
+    : "Restored from your last session.") + (record.frozenRecipes.some((recipe) => recipe.recovery)
+      ? " Complete saved edits were recovered for their original images. Choose a new recipe to replace them while keeping manual corrections." : "");
   state.batch.importToken += 1;
   state.batch.revision += 1;
   // Restored items start without decoded dimensions. Keep the calm editor
@@ -343,33 +434,28 @@ async function restoreSession() {
   scheduleSessionSave(0);
 }
 
+function libraryPresets() {
+  return [...state.customPresets, ...BUILTIN_OUTPUT_RECIPES];
+}
 function allPresets() {
-  const builtIns = DESTINATION_PRESETS.map((destination) => ({
-    ...destination,
-    builtIn: true,
-    operations: {
-      cropRelative: null,
-      rotation: 0,
-      flipX: false,
-      flipY: false,
-      resizeWidth: destination.width,
-      resizeHeight: destination.height,
-      resizeMode: destination.mode,
-      aspectLocked: true,
-      brightness: 1,
-      contrast: 1,
-      grayscale: false,
-      textLayers: [],
-      lossy: false,
-      quality: DEFAULT_QUALITY,
-      format: state.capabilities.outputFormats[0] ?? "png",
-    },
-  }));
-  return [...state.customPresets, ...builtIns];
+  return recipeChoices(state.batch.frozenRecipes, libraryPresets());
 }
 
-function presetById(id) {
-  return allPresets().find((preset) => preset.id === id) ?? allPresets()[0];
+function presetById(id, key = null) {
+  return recipeByReference(allPresets(), id ?? "keep-original", key);
+}
+function presetByChoice(value) {
+  const preset = allPresets().find((entry) => recipeKey(entry) === value);
+  if (!preset) throw new Error("That recipe revision is no longer available.");
+  return preset;
+}
+function pinRecipe(preset) {
+  state.batch.frozenRecipes = recipeChoices(state.batch.frozenRecipes, [clone(preset)]);
+  return recipeKey(preset);
+}
+function retainAppliedRecipes() {
+  state.batch.frozenRecipes = recipeChoices([presetById(state.activePresetId, state.activeRecipeKey), batchPreset(),
+    ...state.batch.files.map((item) => recipeForItem(item))]).map(clone);
 }
 
 function formatBytes(value) {
@@ -405,9 +491,7 @@ function normalizePresetOperations(operations, width, height) {
   next.maxHeight = next.resizeHeight;
   next.lossy = Boolean(next.lossy);
   next.quality = normalizeQuality(next.quality);
-  next.format = state.capabilities.outputFormats.includes(normalizeFormat(next.format))
-    ? normalizeFormat(next.format)
-    : state.capabilities.outputFormats[0] ?? "png";
+  next.format = normalizeFormat(next.format) ?? next.format ?? "png";
   next.textLayers = Array.isArray(next.textLayers) ? next.textLayers : [];
   return next;
 }
@@ -435,7 +519,10 @@ function relativePresetOperations(operations, width, height) {
 }
 
 function settingsForItem(preset, item) {
-  const operations = normalizePresetOperations(preset.operations, item.width || 1, item.height || 1);
+  if (preset.recovery && preset.recovery.fileId !== item.id) throw new Error("Recovered edits belong to a different image.");
+  // An old complete image state has an absolute crop. Reusable presets use
+  // relative crops; sending recovered state through that conversion loses it.
+  const operations = preset.recovery ? legacyRecipeOperations(preset) : normalizePresetOperations(legacyRecipeOperations(preset), item.width || 1, item.height || 1);
   if (!operations.resizeWidth) operations.resizeWidth = item.width;
   if (!operations.resizeHeight) operations.resizeHeight = item.height;
   operations.maxWidth = operations.resizeWidth;
@@ -446,22 +533,17 @@ function settingsForItem(preset, item) {
 }
 
 function batchPreset() {
-  return presetById(state.batch.presetId ?? state.activePresetId);
+  return presetById(state.batch.presetId ?? state.activePresetId, state.batch.presetId ? state.batch.recipeKey : state.activeRecipeKey);
 }
 
 function recipeForItem(item, fallback = batchPreset()) {
   const scopedId = item?.presetOverride;
   if (!scopedId) return fallback;
-  return allPresets().find((preset) => preset.id === scopedId) ?? fallback;
+  return presetById(scopedId, item.recipeKeyOverride);
 }
 
 function batchOutputFormat(preset = batchPreset()) {
-  const available = state.capabilities.outputFormats;
-  return available.includes(state.batch.formatOverride)
-    ? state.batch.formatOverride
-    : available.includes(preset.operations.format)
-      ? preset.operations.format
-      : available[0] ?? "png";
+  return state.batch.formatOverride ?? normalizeFormat(preset.operations.format) ?? preset.operations.format ?? "png";
 }
 
 function baseOperationsForItem(item, preset = null) {
@@ -494,6 +576,81 @@ function effectiveOperationsForItem(item, preset = null) {
 
 function batchFramingReview() {
   return framingReviewForItems(state.batch.files, (item) => effectiveOperationsForItem(item));
+}
+
+function renderPhotoLookControls() {
+  const looks = recipeScopeTargets().map((item) => effectiveOperationsForItem(item).photoLook ?? null);
+  const same = looks.every((look) => canonicalJSON(look) === canonicalJSON(looks[0]));
+  document.querySelector("#photo-look-summary").textContent = same ? photoLookLabel(looks[0]) : "Different photo looks";
+  for (const id of ["photo-look-open", "batch-photo-look"]) document.getElementById(id).disabled = !state.batch.files.length;
+  if (elements.batchTextStamp) elements.batchTextStamp.disabled = !state.batch.files.length;
+  if (elements.trayTextStamp) elements.trayTextStamp.disabled = !state.batch.files.length;
+  for (const id of ["photo-look-undo", "batch-photo-look-undo"]) document.getElementById(id).hidden = !photoLookHistory.length;
+}
+
+function choosePhotoLook() {
+  captureCurrentBatchEditorOverride();
+  const openingProject = state.batch.projectId;
+  const scope = state.batch.files.length > 1 ? normalizedRecipeScope(state.batch.recipeScope) : "all";
+  const initial = photoLookTargets(state.batch, scope)[0];
+  openPhotoLookPanel({ initial: initial ? effectiveOperationsForItem(initial).photoLook ?? null : null, scope,
+    scopes: state.batch.files.length > 1 ? [["all", "All images"], ["selected", "Selected images"], ["this", "This image"]] : [["all", "This image"]],
+    getSample: (chosenScope) => {
+      const targets = photoLookTargets(state.batch, chosenScope), item = targets.find((entry) => entry.id === state.batch.activeId) ?? targets[0];
+      if (!item?.bytes || !item.width || !item.height) throw new Error("Choose a ready image to preview this photo look.");
+      return { id: item.id, name: item.name, bytes: item.bytes, width: item.width, height: item.height, operations: effectiveOperationsForItem(item) };
+    },
+    commit: (look, chosenScope) => {
+      if (state.batch.projectId !== openingProject) throw new Error("This image set changed. Reopen Photo look for the current set.");
+      captureCurrentBatchEditorOverride();
+      const change = applyPhotoLookEdit(state.batch, look, chosenScope); photoLookHistory.push(change); if (photoLookHistory.length > 20) photoLookHistory.shift();
+      state.batch.recipeScope = chosenScope;
+      renderBatchPresetPicker(); renderBatchGrid(); refreshActiveBatchEditor();
+      void runBatch(state.batch.files.filter((item) => change.ids.includes(item.id))); scheduleSessionSave(0);
+    }, report: (message) => { elements.batchStatus.textContent = message; },
+  });
+}
+
+function chooseCreatorStamp() {
+  if (!state.batch.files.length) return;
+  captureCurrentBatchEditorOverride();
+  const scope = state.batch.files.length < 2 ? "this" : normalizedRecipeScope(state.batch.recipeScope);
+  const targets = scope === "all" ? [...state.batch.files] : recipeScopeTargets();
+  if (!targets.length) { elements.batchStatus.textContent = "Select at least one image first."; return; }
+  const current = targets.find(item => item.id === state.batch.activeId) ?? targets[0];
+  openCreatorStampPanel({ layers: effectiveOperationsForItem(current).textLayers, returnFocus: elements.batchTextStamp,
+    onApply: async choice => {
+      const liveTargets = targets.map(target => state.batch.files.find(item => item.id === target.id)).filter(Boolean);
+      if (!liveTargets.length) throw new Error("Those images are no longer in this batch.");
+      for (const target of liveTargets) {
+        const shared = sharedOperationsForItem(target), currentOperations = effectiveOperationsForItem(target);
+        target.override = diffOperationConfig(shared, { ...currentOperations,
+          textLayers: creatorStampLayers(currentOperations.textLayers, choice) });
+      }
+      state.batch.activeId = current.id;
+      renderBatchGrid(); refreshActiveBatchEditor(); renderWorkspaceTray();
+      void runBatch(liveTargets); scheduleSessionSave(0);
+      const label = scope === "all" ? "all images" : scope === "selected" ? `${liveTargets.length} selected images` : "this image";
+      elements.batchStatus.textContent = choice.text.trim() ? `Text overlay applied to ${label}.` : `Text overlay removed from ${label}.`;
+    },
+    onSavePreset: (_choice, layers) => {
+      const target = state.batch.files.find(item => item.id === current.id);
+      if (!target) { elements.batchStatus.textContent = "The image set changed, so the recipe could not be saved."; return; }
+      try {
+        const operations = { ...effectiveOperationsForItem(target), textLayers: layers };
+        openPresetDialog(operations, target.width || 1, target.height || 1, "My text overlay recipe");
+      } catch (error) { elements.batchStatus.textContent = error.message; }
+    },
+  });
+}
+
+function undoPhotoLook() {
+  const change = photoLookHistory.at(-1); if (!change) return;
+  captureCurrentBatchEditorOverride();
+  try {
+    undoPhotoLookEdit(state.batch, change); photoLookHistory.pop();
+    renderBatchPresetPicker(); renderBatchGrid(); refreshActiveBatchEditor(); void runBatch(); scheduleSessionSave(0);
+  } catch (error) { photoLookHistory.length = 0; renderPhotoLookControls(); elements.batchStatus.textContent = error.message; }
 }
 
 function normalizedRecipeScope(scope) {
@@ -556,8 +713,10 @@ function renderApplyCurrentEdits() {
       : "Keep edits on this image";
 }
 
-function selectedPresetFromOperations(operations) {
+function selectedPresetFromOperations(operations, context) {
   const id = operations?.presetId;
+  if (context?.style?.id === id) return withLegacyStyle(context.style);
+  if (context?.presetId === id && context.recipeKey) return presetById(id, context.recipeKey);
   return id ? allPresets().find((preset) => preset.id === id) ?? null : null;
 }
 
@@ -570,7 +729,9 @@ function applyCurrentEditsToScope() {
   }
   const { snapshot, context, item, initial, relativePatch } = edit;
   const scope = state.batch.files.length < 2 ? "this" : normalizedRecipeScope(state.batch.recipeScope);
-  const selectedPreset = selectedPresetFromOperations(snapshot.operations);
+  const selected = selectedPresetFromOperations(snapshot.operations, context);
+  const selectedPreset = selected?.recovery ? null : selected;
+  const selectedKey = selectedPreset ? pinRecipe(selectedPreset) : null;
   let targets = scope === "all" ? [...state.batch.files] : scope === "selected" ? recipeScopeTargets() : [item];
   if (!targets.length) {
     elements.batchStatus.textContent = "Select at least one image first.";
@@ -581,7 +742,8 @@ function applyCurrentEditsToScope() {
     if (selectedPreset) {
       state.batch.presetId = selectedPreset.id;
       state.activePresetId = selectedPreset.id;
-      for (const target of state.batch.files) target.presetOverride = null;
+      state.activeRecipeKey = state.batch.recipeKey = selectedKey;
+      for (const target of state.batch.files) { target.presetOverride = null; target.recipeKeyOverride = null; }
     }
     if (state.capabilities.outputFormats.includes(snapshot.operations.format)) {
       state.batch.formatOverride = snapshot.operations.format;
@@ -607,7 +769,10 @@ function applyCurrentEditsToScope() {
     item.override = removeAppliedKeys(item.override, relativePatch);
   } else if (scope === "selected") {
     for (const target of targets) {
-      if (selectedPreset) target.presetOverride = selectedPreset.id === state.batch.presetId ? null : selectedPreset.id;
+      if (selectedPreset) {
+        target.presetOverride = selectedKey === recipeKey(batchPreset()) ? null : selectedPreset.id;
+        target.recipeKeyOverride = target.presetOverride ? selectedKey : null;
+      }
       const targetCurrent = effectiveOperationsForItem(target);
       const targetEdited = applyRelativeEditPatch(targetCurrent, relativePatch, target.width || 1, target.height || 1);
       target.override = diffOperationConfig(sharedOperationsForItem(target), targetEdited);
@@ -617,6 +782,7 @@ function applyCurrentEditsToScope() {
   }
 
   state.batch.activeId = item.id;
+  retainAppliedRecipes();
   renderBatchPresetPicker();
   renderWorkspaceTray();
   renderBatchGrid();
@@ -629,7 +795,11 @@ function applyCurrentEditsToScope() {
 
 function applyPresetToScope(presetId) {
   captureCurrentBatchEditorOverride();
-  const preset = presetById(presetId);
+  const preset = presetByChoice(presetId);
+  if (preset.recovery) { elements.batchStatus.textContent = "These recovered edits belong to their original image. Save a reusable recipe to apply them elsewhere."; return; }
+  const problem = legacyRecipeProblem(preset, state.capabilities);
+  if (problem) { elements.batchStatus.textContent = problem; return; }
+  const key = pinRecipe(preset);
   const scope = state.batch.files.length < 2 ? "all" : normalizedRecipeScope(state.batch.recipeScope);
   const targets = scope === "all" ? [...state.batch.files] : recipeScopeTargets();
   if (scope !== "all" && !targets.length) {
@@ -639,8 +809,12 @@ function applyPresetToScope(presetId) {
     return;
   }
   state.activePresetId = scope === "all" ? preset.id : state.activePresetId;
+  if (scope === "all") state.activeRecipeKey = key;
   if (scope === "all") {
+    const photoLook = state.batch.sharedOverride && Object.hasOwn(state.batch.sharedOverride, "photoLook")
+      ? state.batch.sharedOverride.photoLook : batchPreset().operations.photoLook;
     state.batch.presetId = preset.id;
+    state.batch.recipeKey = key;
     // A destination recipe owns its complete output contract. If the user
     // chooses a new recipe, discard an older explicit batch format/compression
     // override so the recipe's final format is actually applied. They can
@@ -649,13 +823,17 @@ function applyPresetToScope(presetId) {
     state.batch.formatOverride = null;
     state.batch.lossyOverride = null;
     state.batch.qualityOverride = null;
-    state.batch.sharedOverride = null;
+    state.batch.sharedOverride = preset.builtIn && photoLook !== undefined ? { photoLook: clone(photoLook) } : null;
     // Applying to all intentionally removes only scoped recipe choices. Manual
     // canvas corrections remain in `override` and continue to merge on top.
-    for (const item of state.batch.files) item.presetOverride = null;
+    for (const item of state.batch.files) { item.presetOverride = null; item.recipeKeyOverride = null; }
   } else {
-    for (const item of targets) item.presetOverride = preset.id === state.batch.presetId ? null : preset.id;
+    for (const item of targets) {
+      item.presetOverride = key === recipeKey(batchPreset()) ? null : preset.id;
+      item.recipeKeyOverride = item.presetOverride ? key : null;
+    }
   }
+  retainAppliedRecipes();
   renderBatchPresetPicker();
   renderBatchGrid();
   if (targets.some((item) => item.id === state.batch.activeId)) refreshActiveBatchEditor();
@@ -664,8 +842,9 @@ function applyPresetToScope(presetId) {
 }
 
 function scopedRecipeSelection() {
-  if (state.batch.files.length < 2 || state.batch.recipeScope === "all") return batchPreset().id;
-  const ids = [...new Set(recipeScopeTargets().map((item) => recipeForItem(item).id))];
+  if (state.batch.files.length === 1) return recipeKey(recipeForItem(state.batch.files[0]));
+  if (state.batch.files.length === 0 || state.batch.recipeScope === "all") return recipeKey(batchPreset());
+  const ids = [...new Set(recipeScopeTargets().map((item) => recipeKey(recipeForItem(item))))];
   return ids.length === 1 ? ids[0] : null;
 }
 
@@ -805,17 +984,26 @@ function addButton(parent, label, className, handler) {
 }
 
 function usePreset(preset) {
-  state.activePresetId = preset.id;
-  state.batch.presetId = preset.id;
+  const problem = legacyRecipeProblem(preset, state.capabilities);
+  if (problem) { state.presetMigrationMessage = problem; renderPresetList(); return; }
   closePresets();
+  state.batch.recipeScope = "all";
   showView("batch");
-  if (state.batch.files.length) runBatch();
+  applyPresetToScope(recipeKey(preset));
 }
 
-function renderPresetList() {
+function renderPresetList({ preserveExpanded = false } = {}) {
+  const expanded = new Set(preserveExpanded ? [...elements.presetList.querySelectorAll(".preset-card details[open]")].map((details) => `${details.closest(".preset-card").dataset.presetId}:${details.className}`) : []);
   elements.presetList.replaceChildren();
+  const messages = [...new Set([state.recipeCatalog?.issue, state.presetMigrationMessage].filter(Boolean))];
+  if (messages.length) {
+    const notice = document.createElement("p"); notice.id = "preset-migration-status"; notice.setAttribute("role", "status");
+    notice.textContent = messages.join(" "); elements.presetList.append(notice);
+    if (state.failedCatalogCommand && !state.recipeCatalog?.readOnly) addButton(notice, "Retry recipe update", "button secondary", () => { void commitCatalog(state.failedCatalogCommand); }).disabled = state.catalogBusy;
+    if (state.recipeCatalog?.readOnly) addButton(notice, "Open local data", "button secondary", () => document.querySelector("#local-data-button")?.click());
+  }
   let group = null;
-  for (const preset of allPresets()) {
+  for (const preset of libraryPresets()) {
     const nextGroup = preset.builtIn ? "Popular" : "My presets";
     if (nextGroup !== group) {
       group = nextGroup;
@@ -825,7 +1013,10 @@ function renderPresetList() {
       elements.presetList.append(groupHeading);
     }
     const card = document.createElement("article");
+    const problem = preset.recovery ? "Saved settings for the original image. Save a reusable recipe to apply elsewhere." : legacyRecipeProblem(preset, state.capabilities);
     card.className = "preset-card";
+    card.dataset.presetId = preset.id;
+    if (preset.style) card.dataset.styleRevision = String(preset.style.revision);
     card.tabIndex = 0;
     card.setAttribute("role", "button");
     card.setAttribute("aria-label", `Use ${preset.name}`);
@@ -867,7 +1058,7 @@ function renderPresetList() {
     const dimensions = preset.operations.resizeWidth && preset.operations.resizeHeight
       ? `${preset.operations.resizeWidth} × ${preset.operations.resizeHeight}`
       : "same size as the original";
-    detailsCopy.textContent = `${dimensions} · ${formatLabel(preset.operations.format)} output`;
+    detailsCopy.textContent = `${dimensions} · ${normalizeFormat(preset.operations.format) ? formatLabel(preset.operations.format) : preset.operations.format ?? "PNG"} output${preset.style ? ` · Revision ${preset.style.revision}` : ""}`;
     details.append(detailsSummary, detailsCopy);
     const more = document.createElement("details");
     more.className = "preset-more";
@@ -875,52 +1066,66 @@ function renderPresetList() {
     moreSummary.textContent = "More actions";
     const moreActions = document.createElement("div");
     moreActions.className = "preset-card-actions";
-    addButton(moreActions, "Edit on canvas", "button secondary", () => editPresetOnCanvas(preset));
-    addButton(moreActions, "Duplicate", "button secondary", () => duplicatePreset(preset));
-    if (!preset.builtIn) addButton(moreActions, "Delete", "button secondary", () => deletePreset(preset));
+    addButton(moreActions, "Edit on canvas", "button secondary", () => editPresetOnCanvas(preset)).disabled = Boolean(problem);
+    addButton(moreActions, "Duplicate", "button secondary", () => { void duplicatePreset(preset); }).disabled = state.catalogBusy || !state.recipeCatalog || state.recipeCatalog.readOnly;
+    if (!preset.builtIn) addButton(moreActions, "Delete", "button secondary", () => { void deletePreset(preset); }).disabled = state.catalogBusy || !state.recipeCatalog || state.recipeCatalog.readOnly;
     more.append(moreSummary, moreActions);
     card.append(visual, heading, description, meta, details, more);
+    if (problem) {
+      // aria-disabled on the card would also disable its recovery actions.
+      card.dataset.unavailable = "true"; card.tabIndex = -1; card.setAttribute("role", "group");
+      card.setAttribute("aria-label", `${preset.name}: unavailable`);
+      const notice = document.createElement("p"); notice.className = "preset-note"; notice.textContent = problem; card.append(notice);
+      for (const format of state.capabilities.outputFormats) addButton(card, `Keep edits · use ${formatLabel(format)}`, "button secondary", () => { void replacePresetOutput(preset, format); }).disabled = state.catalogBusy || !state.recipeCatalog || state.recipeCatalog.readOnly;
+    }
+    for (const details of card.querySelectorAll("details")) details.open = expanded.has(`${preset.id}:${details.className}`);
     elements.presetList.append(card);
   }
 }
 
-function duplicatePreset(preset) {
+async function replacePresetOutput(preset, format) {
+  if (!state.capabilities.outputFormats.includes(format) || !state.customPresets.some((entry) => entry.id === preset.id)) return;
+  try {
+    const original = originalRecipe(preset), selection = catalogSelection(preset);
+    const replacement = { ...original, operations: { ...original.operations, format, lossy: false, quality: DEFAULT_QUALITY } };
+    await commitCatalog(recipeCommand(selection.base, "put", replacement, selection.token));
+  } catch (error) { catalogFailure(error); }
+}
+
+async function duplicatePreset(preset) {
   const copy = {
-    ...clone(preset),
-    id: `custom-${Date.now()}`,
+    ...originalRecipe(preset),
+    id: `custom-${crypto.randomUUID()}`,
     name: `${preset.name} copy`,
     builtIn: false,
   };
   delete copy.builtIn;
-  state.customPresets.push(copy);
-  writePresets();
-  renderPresetList();
-  renderWorkspaceTray();
+  delete copy.style;
+  try { await commitCatalog(recipeCommand(state.recipeCatalog, "put", copy)); }
+  catch (error) { catalogFailure(error); }
 }
 
-function deletePreset(preset) {
-  if (!window.confirm(`Delete “${preset.name}”?`)) return;
-  state.customPresets = state.customPresets.filter((candidate) => candidate.id !== preset.id);
-  if (state.activePresetId === preset.id) state.activePresetId = "keep-original";
-  if (state.batch.presetId === preset.id) state.batch.presetId = "keep-original";
-  for (const item of state.batch.files) {
-    if (item.presetOverride === preset.id) item.presetOverride = null;
-  }
-  writePresets();
-  renderPresetList();
-  renderBatchPresetPicker();
-  renderWorkspaceTray();
+async function deletePreset(preset) {
+  try {
+    const selection = catalogSelection(preset);
+    if (!window.confirm(`Delete “${preset.name}” from saved recipes? Applied copies in your open work are kept.`)) return;
+    await commitCatalog(recipeCommand(selection.base, "delete", preset.id, selection.token));
+  } catch (error) { catalogFailure(error); }
 }
 
 function editPresetOnCanvas(preset) {
+  const problem = legacyRecipeProblem(preset, state.capabilities);
+  if (problem) { state.presetMigrationMessage = problem; renderPresetList(); return; }
+  let context; try { context = presetEditContext(preset); } catch (error) { catalogFailure(error); return; }
   const snapshot = window.tinyImageStarEditor?.getSnapshot();
   if (snapshot?.file && snapshot.imageWidth && snapshot.imageHeight) {
-    const operations = normalizePresetOperations(preset.operations, snapshot.imageWidth, snapshot.imageHeight);
-    window.tinyImageStarEditor.replaceOperations(operations, { kind: "preset-edit", presetId: preset.id });
+    const operations = normalizePresetOperations(legacyRecipeOperations(preset), snapshot.imageWidth, snapshot.imageHeight);
+    window.tinyImageStarEditor.replaceOperations(operations, context);
     showView("editor");
     return;
   }
   state.pendingPresetId = preset.id;
+  state.pendingPresetSelection = { preset: clone(preset), context };
   showView("editor");
   document.querySelector("#empty-open-button")?.click();
 }
@@ -930,14 +1135,17 @@ function renderBatchPresetPicker() {
   renderRecipeScopeControls();
   const scopedSelection = scopedRecipeSelection();
   const hasScopedTargets = state.batch.files.length > 1 && state.batch.recipeScope !== "all";
-  const selectedPresetId = scopedSelection ?? (hasScopedTargets ? null : state.batch.presetId ?? state.activePresetId);
+  const selectedPresetId = scopedSelection ?? (hasScopedTargets ? null : recipeKey(batchPreset()));
   const quickIds = ["instagram-square", "profile-photo", "website-banner"];
   const appendPreset = (parent, preset) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = preset.name;
-    button.setAttribute("aria-pressed", String(preset.id === selectedPresetId));
-    button.addEventListener("click", () => applyPresetToScope(preset.id));
+    button.textContent = recipeLabel(preset, allPresets());
+    button.dataset.recipeKey = recipeKey(preset);
+    const problem = preset.recovery ? "Saved settings for the original image. Save a reusable recipe to apply elsewhere." : legacyRecipeProblem(preset, state.capabilities);
+    button.disabled = Boolean(problem); if (problem) button.title = problem;
+    button.setAttribute("aria-pressed", String(recipeKey(preset) === selectedPresetId));
+    button.addEventListener("click", () => applyPresetToScope(recipeKey(preset)));
     parent.append(button);
   };
   const presets = allPresets();
@@ -955,14 +1163,16 @@ function renderBatchPresetPicker() {
     more.append(summary, grid);
     elements.batchPresetPicker.append(more);
   }
-  const activePreset = presetById(selectedPresetId ?? state.batch.presetId ?? state.activePresetId);
+  const activePreset = selectedPresetId ? presetByChoice(selectedPresetId) : batchPreset();
   const scopeLabel = state.batch.files.length > 1 && state.batch.recipeScope !== "all"
     ? state.batch.recipeScope === "selected" ? "Selected images" : "This image"
     : null;
-  const selectedName = selectedPresetId ? activePreset.name : "Different destinations";
+  const selectedName = selectedPresetId ? recipeLabel(activePreset, allPresets()) : "Different recipes or versions";
   const selectedFormat = batchOutputFormat(activePreset);
   const qualityText = state.capabilities.compression.lossyFormats.includes(selectedFormat)
-    ? `${qualityLabel(state.batch.qualityOverride ?? activePreset.operations.quality)} quality`
+    ? state.capabilities.compression.quality
+      ? `${qualityLabel(state.batch.qualityOverride ?? activePreset.operations.quality)} quality`
+      : "Fixed encoder settings · white background"
     : "Full quality";
   const sharedText = state.batch.sharedOverride ? " · Shared canvas edits" : "";
   elements.batchPresetName.textContent = `${scopeLabel ? `${scopeLabel}: ` : "Using: "}${selectedName} · ${formatLabel(selectedFormat)} · ${qualityText}${sharedText}`;
@@ -972,15 +1182,15 @@ function renderBatchPresetPicker() {
 function renderBatchFormatOptions() {
   if (!elements.batchFormat || !elements.batchFormatControl) return;
   const formats = state.capabilities.outputFormats;
-  if (state.batch.formatOverride && !formats.includes(state.batch.formatOverride)) state.batch.formatOverride = null;
-  elements.batchFormatControl.hidden = formats.length < 2;
-  elements.batchFormat.disabled = formats.length < 2;
+  const unavailable = state.batch.formatOverride && !formats.includes(state.batch.formatOverride);
+  elements.batchFormatControl.hidden = formats.length < 2 && !unavailable;
+  elements.batchFormat.disabled = formats.length < 2 && !unavailable;
   elements.batchFormat.replaceChildren();
   const preset = batchPreset();
   if (formats.length > 1) {
     const defaultOption = document.createElement("option");
     defaultOption.value = "";
-    defaultOption.textContent = `Use recipe format (${formatLabel(batchOutputFormat(preset))})`;
+    defaultOption.textContent = `Use recipe format (${formatLabel(preset.operations.format)})`;
     defaultOption.selected = !state.batch.formatOverride;
     elements.batchFormat.append(defaultOption);
   }
@@ -991,9 +1201,19 @@ function renderBatchFormatOptions() {
     option.selected = format === state.batch.formatOverride;
     elements.batchFormat.append(option);
   }
+  appendUnavailableFormat(elements.batchFormat, formats);
   elements.batchFormatReset.hidden = !state.batch.formatOverride;
   elements.batchFormatReset.disabled = !state.batch.formatOverride;
   renderBatchCompressionOptions();
+}
+
+function appendUnavailableFormat(select, formats) {
+  if (!state.batch.formatOverride || formats.includes(state.batch.formatOverride)) return;
+  const option = document.createElement("option");
+  option.value = state.batch.formatOverride;
+  option.textContent = `Saved ${String(state.batch.formatOverride).toUpperCase()} — unavailable`;
+  option.disabled = true; option.selected = true;
+  select.append(option);
 }
 
 function renderBatchCompressionOptions() {
@@ -1005,9 +1225,9 @@ function renderBatchCompressionOptions() {
     [elements.trayLossyControl, elements.trayLossy],
   ]) {
     if (!control || !input) continue;
-    control.hidden = !canBeLossy;
+    control.hidden = !canBeLossy || !state.capabilities.compression.quality;
     input.checked = canBeLossy && state.batch.lossyOverride === true;
-    input.disabled = !canBeLossy;
+    input.disabled = !canBeLossy || !state.capabilities.compression.quality;
   }
   const quality = normalizeQuality(state.batch.qualityOverride ?? batchPreset().operations.quality ?? DEFAULT_QUALITY);
   for (const [control, input] of [
@@ -1026,13 +1246,13 @@ function renderTrayOutputOptions() {
   if (!elements.trayFormat || !elements.trayFormatControl) return;
   const formats = state.capabilities.outputFormats;
   elements.trayFormatControl.hidden = false;
-  elements.trayFormat.disabled = formats.length < 2;
+  elements.trayFormat.disabled = formats.length < 2 && (!state.batch.formatOverride || formats.includes(state.batch.formatOverride));
   elements.trayFormat.replaceChildren();
   const preset = batchPreset();
   if (formats.length > 1) {
     const defaultOption = document.createElement("option");
     defaultOption.value = "";
-    defaultOption.textContent = `Use recipe format (${formatLabel(batchOutputFormat(preset))})`;
+    defaultOption.textContent = `Use recipe format (${formatLabel(preset.operations.format)})`;
     defaultOption.selected = !state.batch.formatOverride;
     elements.trayFormat.append(defaultOption);
   }
@@ -1043,6 +1263,7 @@ function renderTrayOutputOptions() {
     option.selected = format === state.batch.formatOverride;
     elements.trayFormat.append(option);
   }
+  appendUnavailableFormat(elements.trayFormat, formats);
   renderBatchCompressionOptions();
 }
 
@@ -1050,7 +1271,7 @@ function setBatchFormat(format) {
   captureCurrentBatchEditorOverride();
   const normalized = normalizeFormat(format);
   state.batch.formatOverride = normalized && state.capabilities.outputFormats.includes(normalized) ? normalized : null;
-  if (!state.capabilities.compression.lossyFormats.includes(batchOutputFormat())) {
+  if (!state.capabilities.compression.quality || !state.capabilities.compression.lossyFormats.includes(batchOutputFormat())) {
     state.batch.lossyOverride = null;
     state.batch.qualityOverride = null;
   }
@@ -1087,7 +1308,8 @@ function setBatchQuality(value) {
 }
 
 function openPresetDialog(operations, width, height, suggestedName = "My image recipe", context = null) {
-  state.pendingSave = { operations: clone(operations), width, height, context };
+  state.pendingSave = { operations: clone(operations), width, height, context: clone(context) };
+  elements.presetForm.querySelector("[data-preset-save-error]")?.remove();
   elements.presetDialogHeading.textContent = context?.kind === "batch-override" ? "Save override as preset" : "Save as preset";
   elements.presetName.value = suggestedName;
   elements.presetDestination.replaceChildren();
@@ -1117,7 +1339,7 @@ function openPresetDialog(operations, width, height, suggestedName = "My image r
     option.selected = format === (operations?.format ?? state.capabilities.outputFormats[0]);
     elements.presetFormat.append(option);
   }
-  elements.presetCompression.hidden = !state.capabilities.compression.lossy;
+  elements.presetCompression.hidden = !state.capabilities.compression.lossy || !state.capabilities.compression.quality;
   elements.presetLossy.checked = Boolean(operations?.lossy);
   elements.presetLossy.disabled = !state.capabilities.compression.lossy;
   elements.presetQuality.value = String(QUALITY_LEVELS.some((level) => level.value === normalizeQuality(operations?.quality))
@@ -1151,15 +1373,20 @@ function applyPresetDestinationToDialog() {
 function syncPresetCompression() {
   const format = normalizeFormat(elements.presetFormat.value);
   const lossy = state.capabilities.compression.lossy && state.capabilities.compression.lossyFormats.includes(format);
-  elements.presetCompression.hidden = !lossy;
+  elements.presetCompression.hidden = !lossy || !state.capabilities.compression.quality;
   elements.presetLossy.disabled = !lossy;
   elements.presetQualityControl.hidden = !lossy || !state.capabilities.compression.quality;
   elements.presetQuality.disabled = !lossy || !state.capabilities.compression.quality || !elements.presetLossy.checked;
   if (!lossy) elements.presetLossy.checked = false;
 }
 
-function savePresetFromDialog() {
-  if (!state.pendingSave) return;
+async function savePresetFromDialog({ asCopy = false } = {}) {
+  if (!state.pendingSave || state.catalogBusy) return;
+  if (!state.recipeCatalog || state.recipeCatalog.readOnly) {
+    catalogFailure(catalogError(state.recipeCatalog?.issue ?? "Saved recipes are still opening. Try saving again in a moment."), true); return;
+  }
+  const pending = state.pendingSave;
+  if (asCopy) { pending.forceCopy = true; pending.createId = `custom-${crypto.randomUUID()}`; pending.command = null; }
   const name = elements.presetName.value.trim();
   if (!name) return;
   const destination = [...DESTINATION_PRESETS, { id: "custom", name: "Custom recipe" }].find((item) => item.id === elements.presetDestination.value);
@@ -1170,7 +1397,7 @@ function savePresetFromDialog() {
   operations.format = state.capabilities.outputFormats.includes(elements.presetFormat.value)
     ? elements.presetFormat.value
     : state.capabilities.outputFormats[0];
-  operations.lossy = Boolean(elements.presetLossy.checked && state.capabilities.compression.lossyFormats.includes(operations.format));
+  operations.lossy = Boolean(elements.presetLossy.checked && state.capabilities.compression.quality && state.capabilities.compression.lossyFormats.includes(operations.format));
   operations.quality = normalizeQuality(elements.presetQuality.value);
   if (destination?.id && destination.id !== "custom") {
     operations.presetId = destination.id;
@@ -1179,20 +1406,22 @@ function savePresetFromDialog() {
     delete operations.presetId;
     delete operations.presetName;
   }
+  const editing = !pending.forceCopy && pending.context?.catalog;
   const preset = {
-    id: `custom-${Date.now()}`,
+    ...(editing ? pending.context.originalRecipe : {}),
+    id: editing ? pending.context.presetId : pending.createId ??= `custom-${crypto.randomUUID()}`,
     name,
     destination: destination?.id === "custom" ? name : destination.name,
     description: "A local recipe saved from the canvas.",
     builtIn: false,
     operations: relativePresetOperations(operations, state.pendingSave.width || 1, state.pendingSave.height || 1),
   };
-  const existingIndex = state.pendingSave.context?.kind === "preset-edit"
-    ? state.customPresets.findIndex((candidate) => candidate.id === state.pendingSave.context.presetId)
-    : -1;
-  if (existingIndex >= 0) state.customPresets[existingIndex] = { ...state.customPresets[existingIndex], ...preset, id: state.customPresets[existingIndex].id };
-  else state.customPresets.push(preset);
-  writePresets();
+  const selection = editing ? pending.context.catalog : { base: state.recipeCatalog, token: null };
+  try {
+    if (!pending.command || canonicalJSON(pending.command.recipe) !== canonicalJSON(preset)) pending.command = recipeCommand(selection.base, "put", preset, selection.token);
+    const saved = await commitCatalog(pending.command, { inDialog: true });
+    if (!saved || state.pendingSave !== pending) return;
+  } catch (error) { catalogFailure(error, true); return; }
   state.pendingSave = null;
   elements.presetDialog.close();
   renderPresetList();
@@ -1202,6 +1431,11 @@ function savePresetFromDialog() {
 }
 
 function clearBatchFiles({ resetRecipe = false, skipSession = false } = {}) {
+  photoLookHistory.length = 0;
+  state.batch.projectId = `project-${crypto.randomUUID()}`;
+  state.batch.projectRevision = 0;
+  state.batch.projectCreatedAt = Date.now();
+  state.batch.frozenRecipes = [clone(presetById(state.activePresetId, state.activeRecipeKey))];
   cancelBatchWorkers();
   state.batch.revision += 1;
   for (const item of state.batch.files) {
@@ -1216,6 +1450,7 @@ function clearBatchFiles({ resetRecipe = false, skipSession = false } = {}) {
   state.batch.activeId = null;
   if (resetRecipe) {
     state.batch.presetId = null;
+    state.batch.recipeKey = null;
     state.batch.recipeScope = "all";
     state.batch.sharedOverride = null;
     state.batch.formatOverride = null;
@@ -1233,6 +1468,7 @@ function startNewBatch() {
   window.tinyImageStarEditor?.clearFile?.();
   state.batch.importNotice = "";
   state.batch.presetId = state.activePresetId;
+  state.batch.recipeKey = state.activeRecipeKey;
   elements.batchStatus.textContent = "New image set ready. Choose or drop images here.";
   renderBatchPresetPicker();
   if (reviewWasOpen) showView("editor");
@@ -1467,6 +1703,7 @@ async function importBatchFiles(fileList, { focusFirst = false } = {}) {
     height: 0,
     status: "reading",
     presetOverride: null,
+    recipeKeyOverride: null,
     override: null,
     retryable: false,
   }));
@@ -1476,6 +1713,7 @@ async function importBatchFiles(fileList, { focusFirst = false } = {}) {
     clearBatchFiles();
     state.batch.selectionTouched = false;
     state.batch.presetId = state.activePresetId;
+    state.batch.recipeKey = state.activeRecipeKey;
   }
   state.batch.files.push(...newItems);
   setBatchStatus(`${existingCount ? "Added " : "Reading "}${newItems.length} image${newItems.length === 1 ? "" : "s"} locally…${importNotice()}`);
@@ -1497,7 +1735,7 @@ function batchItemsReady(items) {
 }
 
 async function runBatch(items = state.batch.files) {
-  const readyItems = batchItemsReady(items);
+  let readyItems = batchItemsReady(items);
   if (!readyItems.length) {
     elements.batchStatus.textContent = state.batch.files.some((item) => item.status === "error")
       ? `No images are ready to update. Retry a failed image or choose another file.${importNotice()}`
@@ -1505,6 +1743,22 @@ async function runBatch(items = state.batch.files) {
     return;
   }
   cancelBatchWorkers({ previews: false });
+  const blocked = readyItems.filter((item) => {
+    const recipe = recipeForItem(item);
+    const problem = legacyRecipeProblem(recipe, state.capabilities)
+      || (state.batch.lossyOverride === true && !state.capabilities.compression.quality ? "The saved session requests adjustable compression. Choose a supported fixed-setting output." : "")
+      || legacyRecipeProblem({ id: recipe.id, name: recipe.name, operations: effectiveOperationsForItem(item) }, state.capabilities);
+    if (!problem) return false;
+    item.status = "error"; item.error = problem; item.retryable = true;
+    const prior = state.batch.results.get(item.id); if (prior?.url) URL.revokeObjectURL(prior.url);
+    state.batch.results.delete(item.id); return true;
+  });
+  readyItems = readyItems.filter((item) => !blocked.includes(item));
+  if (!readyItems.length) {
+    state.batch.processing = false; renderBatchGrid();
+    elements.batchStatus.textContent = `${blocked.length} image(s) need a supported recipe. Open Presets to choose a replacement. ${blocked[0]?.error ?? ""}`;
+    return;
+  }
   state.batch.revision += 1;
   state.batch.processing = true;
   for (const item of readyItems) {
@@ -1516,17 +1770,16 @@ async function runBatch(items = state.batch.files) {
   renderBatchGrid();
   const queue = readyItems.map((item) => {
     const settings = effectiveOperationsForItem(item);
-    const bytes = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
-    return { id: item.id, name: item.name, bytes, settings };
+    // Queue intent only. Copying every source here doubles the set's encoded
+    // memory before even the first worker can start. Copies belong to dispatch.
+    return { id: item.id, name: item.name, settings };
   });
   state.batch.job = { revision: state.batch.revision, total: queue.length, queue, active: 0, completed: 0, pendingCompositions: 0 };
   elements.batchStatus.textContent = `Updating ${readyItems.length} preview${readyItems.length === 1 ? "" : "s"}…`;
   elements.batchCancel.hidden = false;
-  const workerCount = processingWorkerCount(
-    readyItems,
-    Number(globalThis.navigator?.hardwareConcurrency) || 2,
-    4,
-  );
+  // Logical clients bound metadata dispatch; the shared scheduler decides
+  // how many physical workers can actually run across all surfaces.
+  const workerCount = Math.min(readyItems.length, getProcessingScheduler().budget.cpu);
   state.batchWorkers = Array.from({ length: workerCount }, () => createBatchWorker(state.batch.job));
   state.batchWorker = state.batchWorkers[0] ?? null;
   for (const worker of state.batchWorkers) dispatchBatchWork(worker);
@@ -1549,7 +1802,7 @@ function cancelBatchPreviewWorkers() {
 function requestBatchPreview(item) {
   const revision = state.batch.revision;
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+    const worker = createProcessingClient({ priority: 2 });
     let settled = false;
     let proxyUrl = null;
     const cleanup = () => {
@@ -1568,12 +1821,15 @@ function requestBatchPreview(item) {
     worker.addEventListener("message", (event) => {
       const message = event.data;
       if (message.type === "ready") {
-        const bytes = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
-        worker.postMessage({
+        const message = {
           type: "preview",
           revision,
-          file: { id: item.id, name: item.name, bytes },
-        }, [bytes]);
+          file: { id: item.id, name: item.name },
+        };
+        worker.submit({ message, source: { encodedBytes: item.bytes.byteLength }, prepare: () => {
+          const bytes = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
+          return { message: { ...message, file: { ...message.file, bytes } }, transfer: [bytes] };
+        } });
         return;
       }
       if (message.type === "preview-error") {
@@ -1665,7 +1921,7 @@ function clearCompletedBatchItems() {
 }
 
 function createBatchWorker(job) {
-  const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+  const worker = createProcessingClient({ priority: 1 });
   worker.currentFile = null;
   worker.addEventListener("message", (event) => handleBatchWorkerMessage(worker, event.data, job));
   worker.addEventListener("error", () => retireBatchWorker(worker, job, "This image could not be processed."));
@@ -1705,36 +1961,29 @@ function retireBatchWorker(worker, job, message) {
 function dispatchBatchWork(worker) {
   const job = state.batch.job;
   if (!job || job.revision !== state.batch.revision || worker.currentFile) return;
-  const file = job.queue.shift();
-  if (!file) {
+  const queued = job.queue.shift();
+  if (!queued) {
     finishBatchJobIfReady();
     return;
   }
-  const item = state.batch.files.find((candidate) => candidate.id === file.id);
+  const item = state.batch.files.find((candidate) => candidate.id === queued.id);
   if (!item) {
     dispatchBatchWork(worker);
     return;
   }
+  const file = { ...queued };
   worker.currentFile = { item, file };
   job.active += 1;
-  worker.postMessage({ type: "process", jobId: "batch", revision: job.revision, files: [file], settings: null }, [file.bytes]);
+  const message = { type: "process", jobId: "batch", revision: job.revision, files: [file], settings: null };
+  worker.submit({ message, source: { width: item.width, height: item.height, encodedBytes: item.bytes.byteLength }, prepare: () => {
+    const bytes = item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength);
+    return { message: { ...message, files: [{ ...file, bytes }] }, transfer: [bytes] };
+  } });
 }
 
 async function commitBatchResult(item, message, bytes, settings, job) {
   if (job.revision !== state.batch.revision || !state.batch.files.includes(item)) return;
-  let result = { ...message, output: bytes };
-  if (settings.textLayers?.length) {
-    try {
-      result = await window.tinyImageStarEditor.composeTextOutput(result, settings);
-    } catch (error) {
-      item.status = "error";
-      item.error = error?.userMessage ?? "The text could not be included in this image.";
-      item.retryable = true;
-      renderBatchGrid();
-      return;
-    }
-  }
-  if (job.revision !== state.batch.revision || !state.batch.files.includes(item)) return;
+  const result = { ...message, output: bytes };
   const previous = state.batch.results.get(item.id);
   if (previous?.url) URL.revokeObjectURL(previous.url);
   state.batch.results.set(item.id, {
@@ -1823,22 +2072,26 @@ function renderTrayPresetPicker() {
   if (!selectedPresetId) {
     const mixed = document.createElement("option");
     mixed.value = "";
-    mixed.textContent = "Different destinations";
+    mixed.textContent = "Different recipes or versions";
     mixed.selected = true;
     mixed.disabled = true;
     elements.trayPresetPicker.append(mixed);
   }
   for (const preset of allPresets()) {
     const option = document.createElement("option");
-    option.value = preset.id;
-    option.textContent = preset.name;
-    option.selected = preset.id === selectedPresetId;
+    option.value = recipeKey(preset);
+    option.dataset.recipeId = preset.id;
+    option.dataset.recipeRevision = String(preset.style?.revision ?? "legacy");
+    option.textContent = recipeLabel(preset, allPresets());
+    const problem = preset.recovery ? "Saved settings for the original image. Save a reusable recipe to apply elsewhere." : legacyRecipeProblem(preset, state.capabilities); option.disabled = Boolean(problem); if (problem) option.title = problem;
+    option.selected = recipeKey(preset) === selectedPresetId;
     elements.trayPresetPicker.append(option);
   }
 }
 
 function renderWorkspaceTray() {
   if (!elements.imageTray) return;
+  renderPhotoLookControls();
   renderWorkspaceNavigation();
   renderRecipeScopeControls();
   renderTrayPresetPicker();
@@ -1868,6 +2121,7 @@ function renderWorkspaceTray() {
     open.type = "button";
     open.className = "tray-item-open";
     open.setAttribute("aria-label", `Edit ${item.name}`);
+    open.title = item.name;
     open.disabled = !item.width || !item.height;
     const image = document.createElement("img");
     image.src = result?.url ?? item.sourceUrl;
@@ -1885,10 +2139,12 @@ function renderWorkspaceTray() {
     if (item.presetOverride) {
       const recipe = document.createElement("span");
       recipe.className = "tray-item-recipe";
-      recipe.textContent = `Recipe: ${recipeForItem(item).name}`;
+      recipe.textContent = `Recipe: ${recipeLabel(recipeForItem(item), allPresets())}`;
       details.append(recipe);
     }
     if (framing.flaggedIds.has(String(item.id))) {
+      open.title = `${item.name} — review framing`;
+      open.setAttribute("aria-label", `Edit ${item.name}, review framing`);
       const review = document.createElement("span");
       review.className = "tray-item-framing";
       review.textContent = "Review framing";
@@ -1925,6 +2181,8 @@ function renderWorkspaceTray() {
 }
 
 function renderBatchGrid() {
+  getProcessingScheduler().setRetainedBytes("batch", state.batch.files.reduce((sum, item) => sum + (item.bytes?.byteLength ?? 0), 0)
+    + [...state.batch.results.values()].reduce((sum, result) => sum + (result.output?.byteLength ?? 0) * 2, 0));
   const hasFiles = state.batch.files.length > 0;
   elements.batchView.dataset.hasFiles = String(hasFiles);
   renderWorkspaceTray();
@@ -1998,7 +2256,8 @@ function renderBatchGrid() {
     const destination = document.createElement("span");
     const activePreset = recipeForItem(item);
     const effectiveFormat = effectiveOperationsForItem(item, activePreset).format;
-    destination.textContent = `${activePreset.name} · ${formatLabel(result?.format ?? effectiveFormat)}`;
+    destination.textContent = `${recipeLabel(activePreset, allPresets())} · ${formatLabel(result?.format ?? effectiveFormat)}`;
+    card.dataset.recipeKey = recipeKey(activePreset);
     meta.append(destination);
     if (result) {
       const size = document.createElement("span");
@@ -2022,7 +2281,7 @@ function renderBatchGrid() {
     if (item.presetOverride) {
       const recipeOverride = document.createElement("span");
       recipeOverride.className = "override-chip recipe-override-chip";
-      recipeOverride.textContent = "Different destination";
+      recipeOverride.textContent = activePreset.recovery ? "Recovered image settings" : "Different destination";
       meta.append(recipeOverride);
     }
     const more = document.createElement("details");
@@ -2036,7 +2295,7 @@ function renderBatchGrid() {
     if (["error", "cancelled"].includes(item.status)) addButton(actions, "Retry", "button secondary", () => retryBatchItem(item));
     addButton(actions, "Remove image", "button secondary", () => removeBatchItem(item));
     if (item.override) {
-      addButton(actions, "Reset to preset", "button secondary", () => resetBatchOverride(item));
+      addButton(actions, activePreset.recovery ? "Reset to recovered edits" : "Reset to preset", "button secondary", () => resetBatchOverride(item));
     }
     if (item.presetOverride) {
       addButton(actions, "Use shared destination", "button secondary", () => resetBatchRecipe(item));
@@ -2257,6 +2516,8 @@ function batchEditorContext(item, preset = null) {
     kind: "batch",
     fileId: item.id,
     presetId: recipe.id,
+    recipeKey: recipeKey(recipe),
+    ...(recipe.style ? { style: clone(recipe.style) } : {}),
     batchPresetId: state.batch.presetId,
     sharedOperations,
     overridePatch: clone(item.override),
@@ -2270,7 +2531,7 @@ function captureCurrentBatchEditorOverride() {
   if (!context || context.kind !== "batch") return;
   const item = state.batch.files.find((candidate) => candidate.id === context.fileId);
   if (!item || !snapshot.operations) return;
-  const shared = context.sharedOperations ?? sharedOperationsForItem(item, presetById(context.presetId));
+  const shared = context.sharedOperations ?? sharedOperationsForItem(item, presetById(context.presetId, context.recipeKey));
   const initialEffective = context.effectiveOperations
     ?? mergeOperationConfig(shared, context.overridePatch ?? item.override);
   item.override = mergeOverridePatch(
@@ -2312,22 +2573,24 @@ function editBatchItem(item) {
 function openActiveBatchItemIfNeeded() {
   const snapshot = window.tinyImageStarEditor?.getSnapshot?.();
   if (snapshot?.file || !state.batch.files.length) return false;
-  const active = state.batch.files.find((item) => item.id === state.batch.activeId)
-    ?? state.batch.files.find((item) => state.batch.selected.has(item.id))
-    ?? state.batch.files[0];
+  const usable = state.batch.files.filter((item) => item.status !== "error");
+  const active = usable.find((item) => item.id === state.batch.activeId)
+    ?? usable.find((item) => state.batch.selected.has(item.id))
+    ?? usable[0];
   if (!active) return false;
   editBatchItem(active);
   return true;
 }
 
 function resetBatchOverride(item) {
-  item.override = null;
+  item.override = clone(recipeForItem(item).recovery?.originalOverride ?? null);
   if (state.batch.activeId === item.id) refreshActiveBatchEditor();
   runBatch([item]);
 }
 
 function resetBatchRecipe(item) {
   item.presetOverride = null;
+  item.recipeKeyOverride = null;
   if (state.batch.activeId === item.id) refreshActiveBatchEditor();
   runBatch([item]);
 }
@@ -2373,23 +2636,21 @@ function returnFromEditor(event) {
 
 function onEditorLoaded() {
   if (!state.pendingPresetId) return;
-  const preset = presetById(state.pendingPresetId);
+  const pending = state.pendingPresetSelection, preset = pending?.preset ?? presetById(state.pendingPresetId);
   state.pendingPresetId = null;
+  state.pendingPresetSelection = null;
+  const problem = legacyRecipeProblem(preset, state.capabilities);
+  if (problem) { state.presetMigrationMessage = problem; renderPresetList(); return; }
   const snapshot = window.tinyImageStarEditor.getSnapshot();
-  const operations = normalizePresetOperations(preset.operations, snapshot.imageWidth, snapshot.imageHeight);
-  window.tinyImageStarEditor.replaceOperations(operations, { kind: "preset-edit", presetId: preset.id });
+  const operations = normalizePresetOperations(legacyRecipeOperations(preset), snapshot.imageWidth, snapshot.imageHeight);
+  try { window.tinyImageStarEditor.replaceOperations(operations, pending?.context ?? presetEditContext(preset)); }
+  catch (error) { catalogFailure(error); }
 }
 
 function applyCapabilities(raw) {
   state.capabilities = normalizeCapabilities(raw);
-  if (state.batch.formatOverride && !state.capabilities.outputFormats.includes(state.batch.formatOverride)) {
-    state.batch.formatOverride = null;
-  }
-  if (!state.capabilities.compression.lossyFormats.includes(batchOutputFormat())) {
-    state.batch.lossyOverride = null;
-    state.batch.qualityOverride = null;
-  }
-  if (!state.capabilities.compression.quality) state.batch.qualityOverride = null;
+  // A capability handshake describes what can run; it cannot change saved
+  // output intent. Unsupported settings stay visible until explicitly replaced.
   const accept = formatAccept(state.capabilities.inputFormats);
   elements.batchFileInput.accept = accept;
   elements.batchFolderInput.accept = accept;
@@ -2510,6 +2771,13 @@ elements.individualSaveDialog?.addEventListener("close", () => {
 elements.sessionRestore?.addEventListener("click", () => {
   void restoreSession();
 });
+for (const id of ["photo-look-open", "batch-photo-look"]) document.getElementById(id).addEventListener("click", choosePhotoLook);
+elements.batchTextStamp?.addEventListener("click", chooseCreatorStamp);
+elements.trayTextStamp?.addEventListener("click", chooseCreatorStamp);
+for (const id of ["photo-look-undo", "batch-photo-look-undo"]) document.getElementById(id).addEventListener("click", undoPhotoLook);
+elements.sessionCurrentRecipes.addEventListener("click", () => { void restoreSession({ missingRecipe: "current" }); });
+elements.sessionOriginals.addEventListener("click", () => { void restoreSession({ missingRecipe: "originals" }); });
+elements.sessionBackup.addEventListener("click", () => { document.querySelector("#local-data-button").click(); });
 elements.sessionClear?.addEventListener("click", () => {
   const pending = state.session.pending;
   forgetPendingSession();
@@ -2519,11 +2787,12 @@ elements.sessionLater?.addEventListener("click", forgetPendingSession);
 elements.presetForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (event.submitter?.value === "cancel") {
+    state.catalogMutation?.abort();
     elements.presetDialog.close();
     state.pendingSave = null;
     return;
   }
-  savePresetFromDialog();
+  void savePresetFromDialog();
 });
 window.addEventListener("tinystar:show-presets", () => showView("presets"));
 window.addEventListener("tinystar:show-batch", () => showView("batch"));
@@ -2587,21 +2856,37 @@ window.addEventListener("tinystar:editor-changed", () => {
     scheduleSessionSave(0);
   }, 180);
 });
+window.addEventListener("tinystar:local-data-clearing", () => {
+  state.catalogMutation?.abort(); state.catalogRead++; state.failedCatalogCommand = null; state.presetMigrationMessage = "";
+  clearTimeout(state.session.saveTimer);
+  state.session.suppress = true;
+});
 window.addEventListener("tinystar:local-data-cleared", () => {
+  state.session.suppress = false;
   state.customPresets = [];
-  state.activePresetId = "keep-original";
-  state.batch.recipeScope = "all";
-  state.batch.sharedOverride = null;
-  state.batch.qualityOverride = null;
-  if (!state.batch.files.length || !allPresets().some((preset) => preset.id === state.batch.presetId)) {
-    state.batch.presetId = "keep-original";
+  // Clearing saved data does not change recipes or corrections in open work.
+  if (!state.batch.files.length) {
+    state.batch.frozenRecipes = [];
+    state.activePresetId = state.batch.presetId = "keep-original";
+    state.activeRecipeKey = state.batch.recipeKey = null;
   }
   state.session.pending = null;
   setSessionRecoveryVisible(false);
   renderPresetList();
   renderBatchPresetPicker();
+  void refreshRecipeCatalog();
 });
+window.addEventListener(STYLE_CHANGE_EVENT, () => { if (!state.session.suppress) void refreshRecipeCatalog(); });
+window.addEventListener("storage", (event) => { if (event.key === LEGACY_RECIPES_KEY || event.key === null) void refreshRecipeCatalog(); });
 window.addEventListener("tinystar:capabilities", (event) => applyCapabilities(event.detail));
+window.addEventListener("tinystar:recovery-read-error", (event) => {
+  if (elements.sessionRecoveryMessage) elements.sessionRecoveryMessage.textContent = `${event.detail.message} Use Local data to back up the saved work before clearing it.`;
+  if (elements.sessionRestore) elements.sessionRestore.disabled = true;
+  setSessionRecoveryVisible(true);
+});
+window.addEventListener("tinystar:recovery-write-error", () => {
+  elements.batchStatus.textContent = "Recovery could not be saved. Your open images are still available; use Local data to back up saved work.";
+});
 window.addEventListener("keydown", (event) => {
   if (state.presetsOpen && event.key === "Escape") {
     event.preventDefault();
@@ -2623,10 +2908,11 @@ window.addEventListener("keydown", (event) => {
   saveSelected();
 });
 
-state.customPresets = readPresets();
+void refreshRecipeCatalog();
 state.folderJobs = attachLargeFolderJobs({
-  listRecipes: allPresets,
+  listRecipes: () => allPresets().filter((recipe) => !recipe.recovery),
   getDefaultRecipeId: () => state.batch.presetId ?? state.activePresetId,
+  getDefaultRecipeKey: () => recipeKey(batchPreset()),
   getCapabilities: () => state.capabilities,
   onActiveChange: (active) => {
     state.folderJobActive = active;

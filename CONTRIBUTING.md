@@ -50,9 +50,8 @@ Then open <http://127.0.0.1:8000/>. Override `PORT` and `HOST` when needed;
 Use `make verify-watch` for fast checks while editing. Run `make verify` before
 submitting a change. To inspect the exact GitHub Pages payload locally, run
 `make package-pages`; it recreates the repository-owned `_site/` directory,
-minifies the served assets, creates Brotli sidecars, optionally runs
-`wasm-opt -Oz --strip-debug`, and rejects unexpected files. Set
-`WASM_OPT_REQUIRED=1` to make a local build fail when `wasm-opt` is unavailable.
+minifies app-owned assets, creates Brotli sidecars, and rejects unexpected files.
+The published engine pair stays unchanged and its pinned hashes are verified.
 The complete feature-to-test contract is in
 [VERIFICATION_MATRIX.md](VERIFICATION_MATRIX.md).
 
@@ -69,12 +68,14 @@ directory has already been assembled.
 | `src/editor/` | Canvas state, direct interactions, rendering, and editor processing. |
 | `src/batch.js` | Shared image-set workflow, result selection, overrides, and saves. |
 | `src/jobs/` | Durable, bounded-memory large-folder jobs. |
+| `src/processing/` | Shared worker admission, lifecycle, resource estimates, and mode controls. |
+| `tests/processing.test.mjs` | Scheduler state and failure-injection checks; run by `npm run verify`. |
 | `src/engine/pillow.js` | App-owned adapter around the generated image engine. |
 | `src/worker.js` | Interactive image processing off the main thread. |
 | `scripts/verify.mjs` | Fast deterministic byte/state contract. |
 | `scripts/browser-smoke.mjs` | Headless browser interaction and output checks. |
 | `scripts/assemble-pages.mjs` | Safe local assembly of the GitHub Pages payload. |
-| `scripts/optimize-pages.mjs` | Release minification, WASM optimization, and Brotli sidecars. |
+| `scripts/optimize-pages.mjs` | App minification, published-runtime integrity, and Brotli sidecars. |
 | `scripts/check-pages-artifact.mjs` | Read-only allowlist and required-file check for that payload. |
 | `scripts/check-doc-links.mjs` | Read-only check for broken repository-local Markdown links. |
 | `Makefile` | Thin contributor aliases; it is not a second build system. |
@@ -105,13 +106,15 @@ they do not currently carry semantic-versioning compatibility promises.
 `wasm/pillow_rs_js.js` and `wasm/pillow_rs_js_bg.wasm` are generated together
 and must never be hand-edited independently. A change that replaces them must:
 
-1. identify the exact Pillow-RS source revision and build command;
+1. identify the exact npm version, source revision, lockfile integrity and provenance;
 2. update `wasm/README.md` with new checksums and provenance;
 3. retain the upstream license text; and
 4. pass `make verify` before the artifact is committed.
 
-The current artifact predates a recorded source revision. That known provenance
-debt is stated in `wasm/README.md`; do not invent a revision for it.
+Run `npm run stage:runtime` to copy the locked package and `npm run check:runtime`
+to verify it. The old artifact, whose upstream revision is unknown, remains an
+immutable regression oracle under `tests/oracles/legacy/`. See the
+[parity scope](docs/ENGINE_PARITY_SCOPE.md) for migration evidence commands.
 
 ## Pull requests
 
@@ -125,12 +128,12 @@ Keep the title and description user-focused. Include:
 - browser/platform boundaries that were not exercised; and
 - any change to local storage, permissions, memory limits, or output bytes.
 
-CI runs `make verify` on Node.js 20 and 24, then installs Binaryen and builds
-the optimized Pages artifact with `WASM_OPT_REQUIRED=1`. A pull request must
+CI runs `make verify` on Node.js 20 and 24, then builds and validates
+the Pages artifact with unchanged published engine bytes. A pull request must
 pass both verification matrix entries and the artifact build; a main branch
 deployment is only attempted after those gates succeed. Identifier
 minification is a byte-size optimization, not a security boundary or a way to
-hide source in this open-source browser application.
+hide source in a browser application.
 
 There is currently no CLA or DCO sign-off requirement. Contribution licensing
 cannot be finalized until the project owner selects the repository license;

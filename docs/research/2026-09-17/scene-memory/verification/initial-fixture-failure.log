@@ -1,0 +1,27 @@
+2000x1500-png-cutout: pass; Wasm 126.7 MiB; 5297 ms
+2000x1500-png-finish: pass; Wasm 111.1 MiB; 7381 ms
+2000x1500-png-depth-finish: fail; Wasm NaN MiB; Depth title text size is relative to the photo width.
+2000x1500-jpg-cutout: pass; Wasm 118.7 MiB; 4887 ms
+2000x1500-jpg-finish: pass; Wasm 102.1 MiB; 6957 ms
+2000x1500-jpg-depth-finish: fail; Wasm NaN MiB; Depth title text size is relative to the photo width.
+4000x3000-png-cutout: pass; Wasm 275.9 MiB; 6731 ms
+4000x3000-png-finish: pass; Wasm 321.8 MiB; 8944 ms
+4000x3000-png-depth-finish: fail; Wasm NaN MiB; Depth title text size is relative to the photo width.
+4000x3000-jpg-cutout: pass; Wasm 262.8 MiB; 6136 ms
+4000x3000-jpg-finish: pass; Wasm 297.1 MiB; 8109 ms
+4000x3000-jpg-depth-finish: fail; Wasm NaN MiB; Depth title text size is relative to the photo width.
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Some research cases failed; their evidence is retained.
+    at file:///Users/lazytrot/work/tiny-image-star/scripts/research/scene-memory-probe.mjs:95:10 {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: false,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v24.18.0

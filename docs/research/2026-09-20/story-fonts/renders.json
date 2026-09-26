@@ -1,0 +1,164 @@
+[
+  {
+    "recipe": "Scrapbook",
+    "variant": "portrait",
+    "page": 1,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Scrapbook",
+    "variant": "portrait",
+    "page": 2,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Scrapbook",
+    "variant": "portrait",
+    "page": 4,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Scrapbook",
+    "variant": "tall",
+    "page": 1,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Scrapbook",
+    "variant": "tall",
+    "page": 2,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Scrapbook",
+    "variant": "tall",
+    "page": 4,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "portrait",
+    "page": 1,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "portrait",
+    "page": 2,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "portrait",
+    "page": 4,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "tall",
+    "page": 1,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "tall",
+    "page": 2,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Depth cover",
+    "variant": "tall",
+    "page": 4,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "portrait",
+    "page": 1,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "portrait",
+    "page": 2,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "portrait",
+    "page": 4,
+    "width": 384,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "tall",
+    "page": 1,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "tall",
+    "page": 2,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  },
+  {
+    "recipe": "Film diary",
+    "variant": "tall",
+    "page": 4,
+    "width": 270,
+    "height": 480,
+    "exact": true,
+    "warnings": []
+  }
+]

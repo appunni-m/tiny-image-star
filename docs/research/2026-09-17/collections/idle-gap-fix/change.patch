@@ -1,0 +1,75 @@
+--- before/src/processing/scheduler.js
++++ after/src/processing/scheduler.js
+@@ -127,6 +127,10 @@
+     clearTimeout(task.timer);
+     task.signal?.removeEventListener("abort", task.cancel);
+     this.queue = this.queue.filter((candidate) => candidate !== task);
++    // Partial throughput windows measure continuous demand. Once all work
++    // drains, their wall clock must not include the wait for another job.
++    // Keep completed measurements and the learned limit for the next job.
++    if (!this.queue.length && ![...this.slots].some((slot) => slot.task && slot.task.state !== "finished")) this.windows.clear();
+     if (error) task.reject(error); else task.resolve(value);
+     this.syncOrigin();
+     this.pumpSoon();
+--- before/tests/processing.test.mjs
++++ after/tests/processing.test.mjs
+@@ -228,6 +228,49 @@
+   for (const job of jobs) job.cancel(); await Promise.allSettled(jobs.map((j) => j.promise));
+ });
+ 
++test("Auto retains useful concurrency without counting idle time between collections", async (t) => {
++  let time = 0;
++  const { pool, submit, active } = harness({ now: () => time }); t.after(() => pool.close());
++  const first = Array.from({ length: 26 }, (_, i) => submit(i, { workClass: "same-render" }));
++  await tick();
++  while (first.some((job) => job.state !== "finished")) {
++    time += 100; for (const worker of active()) worker.finish(); await tick();
++  }
++  await Promise.all(first.map((job) => job.promise));
++  assert.equal(pool.snapshot().limit, 4);
++  time += 10_000;
++  const second = Array.from({ length: 64 }, (_, i) => submit(i, { workClass: "same-render" }));
++  await tick();
++  for (let round = 0; round < 4; round++) {
++    time += 100; for (const worker of active()) worker.finish(); await tick();
++    assert.ok(pool.snapshot().limit >= 4, "idle time must not manufacture a throughput regression");
++  }
++  assert.ok(pool.snapshot().limit > 4, "fresh comparable work can resume calibration");
++  for (const job of second) job.cancel(); await Promise.allSettled(second.map((job) => job.promise));
++});
++
++for (const ending of ["success", "render-error", "cancel", "prepare-error", "cancel-queued"]) {
++  test(`Auto discards an unfinished measurement when the queue drains by ${ending}`, async (t) => {
++    let time = 0;
++    const { pool, submit, active } = harness({ now: () => time }); t.after(() => pool.close());
++    const first = submit(1, { workClass: "same-render" });
++    const last = submit(2, { workClass: "same-render",
++      ...(ending === "prepare-error" ? { prepare: () => { throw new Error("Source unavailable"); } } : {}) });
++    await tick(); time += 100;
++    active()[0].finish();
++    if (ending === "cancel-queued") { assert.equal(last.state, "queued"); last.cancel(); }
++    await first.promise;
++    await tick();
++    if (ending === "cancel") last.cancel();
++    if (ending === "success") active()[0].finish();
++    if (ending === "render-error") active()[0].finish({ type: "fatal-error", message: "Invalid source" });
++    await Promise.allSettled([last.promise]);
++    assert.equal(pool.snapshot().active, 0);
++    assert.equal(pool.snapshot().queued, 0);
++    assert.equal(pool.windows.size, 0, "partial wall-time windows cannot span an idle interval");
++  });
++}
++
+ test("an oversized idle WASM heap is retired before admitting smaller work", async (t) => {
+   const { pool, submit, active, workers } = harness(); t.after(() => pool.close());
+   pool.budget.memory = 200 * MiB;
+--- before/scripts/migration/collection-page.js
++++ after/scripts/migration/collection-page.js
+@@ -123,6 +123,7 @@
+   const directory = await root.getDirectoryHandle(result.jobId);
+   const references = await root.getDirectoryHandle("references", { create: true });
+   const records = await store.getManifestPage(result.jobId, 0, input.sequence.length);
++  demand(records.length === input.sequence.length && records.every((record, index) => record.index === index), "Missing or unexpected durable manifest row");
+   const outputNames = [];
+   for await (const [name] of directory.entries()) outputNames.push(name);
+   demand(outputNames.length === input.sequence.length, "Missing or extra saved output");

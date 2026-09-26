@@ -1,66 +1,73 @@
-# Image engine evaluation
+# Image engine decision
 
-This note records the current app-owned decision boundary. It is intentionally
-separate from the public flow: users should experience a private, offline
-image tool without needing to know which implementation is underneath.
+Updated 20 September 2026. Tiny Image Star currently integrates the published
+`pillow-rs@12.2.0-alpha.1` JavaScript/WASM package. The app pins its version,
+lockfile integrity, source revision and paired file hashes; it does not build
+from a sibling Rust checkout. See [runtime identity](wasm/runtime.json) and
+[staging implementation](scripts/stage-pillow-runtime.mjs).
 
-## Candidates
+## Verified application boundary
 
-### pillow-rs JavaScript/WASM package
+The [app-owned adapter](src/engine/pillow.js) initializes Pillow inside admitted
+workers, discovers qualified capabilities and renders actual output bytes. It
+uses `saveWithInput(format, null)` for PNG and fixed-setting JPEG. The second
+argument is an extension hint. JPEG alpha handling uses an explicit background;
+an unavailable output format or adjustable-quality request fails rather than
+silently becoming PNG.
 
-The generated package already provides the operations needed for the first
-vertical slice: open an image, resize, crop, convert, and apply brightness or
-contrast adjustments. A generated browser artifact was exercised locally with
-WebP input and PNG output.
+Source and packaged Chromium suites exercise real decodes, edits, text and
+scene composition, output signatures/dimensions, independent browser decoding,
+multi-worker equality and recovery. The separate [migration slice](docs/ENGINE_PARITY_SCOPE.md)
+compares 33 workflows with an independently executed frozen adapter. This is
+evidence for the declared application slice, not all upstream Pillow APIs or
+all input files and browser/device combinations.
 
-It is not yet a complete release engine for the product contract. The current
-`extra` package accepts the enabled input formats, but its exposed `Image.save`
-path produces PNG only. The generic container encoder in the Rust layer is not
-exposed through the JavaScript binding, and AVIF is not enabled in the current
-WASM feature set. Those limits are tracked in
-[`PILLOW_RS_ISSUES.md`](PILLOW_RS_ISSUES.md).
+The adapter advertises JPEG, PNG, GIF, BMP, WebP, TIFF and ICO inputs. Tiny input
+fixtures do not establish every variant, animation, profile or metadata case.
+Release outputs remain PNG and JPEG. Other encoders observed in the package
+probe are not thereby qualified app features. AVIF is unavailable in the pinned
+package's executed codec probe; HEIC is not in the app's input list.
 
-### image-slash-star codec layer
+Browser Canvas/OffscreenCanvas handles text rasterization, masks and shared
+composition where implemented. Pillow remains the final output encoder.
+Preview and export use the same app-owned scene/operation contracts and explicit
+scale rules; a screen capture is not the export implementation.
 
-The codec layer is the strongest candidate for a format capability contract:
-its source capability table covers JPEG, PNG, GIF, BMP, WebP, TIFF, ICO, and
-AVIF. It is not by itself an image-processing/editor API, so it cannot replace
-the transform engine without an app-owned wrapper. Its current WASM AVIF
-support is also restricted for still decode and unavailable for still encode;
-AVIF therefore remains a release gate rather than a UI promise.
+## Constraints that still affect the product
 
-### Browser Canvas APIs
+- The published save contract has no quality or compression-effort options.
+  [The options proposal](docs/PILLOW_ENCODER_OPTIONS_PROPOSAL.md) requests a
+  separately versioned API and paired performance/quality evidence.
+- Full source buffers and decoded images can coexist with output buffers.
+  Reducing preview dimensions does not make the current source decode bounded
+  to thumbnail memory. Admission limits and working-copy work remain necessary.
+- Synchronous WASM cannot receive an in-operation cancellation message. The
+  scheduler terminates an active worker for cancellation, then recreates it as
+  needed; queued work is cancellable before reading source bytes.
+- [HEIC native decoding research](docs/HEIC_IMPORT_RESEARCH.md) has separate
+  Chromium/WebKit observations. No HEIC decoder or fallback has been integrated.
+- sRGB/profile conversion, HDR exclusions, EXIF normalization, physical phone
+  behavior, complete memory accounting and advertised-scale performance remain
+  release gates. Current concurrency evidence is in
+  [Collection benchmarks](docs/COLLECTION_BENCHMARKS.md).
 
-Canvas or OffscreenCanvas can provide a useful emergency preview path for
-common browser-readable images. It cannot define Tiny Image Star's all-format
-export contract because browser support for TIFF, ICO, and AVIF output is not
-uniform. It must remain a preview fallback, not the source of truth for saved
-files.
+The architecture still uses a static local-processing app. Pillow does not
+provide an automatic segmentation or generative-image model. Optional inference
+needs its own qualified assets, licenses, resource admission and quality tests.
 
-## Decision
+## Upgrade decision
 
-Keep the frontend behind an app-owned `ImageEngine` adapter with three narrow
-responsibilities:
+Keep the published package behind the existing adapter. Adopt a new immutable
+package only after verifying its provenance, paired bytes, public capabilities,
+error behavior, independent decode checks, parity, packaged browser behavior
+and representative benchmark results. [Release instructions](RELEASING.md)
+describe the repository commands and open operational gates.
 
-```text
-inspect(bytes)
-render(bytes, operations, outputSettings)
-capabilities()
-```
+Revisit the engine boundary for qualified encoder controls, reduced source
+decoding, streaming, AVIF/HEIC support or a measured operation bottleneck. Never
+infer a browser capability from the Rust core alone, patch generated WASM, or
+edit the upstream checkout as part of an application upgrade.
 
-Use the existing pillow-rs generated artifact for the first useful browser
-slice, with processing isolated in a worker and output formats disabled until
-their encode/download fixture tests pass. If the complete format contract,
-especially AVIF, is required for launch, resolve the upstream binding/feature
-gates or put a separate app-owned WASM facade behind the adapter. Never patch
-the pillow-rs checkout from this application.
-
-## Revisit triggers
-
-Re-evaluate the adapter when one of these becomes true:
-
-- generic output encoding is exposed and reproducibly packaged;
-- AVIF still decode and encode pass in a browser fixture matrix;
-- a batch benchmark shows the current transform path cannot meet the
-  responsiveness target;
-- preview and export need separate quality settings or streaming cancellation.
+The [earlier evaluation](docs/research/2026-08-02/engine-evaluation-history.md)
+is preserved as history. Its missing-generic-encoder conclusion does not apply
+to the package now integrated here.

@@ -1,0 +1,585 @@
+{
+  "schema": "tinystar/scene-collection-verification@1",
+  "recordedAt": "2026-09-20T15:01:57.498372+00:00",
+  "scope": "Durable selected-story groups with immutable scene and asset snapshots, complete slide/shape manifests, concurrent journaled outputs, reload, pause, failed-only retry and paged review.",
+  "processingTarget": {
+    "target_profile": "node-wasm",
+    "target_id": "app-engine",
+    "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:178b550eb645e1df9c1dbcbf2dec19cfaa77276e8b13aaaa3f1578115d28c67f",
+    "dirty": true,
+    "runtime": "v24.18.0",
+    "backend": "wasm-cpu",
+    "features": [
+      "png"
+    ]
+  },
+  "archiveInventorySha256": "ac5e81da96215a6b5faf56cd74c58e337867bcb18efe4e38259a427b1911d3f1",
+  "packageInventorySha256": "177581702f1c6faa8004b86385ff698d6d63542a8496ed781de273f90f994a22",
+  "inventoryCounts": {
+    "source-files.json": 129,
+    "archive-files.json": 253,
+    "packaged-files.json": 231
+  },
+  "checks": {
+    "deterministic": {
+      "scheduler": 38,
+      "modelAndDiagnostics": 147,
+      "total": 185
+    },
+    "sourceBrowser": "pass",
+    "packagedBrowser": "pass",
+    "folderRecovery": "pass",
+    "csp": [
+      {
+        "artifact": "source-security.json",
+        "browser": "chromium",
+        "version": "151.0.7922.34",
+        "mode": "meta",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "source-security.json",
+        "browser": "chromium",
+        "version": "151.0.7922.34",
+        "mode": "headers",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "source-security.json",
+        "browser": "webkit",
+        "version": "26.5",
+        "mode": "meta",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "source-security.json",
+        "browser": "webkit",
+        "version": "26.5",
+        "mode": "headers",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "packaged-security.json",
+        "browser": "chromium",
+        "version": "151.0.7922.34",
+        "mode": "meta",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "packaged-security.json",
+        "browser": "chromium",
+        "version": "151.0.7922.34",
+        "mode": "headers",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "packaged-security.json",
+        "browser": "webkit",
+        "version": "26.5",
+        "mode": "meta",
+        "outcome": "pass"
+      },
+      {
+        "artifact": "packaged-security.json",
+        "browser": "webkit",
+        "version": "26.5",
+        "mode": "headers",
+        "outcome": "pass"
+      }
+    ],
+    "sceneCollections": {
+      "focused.log": {
+        "runs": [
+          {
+            "workers": 1,
+            "peak": 1,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 4,
+            "peak": 4,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 8,
+            "peak": 8,
+            "violations": 0,
+            "checked": 16
+          }
+        ],
+        "independentOutputs": 48,
+        "retryPreserved": true,
+        "reloadWithoutLibrary": true,
+        "pausePreserved": 1,
+        "immutable": true,
+        "phoneReview": true,
+        "phoneCreate": true,
+        "quotaAtomic": true,
+        "renderWarningsVisible": true,
+        "browserBack": true
+      },
+      "source-browser.log": {
+        "runs": [
+          {
+            "workers": 1,
+            "peak": 1,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 4,
+            "peak": 4,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 8,
+            "peak": 8,
+            "violations": 0,
+            "checked": 16
+          }
+        ],
+        "independentOutputs": 48,
+        "retryPreserved": true,
+        "reloadWithoutLibrary": true,
+        "pausePreserved": 1,
+        "immutable": true,
+        "phoneReview": true,
+        "phoneCreate": true,
+        "quotaAtomic": true,
+        "renderWarningsVisible": true,
+        "browserBack": true
+      },
+      "packaged-browser.log": {
+        "runs": [
+          {
+            "workers": 1,
+            "peak": 1,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 4,
+            "peak": 4,
+            "violations": 0,
+            "checked": 16
+          },
+          {
+            "workers": 8,
+            "peak": 8,
+            "violations": 0,
+            "checked": 16
+          }
+        ],
+        "independentOutputs": 48,
+        "retryPreserved": true,
+        "reloadWithoutLibrary": true,
+        "pausePreserved": 1,
+        "immutable": true,
+        "phoneReview": true,
+        "phoneCreate": true,
+        "quotaAtomic": true,
+        "renderWarningsVisible": true,
+        "browserBack": true
+      }
+    },
+    "defaultJPEG": {
+      "source-jpeg.log": {
+        "defaultFormat": "jpeg",
+        "completed": 8,
+        "outputs": [
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          }
+        ]
+      },
+      "packaged-jpeg.log": {
+        "defaultFormat": "jpeg",
+        "completed": 8,
+        "outputs": [
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          },
+          {
+            "format": "jpeg",
+            "jpeg": true,
+            "extension": true,
+            "match": true,
+            "dimensions": true
+          }
+        ]
+      }
+    },
+    "artifactFiles": 231,
+    "documentation": {
+      "markdownFiles": 88,
+      "errors": 0,
+      "info": 0,
+      "review": 7
+    },
+    "parity": {
+      "runId": "parity-afc9d969-d539-4ba4-a899-d6b26776d2eb",
+      "summary": {
+        "selected": 33,
+        "executed": 33,
+        "passed": 33,
+        "failed": 0,
+        "not_run": 0,
+        "infrastructure_errors": 0
+      }
+    },
+    "coverage": {
+      "runId": "coverage-312ac370-e762-4af7-93d0-44abc2f8fcdc",
+      "threshold": {
+        "dimension": "function",
+        "minimum_percent": 70,
+        "covered": 27,
+        "total": 35,
+        "outcome": "pass"
+      }
+    }
+  },
+  "limitations": [
+    "Dirty local revision; no deployment or current throughput qualification.",
+    "Groups are selected saved stories; automatic directory/fixed-size grouping and incomplete-group choices remain open.",
+    "Directory saving and Web Locks are required; durable phone staging/share fallback remains open.",
+    "Synthetic scenes, browser viewports and OPFS picker substitution do not qualify physical phones, native pickers or filesystem crashes.",
+    "The 1000-group and 100000-output model bounds are not advertised-scale qualifications; the original story-library asset budget still applies.",
+    "PNG checks cover custom fonts, looks and crops; the supplemental default-JPEG checks omit custom fonts.",
+    "Memory reservations are not measurements of complete native memory; current throughput and maximum-effect capacity remain unqualified.",
+    "Complete per-image scene styles, source/application identity, production HTTP headers and other migration/release gates remain open."
+  ],
+  "artifacts": [
+    {
+      "path": "MIGRATION_PLAN.md.snapshot",
+      "sha256": "ccd901f4e2095043db9105668e1715acc6bfea9788462a65577ac46e62423835",
+      "bytes": 68294
+    },
+    {
+      "path": "MIGRATION_STATUS.md.snapshot",
+      "sha256": "a9c8b6adf311b0ce090693cbc76988514fc7bc2151751f2e2e329ec7864b8254",
+      "bytes": 36957
+    },
+    {
+      "path": "README.md",
+      "sha256": "df6873c00aba2a19f9ce3c8f85e747d84cafca55ba7c0b7867970d2d4fb44012",
+      "bytes": 3737
+    },
+    {
+      "path": "README.md.snapshot",
+      "sha256": "16411653fc928c700c6823211d8f40dae3d8efe6e3193a32d6775a72bd025a36",
+      "bytes": 18920
+    },
+    {
+      "path": "SCENE_COLLECTION_VERIFICATION.md.snapshot",
+      "sha256": "9446fde86501d066bbff859ee45ab7874e55ead45cf4b5b6794c3bf6146a8c42",
+      "bytes": 7560
+    },
+    {
+      "path": "SHARED_SCHEDULER_VERIFICATION.md.snapshot",
+      "sha256": "dc303497a047e9cd15c584d779090ea2e89dec21069a5eb71af3edafe2b0c6e0",
+      "bytes": 19033
+    },
+    {
+      "path": "STORY_EXPORT_VERIFICATION.md.snapshot",
+      "sha256": "26a6afd00485b3db95852e46e8da9dfd7f3de676e6b2d82b6a39032c5cdd4eca",
+      "bytes": 5878
+    },
+    {
+      "path": "STORY_WORKSPACE_VERIFICATION.md.snapshot",
+      "sha256": "cb195a6b5deb9d7c463aae67f507a001aad6e5293b8f1e6b2a7ab58f8c9ccda8",
+      "bytes": 9349
+    },
+    {
+      "path": "VERIFICATION_MATRIX.md.snapshot",
+      "sha256": "f982a2214fe644241a49af09734e8cccb40fbb7b7cef977471515aecaea24376",
+      "bytes": 38822
+    },
+    {
+      "path": "aggregate.log",
+      "sha256": "c96b9bf7a9ba9b0070c400564f0355cc738d37fff4c247048d7a9d591ef558d5",
+      "bytes": 102
+    },
+    {
+      "path": "archive-files.json",
+      "sha256": "ac5e81da96215a6b5faf56cd74c58e337867bcb18efe4e38259a427b1911d3f1",
+      "bytes": 39314
+    },
+    {
+      "path": "coverage.json",
+      "sha256": "a2726a26cb2e9f37d3e56cd910353a127ef251cdc773f8cd776cbafcaaa3ab9a",
+      "bytes": 27469
+    },
+    {
+      "path": "coverage.log",
+      "sha256": "d611e4fb4f3887fa3578452a24931815d18ac018f9843e8d732864bee72c69ae",
+      "bytes": 182
+    },
+    {
+      "path": "diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "doc-audit.json",
+      "sha256": "b61aaa823d7565b862acc5519b839caa5d5c04bc3561297786df373be2f9de62",
+      "bytes": 9453
+    },
+    {
+      "path": "doc-links.log",
+      "sha256": "2ef10382b49465cb0b05932a7e248c4d4fb74e6a5598709268b316ccb3dcdc40",
+      "bytes": 101
+    },
+    {
+      "path": "fixture-audit.log",
+      "sha256": "a6b29722a6d02822b9a5e6c422b774a4ce5b534b30e361dec1ff6612ad4d1191",
+      "bytes": 479
+    },
+    {
+      "path": "focused.log",
+      "sha256": "3ae0cfc463617b04e7da7f49119bceb1ec0cdf01441c3faf47a8d9290d85b667",
+      "bytes": 441
+    },
+    {
+      "path": "focused.mjs",
+      "sha256": "939bbd25cd20ecfb982afce3a3aad76fcb61b5edb83b3bcb19f552a35f946458",
+      "bytes": 1352
+    },
+    {
+      "path": "jpeg-browser.mjs",
+      "sha256": "4900bc0201d81d0cf4175c645b21586b0e781471cd32abefa590c7efade31470",
+      "bytes": 3463
+    },
+    {
+      "path": "jpeg-focused.mjs",
+      "sha256": "1ddef8a8e2e5461dd071f6f149c691949f9effedd047e66f8492b036fdca12ed",
+      "bytes": 1325
+    },
+    {
+      "path": "migration-check.log",
+      "sha256": "cd0476160a431c060d25d1724eb871d3e4152d53286b3cbe903ccad01c84d8da",
+      "bytes": 124
+    },
+    {
+      "path": "package.log",
+      "sha256": "069201df3c557d008cd625ac086bacd3f89a97bf2c90c5e6e8031ff6b7bc22a2",
+      "bytes": 485
+    },
+    {
+      "path": "packaged-browser.log",
+      "sha256": "ecbc37bf60196390c4b05d9e50262544260fe1c354637f20d7a3e1e0a6f6435e",
+      "bytes": 10133
+    },
+    {
+      "path": "packaged-files.json",
+      "sha256": "177581702f1c6faa8004b86385ff698d6d63542a8496ed781de273f90f994a22",
+      "bytes": 34675
+    },
+    {
+      "path": "packaged-jpeg.log",
+      "sha256": "25d8ecfc0400de2758351341d9387a203a61c173eff694d7bac12f9b7a7ebea8",
+      "bytes": 724
+    },
+    {
+      "path": "packaged-security.json",
+      "sha256": "eb692d7b5d60c8ba1b0ec5346d1c61194b814f68aa52b06d418316bc6da7ec4e",
+      "bytes": 26117
+    },
+    {
+      "path": "packaged-security.log",
+      "sha256": "7be1bf7680afa3a2017b739d48c8ba4488158e710dfe584fa8e26bf94cfc358c",
+      "bytes": 551
+    },
+    {
+      "path": "parity.json",
+      "sha256": "12018b4fd801883c8602661a57eb2d9d307a0f86646e51092e06586404ac4810",
+      "bytes": 200292
+    },
+    {
+      "path": "parity.log",
+      "sha256": "05e977acaa9d50eda802aab2c043e6e64217578396e133761b2943a43fcd6c11",
+      "bytes": 140
+    },
+    {
+      "path": "prior-records.log",
+      "sha256": "88d63bd219c46f1331caa22e3a37179221cdd4cdd413f114b9c9a72d5c505a01",
+      "bytes": 273
+    },
+    {
+      "path": "recovery.log",
+      "sha256": "e6b7000584f49ebf4133e3d72027d54af036a36cb8248608a0b80ee3b5c03f45",
+      "bytes": 891
+    },
+    {
+      "path": "scene-batch-phone-200.png",
+      "sha256": "af6478a879204822ea69a04aff91d11db568080dc4eda836fb0419b47978b73e",
+      "bytes": 57915
+    },
+    {
+      "path": "scene-batch-phone.png",
+      "sha256": "50b94703760c4841f5510d2379ed68957e25c09735f26b798863db646f1fce7e",
+      "bytes": 44353
+    },
+    {
+      "path": "seal.py",
+      "sha256": "3c7ddaa79e29f482b7537c006f6f143c579f588da6e58b90f5ebb715d617d051",
+      "bytes": 9150
+    },
+    {
+      "path": "snapshot.log",
+      "sha256": "feb85c2d2d0a95f3edad06395bf95b0fe10ab4840468a57b881cbd69dc09717b",
+      "bytes": 341
+    },
+    {
+      "path": "snapshot.py",
+      "sha256": "680811a8675eeb7c500cf4e7327326a4b2f27085c278bf939ee317fc4c8f20d2",
+      "bytes": 2324
+    },
+    {
+      "path": "source-browser.log",
+      "sha256": "ecbc37bf60196390c4b05d9e50262544260fe1c354637f20d7a3e1e0a6f6435e",
+      "bytes": 10133
+    },
+    {
+      "path": "source-files.json",
+      "sha256": "abbc63b6a95b2b7dc7905adabc54a05f609f483ec086429e49b1fe22e13e6860",
+      "bytes": 19532
+    },
+    {
+      "path": "source-jpeg.log",
+      "sha256": "25d8ecfc0400de2758351341d9387a203a61c173eff694d7bac12f9b7a7ebea8",
+      "bytes": 724
+    },
+    {
+      "path": "source-security.json",
+      "sha256": "8971c66502e9e0f96ec97241c819465670bf6a16683faadeb4ee99f51b7108af",
+      "bytes": 26111
+    },
+    {
+      "path": "source-security.log",
+      "sha256": "7be1bf7680afa3a2017b739d48c8ba4488158e710dfe584fa8e26bf94cfc358c",
+      "bytes": 551
+    },
+    {
+      "path": "target.json",
+      "sha256": "2ae6cc223ee5884355277b60e5fe4efc5e2def3f1aa29c595fff15d91bf94b38",
+      "bytes": 286
+    },
+    {
+      "path": "tested-site.tar.gz",
+      "sha256": "c3445995235735af57ecb09411a6bd6d1e982681244c34563684c4642ca94f04",
+      "bytes": 4272675
+    },
+    {
+      "path": "unit.log",
+      "sha256": "aac6b9400e70da90f8e3942e76e39986fb42f80d3dc37e86f140ce04fdce3ef6",
+      "bytes": 21622
+    },
+    {
+      "path": "verified-source.tar.gz",
+      "sha256": "30a40e1ca507db7e5a6be6e83964b4fc9b86742113b24c6700324e82044e0830",
+      "bytes": 28913804
+    }
+  ]
+}

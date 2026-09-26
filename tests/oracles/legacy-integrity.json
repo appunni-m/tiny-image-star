@@ -1,0 +1,13 @@
+{
+  "revision": "89cc88c",
+  "files": {
+    "tests/oracles/legacy/src/engine/pillow.js": "c32015ecf8282ea20a15466e02e508e1bb13cf2272b37e6a84b03c1a113a5754",
+    "tests/oracles/legacy/src/formats.js": "42bd67a0e7f92e89ecb4326f6f7f325155b52ad26ddef636c75e35eadbd06436",
+    "tests/oracles/legacy/src/input.js": "5e3596646f95cfd2be99d27435e43eb4f734fcf76ee72410486be8796da1f952",
+    "tests/oracles/legacy/src/names.js": "de8007ea866f05c9a311267e682c9f8a9b91a29926daa5f981bd4909290d13ac",
+    "tests/oracles/legacy/src/quality.js": "1200f72040eeb641646ac5c1cd6a7f508c1568ffaea60a20f082e52262a89b39",
+    "tests/oracles/legacy/wasm/PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405",
+    "tests/oracles/legacy/wasm/pillow_rs_js.js": "36433b78090749bbd6463236bcaafb64f6ed7f6ee7cfd080a516724957587c14",
+    "tests/oracles/legacy/wasm/pillow_rs_js_bg.wasm": "89b09da572b3361d5bac7fd338334e34ce61c6e29b02d06056504e33ee5d10be"
+  }
+}

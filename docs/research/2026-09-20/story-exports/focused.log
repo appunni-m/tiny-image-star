@@ -1,0 +1,3 @@
+story export observations: {"runs":[{"concurrency":1,"peak":1,"violations":0,"checked":8},{"concurrency":4,"peak":4,"violations":0,"checked":8},{"concurrency":8,"peak":8,"violations":0,"checked":8}],"fullSizeOutputs":8,"retryPreserved":7,"pausePreserved":1,"savedShapes":["portrait","tall"],"sourceEditsUnchanged":true,"reusableOutputStyle":true,"activeBackCleanup":true,"pendingShareRetained":true}
+  story exports: both shapes, frozen ordered outputs, exact 1/4/8 references, partial failure and retry-only-failed, pause/continue, phone 200% text, native decode/download, activated share, saved choices and cleanup
+focused story exports PASS

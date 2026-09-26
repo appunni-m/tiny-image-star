@@ -1,0 +1,91 @@
+{
+  "checkedAt": "2026-09-16T15:36:52.924Z",
+  "registry": "https://registry.npmjs.org/pillow-rs",
+  "distTags": {
+    "next": "12.2.0-alpha.1",
+    "latest": "0.1.3"
+  },
+  "versions": [
+    {
+      "version": "0.1.3",
+      "publishedAt": "2026-09-15T20:26:49.477Z",
+      "tarball": "https://registry.npmjs.org/pillow-rs/-/pillow-rs-0.1.3.tgz",
+      "integrity": "sha512-VX8ZqlaUi7bxtFIs5/L5nUG69ryMAjofwKg0o1JSYhpb6FnDFusPqoDgoosSnyKXr/ZWcLRP+kRvrbSx/k/Mbw==",
+      "downloadedIntegrityMatches": true,
+      "jsSha256": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed"
+    },
+    {
+      "version": "12.2.0-alpha.1",
+      "publishedAt": "2026-09-16T13:33:31.377Z",
+      "tarball": "https://registry.npmjs.org/pillow-rs/-/pillow-rs-12.2.0-alpha.1.tgz",
+      "integrity": "sha512-dPPpkm5JBKlsBce+C9cHLxVXfeJvW3HR9psDXhvxjD8PaloJgbR/PnXt5BqO5ftvQX+LdBG1LzhP01m2uvEJgw==",
+      "downloadedIntegrityMatches": true,
+      "jsSha256": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed"
+    }
+  ],
+  "alphaProvenance": {
+    "url": "https://registry.npmjs.org/-/npm/v1/attestations/pillow-rs@12.2.0-alpha.1",
+    "statement": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "subject": [
+        {
+          "name": "pkg:npm/pillow-rs@12.2.0-alpha.1",
+          "digest": {
+            "sha512": "74f3e9926e4904a96c05c7be0bd7072f15577de26f5b71d1f69b035e1bf18c3f0f6a5a0981b47f3e75ede41a8ee5fb6f417f8b7411b52f384fd359b6baf10983"
+          }
+        }
+      ],
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "predicate": {
+        "buildDefinition": {
+          "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+          "externalParameters": {
+            "workflow": {
+              "ref": "refs/tags/v12.2.0-alpha.1",
+              "repository": "https://github.com/appunni-m/pillow-rs",
+              "path": ".github/workflows/release.yml"
+            }
+          },
+          "internalParameters": {
+            "github": {
+              "event_name": "push",
+              "repository_id": "1265036425",
+              "repository_owner_id": "31534711"
+            }
+          },
+          "resolvedDependencies": [
+            {
+              "uri": "git+https://github.com/appunni-m/pillow-rs@refs/tags/v12.2.0-alpha.1",
+              "digest": {
+                "gitCommit": "310788f9fcadc85b02263b383c5a6ea094b000c6"
+              }
+            }
+          ]
+        },
+        "runDetails": {
+          "builder": {
+            "id": "https://github.com/actions/runner/github-hosted"
+          },
+          "metadata": {
+            "invocationId": "https://github.com/appunni-m/pillow-rs/actions/runs/35099580659/attempts/1"
+          }
+        }
+      }
+    },
+    "verification": "Attestation payload inspected and tarball SHA-512 matched registry integrity. Signature/transparency-chain verification was not performed in this research."
+  },
+  "appBaseline": {
+    "commit": "89cc88c",
+    "deterministic": "PASS",
+    "chromiumSmoke": "PASS",
+    "documentationLinks": "PASS",
+    "mobileLayout": {
+      "kind": "Codex embedded browser viewport emulation; not a physical phone",
+      "width": 390,
+      "height": 844,
+      "canvasTop": 481.65625,
+      "canvasHeight": 362.3046875,
+      "pageHeight": 1339
+    }
+  }
+}

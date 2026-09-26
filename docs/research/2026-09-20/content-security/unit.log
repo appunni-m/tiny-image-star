@@ -1,0 +1,218 @@
+
+> preverify
+> npm run check:runtime
+
+
+> check:runtime
+> node scripts/stage-pillow-runtime.mjs --check
+
+Pillow-RS 12.2.0-alpha.1: paired runtime integrity verified.
+
+> verify
+> node scripts/verify.mjs && npm run verify:scheduler && npm run verify:project-model
+
+verify: PASS
+  real WASM transforms: PNG fit/crop/rotate/flip/adjustments, exact decoded pixels, PNG bytes, decoded dimensions, output-size guard
+  real input decoders: JPEG, BMP, WebP, GIF, TIFF, ICO, EXIF-JPEG fixture paths, corrupt-input rejection
+  real format contract: runtime-verified output formats png, jpeg; JPEG alpha flattening, fixed settings and rejection of PNG-only masquerading
+  large-folder contract: 100k metadata-only manifest, bounded virtual rows/workers, collision-safe paths, direct folder output, no archive path
+  contract checks: editor modules, readiness separation, revisions, capability-driven formats, Low/Medium/High quality gating, metadata-only download, presets, selection, append imports, animated-input safety, duplicate identity, byte/output pixel guards, memory-aware worker parallelism, bounded worker failure handling, relative apply-to-all edits, shared-recipe/per-item override merge, explicit recipe scope, mixed-shape framing review, unified tray selection, versioned session and large-job recovery
+
+> verify:scheduler
+> node --test tests/processing.test.mjs tests/processing-startup.test.mjs
+
+✔ initial Auto admission follows real arrivals, then stops speculative growth at the first useful result (15.454833ms)
+✔ a completed short probe cannot be enlarged merely by later arrivals or header inspection (2.102292ms)
+✔ cancelled initial work and pressure do not reopen the speculative arrival phase (1.378041ms)
+✔ a wider initial limit still counts retained sources, terminal outputs and actual reads against memory (0.673708ms)
+✔ Auto challenges an unproven initial size when 1 workers already saturate useful throughput (4.060208ms)
+✔ Auto challenges an unproven initial size when 2 workers already saturate useful throughput (4.257125ms)
+✔ an unfinished downward probe restores the measured good limit on cancel (2.092166ms)
+✔ an unfinished downward probe restores the measured good limit on drain (1.325583ms)
+✔ the initial eight-worker bound does not cap later measured concurrency on a larger budget (2.010833ms)
+✔ another work class cannot certify a lower-count trial, and pressure cancels its old baseline (2.162166ms)
+✔ admission defers copies, shares CPU across worker kinds, and reuses an idle engine (14.654917ms)
+✔ current-image priority, FIFO ties, and aging prevent starvation (1.613125ms)
+✔ memory admission counts retained data, active output and idle heaps (1.454917ms)
+✔ explicit high concurrency is not capped at four and never exceeds CPU tokens (1.521334ms)
+✔ text admission includes its RGBA surfaces and custom fonts before dispatch (0.864083ms)
+✔ cancel kills synchronous work, drops stale messages, and does not prepare queued sources (0.713416ms)
+✔ worker death and task timeout release all reservations and permit retry (26.810333ms)
+✔ cancelled asynchronous source reads retain memory credit until they settle (0.711125ms)
+✔ reentrant completion can close a logical client without destroying reusable workers (0.52125ms)
+✔ closing during a grouped worker-start failure cannot dispatch later cancelled tasks (0.373167ms)
+✔ allocation estimates reject oversized sources and budget the full current preview path (0.094083ms)
+✔ Auto grows on useful work, retreats without throughput gain, and observes cooldown (2.5915ms)
+✔ interleaved header inspection and mixed image sizes do not erase Auto calibration (2.15725ms)
+✔ header-only work does not calibrate image throughput (1.658875ms)
+✔ Auto keeps the eight-sample growth gate and checks whether fewer provisional workers suffice (1.57175ms)
+✔ Auto preserves a serial start with a missing memory hint (0.4195ms)
+✔ Auto preserves a serial start with a small memory hint (0.315625ms)
+✔ Auto preserves a serial start with a small CPU hint (0.301958ms)
+✔ Auto does not start an extra worker for short edits or from queued inspections (0.59475ms)
+✔ the initial Auto probe cannot bypass retained memory or output reservations (0.614125ms)
+✔ pressure suppresses the initial Auto probe even after cooldown and an unchanged configure call (0.497417ms)
+✔ Auto retains useful concurrency without counting idle time between collections (2.804834ms)
+✔ Auto discards an unfinished measurement when the queue drains by success (0.502209ms)
+✔ Auto discards an unfinished measurement when the queue drains by render-error (0.34125ms)
+✔ Auto discards an unfinished measurement when the queue drains by cancel (0.561125ms)
+✔ Auto discards an unfinished measurement when the queue drains by prepare-error (0.6305ms)
+✔ Auto discards an unfinished measurement when the queue drains by cancel-queued (0.376334ms)
+✔ an oversized idle WASM heap is retired before admitting smaller work (0.387208ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 106.280333
+
+> verify:project-model
+> node --test tests/project.test.mjs tests/story-layout.test.mjs tests/story-export.test.mjs tests/story-designs.test.mjs tests/story-fonts.test.mjs tests/working-copies.test.mjs tests/source-resolution.test.mjs tests/folder-contract.test.mjs tests/styles.test.mjs tests/legacy-styles.test.mjs tests/recipe-catalog.test.mjs tests/recipe-selection.test.mjs tests/photo-look.test.mjs tests/masks.test.mjs tests/depth.test.mjs tests/connections.test.mjs tests/cutout-effects.test.mjs tests/render-diagnostics.test.mjs
+
+✔ connected copy preserves its source, shares the mask, and spans the same join in both shapes (82.336333ms)
+✔ create, position, mask edit and remove are atomic and reversible, with no shared-mask deletion (24.943667ms)
+✔ connected pairs move together past neighboring blocks and retain local geometry (17.0015ms)
+✔ changing the joined pair carries depth text and removing the copy leaves originals intact (2.432ms)
+✔ connection validation rejects split pairs, unilateral overrides and unknown connection schemas (5.802375ms)
+✔ variant positioning, layout and styles preserve connections without counting decorative copies as sources (24.874875ms)
+✔ disk dilation agrees with an independent neighborhood oracle for soft masks, thin edges and transparent borders (35.449042ms)
+✔ depth decoration agrees with an independent three-layer composition and protects opaque subjects (1.977167ms)
+✔ effects persist through grouped history, connected copies, mask removal and reattachment (29.871458ms)
+✔ schema rejects unsupported fields, non-image effects and unbounded or invalid parameters (5.689166ms)
+✔ planning includes off-page effect support and reserves padded rendering before admission (2.021291ms)
+✔ reusable finishes share only effect parameters and apply to existing subject selections in scope (14.640292ms)
+✔ depth preserves source alpha and matches an independently split layer stack (1.825ms)
+✔ page background composites the extracted subject once over the title (0.759417ms)
+✔ depth title creation and edits form one undoable project operation (84.708125ms)
+✔ depth relationships reject dangling, reordered, shared or incompatible titles (5.24575ms)
+✔ depth geometry follows photo frame, rotation and both output variants (17.256084ms)
+✔ looks and missing-mask fallback preserve title edits, while styles exclude private links (13.765917ms)
+✔ new folder jobs pin the renderer without sharing mutable contract objects (1.293958ms)
+✔ older and unknown contracts remain identifiable instead of silently adopting this renderer (0.243417ms)
+✔ recipe hashes are canonical and include actual text and all recipe parameters (32.540875ms)
+✔ both stale queued edits and altered persisted recipes fail against the frozen identity (4.675708ms)
+✔ font snapshots enforce unique identities, exact fields and per-font and total bounds (1.043959ms)
+✔ all destination presets become versioned outputs with identical identity, parameters and order (4.841291ms)
+✔ private legacy definitions preserve original fields and text, and do not enter public style sharing (1.514458ms)
+✔ a consumer resolves the copied revision rather than mutable wrapper operations (0.3275ms)
+✔ unsupported output and compression intents remain identifiable until an explicit replacement (0.996875ms)
+✔ folder jobs freeze the complete style and preserve relative crop, transforms and local recipe parameters (0.811416ms)
+✔ unknown engine identities remain preserved but cannot execute as the current renderer (0.917667ms)
+✔ migration rejects malformed executable, oversized and out-of-range data without coercing intent (3.351833ms)
+✔ mask brushes preserve untouched pixels and support erase/restore with soft opacity (1.845958ms)
+✔ one stroke is independent of point density and retracing (44.50375ms)
+✔ a one-source-pixel brush can repair a large image without touching neighbors (37.458083ms)
+✔ detail areas preserve source coordinates at every zoom and edge, with bounded allocation (0.595709ms)
+✔ mask brush and memory bounds reject malformed work before allocation (0.152083ms)
+✔ a cutout is one reversible asset edit and global looks preserve mask/crop (31.102375ms)
+✔ mask removal preserves shared assets and bounded history keeps undo dependencies (21.70125ms)
+✔ photo colors are frozen independently of story layout, typography and output (11.314541ms)
+✔ malformed, out-of-range and unsupported photo looks fail before rendering (14.255167ms)
+✔ all/selected/this look application and undo preserve unrelated manual corrections (4.167166ms)
+✔ a stale look undo cannot overwrite a later look and empty selections do not mutate (2.112958ms)
+✔ folder recipes copy the chosen look and its base output recipe without following library updates (1.936125ms)
+✔ look and downsampled output previews reserve their additional memory and have distinct timing classes (1.574875ms)
+✔ recovery rejects future shared and per-image look metadata before restoring the set (5.279125ms)
+✔ project renderer identity matches the actual pinned runtime bytes (53.617167ms)
+✔ legacy migration preserves IDs, fractional pixel crops and exact transform order (1.520167ms)
+✔ the shared text renderer upgrades only the known old identity and leaves original intent intact (0.733ms)
+✔ serialized projects preserve exact PNG and JPEG output bytes through the published engine (177.252334ms)
+✔ many previews commit one reversible action and cancel restores the prior edit (3.810167ms)
+✔ new edits discard redo; command history is bounded and contains no source data (58.3065ms)
+✔ shared appearance resolves before node settings and local overrides without removing crops/masks (0.412417ms)
+✔ connected geometry resolves per viewport in both ratios and tracks its stable anchor on reorder (0.39975ms)
+✔ replacing a source invalidates only dependent slides and preserves unrelated local edits (1.661166ms)
+✔ bad references, unknown schemas, code, remote assets and binary payloads are rejected (0.794375ms)
+✔ scene styles reject unsupported operations and preview dimensions stay bounded (1.252084ms)
+✔ image placement preserves crop bounds, cover focal edges and clockwise rotation (0.154625ms)
+✔ the story assembler places every chosen photo exactly once at both count extremes and both ratios (95.492916ms)
+✔ story look strength and reversible layout changes preserve captions, sources, focal points and crops (16.742375ms)
+✔ story reorder moves stable slides and updates numbering as one reversible command (5.257166ms)
+✔ legacy catalog parsing preserves complete data and fences unknown/malformed/duplicate records (2.426334ms)
+✔ independent creates from the same snapshot merge without overwriting catalog entries (3.623916ms)
+✔ stale edits and edit/delete races cannot replace a newer version (0.711875ms)
+✔ a stale create cannot resurrect an ID created and then deleted since its snapshot (0.55275ms)
+✔ an exact retry is idempotent and a reused operation ID with different payload is refused (2.227334ms)
+✔ bounded receipts reject retries older than the retained history instead of replaying them (35.551292ms)
+✔ clearing advances the generation so pending work from any tab cannot recreate recipes (0.279875ms)
+✔ catalog validation fences future schemas, missing histories, duplicate entries and extra fields (0.626875ms)
+✔ one ID can have independently selected immutable revisions without rebinding to a library update (5.48825ms)
+✔ selection identities distinguish separator-bearing IDs and unversioned saved copies (2.12325ms)
+✔ duplicate identities with different immutable definitions fail instead of picking one (1.248625ms)
+✔ new recovery references reject missing revisions, wrong IDs, extra items and future formats (5.181834ms)
+✔ old ID-only recovery selects its frozen copy before consulting the library and keeps source buffers (2.0845ms)
+✔ new snapshots reopen all selected revisions without a library and remain independent of its removal (2.033792ms)
+✔ oldest custom recipes require a deliberate choice even when a current copy has the same ID (0.794083ms)
+✔ historical built-ins are resolved from the frozen baseline, independently of current catalog changes (0.719041ms)
+✔ complete saved image state preserves absolute edits without inventing the original custom definition (7.452292ms)
+✔ partial patches never masquerade as complete saved state, and malformed state is not silently replaced (1.014416ms)
+✔ opt-in timing observations preserve complete PNG/JPEG outputs and ordinary result shape (9.384333ms)
+✔ one conversion preserves edited and connected scene metadata, parent masks and one-step undo (79.415334ms)
+✔ restoring after cutout painting resizes the current mask instead of restoring a stale parent (11.470583ms)
+✔ old copies remain readable, verified parent hashes control caching, and referenced masks cannot be deleted (13.453541ms)
+✔ admission includes full source and upscaled target before reads; malformed output never changes the input (16.28375ms)
+✔ partial failure and cancellation drain all copy tasks before releasing output ownership (33.025292ms)
+✔ conversion without a mask stays mask-free; copies reject invalid direction, geometry and reservations before decoding (13.685458ms)
+✔ story byte limits and sibling failure leave no partial assets or retained copies (24.936958ms)
+✔ three frozen story recipes remain separate from the existing color-look revisions (31.918292ms)
+✔ all recipes preserve every photo and caption across counts, orientations and both output shapes (3063.424791ms)
+✔ photo decorations follow manual frames and rotation using photo-relative geometry (10.5725ms)
+✔ recipe replacement removes only owned decorations and preserves local photo/word repairs through undo (55.406334ms)
+✔ Depth cover requires the cover mask, targets only that photo and preserves an existing title (12.481334ms)
+✔ Depth cover fills the available frame in both shapes while preserving editable source crop and mask (25.75825ms)
+✔ recipe color strength leaves layout, typography, captions and subject selection identical (57.35975ms)
+✔ new source reflow keeps decorations attached and old saved stories do not acquire a design (24.935083ms)
+✔ untrusted designs and attachments cannot add executable fields, unbounded data or unrelated owners (20.066667ms)
+✔ both shapes have a complete, ordered output manifest with unique filenames and independent metadata (10.695166ms)
+✔ legacy single-shape filenames and saved export selections survive without changing preview shape (8.79325ms)
+✔ invalid, unavailable, duplicate and unbounded export choices fail before rendering (2.36775ms)
+✔ output-only saved styles retain both shapes and legacy styles still choose exactly one (16.409541ms)
+✔ one failed output preserves all successes, ordered results and the exact frozen retry (1.313375ms)
+✔ pausing preserves ready files and rejects late output ownership; continuing runs only pending items (9.845541ms)
+✔ closing a batch cancels admitted work and ignores all later completion notifications (5.433875ms)
+✔ synchronous render and output-retention failures are isolated to their own output (2.288167ms)
+✔ the unmodified font pack binds four binaries, licenses, descriptors and coverage to pinned source hashes (48.05475ms)
+✔ revision-two recipes freeze licensed fonts while revision one remains independent and asset-free (212.17625ms)
+✔ saved text and depth styles share only pinned font references and preserve one-step undo (47.004ms)
+✔ font declarations reject unsafe/private fields and preserve unavailable imports without substitution (28.104292ms)
+✔ unsupported glyphs and styles fail preflight; explicit device fallback keeps words and is reversible (23.548125ms)
+✔ font fetches are pinned, bounded, hash-checked, cancellable and never accept recipe URLs (18.04375ms)
+✔ shared font loading counts temporary bytes, cancels only the last consumer and reuses stored sources (0.787875ms)
+✔ automatic layout actually changes the arrangement between portrait and tall (9.843125ms)
+✔ an infeasible candidate does not discard another valid automatic arrangement (4.954292ms)
+✔ every photo count and varied aspect/caption corpus fits rotated prints with consistent physical borders (654.2235ms)
+✔ output frames resolve with local precedence and invalidate only their own variant (2.289584ms)
+✔ reflow preserves masks, crop rounding, captions, focal points and local appearance as one undo (7.702208ms)
+✔ manual positions survive replacement/reflow; explicit reset removes only position overrides (3.879083ms)
+✔ replacing a portrait with landscape and extending a caption reflows only the dependent slide (5.669125ms)
+✔ old stories stay unchanged until explicit adaptation; reopening uses frozen frames (3.04775ms)
+✔ malformed variant maps, sizing bases and layout definitions fail before editing (5.056875ms)
+✔ style capture exports only chosen reusable settings, with no photos, masks, captions, crops or node IDs (39.651875ms)
+✔ single-slide layout styles cannot alter another slide's present or future reflow (52.543917ms)
+✔ look strength has deterministic endpoints and preserves source-specific edits (21.946083ms)
+✔ layout application keeps manual positions by default; explicit reset preserves crop/appearance/text overrides (48.539334ms)
+✔ style previews produce one undo and copy the immutable definition through serialization (58.579417ms)
+✔ custom fonts and unrecognized layouts require an explicit supported alternative when saving (6.154333ms)
+✔ unsupported requirements and engines import as identifiable styles but cannot be applied (5.530583ms)
+✔ malformed imports reject executable, remote, private, oversized and out-of-range content (3.198ms)
+✔ text-only styles reflow the selected slide while keeping old static stories static (13.663083ms)
+✔ depth styles capture bounded relative settings without private words, masks, identities or font assets (3.969416ms)
+✔ depth style applies once to selected masked photos, preserves words and repairs, and reports incompatible scope (12.606167ms)
+✔ depth styles keep existing words and positions by default, offer explicit reset, and undo as one change (17.036791ms)
+✔ depth style scope updates both halves of a connected subject and creates one shared title (9.941542ms)
+✔ depth style imports reject private fields, remote fonts, missing capabilities and invalid placement or type (3.736042ms)
+✔ editing copies keep original identity and dimensions; invalid lineage and original deletion are atomic failures (13.777541ms)
+✔ reducing is explicit; original imports and already-small images keep their exact bytes (5.612958ms)
+✔ copy generation reserves the full source decode, rereads only after admission and transfers output ownership (4.591167ms)
+✔ memory rejection precedes the second source read; changed originals and malformed copy output cannot be accepted (5.019583ms)
+✔ cancelled imports drain all consumers before releasing retained originals and leave no partial project (3.158375ms)
+ℹ tests 137
+ℹ suites 0
+ℹ pass 137
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3499.243667

@@ -1,0 +1,366 @@
+{
+  "date": "2026-09-16T15:30:33.928Z",
+  "scope": "Node execution of published WASM, small fixture capability probes only; not mobile certification",
+  "versions": [
+    {
+      "version": "0.1.3",
+      "wasmBytes": 5137461,
+      "wasmSha256": "2e589be19ca1ce507fe895c6325d4da5035f9dd91192a3cc1493de55f42d7a51",
+      "decoders": {
+        "exif-orientation6.jpg.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 6,
+          "mode": "RGB",
+          "rawBytes": 144
+        },
+        "p-small.gif.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "P",
+          "rawBytes": 64
+        },
+        "rgb-small.bmp.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.ico.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.jpg.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.png.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.tiff.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.webp.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        }
+      },
+      "encoders": {
+        "PNG": {
+          "ok": true,
+          "bytes": 77,
+          "signatureHex": "89504e470d0a1a0a0000000d49484452",
+          "reopenedFormat": "PNG",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "JPEG": {
+          "ok": true,
+          "bytes": 633,
+          "signatureHex": "ffd8ffe000104a464946000101000001",
+          "reopenedFormat": "JPEG",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "WEBP": {
+          "ok": true,
+          "bytes": 66,
+          "signatureHex": "524946463a0000005745425056503820",
+          "reopenedFormat": "WEBP",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "GIF": {
+          "ok": true,
+          "bytes": 54,
+          "signatureHex": "47494638376108000800810000c83c14",
+          "reopenedFormat": "GIF",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 64
+        },
+        "BMP": {
+          "ok": true,
+          "bytes": 246,
+          "signatureHex": "424df600000000000000360000002800",
+          "reopenedFormat": "BMP",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "TIFF": {
+          "ok": true,
+          "bytes": 332,
+          "signatureHex": "49492a00080000000a00000104000100",
+          "reopenedFormat": "TIFF",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "ICO": {
+          "ok": true,
+          "bytes": 99,
+          "signatureHex": "00000100010008080000000020004d00",
+          "reopenedFormat": "ICO",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "AVIF": {
+          "ok": false,
+          "error": "Error: image processing error: codec feature `avif` is disabled for Avif"
+        }
+      },
+      "operations": {
+        "resize": {
+          "ok": true,
+          "width": 4,
+          "height": 4,
+          "rawBytes": 48
+        },
+        "blur": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "color": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "rotate": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "crop": {
+          "ok": true,
+          "width": 4,
+          "height": 4,
+          "rawBytes": 48
+        },
+        "composite": {
+          "ok": true,
+          "pixel": [
+            255,
+            0,
+            0,
+            255
+          ]
+        }
+      },
+      "encoderMethods": {
+        "save": "function",
+        "saveWithInput": "function",
+        "encode": "undefined",
+        "saveArity": 0,
+        "saveWithInputArity": 2
+      }
+    },
+    {
+      "version": "12.2.0-alpha.1",
+      "wasmBytes": 4548741,
+      "wasmSha256": "08dfff0b10424b6ece937574aefd4c07d1d4f8ac95643e7c4d5138ab720d5a96",
+      "decoders": {
+        "exif-orientation6.jpg.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 6,
+          "mode": "RGB",
+          "rawBytes": 144
+        },
+        "p-small.gif.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "P",
+          "rawBytes": 64
+        },
+        "rgb-small.bmp.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.ico.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.jpg.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.png.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.tiff.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        },
+        "rgb-small.webp.base64": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "mode": "RGB",
+          "rawBytes": 192
+        }
+      },
+      "encoders": {
+        "PNG": {
+          "ok": true,
+          "bytes": 77,
+          "signatureHex": "89504e470d0a1a0a0000000d49484452",
+          "reopenedFormat": "PNG",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "JPEG": {
+          "ok": true,
+          "bytes": 633,
+          "signatureHex": "ffd8ffe000104a464946000101000001",
+          "reopenedFormat": "JPEG",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "WEBP": {
+          "ok": true,
+          "bytes": 66,
+          "signatureHex": "524946463a0000005745425056503820",
+          "reopenedFormat": "WEBP",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "GIF": {
+          "ok": true,
+          "bytes": 54,
+          "signatureHex": "47494638376108000800810000c83c14",
+          "reopenedFormat": "GIF",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 64
+        },
+        "BMP": {
+          "ok": true,
+          "bytes": 246,
+          "signatureHex": "424df600000000000000360000002800",
+          "reopenedFormat": "BMP",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "TIFF": {
+          "ok": true,
+          "bytes": 332,
+          "signatureHex": "49492a00080000000a00000104000100",
+          "reopenedFormat": "TIFF",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "ICO": {
+          "ok": true,
+          "bytes": 99,
+          "signatureHex": "00000100010008080000000020004d00",
+          "reopenedFormat": "ICO",
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "AVIF": {
+          "ok": false,
+          "error": "Error: image processing error: codec feature `avif` is disabled for Avif"
+        }
+      },
+      "operations": {
+        "resize": {
+          "ok": true,
+          "width": 4,
+          "height": 4,
+          "rawBytes": 48
+        },
+        "blur": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "color": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "rotate": {
+          "ok": true,
+          "width": 8,
+          "height": 8,
+          "rawBytes": 192
+        },
+        "crop": {
+          "ok": true,
+          "width": 4,
+          "height": 4,
+          "rawBytes": 48
+        },
+        "composite": {
+          "ok": true,
+          "pixel": [
+            255,
+            0,
+            0,
+            255
+          ]
+        }
+      },
+      "encoderMethods": {
+        "save": "function",
+        "saveWithInput": "function",
+        "encode": "undefined",
+        "saveArity": 0,
+        "saveWithInputArity": 2
+      }
+    }
+  ]
+}

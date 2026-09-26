@@ -1,0 +1,58 @@
+{
+  "fonttools_version": "4.60.2",
+  "fonts": [
+    {
+      "role": "serif",
+      "version": "Version 4.004;hotconv 1.0.116;makeotfexe 2.5.65601",
+      "axes": {
+        "wght": [
+          200.0,
+          400.0,
+          900.0
+        ],
+        "opsz": [
+          8.0,
+          20.0,
+          60.0
+        ]
+      },
+      "unicode_codepoints": 918
+    },
+    {
+      "role": "sans",
+      "version": "Version 3.052;hotconv 1.1.0;makeotfexe 2.6.0",
+      "axes": {
+        "wght": [
+          200.0,
+          200.0,
+          900.0
+        ]
+      },
+      "unicode_codepoints": 1615
+    },
+    {
+      "role": "mono",
+      "version": "Version 1.026;hotconv 1.1.0;makeotfexe 2.6.0",
+      "axes": {
+        "wght": [
+          200.0,
+          200.0,
+          900.0
+        ]
+      },
+      "unicode_codepoints": 1334
+    },
+    {
+      "role": "display",
+      "version": "Version 4.103;gftools[0.9.33.dev8+g029e19f]",
+      "axes": {
+        "wght": [
+          200.0,
+          400.0,
+          700.0
+        ]
+      },
+      "unicode_codepoints": 850
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+
+> verify:folder-recovery
+> node scripts/verify-folder-recovery.mjs
+
+  cross-tab exclusion, monotonic fences, 24 unique parallel claims, stale-owner rejection: PASS
+  actual owner-tab closure releases its lock for recovery: PASS
+  24 concurrent journaled writes, idempotent completion, late-error and stale-UI counter protection: PASS
+  ownership handoff waits for outstanding writes: PASS
+  terminated worker after-close: recovery and exactly-once counters PASS
+  terminated worker during-write: recovery and exactly-once counters PASS
+  unrelated-file protection, changed-source rejection, old-attempt fencing and retry-only-failed: PASS
+  a changed journaled output is preserved and never counted as recovered: PASS
+  browsers that ignore exclusive-write mode fail safely before writing: PASS
+verify:folder-recovery PASS (Chromium, real IndexedDB, OPFS, Web Locks and terminated workers)

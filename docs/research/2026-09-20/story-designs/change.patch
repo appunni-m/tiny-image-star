@@ -1,0 +1,498 @@
+--- before/src/compositor/contracts.d.ts
++++ after/src/compositor/contracts.d.ts
+@@ -33,6 +33,8 @@
+ }
+ export interface ShapeLayer extends Layer {
+   kind: "shape"; color?: string;
++  /** The frame is photo-relative and follows that photo's resolved geometry. */
++  attachment?: { schema: 1; imageId: string };
+   style?: { shape?: "rectangle" | "rounded" | "ellipse"; radius?: number; strokeColor?: string; strokeWidth?: number };
+ }
+ export type SceneLayer = ImageLayer | TextLayer | ShapeLayer;
+--- before/src/project/model.js
++++ after/src/project/model.js
+@@ -191,12 +191,19 @@
+     }
+   }
+   for (const [id, node] of Object.entries(project.nodes)) {
+-    keys(node, ["id", "kind", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects"]);
++    keys(node, ["id", "kind", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape"].includes(node.kind), "Unsupported layer kind.");
+     if (["legacy-image", "image"].includes(node.kind)) check(project.assets[node.assetId]?.kind === "image", "An image layer needs a source asset.");
+     if (node.maskId != null) check(project.assets[node.maskId]?.kind === "mask", "A layer mask is missing.");
+     if (node.fontId != null) check(project.assets[node.fontId]?.kind === "font", "A layer font is missing.");
+     if (node.cutoutEffects != null) { check(node.kind === "image", "Only scene photos support cutout effects."); validateCutoutEffects(node.cutoutEffects); }
++    if (node.attachment != null) {
++      check(object(node.attachment), "Invalid photo decoration."); keys(node.attachment, ["schema", "imageId"]);
++      const photo = project.nodes[node.attachment.imageId];
++      check(node.kind === "shape" && node.attachment.schema === 1 && photo?.kind === "image", "A decoration must follow a scene photo.");
++      check(node.space === photo.space && node.anchorSlideId === photo.anchorSlideId, "A decoration must share its photo's coordinate space.");
++      for (const slide of project.slides) check(slide.nodeIds.includes(id) === slide.nodeIds.includes(photo.id), "A decoration must share its photo's slides.");
++    }
+     if (node.connection != null) {
+       const connection = node.connection, left = project.slides.findIndex((slide) => slide.id === node.anchorSlideId);
+       check(object(connection), "Invalid connected cutout."); keys(connection, ["schema", "rightSlideId"]);
+@@ -284,10 +291,10 @@
+     }
+     return node;
+   });
+-  // A linked title's stored frame is relative to its photo, so crop/reflow,
+-  // rotation and output variants cannot leave an unrelated title behind.
+-  for (const photo of nodes.filter((node) => node.depthTextId)) {
+-    const title = nodes.find((node) => node.id === photo.depthTextId), local = title.frame, box = photo.viewport;
++  // Photo-relative titles and decorations follow the resolved frame, including
++  // local/output-specific placement and rotation. Stored coordinates stay local.
++  const followPhoto = (title, photo, text = false) => {
++    const local = title.frame, box = photo.viewport;
+     const angle = (photo.rotation ?? 0) * Math.PI / 180, cos = Math.cos(angle), sin = Math.sin(angle);
+     const dx = (local.x + local.width / 2 - .5) * box.width, dy = (local.y + local.height / 2 - .5) * box.height;
+     const w = local.width * box.width, h = local.height * box.height;
+@@ -296,9 +303,11 @@
+     const anchor = title.space === "story" ? project.slides.findIndex((entry) => entry.id === title.anchorSlideId) - slideIndex : 0;
+     title.frame = { x: title.viewport.x / variant.width - anchor, y: title.viewport.y / variant.height, width: w / variant.width, height: h / variant.height };
+     title.rotation = (photo.rotation ?? 0) + (title.rotation ?? 0);
+-    title.style = { ...title.style, fontSize: (title.style?.fontSize ?? .05) * photo.frame.width,
++    if (text) title.style = { ...title.style, fontSize: (title.style?.fontSize ?? .05) * photo.frame.width,
+       minFontSize: (title.style?.minFontSize ?? .012) * photo.frame.width, fontBasis: "width" };
+-  }
++  };
++  for (const photo of nodes.filter((node) => node.depthTextId)) followPhoto(nodes.find((node) => node.id === photo.depthTextId), photo, true);
++  for (const node of nodes.filter((node) => node.attachment)) followPhoto(node, nodes.find((photo) => photo.id === node.attachment.imageId));
+   return { slideId, variant: clone(variant), nodes, seed: project.seed, engine: clone(project.engine), models: clone(project.models) };
+ }
+ 
+--- /dev/null
++++ after/src/story/designs.js
+@@ -0,0 +1,108 @@
++import { canonicalJSON, clone, createSceneProject, validateData, validateProject } from "../project/model.js";
++import { applyProjectCommand } from "../project/history.js";
++import { adaptStoryLayoutCommand, validateStoryLayout } from "./layout.js";
++
++const check = (value, message = "This story design contains unsupported settings.") => { if (!value) throw new Error(message); };
++const keys = (value, names) => check(value && Object.getPrototypeOf(value) === Object.prototype
++  && Object.keys(value).length === names.length && names.every((name) => Object.hasOwn(value, name)));
++const type = (font, size, weight = 400) => ({ builtinFont: font, weight, fontBasis: "width", fontSize: size, minFontSize: .02, lineHeight: 1.15, fit: "shrink" });
++const layout = (patch = {}) => ({ margin: .07, gap: .05, border: .014, header: .06, captionMin: .105, captionMax: .24, arrangement: "auto", tilt: -3, fit: "contain", ...patch });
++const role = (font, size, border, decoration, options = {}) => ({ caption: type(font, size, font === "system-serif" ? 700 : 400),
++  number: type("system-mono", .025), border, decoration, layout: layout(options) });
++
++// These are parameters, not executable presets. Applied revisions are copied
++// into the style and project; rendering never looks up a mutable catalog entry.
++export function authoredStoryDesigns() {
++  return [
++    { id: "scrapbook", name: "Scrapbook", description: "Taped prints, generous cover type and warm paper.", lookId: "scrapbook", design: { schema: 1, roles: {
++      cover: role("system-serif", .1, "#fffdf7", "tape", { captionMin: .15, captionMax: .28, border: .022 }),
++      body: role("system-serif", .04, "#fffdf7", "tape", { captionMin: .075, gap: .06 }),
++      closing: role("system-serif", .075, "#fffdf7", "tape", { captionMin: .13, border: .022, tilt: 3 }),
++    } } },
++    { id: "depth-cover", name: "Depth cover", description: "A bold title behind your cover subject, with quiet straight pages.", lookId: "clean", design: { schema: 1, roles: {
++      cover: role("system-sans", .032, "#ffffff", "none", { margin: .045, border: .006, header: .04, captionMin: .06, captionMax: .15, tilt: 0, fit: "cover" }),
++      body: role("system-sans", .037, "#ffffff", "none", { margin: .065, border: .006, captionMin: .075, tilt: 0 }),
++      closing: role("system-serif", .08, "#ffffff", "none", { border: .006, captionMin: .15, tilt: 0 }),
++    } }, depthTitle: { schema: 1, target: "cover", background: "photo", frame: { x: .02, y: .08, width: .96, height: .42 }, color: "#ffffff",
++      style: { ...type("system-display", .24, 800), align: "center", lineHeight: .95, shadow: { color: "#00000088", blur: .004, x: 0, y: .002 } } } },
++    { id: "film-diary", name: "Film diary", description: "Film-edge frames, straight contact sheets and small diary type.", lookId: "film-diary", design: { schema: 1, roles: {
++      cover: role("system-mono", .065, "#10110f", "film", { border: .025, captionMin: .14, tilt: 0 }),
++      body: role("system-mono", .032, "#10110f", "film", { border: .025, gap: .055, captionMin: .075, tilt: 0 }),
++      closing: role("system-mono", .05, "#10110f", "film", { border: .025, captionMin: .12, tilt: 0 }),
++    } } },
++  ];
++}
++
++export function validateStoryDesign(design) {
++  validateData(design); keys(design, ["schema", "roles"]); check(design.schema === 1); keys(design.roles, ["cover", "body", "closing"]);
++  for (const value of Object.values(design.roles)) {
++    keys(value, ["caption", "number", "border", "decoration", "layout"]);
++    check(/^#[0-9a-f]{6}$/i.test(value.border) && ["none", "tape", "film"].includes(value.decoration));
++    keys(value.layout, ["margin", "gap", "border", "header", "captionMin", "captionMax", "arrangement", "tilt", "fit"]);
++    check(["auto", "row", "stack"].includes(value.layout.arrangement) && [-3, 0, 3].includes(value.layout.tilt) && ["contain", "cover"].includes(value.layout.fit));
++    const { arrangement, tilt, fit, ...constraints } = value.layout;
++    validateStoryLayout({ recipe: { layout: { id: "photo-prints", version: 1, ...constraints, slides: {} } }, slides: [], nodes: {} });
++    for (const style of [value.caption, value.number]) {
++      check(style?.fontBasis === "width");
++      validateProject(createSceneProject({ nodes: { text: { id: "text", kind: "text", space: "slide", text: "", frame: { x: 0, y: 0, width: 1, height: .2 }, style } } }));
++    }
++  }
++  return design;
++}
++
++function decorationNodes(photo, kind) {
++  const make = (suffix, frame, color, options = {}) => ({ id: `${photo.id}:design:${suffix}`, kind: "shape", space: photo.space,
++    ...(photo.anchorSlideId ? { anchorSlideId: photo.anchorSlideId } : {}), attachment: { schema: 1, imageId: photo.id }, frame, color, ...options });
++  if (kind === "tape") return [make("tape", { x: .33, y: -.025, width: .34, height: .06 }, "#d3be92", { opacity: .78, rotation: -2 })];
++  if (kind === "film") return ["l", "r"].flatMap((side) => Array.from({ length: 4 }, (_, index) => make(`hole-${side}-${index}`,
++    { x: side === "l" ? -.023 : 1.005, y: .14 + index * .22, width: .018, height: .026 }, "#d3ba8e", { style: { shape: "rounded", radius: .2 } })));
++  return [];
++}
++
++export function storyDesignCommand(project, design, { keepPositions = true } = {}) {
++  validateProject(project); validateStoryDesign(design);
++  let next = clone(project);
++  const prior = next.recipe.storyDesign?.decorations ?? [];
++  check(Array.isArray(prior) && prior.length <= 120, "This saved decoration list needs a different app version.");
++  for (const id of prior) {
++    const node = next.nodes[id];
++    check(node?.kind === "shape" && node.attachment && id.startsWith(`${node.attachment.imageId}:design:`)
++      && /:design:(tape|hole-[lr]-[0-3])$/.test(id), "A saved design cannot replace unrelated artwork.");
++    delete next.nodes[id]; for (const slide of next.slides) { slide.nodeIds = slide.nodeIds.filter((nodeId) => nodeId !== id); delete slide.overrides[id]; }
++  }
++  const bindings = {}, decorations = [];
++  for (const [index, slide] of next.slides.entries()) {
++    const role = index === 0 ? "cover" : index === next.slides.length - 1 ? "closing" : "body", treatment = design.roles[role];
++    next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id)).project;
++    const binding = next.recipe.layout.slides[slide.id], { arrangement, tilt, fit, ...constraints } = treatment.layout;
++    binding.constraints = clone(constraints);
++    for (const [i, pair] of binding.photos.entries()) {
++      next.nodes[pair.imageId].rotation = next.nodes[pair.borderId].rotation = i % 2 ? -tilt : tilt;
++      next.nodes[pair.borderId].color = treatment.border;
++    }
++    for (const [id, style] of [[binding.captionId, treatment.caption], [binding.numberId, treatment.number]]) {
++      next.nodes[id].style = clone(style); delete next.nodes[id].fontId;
++    }
++    next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id, { arrangement, fit, resetPositions: !keepPositions })).project;
++    const current = next.slides.find((entry) => entry.id === slide.id);
++    for (const pair of binding.photos) {
++      const photo = next.nodes[pair.imageId], nodes = decorationNodes(photo, treatment.decoration);
++      // Decorate the print above its image/depth title; captions stay independent.
++      const after = photo.depthTextId ?? photo.id, offset = current.nodeIds.indexOf(after) + 1;
++      for (const node of nodes) {
++        check(!Object.hasOwn(next.nodes, node.id), "This design conflicts with existing artwork. Your project is unchanged.");
++        next.nodes[node.id] = node; decorations.push(node.id);
++      }
++      current.nodeIds.splice(offset, 0, ...nodes.map((node) => node.id));
++    }
++    bindings[slide.id] = role;
++  }
++  next.recipe.storyDesign = { schema: 1, definition: clone(design), roles: bindings, decorations };
++  validateProject(next);
++  const commands = [];
++  for (const id of new Set([...Object.keys(project.nodes), ...Object.keys(next.nodes)])) {
++    if (canonicalJSON(next.nodes[id]) !== canonicalJSON(project.nodes[id])) commands.push({ type: "node", id, value: next.nodes[id] ?? null });
++  }
++  for (const type of ["recipe", "slides"]) if (canonicalJSON(next[type]) !== canonicalJSON(project[type])) commands.push({ type, value: next[type] });
++  return { type: "group", commands };
++}
+--- before/src/story/layout.js
++++ after/src/story/layout.js
+@@ -24,7 +24,8 @@
+   requireLayout(plain(layout.slides) && Object.keys(layout.slides).length <= project.slides.length);
+   for (const [id, binding] of Object.entries(layout.slides)) {
+     const slide = project.slides.find((entry) => entry.id === id);
+-    requireLayout(slide && plain(binding) && Object.keys(binding).every((key) => ["photos", "captionId", "numberId", "arrangement", "constraints"].includes(key)));
++    requireLayout(slide && plain(binding) && Object.keys(binding).every((key) => ["photos", "captionId", "numberId", "arrangement", "constraints", "fit"].includes(key)));
++    requireLayout(binding.fit == null || ["contain", "cover"].includes(binding.fit));
+     if (binding.constraints !== undefined) {
+       requireLayout(plain(binding.constraints) && Object.keys(binding.constraints).every((key) => constraints.some(([name]) => name === key)));
+       for (const [key, min, max] of constraints) if (binding.constraints[key] !== undefined) requireLayout(Number.isFinite(binding.constraints[key]) && binding.constraints[key] >= min && binding.constraints[key] <= max);
+@@ -90,7 +91,10 @@
+     const slotW = arrangement === "row" ? (availableW - gap * (binding.photos.length - 1)) / binding.photos.length : availableW;
+     const slotH = arrangement === "stack" ? (photosH - gap * (binding.photos.length - 1)) / binding.photos.length : photosH;
+     const prints = binding.photos.map(({ imageId }) => {
+-      const node = project.nodes[imageId]; return fitPrint(cropAspect(project, slide, node), node.rotation ?? 0, slotW, slotH, border);
++      const node = project.nodes[imageId];
++      const aspect = binding.fit === "cover" ? (slotW - 2 * border) / (slotH - 2 * border) : cropAspect(project, slide, node);
++      if (!Number.isFinite(aspect) || aspect <= 0) return null;
++      return fitPrint(aspect, node.rotation ?? 0, slotW, slotH, border);
+     });
+     if (prints.some((print) => !print)) continue;
+     const score = prints.reduce((sum, print) => sum + print.w * print.h, 0);
+@@ -128,7 +132,7 @@
+   return { type: "group", commands };
+ }
+ 
+-export function adaptStoryLayoutCommand(project, slideId, { arrangement, resetPositions = false } = {}) {
++export function adaptStoryLayoutCommand(project, slideId, { arrangement, fit, resetPositions = false } = {}) {
+   const next = clone(project);
+   if (next.recipe?.layout === "paper-prints-v1") next.recipe.layout = definition();
+   const layout = validateStoryLayout(next);
+@@ -142,6 +146,7 @@
+     }
+   }
+   if (arrangement != null) { requireLayout(arrangements.includes(arrangement), "Choose Auto, Side by side, or Stacked."); layout.slides[slideId].arrangement = arrangement; }
++  if (fit != null) { requireLayout(["contain", "cover"].includes(fit), "Choose Keep whole crop or Fill the frame."); layout.slides[slideId].fit = fit; }
+   validateStoryLayout(next);
+   if (resetPositions) {
+     const slide = next.slides.find((entry) => entry.id === slideId), binding = layout.slides[slideId];
+--- before/src/story/style-panel.js
++++ after/src/story/style-panel.js
+@@ -1,5 +1,5 @@
+ import { action, field, range, select } from "./view.js";
+-import { captureStoryStyle, curatedStyles, MAX_STYLE_BYTES, parseStyle, serializeStyle, styleCompatibility, styleFromLook, styleHasStrength, styleKey, styleSubjectSummary } from "../styles/model.js";
++import { captureStoryStyle, curatedStyles, curatedStoryStyles, MAX_STYLE_BYTES, parseStyle, serializeStyle, styleCompatibility, styleFromLook, styleHasStrength, styleKey, styleSubjectSummary } from "../styles/model.js";
+ import { putStyle, readStyleLibrary, removeStyle, STYLE_CHANGE_EVENT } from "../styles/store.js";
+ import { readableSlug } from "../names.js";
+ 
+@@ -10,6 +10,7 @@
+   const initial = { style: selected, strength, slideId: null, keepPositions: true };
+   const resources = new Map(), requests = new Map();
+   const scope = select([["all", "Whole story"], ["this", "This slide"]], "all", "Look scope");
++  const scopeField = field("Apply to", scope);
+   const navigation = document.createElement("nav"); navigation.className = "story-style-tabs"; navigation.setAttribute("aria-label", "Style library");
+   const filters = select([["all", "All saved"], ["favorites", "Favorites"], ["custom", "My styles"]], "all", "Saved style filter");
+   const filterField = field("Show", filters); filterField.hidden = true;
+@@ -23,10 +24,10 @@
+   const actions = document.createElement("div"); actions.className = "story-style-actions";
+   const saveForm = document.createElement("form"); saveForm.className = "story-style-form"; saveForm.hidden = true;
+   const fileInput = document.createElement("input"); fileInput.type = "file"; fileInput.accept = ".tstyle,.json,application/json"; fileInput.hidden = true; fileInput.setAttribute("aria-label", "Import style file");
+-  content.append(field("Apply to", scope), navigation, filterField, cards, more, selection, strengthControl, keepField, message, actions, saveForm, fileInput);
++  content.append(scopeField, navigation, filterField, cards, more, selection, strengthControl, keepField, message, actions, saveForm, fileInput);
+   const say = (text) => { if (!disposed) message.textContent = text; };
+   const tabs = new Map();
+-  for (const [id, label] of [["for", "For this story"], ["saved", "Saved"], ["recent", "Recent"]]) {
++  for (const [id, label] of [["for", "For this story"], ["looks", "Photo looks"], ["saved", "Saved"], ["recent", "Recent"]]) {
+     const button = action(label, () => { tab = id; shown = 12; renderCards(); }); tabs.set(id, button); navigation.append(button);
+   }
+   filters.addEventListener("change", () => { savedFilter = filters.value; shown = 12; renderCards(); });
+@@ -37,9 +38,11 @@
+   }
+   function selectionState() {
+     for (const button of cards.querySelectorAll("[data-style-key]")) button.setAttribute("aria-pressed", String(button.dataset.styleKey === styleKey(selected)));
+-    strengthControl.hidden = !styleHasStrength(selected); keepField.hidden = !selected.components.layout && !selected.components.depthTitle;
++    strengthControl.hidden = !applied || !styleHasStrength(selected); keepField.hidden = !applied || (!selected.components.layout && !selected.components.depthTitle && !selected.components.storyDesign);
++    scope.disabled = Boolean(applied?.style.components.storyDesign);
++    scopeField.hidden = tab === "for" || scope.disabled;
+     const input = strengthControl.querySelector("input"); input.value = strength; strengthControl.querySelector("output").value = strength;
+-    selection.textContent = `${selected.name} · revision ${selected.revision}. Local photo corrections stay in place.${selected.components.output ? " Output settings apply to the whole story." : ""} ${styleSubjectSummary(selected, project, scope.value === "this" ? slideId : null)}`;
++    selection.textContent = `${selected.name} · revision ${selected.revision}. ${selected.components.storyDesign ? "This recipe changes framing and type across the whole story. Your captions, crops and masks stay." : "Local photo corrections stay in place."}${selected.components.output ? " Output settings apply to the whole story." : ""} ${styleSubjectSummary(selected, project, scope.value === "this" ? slideId : null)}`;
+   }
+   function preview() {
+     const options = { strength, slideId: scope.value === "this" ? slideId : null, keepPositions: keep.checked };
+@@ -47,20 +50,20 @@
+       const problem = styleCompatibility(selected, project, null, options.slideId); if (problem) throw new Error(problem);
+       if (!onPreview(selected, options)) throw new Error("This style could not be previewed. The previous choice is kept.");
+       applied = { style: selected, ...options };
+-      say(selected.components.layout || selected.components.depthTitle ? "Review the new arrangement before applying. Adjusted positions follow the choice above." : "Previewing this style. Apply to keep it.");
++      say(selected.components.layout || selected.components.depthTitle || selected.components.storyDesign ? "Review the new arrangement before applying. Adjusted positions follow the choice above." : "Previewing this style. Apply to keep it.");
+     } catch (error) {
+       const previous = applied ?? initial; selected = previous.style; strength = previous.strength;
+       scope.value = previous.slideId ? "this" : "all"; keep.checked = previous.keepPositions; say(error.message);
+     }
+     selectionState();
+   }
+-  scope.addEventListener("change", () => { preview(); renderCards(); }); keep.addEventListener("change", preview);
++  scope.addEventListener("change", () => { if (applied) preview(); renderCards(); }); keep.addEventListener("change", preview);
+ 
+   async function thumbnail(card, style) {
+     const key = styleKey(style); if (requests.has(key) || resources.has(key) || disposed) return;
+     const controller = new AbortController(), currentGeneration = generation; requests.set(key, controller);
+     try {
+-      const entry = await renderThumbnail(style, { signal: controller.signal, slideId: scope.value === "this" ? slideId : null });
++      const entry = await renderThumbnail(style, { signal: controller.signal, slideId: scope.value === "this" && !style.components.storyDesign ? slideId : null });
+       if (disposed || controller.signal.aborted || currentGeneration !== generation || !card.isConnected) { releaseThumbnail(entry); return; }
+       resources.set(key, entry); const image = new Image(); image.alt = ""; image.src = entry.url; card.querySelector("[data-style-key]").prepend(image);
+     } catch (error) {
+@@ -87,16 +90,16 @@
+     const focusKey = document.activeElement?.dataset.favoriteKey;
+     cards.replaceChildren(); filterField.hidden = tab !== "saved";
+     for (const [id, button] of tabs) button.setAttribute("aria-pressed", String(tab === id));
+-    let styles = curatedStyles();
++    let styles = tab === "for" ? curatedStoryStyles() : curatedStyles();
+     if (tab === "saved") styles = records.filter((record) => savedFilter === "favorites" ? record.favorite
+       : savedFilter === "custom" ? record.origin === "custom" : record.favorite || ["custom", "imported"].includes(record.origin))
+       .sort((a, b) => b.savedAt - a.savedAt || a.key.localeCompare(b.key)).map((record) => record.style);
+     if (tab === "recent") styles = records.filter((record) => record.lastUsed > 0).sort((a, b) => b.lastUsed - a.lastUsed || a.key.localeCompare(b.key)).slice(0, 12).map((record) => record.style);
+     more.hidden = styles.length <= shown;
+     for (const style of styles.slice(0, shown)) {
+-      const key = styleKey(style), record = records.find((entry) => entry.key === key), problem = styleCompatibility(style, project, null, scope.value === "this" ? slideId : null);
++      const key = styleKey(style), record = records.find((entry) => entry.key === key), problem = styleCompatibility(style, project, null, scope.value === "this" && !style.components.storyDesign ? slideId : null);
+       const card = document.createElement("article"); card.className = "story-style-card"; card.dataset.cardKey = key; card.styleDefinition = style;
+-      const button = action(style.name, () => { selected = style; strength = 1; preview(); });
++      const button = action(style.name, () => { selected = style; strength = 1; if (style.components.storyDesign) scope.value = "all"; preview(); });
+       button.dataset.styleKey = key; button.dataset.look = style.id.replace(/^builtin:/, ""); button.disabled = Boolean(problem);
+       const detail = document.createElement("small"); detail.textContent = problem || style.description; button.append(detail); card.append(button);
+       const favorite = action(record?.favorite ? `Unfavorite ${style.name}` : `Favorite ${style.name}`, async () => {
+--- before/src/story/workspace.js
++++ after/src/story/workspace.js
+@@ -9,7 +9,7 @@
+ import { mountCutoutEffectsPanel } from "./cutout-effects-panel.js";
+ import { canMoveStorySlide, connectedSlideGroup, reviewConnections } from "./connections.js";
+ import { storyMaskCommand, pruneStorySources } from "./masks.js";
+-import { storyStyleCommand } from "../styles/model.js";
++import { storyStyleCommand, curatedStoryStyles } from "../styles/model.js";
+ import { ProjectHistory, applyProjectCommand } from "../project/history.js";
+ import { canonicalJSON, clone, newId, resolveSlide } from "../project/model.js";
+ import { listStoryProjects, readStoryProject, writeStoryProject } from "../project/storage.js";
+@@ -399,6 +399,11 @@
+         const arrangement = select([["auto", "Auto"], ["row", "Side by side"], ["stack", "Stacked"]], documentNow().recipe.layout.slides[slideId].arrangement, "Photo arrangement");
+         layoutControls.append(field("Arrange this slide", arrangement));
+         arrangement.addEventListener("change", () => { if (previewEdit(() => adaptStoryLayoutCommand(documentNow(), slideId, { arrangement: arrangement.value }))) updateLayout(); });
++        const fit = select([["contain", "Keep whole crop"], ["cover", "Fill the frame"]], documentNow().recipe.layout.slides[slideId].fit ?? "contain", "Photo fit");
++        layoutControls.append(field("Photo fit", fit));
++        fit.addEventListener("change", () => { if (previewEdit(() => adaptStoryLayoutCommand(documentNow(), slideId, { fit: fit.value }))) updateLayout(); });
++        if (fit.value === "cover") { const hint = document.createElement("p"); hint.className = "story-note";
++          hint.textContent = "Photos fill their frames. Open Photos to adjust the crop if your subject is cut off."; layoutControls.append(hint); }
+         layoutControls.append(action("Reset adjusted positions", () => { if (previewEdit(() => adaptStoryLayoutCommand(documentNow(), slideId, { resetPositions: true }))) updateLayout(); }));
+         const resetNote = document.createElement("p"); resetNote.className = "story-note"; resetNote.textContent = "Reset applies to both shapes on this slide. Crops and colors are kept."; layoutControls.append(resetNote);
+         choosePhoto(layoutControls, (photo, controls) => {
+@@ -487,7 +492,8 @@
+       await persist(); ledger(files.reduce((sum, file) => sum + file.size, 0));
+       const entries = await importStoryPhotos(files, { signal: controller.signal, onProgress: (count, total) => status(`Reading photo ${count} of ${total}…`) });
+       if (controller.signal.aborted || !root.open) return;
+-      const project = createPhotoStory(entries.map((entry) => entry.asset), { title: get("title").value });
++      const base = createPhotoStory(entries.map((entry) => entry.asset), { title: get("title").value });
++      const project = applyProjectCommand(base, storyStyleCommand(base, curatedStoryStyles()[0])).project;
+       showSession({ sources: new Map(entries.map((entry) => [entry.asset.id, entry.source])), history: new ProjectHistory(project), savedRevision: null, autoSave: true });
+       scheduleSave();
+     } catch (failure) { if (failure.name !== "AbortError") status(failure.message); }
+--- before/src/styles/model.js
++++ after/src/styles/model.js
+@@ -4,9 +4,10 @@
+ import { STORY_LOOKS } from "../story/recipes.js";
+ import { validateCutoutEffects } from "../compositor/cutout-effects-spec.js";
+ import { storyDepthCommand } from "../story/depth.js";
++import { authoredStoryDesigns, storyDesignCommand, validateStoryDesign } from "../story/designs.js";
+ 
+ export const MAX_STYLE_BYTES = 32 * 1024;
+-export const STYLE_CAPABILITIES = Object.freeze(["scene-v1", "photo-look-v1", "builtin-text-v1", "photo-prints-v1", "cutout-effects-v1", "depth-title-v1", "png-output", "jpeg-output"]);
++export const STYLE_CAPABILITIES = Object.freeze(["scene-v1", "photo-look-v1", "builtin-text-v1", "photo-prints-v1", "photo-fill-v1", "cutout-effects-v1", "depth-title-v1", "story-design-v1", "png-output", "jpeg-output"]);
+ const layoutKeys = ["id", "version", "margin", "gap", "border", "header", "captionMin", "captionMax"];
+ const plain = (value) => value && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+ const bounded = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
+@@ -14,8 +15,8 @@
+ function check(condition, message = "This style contains unsupported or invalid settings.") { if (!condition) throw new Error(message); }
+ function keys(value, allowed) { check(plain(value) && Object.keys(value).every((key) => allowed.includes(key))); }
+ const requiredFor = (components) => ["scene-v1", ...(components.look ? ["photo-look-v1"] : []), ...(components.text ? ["builtin-text-v1"] : []),
+-  ...(components.layout ? ["photo-prints-v1"] : []), ...(components.cutoutEffects ? ["cutout-effects-v1"] : []),
+-  ...(components.depthTitle ? ["depth-title-v1"] : []), ...(components.output ? [`${components.output.format}-output`] : [])];
++  ...(components.layout ? ["photo-prints-v1", ...(components.layout.fit === "cover" ? ["photo-fill-v1"] : [])] : []), ...(components.cutoutEffects ? ["cutout-effects-v1"] : []),
++  ...(components.depthTitle ? ["depth-title-v1"] : []), ...(components.storyDesign ? ["story-design-v1"] : []), ...(components.output ? [`${components.output.format}-output`] : [])];
+ export const styleKey = (style) => `${style.id}@${style.revision}`;
+ export const styleHasStrength = (style) => Object.entries(style.components.look?.appearance ?? {}).some(([key, value]) => value !== (key === "grayscaleMix" ? 0 : 1));
+ 
+@@ -50,7 +51,7 @@
+     && new Set(style.supported.variants).size === style.supported.variants.length && style.supported.variants.every((id) => ["portrait", "tall"].includes(id)));
+   keys(style.seed, ["mode"]); check(style.seed.mode === "project");
+   check(Array.isArray(style.assets) && style.assets.length === 0, "This style version supports built-in fonts and parameters. Asset packs need a separately supported format.");
+-  keys(style.components, ["look", "text", "layout", "output", "cutoutEffects", "depthTitle"]); check(Object.keys(style.components).length > 0, "Choose at least one setting to save.");
++  keys(style.components, ["look", "text", "layout", "output", "cutoutEffects", "depthTitle", "storyDesign"]); check(Object.keys(style.components).length > 0, "Choose at least one setting to save.");
+   const { look, text, layout, output } = style.components;
+   const validation = createSceneProject({ nodes: { caption: { id: "caption", kind: "text", space: "slide", frame: { x: .1, y: .1, width: .8, height: .2 }, text: "" } } });
+   if (look !== undefined) {
+@@ -65,8 +66,9 @@
+     }
+   }
+   if (layout !== undefined) {
+-    keys(layout, [...layoutKeys, "arrangement", "tilt"]);
++    keys(layout, [...layoutKeys, "arrangement", "tilt", "fit"]);
+     check(["auto", "row", "stack"].includes(layout.arrangement) && [-3, 0, 3].includes(layout.tilt));
++    check(layout.fit == null || ["contain", "cover"].includes(layout.fit));
+     validateStoryLayout({ recipe: { layout: { ...Object.fromEntries(layoutKeys.map((key) => [key, layout[key]])), slides: {} } }, slides: [], nodes: {} });
+   }
+   if (output !== undefined) {
+@@ -75,7 +77,8 @@
+   if (style.components.cutoutEffects !== undefined) validateCutoutEffects(style.components.cutoutEffects);
+   if (style.components.depthTitle !== undefined) {
+     const depth = style.components.depthTitle;
+-    keys(depth, ["schema", "background", "frame", "style", "color"]);
++    keys(depth, ["schema", "background", "frame", "style", "color", "target"]);
++    check(depth.target == null || depth.target === "cover", "This depth-title target is not supported.");
+     check(depth.schema === 1 && ["photo", "page"].includes(depth.background) && color(depth.color), "This style has invalid depth-title settings.");
+     keys(depth.frame, ["x", "y", "width", "height"]);
+     check(bounded(depth.frame.x, -.5, 1) && bounded(depth.frame.y, -.5, 1) && bounded(depth.frame.width, .2, 1.8)
+@@ -83,6 +86,10 @@
+     check(plain(depth.style) && depth.style.fontBasis === "width", "Depth-title type must be relative to the photo width.");
+     validation.nodes.caption.style = depth.style; validateProject(validation);
+   }
++  if (style.components.storyDesign !== undefined) {
++    validateStoryDesign(style.components.storyDesign);
++    check(!layout && !text, "A story design already defines layout and caption type. Save those as a separate style.");
++  }
+   check(requiredFor(style.components).every((requirement) => style.requires.includes(requirement)), "This style omits a required capability declaration.");
+   check(Array.isArray(style.controls) && canonicalJSON(style.controls) === canonicalJSON(styleHasStrength(style) ? ["appearance-strength"] : []));
+   validateProject(validation);
+@@ -97,13 +104,24 @@
+   style.revision = look.revision; return validateStyle(style);
+ }
+ export const curatedStyles = () => STORY_LOOKS.map(styleFromLook);
++export const curatedStoryStyles = () => authoredStoryDesigns().map((entry) => {
++  const look = STORY_LOOKS.find((item) => item.id === entry.lookId);
++  return envelope(`builtin:story-${entry.id}`, entry.name, entry.description, {
++    look: { appearance: clone(look.appearance), paper: look.paper, ink: look.ink, accent: look.accent },
++    storyDesign: entry.design, ...(entry.depthTitle ? { depthTitle: entry.depthTitle } : {}),
++  });
++});
+ 
+ const scopedPhotos = (project, slideId) => [...new Set(project.slides.filter((slide) => !slideId || slide.id === slideId).flatMap((slide) => slide.nodeIds))]
+   .map((id) => project.nodes[id]).filter((node) => node.kind === "image");
++const depthPhotos = (project, style, slideId) => style.components.depthTitle?.target === "cover"
++  ? scopedPhotos(project, project.slides[0].id).filter((node) => !node.connection).slice(0, 1).filter((node) => !slideId || project.slides.find((slide) => slide.id === slideId)?.nodeIds.includes(node.id))
++  : scopedPhotos(project, slideId);
+ 
+ export function styleSubjectSummary(style, project, slideId = null) {
+   if (!style.components.cutoutEffects && !style.components.depthTitle) return "";
+-  const photos = scopedPhotos(project, slideId), subjects = photos.filter((node) => node.maskId), skipped = photos.length - subjects.length;
++  const photos = style.components.depthTitle ? depthPhotos(project, style, slideId) : scopedPhotos(project, slideId), subjects = photos.filter((node) => node.maskId), skipped = photos.length - subjects.length;
++  if (style.components.depthTitle?.target === "cover") return "Depth type applies to the cover photo. Existing title words stay; a new title uses this story’s name. Your slide caption stays separate.";
+   return `${subjects.length} photo${subjects.length === 1 ? "" : "s"} with a subject selection will receive the effect. ${skipped} without a selection stay unchanged.`
+     + (style.components.depthTitle ? " Existing words stay; new titles use this story’s name. Existing title positions stay unless Keep adjusted positions is unchecked." : "")
+     + (subjects.some((node) => node.connection) ? " Connected subjects change on both slides." : "");
+@@ -121,7 +139,11 @@
+     if (count < style.supported.photoCounts.min || count > style.supported.photoCounts.max) return `This style needs ${style.supported.photoCounts.min}–${style.supported.photoCounts.max} photos.`;
+     const shape = style.components.output?.variant ?? variantId ?? project.recipe.outputVariant;
+     if (!style.supported.variants.includes(shape) || !project.variants.some((variant) => variant.id === shape)) return "This style does not support the selected output shape.";
+-    if ((style.components.cutoutEffects || style.components.depthTitle) && !scopedPhotos(project, slideId).some((node) => node.maskId))
++    if (style.components.storyDesign && slideId) return "This story recipe applies to the whole story. Choose Whole story.";
++    if (style.components.depthTitle?.target === "cover" && slideId && slideId !== project.slides[0].id) return "This effect targets the cover. Choose the cover slide or Whole story.";
++    if (style.components.depthTitle?.target === "cover" && !depthPhotos(project, style, slideId).some((node) => node.maskId)) return "Choose the cover subject in Cutout first, or use Scrapbook or Film diary without a cutout.";
++    if ((style.components.cutoutEffects && !scopedPhotos(project, slideId).some((node) => node.maskId))
++      || (style.components.depthTitle && !depthPhotos(project, style, slideId).some((node) => node.maskId)))
+       return `Choose a subject in Cutout${slideId ? " on this slide" : ""} before applying this effect.`;
+   }
+   return "";
+@@ -141,7 +163,8 @@
+   if (inclusion.layout) {
+     const layout = validateStoryLayout(project), binding = layout.slides[slideId]; check(binding, "Adapt this slide to photos before saving its layout.");
+     check([-3, 0, 3].includes(photo.rotation ?? 0), "This rotation is not part of a reusable photo-print layout.");
+-    components.layout = { ...Object.fromEntries(layoutKeys.map((key) => [key, binding.constraints?.[key] ?? layout[key]])), arrangement: binding.arrangement, tilt: photo.rotation ?? 0 };
++    components.layout = { ...Object.fromEntries(layoutKeys.map((key) => [key, binding.constraints?.[key] ?? layout[key]])), arrangement: binding.arrangement, tilt: photo.rotation ?? 0,
++      ...(binding.fit === "cover" ? { fit: binding.fit } : {}) };
+   }
+   if (inclusion.output) components.output = { variant: project.recipe.outputVariant, format: project.recipe.outputFormat ?? "jpeg" };
+   if (inclusion.cutoutEffects) {
+@@ -169,7 +192,7 @@
+   if (style.components.depthTitle) {
+     const depth = style.components.depthTitle;
+     // Shared connected photos appear on two slides; change their single title once.
+-    for (const photo of scopedPhotos(project, slideId).filter((node) => node.maskId)) {
++    for (const photo of depthPhotos(project, style, slideId).filter((node) => node.maskId)) {
+       next = applyProjectCommand(next, storyDepthCommand(next, photo.id, { background: depth.background })).project;
+       const title = next.nodes[next.nodes[photo.id].depthTextId];
+       title.style = clone(depth.style); title.color = depth.color; delete title.fontId;
+@@ -202,16 +225,17 @@
+       next.recipe.layout.slides[slide.id].constraints = Object.fromEntries(layoutKeys.filter((key) => !["id", "version"].includes(key)).map((key) => [key, layout[key]]));
+       const pairs = next.recipe.layout.slides[slide.id].photos;
+       pairs.forEach((pair, index) => { for (const id of [pair.imageId, pair.borderId]) next.nodes[id].rotation = index % 2 ? -layout.tilt : layout.tilt; });
+-      next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id, { arrangement: layout.arrangement, resetPositions: !keepPositions })).project;
++      next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id, { arrangement: layout.arrangement, fit: layout.fit ?? "contain", resetPositions: !keepPositions })).project;
+     } else if (text && hasAdaptiveLayout(next, slide.id)) next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id)).project;
+   }
++  if (style.components.storyDesign) next = applyProjectCommand(next, storyDesignCommand(next, style.components.storyDesign, { keepPositions })).project;
+   if (output) { next.recipe.outputVariant = output.variant; next.recipe.outputFormat = output.format; }
+   const applied = { definition: clone(style), strength };
+   if (slideId) next.recipe.slideStyles = { ...next.recipe.slideStyles, [slideId]: applied };
+   else next.recipe.style = applied;
+   validateProject(next);
+   const commands = [];
+-  for (const [id, node] of Object.entries(next.nodes)) if (canonicalJSON(node) !== canonicalJSON(project.nodes[id])) commands.push({ type: "node", id, value: node });
++  for (const id of new Set([...Object.keys(project.nodes), ...Object.keys(next.nodes)])) if (canonicalJSON(next.nodes[id]) !== canonicalJSON(project.nodes[id])) commands.push({ type: "node", id, value: next.nodes[id] ?? null });
+   for (const type of ["shared", "slides", "recipe"]) if (canonicalJSON(next[type]) !== canonicalJSON(project[type])) commands.push({ type, value: next[type] });
+   return { type: "group", commands };
+ }
+--- before/src/styles/store.js
++++ after/src/styles/store.js
+@@ -1,5 +1,5 @@
+ import { canonicalJSON, clone } from "../project/model.js";
+-import { curatedStyles, styleKey, validateStyle } from "./model.js";
++import { curatedStyles, curatedStoryStyles, styleKey, validateStyle } from "./model.js";
+ import { LEGACY_STYLE_KIND, legacyStyleFromRecipe, originalRecipe, validateLegacyStyle } from "./legacy.js";
+ import { CATALOG_KEY, emptyRecipeCatalog, LEGACY_RECIPES_KEY } from "./catalog-model.js";
+ 
+@@ -64,7 +64,7 @@
+ 
+ function assertBuiltin(style) {
+   if (!style.id.startsWith("builtin:")) return false;
+-  const builtin = curatedStyles().find((item) => styleKey(item) === styleKey(style));
++  const builtin = [...curatedStyles(), ...curatedStoryStyles()].find((item) => styleKey(item) === styleKey(style));
+   if (!builtin || canonicalJSON(builtin) !== canonicalJSON(style)) throw new Error("This file conflicts with a built-in style. Its settings were not imported.");
+   return true;
+ }

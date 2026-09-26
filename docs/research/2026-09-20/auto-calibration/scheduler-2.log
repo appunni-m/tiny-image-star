@@ -1,0 +1,69 @@
+
+> verify:scheduler
+> node --test tests/processing.test.mjs tests/processing-startup.test.mjs
+
+✔ initial Auto admission follows real arrivals, then stops speculative growth at the first useful result (24.376916ms)
+✔ a completed short probe cannot be enlarged merely by later arrivals or header inspection (1.86875ms)
+✔ cancelled initial work and pressure do not reopen the speculative arrival phase (1.33675ms)
+✔ a wider initial limit still counts retained sources, terminal outputs and actual reads against memory (0.59ms)
+✔ Auto challenges an unproven initial size when 1 workers already saturate useful throughput (4.8325ms)
+✔ Auto challenges an unproven initial size when 2 workers already saturate useful throughput (3.953334ms)
+✔ an unfinished downward probe restores the measured good limit on cancel (2.004ms)
+✔ an unfinished downward probe restores the measured good limit on drain (1.312ms)
+✔ the initial eight-worker bound does not cap later measured concurrency on a larger budget (1.725167ms)
+✖ another work class cannot certify a lower-count trial, and pressure cancels its old baseline (2.691208ms)
+✔ admission defers copies, shares CPU across worker kinds, and reuses an idle engine (23.952208ms)
+✔ current-image priority, FIFO ties, and aging prevent starvation (0.88475ms)
+✔ memory admission counts retained data, active output and idle heaps (1.140959ms)
+✔ explicit high concurrency is not capped at four and never exceeds CPU tokens (1.515584ms)
+✔ text admission includes its RGBA surfaces and custom fonts before dispatch (1.136209ms)
+✔ cancel kills synchronous work, drops stale messages, and does not prepare queued sources (1.003833ms)
+✔ worker death and task timeout release all reservations and permit retry (26.242583ms)
+✔ cancelled asynchronous source reads retain memory credit until they settle (0.686042ms)
+✔ reentrant completion can close a logical client without destroying reusable workers (0.41375ms)
+✔ closing during a grouped worker-start failure cannot dispatch later cancelled tasks (0.358792ms)
+✔ allocation estimates reject oversized sources and budget the full current preview path (0.086958ms)
+✔ Auto grows on useful work, retreats without throughput gain, and observes cooldown (2.405375ms)
+✔ interleaved header inspection and mixed image sizes do not erase Auto calibration (2.233417ms)
+✔ header-only work does not calibrate image throughput (1.138959ms)
+✔ Auto keeps the eight-sample growth gate and checks whether fewer provisional workers suffice (2.363792ms)
+✔ Auto preserves a serial start with a missing memory hint (0.464791ms)
+✔ Auto preserves a serial start with a small memory hint (0.336083ms)
+✔ Auto preserves a serial start with a small CPU hint (0.30475ms)
+✔ Auto does not start an extra worker for short edits or from queued inspections (0.521584ms)
+✔ the initial Auto probe cannot bypass retained memory or output reservations (0.578125ms)
+✔ pressure suppresses the initial Auto probe even after cooldown and an unchanged configure call (0.439875ms)
+✔ Auto retains useful concurrency without counting idle time between collections (2.817667ms)
+✔ Auto discards an unfinished measurement when the queue drains by success (0.517666ms)
+✔ Auto discards an unfinished measurement when the queue drains by render-error (0.398792ms)
+✔ Auto discards an unfinished measurement when the queue drains by cancel (0.330833ms)
+✔ Auto discards an unfinished measurement when the queue drains by prepare-error (0.251792ms)
+✔ Auto discards an unfinished measurement when the queue drains by cancel-queued (0.233625ms)
+✔ an oversized idle WASM heap is retired before admitting smaller work (0.349584ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 37
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 116.08
+
+✖ failing tests:
+
+test at tests/processing-startup.test.mjs:103:1
+✖ another work class cannot certify a lower-count trial, and pressure cancels its old baseline (2.691208ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 2
+  
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/processing-startup.test.mjs:112:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

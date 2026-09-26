@@ -1,0 +1,11 @@
+{
+  "target_profile": "node-wasm",
+  "target_id": "app-engine",
+  "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:8a74407abb160a86e7b51eecda6cc5fc380be7ad0a12b4b60ae93e3dc23883ab",
+  "dirty": true,
+  "runtime": "v24.18.0",
+  "backend": "wasm-cpu",
+  "features": [
+    "png"
+  ]
+}

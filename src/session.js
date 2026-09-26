@@ -1,6 +1,7 @@
 // Browser-local recovery for the active image set. Source bytes are retained
 // only under a bounded budget; generated outputs are deliberately excluded and
 // are rebuilt through the normal worker path after a restore.
+import { clearRecoveryProject, readRecoveryProject, writeRecoveryProject } from "./project/storage.js";
 
 export const SESSION_VERSION = 1;
 export const SESSION_DB_NAME = "tiny-image-star.session";
@@ -26,7 +27,7 @@ function copyBytes(bytes) {
   return null;
 }
 
-export function buildSessionSnapshot({ batch, activePresetId }) {
+export function buildSessionSnapshot({ batch, activePresetId, recipes = [], recipeReferences, operationsForItem = () => null }) {
   const files = Array.from(batch?.files ?? []).map((item) => ({
     id: String(item.id),
     name: String(item.name ?? item.file?.name ?? "image"),
@@ -39,6 +40,12 @@ export function buildSessionSnapshot({ batch, activePresetId }) {
     // separate from `override`, which stores manual canvas corrections.
     presetOverride: item.presetOverride ?? null,
     override: clone(item.override),
+    assetId: `asset:${item.id}`,
+    nodeId: `layer:${item.id}`,
+    slideId: `slide:${item.id}`,
+    width: item.width || null,
+    height: item.height || null,
+    resolvedOperations: clone(operationsForItem(item)),
   }));
   const byteLength = files.reduce((total, item) => total + (item.bytes?.byteLength ?? 0), 0);
   if (!files.length) return { snapshot: null, byteLength: 0, reason: "empty" };
@@ -48,13 +55,18 @@ export function buildSessionSnapshot({ batch, activePresetId }) {
       version: SESSION_VERSION,
       savedAt: Date.now(),
       activePresetId: activePresetId ?? null,
+      projectId: batch.projectId ?? "active-image-set",
+      projectRevision: Number(batch.projectRevision) || 0,
+      projectCreatedAt: Number(batch.projectCreatedAt) || 0,
+      frozenRecipes: clone(recipes),
+      ...(recipeReferences ? { recipeReferences: clone(recipeReferences) } : {}),
       batch: {
         presetId: batch.presetId ?? null,
         recipeScope: RECIPE_SCOPES.has(batch.recipeScope) ? batch.recipeScope : "all",
         sharedOverride: clone(batch.sharedOverride),
         formatOverride: batch.formatOverride ?? null,
         lossyOverride: typeof batch.lossyOverride === "boolean" ? batch.lossyOverride : null,
-        qualityOverride: Number.isFinite(Number(batch.qualityOverride)) ? Number(batch.qualityOverride) : null,
+        qualityOverride: batch.qualityOverride != null && Number.isFinite(Number(batch.qualityOverride)) ? Number(batch.qualityOverride) : null,
         activeId: batch.activeId ?? null,
         selected: [...(batch.selected ?? [])],
         selectionTouched: Boolean(batch.selectionTouched),
@@ -66,7 +78,7 @@ export function buildSessionSnapshot({ batch, activePresetId }) {
   };
 }
 
-export function buildEditorSessionSnapshot({ file, operations }) {
+export function buildEditorSessionSnapshot({ file, operations, project = null }) {
   const bytes = copyBytes(file?.bytes);
   const byteLength = bytes?.byteLength ?? 0;
   if (!file || !bytes?.byteLength) return { snapshot: null, byteLength, reason: "empty" };
@@ -76,6 +88,7 @@ export function buildEditorSessionSnapshot({ file, operations }) {
       version: SESSION_VERSION,
       kind: "editor",
       savedAt: Date.now(),
+      project: clone(project),
       editor: {
         id: String(file.id ?? "editor"),
         name: String(file.name ?? "image"),
@@ -138,7 +151,7 @@ function openDatabase() {
   });
 }
 
-export async function readSession(key = SESSION_KEY) {
+async function readLegacySession(key = SESSION_KEY) {
   try {
     const database = await openDatabase();
     if (!database) return null;
@@ -158,31 +171,40 @@ export async function readSession(key = SESSION_KEY) {
 export async function writeSession(snapshot, key = SESSION_KEY) {
   if (!sessionRecordIsUsable(snapshot)) return false;
   try {
-    const database = await openDatabase();
-    if (!database) return false;
-    return await new Promise((resolve) => {
-      const transaction = database.transaction(SESSION_STORE_NAME, "readwrite");
-      transaction.objectStore(SESSION_STORE_NAME).put(snapshot, key);
-      transaction.oncomplete = () => {
-        database.close();
-        resolve(true);
-      };
-      transaction.onerror = () => {
-        database.close();
-        resolve(false);
-      };
-      transaction.onabort = () => {
-        database.close();
-        resolve(false);
-      };
-    });
-  } catch {
+    return await writeRecoveryProject(snapshot, key);
+  } catch (error) {
+    globalThis.dispatchEvent?.(new CustomEvent("tinystar:recovery-write-error", { detail: { message: error.message } }));
     return false;
   }
 }
 
+export async function readSession(key = SESSION_KEY) {
+  try { return await readRecoveryProject(key) ?? await readLegacySession(key); }
+  catch (error) {
+    globalThis.dispatchEvent?.(new CustomEvent("tinystar:recovery-read-error", { detail: { message: error.message } }));
+    return null;
+  }
+}
+
+// Raw copies are only for lossless backup. Unknown versions are never coerced
+// into the current editor or rewritten during a read.
+export async function readLegacySessionBackups() {
+  const database = await openDatabase();
+  if (!database) return [];
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction(SESSION_STORE_NAME, "readonly");
+      const store = transaction.objectStore(SESSION_STORE_NAME);
+      const keys = store.getAllKeys(), values = store.getAll();
+      transaction.oncomplete = () => resolve(values.result.map((value, index) => ({ key: keys.result[index], value })));
+      transaction.onerror = transaction.onabort = () => reject(transaction.error);
+    });
+  } finally { database.close(); }
+}
+
 export async function clearSession(key = SESSION_KEY) {
   try {
+    await clearRecoveryProject(key);
     const database = await openDatabase();
     if (!database) return false;
     return await new Promise((resolve) => {

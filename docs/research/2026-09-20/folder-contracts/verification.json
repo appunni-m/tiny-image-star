@@ -1,0 +1,283 @@
+{
+  "schema": "tinystar/folder-contract-verification@1",
+  "recordedAt": "2026-09-20T12:03:47.420984+00:00",
+  "target": {
+    "target_profile": "node-wasm",
+    "target_id": "app-engine",
+    "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:69d55b8f17300b37b4b6aa0d8f39438c83ff28e4359a88b485077f890913ca0c",
+    "dirty": true,
+    "runtime": "v24.18.0",
+    "backend": "wasm-cpu",
+    "features": [
+      "png"
+    ]
+  },
+  "scope": "Versioned folder recipe/renderer identity, atomic job-owned custom fonts, concurrent recovery and bounded render inputs.",
+  "inventoryCounts": {
+    "source-files.json": 119,
+    "archive-files.json": 230,
+    "packaged-files.json": 210
+  },
+  "checks": {
+    "deterministic": {
+      "scheduler": 38,
+      "modelAndDiagnostics": 129,
+      "total": 167
+    },
+    "sourceBrowser": "pass",
+    "packagedBrowser": "pass",
+    "folderRecovery": "pass",
+    "artifactFiles": 210,
+    "documentation": {
+      "markdownFiles": 77,
+      "errors": 0,
+      "info": 0,
+      "review": 7
+    },
+    "focused": {
+      "fontSha256": "bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d",
+      "reference": "32ffccd5f6b60d3381e77239283650fa79eb1e2be3f1b6b3febc2860870c9704",
+      "runs": [
+        {
+          "concurrency": 1,
+          "peak": 1,
+          "violations": 0,
+          "checked": 16
+        },
+        {
+          "concurrency": 4,
+          "peak": 4,
+          "violations": 0,
+          "checked": 16
+        },
+        {
+          "concurrency": 8,
+          "peak": 8,
+          "violations": 0,
+          "checked": 16
+        }
+      ],
+      "completed": 49,
+      "expectedFailures": 2,
+      "quotaAtomic": true,
+      "libraryMissingAfterReload": true,
+      "upgradeBlockedThenRecovered": true,
+      "staleMetadataUsedSnapshot": true,
+      "staleDestinationIgnored": true,
+      "unboundFontMetadataIgnored": true,
+      "preparationPeak": 1,
+      "libraryReads": 1,
+      "sameSnapshot": true
+    },
+    "parity": {
+      "runId": "parity-6533c6ff-cad1-47a3-bd4a-ff785bbfee34",
+      "summary": {
+        "selected": 33,
+        "executed": 33,
+        "passed": 33,
+        "failed": 0,
+        "not_run": 0,
+        "infrastructure_errors": 0
+      }
+    },
+    "coverage": {
+      "runId": "coverage-6cf2705f-17d5-4fe8-b180-b111749a2227",
+      "threshold": {
+        "dimension": "function",
+        "minimum_percent": 70,
+        "covered": 27,
+        "total": 35,
+        "outcome": "pass"
+      }
+    }
+  },
+  "limitations": [
+    "Dirty local development revision; no deployment or release certification.",
+    "Previous canonical timing target differs; no new throughput qualification.",
+    "Browser-managed OPFS and viewport tests do not qualify physical devices or native filesystem crashes.",
+    "System fonts, complete application identity, discovery-time input snapshots and future model identities are not frozen by this contract.",
+    "Complete migration and production gates remain open."
+  ],
+  "artifacts": [
+    {
+      "path": "FOLDER_RECOVERY_VERIFICATION.md.snapshot",
+      "sha256": "df113fa37cd42850ab3aca5f8cba6caf104c750349fa17f4509c9a75393fb822",
+      "bytes": 6424
+    },
+    {
+      "path": "FOLDER_RENDER_CONTRACT_VERIFICATION.md.snapshot",
+      "sha256": "442207e15d37649b1026088159fde4e158cc7ad5da675c81f25b1b87a110dcbf",
+      "bytes": 6867
+    },
+    {
+      "path": "MIGRATION_PLAN.md.snapshot",
+      "sha256": "a0e9a5d23a44cc9e9ce9ff3e9709a74c5ac401c27c68ef99246287393a1a9e1f",
+      "bytes": 68339
+    },
+    {
+      "path": "MIGRATION_STATUS.md.snapshot",
+      "sha256": "aa08701f78a5ed5fe5b211645575673a0e8d78645bb1f2b5d5239a083e3a3f58",
+      "bytes": 31444
+    },
+    {
+      "path": "README.md",
+      "sha256": "a3a64887f62c87722ff7fd756010d811fd45ce6313ab9b10422d3d190306e2fc",
+      "bytes": 4280
+    },
+    {
+      "path": "SHARED_SCHEDULER_VERIFICATION.md.snapshot",
+      "sha256": "62e5a3285184b559d70523aa856cfe5f4fb15e8d99aee4cc921a7272088a4e6d",
+      "bytes": 18007
+    },
+    {
+      "path": "VERIFICATION_MATRIX.md.snapshot",
+      "sha256": "9297ad46cccec71b40fe8a0c64aec5b8ed3b5fa2afdb7a8673d03983aa564892",
+      "bytes": 35581
+    },
+    {
+      "path": "aggregate.log",
+      "sha256": "c96b9bf7a9ba9b0070c400564f0355cc738d37fff4c247048d7a9d591ef558d5",
+      "bytes": 102
+    },
+    {
+      "path": "archive-files.json",
+      "sha256": "0cd3ae4f073362088f699f003ecba42beb1ea82b40b669d2a9fa076fedf3e3a4",
+      "bytes": 35806
+    },
+    {
+      "path": "coverage.json",
+      "sha256": "caccb65f59448ecd2c9e4dea68c0c6824bb6bce6fe556f73eca0ca2ae25b0add",
+      "bytes": 27469
+    },
+    {
+      "path": "coverage.log",
+      "sha256": "a8655a5b66bad933420bd5c1780e83d7cac2eeb57b81d76ff8f4a6724dc413df",
+      "bytes": 182
+    },
+    {
+      "path": "diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "doc-audit.json",
+      "sha256": "2bd97c3bd2f01192f8ca66878e62a37af5aff08d12f94f2752414ea419c31374",
+      "bytes": 8880
+    },
+    {
+      "path": "doc-links.log",
+      "sha256": "361cd0f0722469d970aa4b736e7fb9ea991caa2f64de857c8730b053fd098237",
+      "bytes": 101
+    },
+    {
+      "path": "fixture-audit.log",
+      "sha256": "a6b29722a6d02822b9a5e6c422b774a4ce5b534b30e361dec1ff6612ad4d1191",
+      "bytes": 479
+    },
+    {
+      "path": "focused-green.log",
+      "sha256": "b236ac70bb142c45928e937ace15601e860cda3f05ca59bb913a2543c64fd457",
+      "bytes": 836
+    },
+    {
+      "path": "focused-runner.mjs",
+      "sha256": "a3cac917069638192ecd972137ba06d711a91aeb77d3bb4c5adeab9dae9ea9af",
+      "bytes": 1274
+    },
+    {
+      "path": "migration-check.log",
+      "sha256": "cd0476160a431c060d25d1724eb871d3e4152d53286b3cbe903ccad01c84d8da",
+      "bytes": 124
+    },
+    {
+      "path": "package.log",
+      "sha256": "1dcdcce9beaba350c03df63567c507449cd05f8e1315fa55ae91a735a3cb6175",
+      "bytes": 484
+    },
+    {
+      "path": "packaged-browser.log",
+      "sha256": "8b25e3b44e29a16b6631b363ffaa776b83351fb87b09db86056c1e18b3232d51",
+      "bytes": 8239
+    },
+    {
+      "path": "packaged-files.json",
+      "sha256": "800276f7bd22c393b226bb81923f3b0b6febb2950649c9ec513e2fe210d0883d",
+      "bytes": 31526
+    },
+    {
+      "path": "parallel-capture-red.log",
+      "sha256": "165eb56be31fecef5b58fc1b3aaf2e10c45875ff69d7a2a2d20e686d6d6dac7c",
+      "bytes": 654
+    },
+    {
+      "path": "parity.json",
+      "sha256": "088af27403f1529d1754de484e3063b05cc3160f5b0db34b32350c03f1dbeeb1",
+      "bytes": 200292
+    },
+    {
+      "path": "parity.log",
+      "sha256": "67bb584dce248eada8533ad3f8e46f64fcbd2ed661b0384ca3d73ff6cd65c06a",
+      "bytes": 140
+    },
+    {
+      "path": "pending-metadata-red.log",
+      "sha256": "02d175db1b3ce2673b1169815b53d5ec2af3ff57e0bf1c6b4a739d89c0c2412c",
+      "bytes": 706
+    },
+    {
+      "path": "recovery.log",
+      "sha256": "e6b7000584f49ebf4133e3d72027d54af036a36cb8248608a0b80ee3b5c03f45",
+      "bytes": 891
+    },
+    {
+      "path": "seal.py",
+      "sha256": "c493ee1effff0eb095676bbf5b5fe8d6e82c7dbe183788a21e1c3607bce1fe79",
+      "bytes": 4811
+    },
+    {
+      "path": "snapshot.log",
+      "sha256": "c38f68a2df79f1763e6b5400d110874b63bde4f5475e801062c34983a395f5b2",
+      "bytes": 341
+    },
+    {
+      "path": "snapshot.py",
+      "sha256": "8e69fd7e3ee275c15c3d7a068376793903ca3e70247f3094f8b89dd7f95db10f",
+      "bytes": 2292
+    },
+    {
+      "path": "source-browser.log",
+      "sha256": "8b25e3b44e29a16b6631b363ffaa776b83351fb87b09db86056c1e18b3232d51",
+      "bytes": 8239
+    },
+    {
+      "path": "source-files.json",
+      "sha256": "bf77cbe6a6a8ddf0b1c39780d90e0c754c7f58c091af9c54ffbec4bfccd268a9",
+      "bytes": 18038
+    },
+    {
+      "path": "target.json",
+      "sha256": "8861c69e239445e40d3fd77b6d2d8d2b5e013a1e4d9f35a275b51adb59698d3a",
+      "bytes": 286
+    },
+    {
+      "path": "tested-site.tar.gz",
+      "sha256": "f7da9f65baa5a9113ee522fc8be4520376773f39fb4c75a1323731cea3c79a17",
+      "bytes": 4237592
+    },
+    {
+      "path": "unbound-metadata-red.log",
+      "sha256": "aafbcf39f83be609b56729a27a6eb375f0f49f7d2e86732ab2337853f89ca48a",
+      "bytes": 494
+    },
+    {
+      "path": "unit.log",
+      "sha256": "6f28b1689f32307eb70bc7c68b742e2690db7f52620c0e8cef8d83354716aa00",
+      "bytes": 19625
+    },
+    {
+      "path": "verified-source.tar.gz",
+      "sha256": "b11e48093460c9ef18185ac0e326d3e39e2281ebb279642412d5aeb744621df8",
+      "bytes": 28859642
+    }
+  ]
+}

@@ -1,0 +1,665 @@
+--- a/package.json
++++ b/package.json
+@@ -25,7 +25,7 @@
+     "migration:status": "node scripts/migration/run.mjs docs",
+     "preverify": "npm run check:runtime",
+     "verify": "node scripts/verify.mjs && npm run verify:scheduler && npm run verify:project-model",
+-    "verify:project-model": "node --test tests/project.test.mjs tests/story-layout.test.mjs tests/story-designs.test.mjs tests/story-fonts.test.mjs tests/working-copies.test.mjs tests/source-resolution.test.mjs tests/folder-contract.test.mjs tests/styles.test.mjs tests/legacy-styles.test.mjs tests/recipe-catalog.test.mjs tests/recipe-selection.test.mjs tests/photo-look.test.mjs tests/masks.test.mjs tests/depth.test.mjs tests/connections.test.mjs tests/cutout-effects.test.mjs tests/render-diagnostics.test.mjs",
++    "verify:project-model": "node --test tests/project.test.mjs tests/story-layout.test.mjs tests/story-export.test.mjs tests/story-designs.test.mjs tests/story-fonts.test.mjs tests/working-copies.test.mjs tests/source-resolution.test.mjs tests/folder-contract.test.mjs tests/styles.test.mjs tests/legacy-styles.test.mjs tests/recipe-catalog.test.mjs tests/recipe-selection.test.mjs tests/photo-look.test.mjs tests/masks.test.mjs tests/depth.test.mjs tests/connections.test.mjs tests/cutout-effects.test.mjs tests/render-diagnostics.test.mjs",
+     "verify:scheduler": "node --test tests/processing.test.mjs tests/processing-startup.test.mjs",
+     "verify:watch": "node scripts/watch-verify.mjs",
+     "verify:browser": "node scripts/browser-smoke.mjs",
+--- a/scripts/browser-smoke.mjs
++++ b/scripts/browser-smoke.mjs
+@@ -11,6 +11,7 @@
+ import { assertSceneCompositor } from "../tests/scene-compositor.browser.mjs";
+ import { assertStoryStorage } from "../tests/story-storage.browser.mjs";
+ import { assertStoryWorkspace } from "../tests/story-workspace.browser.mjs";
++import { assertStoryExports } from "../tests/story-export.browser.mjs";
+ import { assertStyleStorage } from "../tests/style-storage.browser.mjs";
+ import { assertLegacyStyles } from "../tests/legacy-styles.browser.mjs";
+ import { assertRecipeCatalog } from "../tests/recipe-catalog.browser.mjs";
+@@ -837,6 +838,7 @@
+     await assertConnectedCutouts(browser, page.url());
+     await assertCutoutEffects(browser, page.url());
+     await assertStoryWorkspace(browser, page.url());
++    await assertStoryExports(browser, page.url());
+     await assertProjectStorage(page, fixtureSource);
+     assert.equal(await page.locator("#engine-status").textContent(), "Ready", "fresh readiness");
+     assert.equal(await page.locator("#engine-status").isVisible(), false, "healthy readiness badge stays quiet");
+--- /dev/null
++++ b/src/story/export-panel.js
+@@ -0,0 +1,120 @@
++import { action, field, select } from "./view.js";
++import { EXPORT_SHAPES, planStoryExports, StoryExportBatch } from "./export-plan.js";
++import { enqueueScene } from "../processing/scene-client.js";
++import { getProcessingScheduler } from "../processing/client.js";
++import { reviewStoryLayout } from "./layout.js";
++import { reviewConnections } from "./connections.js";
++
++export function mountStoryExportPanel({ content, getProject, readAsset, saveSelection, retained, notices }) {
++  const initial = getProject(), saved = initial.recipe.outputVariants ?? [initial.recipe.outputVariant];
++  const shapeValue = Array.isArray(saved) && saved.length === 2 && new Set(saved).size === 2 && saved.every(id => Object.hasOwn(EXPORT_SHAPES, id)) ? "both"
++    : Array.isArray(saved) && saved.length === 1 ? saved[0] : "";
++  const shape = select([...Object.entries(EXPORT_SHAPES), ["both", "Both shapes"]], shapeValue, "Story export shapes");
++  const format = select([["jpeg", "JPEG"], ["png", "PNG"]], initial.recipe.outputFormat ?? "jpeg", "Story export format");
++  const summary = document.createElement("p"); summary.className = "story-note"; summary.dataset.exportSummary = "";
++  const progress = document.createElement("p"); progress.setAttribute("role", "status"); progress.dataset.exportProgress = "";
++  const list = document.createElement("ol"); list.className = "story-exports";
++  const filter = document.createElement("input"); filter.type = "checkbox";
++  const filterLabel = document.createElement("label"); filterLabel.className = "story-check"; filterLabel.append(filter, "Only items needing attention"); filterLabel.hidden = true;
++  let batch = null, disposed = false, paused = false, planError = "", sharing = false;
++  const files = () => batch?.records.filter(record => record.status === "ready").map(record => record.value) ?? [];
++  const variants = () => shape.value === "both" ? Object.keys(EXPORT_SHAPES) : [shape.value];
++  const release = () => {
++    const entries = files(); batch?.dispose(); for (const entry of entries) URL.revokeObjectURL(entry.url);
++    batch = null; paused = false; retained([]);
++  };
++  const warnings = (result, item, plan) => {
++    const messages = notices(result.warnings ?? []);
++    if (reviewStoryLayout(plan.project, item.slideId, item.variantId).length) messages.push("Some positions overlap or leave the page. Review Layout.");
++    if (reviewConnections(plan.project, item.variantId).some(warning => warning.slideIds.includes(item.slideId))) messages.push("A connected cutout no longer crosses its join. Review Across slides in Cutout.");
++    return [...new Set(messages)];
++  };
++  function describePlan() {
++    try {
++      const plan = planStoryExports(getProject(), { variants: variants(), format: format.value }); planError = "";
++      summary.textContent = `${plan.items.length} files · ${plan.project.slides.length} slides × ${plan.variants.length} ${plan.variants.length === 1 ? "shape" : "shapes"} · `
++        + plan.variants.map(id => { const { width, height } = plan.project.variants.find(item => item.id === id); return `${width} × ${height}`; }).join(" / ");
++      return plan;
++    } catch (error) { planError = error.message; summary.textContent = planError; return null; }
++  }
++  function refresh() {
++    if (disposed) return;
++    const busy = Boolean(batch?.running), counts = batch?.counts, ready = files();
++    shape.disabled = format.disabled = busy || sharing;
++    prepare.disabled = busy || sharing || Boolean(planError);
++    prepare.hidden = Boolean(counts && !counts.pending); prepare.textContent = batch ? "Continue preparing" : "Prepare files";
++    pause.hidden = !busy; pause.disabled = paused; pause.textContent = paused ? "Pausing…" : "Pause";
++    retry.hidden = !counts?.failed; retry.disabled = busy || sharing; retry.textContent = `Retry ${counts?.failed ?? 0} failed`;
++    list.replaceChildren(); let attention = 0;
++    for (const record of batch?.records ?? []) {
++      const issues = record.value?.warnings ?? [], needsAttention = record.status === "failed" || issues.length > 0;
++      if (needsAttention) attention++;
++      const row = document.createElement("li"); row.dataset.exportKey = record.item.key; row.dataset.exportStatus = record.status;
++      row.hidden = filter.checked && !needsAttention;
++      const label = `Slide ${record.item.slideIndex + 1}${batch.plan.variants.length > 1 ? ` · ${EXPORT_SHAPES[record.item.variantId]}` : ""}`;
++      if (record.status === "ready") {
++        const link = document.createElement("a"); link.href = record.value.url; link.download = record.value.file.name; link.className = "button secondary";
++        link.textContent = `Save ${label.toLowerCase()} · ${(record.value.file.size / 1024).toFixed(0)} KB`; row.append(link);
++      } else { const text = document.createElement("span"); text.textContent = `${label} · ${record.status === "failed" ? record.error : record.status === "pending" ? "Waiting" : "Preparing…"}`; row.append(text); }
++      if (issues.length) { const note = document.createElement("p"); note.className = "story-note"; note.textContent = issues.join(" "); row.append(note); }
++      list.append(row);
++    }
++    filterLabel.hidden = !attention && !filter.checked;
++    let canShare = false; try { canShare = Boolean(ready.length && navigator.share && navigator.canShare?.({ files: ready.map(entry => entry.file) })); } catch { /* Download links remain available. */ }
++    share.hidden = !canShare; share.disabled = busy || sharing;
++    share.textContent = counts?.ready === counts?.total ? batch?.plan.variants.length === 1 ? "Share all slides" : "Share all files" : `Share ${ready.length} ready files`;
++    if (counts) {
++      const state = busy ? paused ? "Pausing" : "Preparing files" : counts.pending ? "Paused" : counts.failed ? "Some files need attention" : `${counts.ready} files ready`;
++      progress.textContent = `${state} · ${counts.ready} ready, ${counts.failed} failed, ${counts.pending + counts.processing} remaining.`
++        + (attention ? ` ${attention} ${attention === 1 ? "item needs" : "items need"} attention.` : "")
++        + (filter.checked && !attention ? " No items need attention." : "");
++    }
++  }
++  async function run(retryFailed = false) {
++    if (disposed || batch?.running) return;
++    if (!batch) {
++      const plan = describePlan(); if (!plan) { refresh(); return; }
++      const read = readAsset(plan.project);
++      batch = new StoryExportBatch(plan, {
++        render: (item, { signal }) => enqueueScene({ project: plan.project, slideId: item.slideId, variantId: item.variantId,
++          format: plan.format, signal, readAsset: read, priority: 1 }).promise,
++        retain: (result, item) => {
++          const messages = warnings(result, item, plan);
++          const file = new File([result.output], item.name, { type: result.mime });
++          return { index: item.index, file, url: URL.createObjectURL(file), warnings: messages };
++        },
++        changed: () => { retained(files()); refresh(); },
++      });
++    }
++    paused = false;
++    try { await batch.start({ retryFailed }); } catch (error) { if (!disposed) progress.textContent = error.message; }
++  }
++  const prepare = action("Prepare files", () => { void run(); }, true);
++  const pause = action("Pause", () => { paused = true; batch?.pause(); refresh(); }); pause.hidden = true;
++  const retry = action("Retry failed", () => { void run(true); }); retry.hidden = true;
++  const share = action("Share all slides", async () => {
++    const ready = files(); if (!ready.length || sharing || batch?.running) return;
++    // The share promise owns its File references independently of this panel.
++    // Keep them charged if Back/Done disposes the prepared-output list first.
++    const pool = getProcessingScheduler(), shareOwner = `story-share:${crypto.randomUUID()}`;
++    pool.setRetainedBytes(shareOwner, ready.reduce((bytes, entry) => bytes + entry.file.size, 0));
++    sharing = true;
++    try { refresh(); await navigator.share({ files: ready.map(entry => entry.file), title: batch.plan.project.name }); if (!disposed) progress.textContent = "Share sheet closed. You can save individual files below."; }
++    catch (error) { if (!disposed && error.name !== "AbortError") progress.textContent = "Sharing was unavailable. Save individual files below."; }
++    finally {
++      pool.setRetainedBytes(shareOwner, 0); sharing = false;
++      if (!disposed) { shape.disabled = format.disabled = false; share.disabled = false; retry.disabled = false; prepare.disabled = Boolean(planError); }
++    }
++  }, true); share.hidden = true;
++  function changedSelection() {
++    release(); list.replaceChildren(); filter.checked = false; progress.textContent = "Prepare files with your selected shapes and format.";
++    const plan = describePlan(); if (plan) saveSelection({ format: plan.format, variants: [...plan.variants] }); refresh();
++  }
++  shape.addEventListener("change", changedSelection); format.addEventListener("change", changedSelection); filter.addEventListener("change", refresh);
++  const note = document.createElement("p"); note.className = "story-note";
++  note.textContent = "Each shape keeps its framing and edits. Download or share before closing this sheet."
++    + (Object.values(initial.nodes).some(node => initial.assets[node.assetId]?.workingCopy) ? " Some photos use smaller editing copies. Their originals are available in Photos." : "");
++  content.append(field("Shapes", shape), field("Format", format), summary, note, prepare, pause, retry, progress, share, filterLabel, list);
++  describePlan(); refresh();
++  return { dispose() { disposed = true; release(); } };
++}
+--- /dev/null
++++ b/src/story/export-plan.js
+@@ -0,0 +1,76 @@
++import { assertEngineCompatibility, clone, validateProject } from "../project/model.js";
++import { readableSlug } from "../names.js";
++
++export const EXPORT_SHAPES = Object.freeze({ portrait: "Portrait · 4:5", tall: "Tall · 9:16" });
++export const MAX_STORY_EXPORT_OUTPUTS = 80;
++const freeze = value => { if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
++
++// A plan is copied before work enters the scheduler. Changes to the live story
++// or export controls cannot change an in-flight output or a failed-item retry.
++export function planStoryExports(project, { variants = project?.recipe?.outputVariants ?? [project?.recipe?.outputVariant], format = project?.recipe?.outputFormat ?? "jpeg" } = {}) {
++  validateProject(project); assertEngineCompatibility(project);
++  if (!["png", "jpeg"].includes(format)) throw new Error("Choose PNG or JPEG for these exports.");
++  if (!Array.isArray(variants) || variants.length < 1 || variants.length > 2 || new Set(variants).size !== variants.length
++    || variants.some(id => !Object.hasOwn(EXPORT_SHAPES, id) || !project.variants.some(variant => variant.id === id))) {
++    throw new Error("Choose Portrait, Tall, or both export shapes.");
++  }
++  const selected = Object.keys(EXPORT_SHAPES).filter(id => variants.includes(id));
++  if (project.slides.length * selected.length > MAX_STORY_EXPORT_OUTPUTS) throw new Error("This export exceeds the 80-file limit.");
++  const snapshot = clone(project), items = [];
++  for (const variantId of selected) {
++    const variant = snapshot.variants.find(item => item.id === variantId);
++    snapshot.slides.forEach((slide, slideIndex) => {
++      const stem = `${readableSlug(snapshot.name)}${selected.length > 1 ? `-${variantId}` : ""}-${String(slideIndex + 1).padStart(2, "0")}`;
++      items.push({ key: `${variantId}:${slide.id}`, index: items.length, slideId: slide.id, slideIndex, variantId,
++        width: variant.width, height: variant.height, name: `${stem}.${format === "jpeg" ? "jpg" : "png"}` });
++    });
++  }
++  return freeze({ project: snapshot, variants: selected, format, items });
++}
++
++// This coordinator retains metadata and caller-owned output handles only.
++// Actual reads, CPU/memory admission and cancellation belong to enqueueScene.
++export class StoryExportBatch {
++  constructor(plan, { render, retain = value => value, changed = () => {} }) {
++    this.plan = plan; this.render = render; this.retain = retain; this.changed = changed;
++    this.records = plan.items.map(item => ({ item, status: "pending", value: null, error: "" }));
++    this.running = false; this.disposed = false; this.controller = null;
++  }
++  get counts() {
++    const counts = { total: this.records.length, ready: 0, failed: 0, pending: 0, processing: 0 };
++    for (const record of this.records) counts[record.status]++;
++    return counts;
++  }
++  async start({ retryFailed = false } = {}) {
++    if (this.disposed) throw new Error("This export has been closed.");
++    if (this.running) throw new Error("These files are already being prepared.");
++    const records = this.records.filter(record => record.status === (retryFailed ? "failed" : "pending"));
++    if (!records.length) return;
++    const controller = new AbortController(); this.controller = controller; this.running = true;
++    records.forEach(record => { record.status = "processing"; record.error = ""; }); this.changed();
++    try {
++      await Promise.all(records.map(async record => {
++        try {
++          const result = await this.render(record.item, { plan: this.plan, signal: controller.signal });
++          if (this.disposed) return;
++          if (controller.signal.aborted) { record.status = "pending"; return; }
++          record.value = this.retain(result, record.item); record.status = "ready";
++        } catch (error) {
++          if (this.disposed) return;
++          record.status = controller.signal.aborted ? "pending" : "failed";
++          record.error = record.status === "failed" ? error?.userMessage ?? error?.message ?? "This file could not be prepared." : "";
++        } finally { if (!this.disposed) this.changed(); }
++      }));
++    } finally {
++      this.running = false; this.controller = null;
++      if (!this.disposed) this.changed();
++    }
++  }
++  pause() { this.controller?.abort(); }
++  dispose() {
++    this.disposed = true; this.pause();
++    // An aborted renderer can settle later. Its promise must not keep already
++    // released output files alive after their owner's memory ledger is cleared.
++    for (const record of this.records) record.value = null;
++  }
++}
+--- a/src/story/style-panel.js
++++ b/src/story/style-panel.js
+@@ -171,7 +171,7 @@
+     inclusions.get("depthTitle").disabled = !depthPhotos.length;
+     inclusions.get("depthTitle").addEventListener("change", () => { depthField.hidden = !inclusions.get("depthTitle").checked; });
+     const note = document.createElement("p"); note.className = "story-note";
+-    note.textContent = "Uses this slide’s first photo for color settings. Choose a finished subject for its outline and shadow, or a depth title for its type, placement and background choice. Photos, masks, captions and depth-title words stay out of the style. Output shape and format are separate options.";
++    note.textContent = "Uses this slide’s first photo for color settings. Choose a finished subject for its outline and shadow, or a depth title for its type, placement and background choice. Photos, masks, captions and depth-title words stay out of the style. Output saves your selected export shapes and format.";
+     const save = action("Save style", () => {}); save.type = "submit";
+     saveForm.append(note, save, action("Close save form", () => { saveForm.hidden = true; }));
+     saveForm.onsubmit = async (event) => {
+--- a/src/story/workspace.js
++++ b/src/story/workspace.js
+@@ -18,7 +18,7 @@
+ import { listStoryProjects, readStoryProject, writeStoryProject, readStoredStoryAsset } from "../project/storage.js";
+ import { getProcessingScheduler } from "../processing/client.js";
+ import { enqueueScene } from "../processing/scene-client.js";
+-import { readableSlug } from "../names.js";
++import { mountStoryExportPanel } from "./export-panel.js";
+ 
+ export function attachStoryWorkspace() {
+   const { root, sheet, get } = createStoryView(), pool = getProcessingScheduler();
+@@ -34,7 +34,7 @@
+   const pendingSources = new Set();
+   const importReservations = new Set();
+   const fontLoaders = new Set();
+-  let exportController, exportSequence = 0;
++  let exportPanelController = null;
+   const documentNow = () => session?.history.document;
+   const keyFor = (project, id, variant = variantId) => canonicalJSON(resolveSlide(project, id, variant));
+   const bytesOf = (entry) => entry ? entry.blob.size + entry.width * entry.height * 4 : 0;
+@@ -59,7 +59,7 @@
+   const readSource = (owner, project) => (id, options) => owner.sources.get(id) ?? fontsFor(owner).read(project.assets[id], options);
+   function release(entry) { if (entry?.url) URL.revokeObjectURL(entry.url); }
+   function clearOutputs() {
+-    exportSequence++; exportController?.abort(); exportController = null;
++    exportPanelController?.dispose(); exportPanelController = null;
+     for (const entry of outputs) release(entry); outputs.length = 0; ledger();
+   }
+   function clearRenders() {
+@@ -507,48 +507,15 @@
+     if (manageHistory) history[prior ? "replaceState" : "pushState"]({ ...history.state, tinyStarStory: navigationId, tinyStarTool: kind }, "");
+   }
+   function exportPanel(content) {
+-    const format = select([["jpeg", "JPEG"], ["png", "PNG"]], documentNow().recipe.outputFormat ?? "jpeg", "Story export format");
+-    const progress = document.createElement("p"); progress.setAttribute("role", "status");
+-    const list = document.createElement("ol"); list.className = "story-exports";
+-    const share = action("Share all slides", async () => {
+-      try { await navigator.share({ files: outputs.map((item) => item.file), title: documentNow().name }); progress.textContent = "Share sheet closed. You can save individual slides below."; }
+-      catch (failure) { if (failure.name !== "AbortError") progress.textContent = "Sharing was unavailable. Save the ordered slides below."; }
+-    }, true); share.hidden = true;
+-    const prepare = action("Prepare files", async () => {
+-      clearOutputs(); const sequence = exportSequence, owner = session, project = clone(documentNow()), variant = variantId;
+-      exportController = new AbortController(); prepare.disabled = true; format.disabled = true; list.replaceChildren(); share.hidden = true;
+-      try {
+-        const results = await Promise.all(project.slides.map(async (slide, index) => {
+-          const task = enqueueScene({ project, slideId: slide.id, variantId: variant, format: format.value, signal: exportController.signal, readAsset: readSource(owner, project), priority: 1 });
+-          const result = await task.promise; if (sequence !== exportSequence) return null;
+-          const name = `${readableSlug(project.name)}-${String(index + 1).padStart(2, "0")}.${format.value === "jpeg" ? "jpg" : "png"}`;
+-          const file = new File([result.output], name, { type: result.mime }); const entry = { index, file, url: URL.createObjectURL(file), warnings: result.warnings };
+-          outputs.push(entry); ledger(); progress.textContent = `Prepared ${outputs.length} of ${project.slides.length} slides`; return entry;
+-        }));
+-        if (sequence !== exportSequence) return; outputs.sort((a, b) => a.index - b.index);
+-        for (const entry of results) {
+-          const li = document.createElement("li"), link = document.createElement("a"); link.href = entry.url; link.download = entry.file.name; link.className = "button secondary";
+-          link.textContent = `Save slide ${entry.index + 1} · ${(entry.file.size / 1024).toFixed(0)} KB`; li.append(link); list.append(li);
+-        }
+-        share.hidden = !(navigator.share && navigator.canShare?.({ files: outputs.map((item) => item.file) }));
+-        const dimensions = project.variants.find((item) => item.id === variant);
+-        const issues = [];
+-        issues.push(...renderNotices(outputs.flatMap((entry) => entry.warnings)));
+-        if (reviewConnections(project, variant).length) issues.push("A connected cutout no longer crosses its join; review Across slides in Cutout.");
+-        if (project.slides.some((slide) => reviewStoryLayout(project, slide.id, variant).length)) issues.push("Some positions overlap or leave the page; review Layout before sharing.");
+-        progress.textContent = `${outputs.length} files ready · ${dimensions.width} × ${dimensions.height}. ${issues.join(" ") || "Save in this order."}`;
+-      } catch (failure) { if (sequence === exportSequence && failure.name !== "AbortError") { clearOutputs(); progress.textContent = `${failure.message} Try preparing the files again.`; } }
+-      finally { if (tool === "export") { prepare.disabled = false; format.disabled = false; } }
+-    }, true);
+-    format.addEventListener("change", () => {
+-      clearOutputs(); list.replaceChildren(); share.hidden = true; progress.textContent = "Prepare files in the selected format.";
+-      session.history.apply({ type: "recipe", value: { ...documentNow().recipe, outputFormat: format.value } }, "Change export format");
+-      session.autoSave = true; scheduleSave(); status();
++    const owner = session;
++    exportPanelController = mountStoryExportPanel({ content, getProject: documentNow,
++      readAsset: project => readSource(owner, project), notices: renderNotices,
++      retained: entries => { outputs.splice(0, outputs.length, ...entries); ledger(); },
++      saveSelection: ({ format, variants }) => {
++        owner.history.apply({ type: "recipe", value: { ...documentNow().recipe, outputFormat: format, outputVariants: variants } }, "Change export choices");
++        owner.autoSave = true; scheduleSave(); status();
++      },
+     });
+-    const note = document.createElement("p"); note.className = "story-note"; note.textContent = "Files are prepared from your current edits. Sharing is available when your browser supports these files."
+-      + (Object.values(documentNow().nodes).some((node) => documentNow().assets[node.assetId]?.workingCopy)
+-        ? " Some photos use smaller editing copies. Their originals are available in Photos." : "");
+-    content.append(field("Format", format), note, prepare, progress, share, list);
+   }
+ 
+   document.querySelectorAll("[data-open-story]").forEach((button) => button.addEventListener("click", () => open()));
+--- a/src/styles/model.js
++++ b/src/styles/model.js
+@@ -8,7 +8,7 @@
+ import { storyFontForBuiltin, storyFonts, knownStoryFont } from "./font-pack.js";
+ 
+ export const MAX_STYLE_BYTES = 32 * 1024;
+-export const STYLE_CAPABILITIES = Object.freeze(["scene-v1", "photo-look-v1", "builtin-text-v1", "photo-prints-v1", "photo-fill-v1", "cutout-effects-v1", "depth-title-v1", "story-design-v1", "licensed-fonts-v1", "png-output", "jpeg-output"]);
++export const STYLE_CAPABILITIES = Object.freeze(["scene-v1", "photo-look-v1", "builtin-text-v1", "photo-prints-v1", "photo-fill-v1", "cutout-effects-v1", "depth-title-v1", "story-design-v1", "licensed-fonts-v1", "export-variants-v1", "png-output", "jpeg-output"]);
+ const layoutKeys = ["id", "version", "margin", "gap", "border", "header", "captionMin", "captionMax"];
+ const plain = (value) => value && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+ const bounded = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
+@@ -19,7 +19,8 @@
+   ...Object.values(components.storyDesign?.roles ?? {}).flatMap((role) => [role.caption.fontId, role.number.fontId])].filter((id) => id !== undefined))];
+ const requiredFor = (components) => ["scene-v1", ...(fontReferences(components).length ? ["licensed-fonts-v1"] : []), ...(components.look ? ["photo-look-v1"] : []), ...(components.text ? ["builtin-text-v1"] : []),
+   ...(components.layout ? ["photo-prints-v1", ...(components.layout.fit === "cover" ? ["photo-fill-v1"] : [])] : []), ...(components.cutoutEffects ? ["cutout-effects-v1"] : []),
+-  ...(components.depthTitle ? ["depth-title-v1"] : []), ...(components.storyDesign ? ["story-design-v1"] : []), ...(components.output ? [`${components.output.format}-output`] : [])];
++  ...(components.depthTitle ? ["depth-title-v1"] : []), ...(components.storyDesign ? ["story-design-v1"] : []), ...(components.output ? [`${components.output.format}-output`] : []),
++  ...(components.output?.variants ? ["export-variants-v1"] : [])];
+ export const styleKey = (style) => `${style.id}@${style.revision}`;
+ export const styleHasStrength = (style) => Object.entries(style.components.look?.appearance ?? {}).some(([key, value]) => value !== (key === "grayscaleMix" ? 0 : 1));
+ 
+@@ -87,7 +88,9 @@
+     validateStoryLayout({ recipe: { layout: { ...Object.fromEntries(layoutKeys.map((key) => [key, layout[key]])), slides: {} } }, slides: [], nodes: {} });
+   }
+   if (output !== undefined) {
+-    keys(output, ["variant", "format"]); check(["portrait", "tall"].includes(output.variant) && ["png", "jpeg"].includes(output.format));
++    keys(output, ["variant", "variants", "format"]); check(["portrait", "tall"].includes(output.variant) && ["png", "jpeg"].includes(output.format));
++    if (output.variants !== undefined) check(Array.isArray(output.variants) && output.variants.length > 0 && output.variants.length <= 2
++      && new Set(output.variants).size === output.variants.length && output.variants.every(id => ["portrait", "tall"].includes(id)), "Choose one or both supported export shapes.");
+   }
+   if (style.components.cutoutEffects !== undefined) validateCutoutEffects(style.components.cutoutEffects);
+   if (style.components.depthTitle !== undefined) {
+@@ -164,7 +167,7 @@
+     const count = new Set(project.slides.flatMap((slide) => slide.nodeIds.filter((id) => project.nodes[id].kind === "image" && !project.nodes[id].connection))).size;
+     if (count < style.supported.photoCounts.min || count > style.supported.photoCounts.max) return `This style needs ${style.supported.photoCounts.min}–${style.supported.photoCounts.max} photos.`;
+     const shape = style.components.output?.variant ?? variantId ?? project.recipe.outputVariant;
+-    if (!style.supported.variants.includes(shape) || !project.variants.some((variant) => variant.id === shape)) return "This style does not support the selected output shape.";
++    if ([shape, ...(style.components.output?.variants ?? [])].some(id => !style.supported.variants.includes(id) || !project.variants.some(variant => variant.id === id))) return "This style does not support the selected output shape.";
+     if (style.components.storyDesign && slideId) return "This story recipe applies to the whole story. Choose Whole story.";
+     if (style.components.depthTitle?.target === "cover" && slideId && slideId !== project.slides[0].id) return "This effect targets the cover. Choose the cover slide or Whole story.";
+     if (style.components.depthTitle?.target === "cover" && !depthPhotos(project, style, slideId).some((node) => node.maskId)) return "Choose the cover subject in Cutout first, or use Scrapbook or Film diary without a cutout.";
+@@ -192,7 +195,8 @@
+     components.layout = { ...Object.fromEntries(layoutKeys.map((key) => [key, binding.constraints?.[key] ?? layout[key]])), arrangement: binding.arrangement, tilt: photo.rotation ?? 0,
+       ...(binding.fit === "cover" ? { fit: binding.fit } : {}) };
+   }
+-  if (inclusion.output) components.output = { variant: project.recipe.outputVariant, format: project.recipe.outputFormat ?? "jpeg" };
++  if (inclusion.output) components.output = { variant: project.recipe.outputVariant, format: project.recipe.outputFormat ?? "jpeg",
++    ...(project.recipe.outputVariants !== undefined ? { variants: clone(project.recipe.outputVariants) } : {}) };
+   if (inclusion.cutoutEffects) {
+     const subject = nodes.find((node) => node.id === inclusion.effectPhotoId);
+     check(subject?.kind === "image" && subject.cutoutEffects, "Choose a photo with an outline or shadow to save its finish.");
+@@ -260,7 +264,11 @@
+     } else if (text && hasAdaptiveLayout(next, slide.id)) next = applyProjectCommand(next, adaptStoryLayoutCommand(next, slide.id)).project;
+   }
+   if (style.components.storyDesign) next = applyProjectCommand(next, storyDesignCommand(next, style.components.storyDesign, { keepPositions })).project;
+-  if (output) { next.recipe.outputVariant = output.variant; next.recipe.outputFormat = output.format; }
++  if (output) {
++    next.recipe.outputVariant = output.variant; next.recipe.outputFormat = output.format;
++    if (output.variants) next.recipe.outputVariants = clone(output.variants);
++    else delete next.recipe.outputVariants; // Older output styles explicitly select their one shape.
++  }
+   const applied = { definition: clone(style), strength };
+   if (slideId) next.recipe.slideStyles = { ...next.recipe.slideStyles, [slideId]: applied };
+   else next.recipe.style = applied;
+--- /dev/null
++++ b/tests/story-export.browser.mjs
+@@ -0,0 +1,165 @@
++import assert from "node:assert/strict";
++import { mkdir } from "node:fs/promises";
++
++export async function assertStoryExports(browser, origin) {
++  const context = await browser.newContext({ viewport: { width: 375, height: 667 }, isMobile: true, hasTouch: true });
++  await context.addInitScript(() => {
++    Object.defineProperty(navigator,"canShare",{configurable:true,value:({files})=>Boolean(files?.length)});
++    Object.defineProperty(navigator,"share",{configurable:true,value:async({files})=>{window.sharedExports={active:navigator.userActivation.isActive,names:files.map(file=>file.name)};}});
++  });
++  const page=await context.newPage(), errors=[], external=[];
++  page.on("pageerror",error=>errors.push(error.message));
++  context.on("request",request=>{if(/^https?:/.test(request.url())&&new URL(request.url()).origin!==new URL(origin).origin)external.push(request.url());});
++  const button=name=>page.getByRole("button",{name,exact:true});
++  const rows=()=>page.locator(".story-exports li");
++  const ready=()=>page.waitForFunction(()=>document.querySelector("#story-preview")?.naturalWidth>0&&!document.querySelector("#story-export").disabled);
++  const outputs=()=>page.locator(".story-exports a").evaluateAll(async links=>Promise.all(links.map(async link=>{
++    const bytes=await(await fetch(link.href)).arrayBuffer(),image=await createImageBitmap(new Blob([bytes]));
++    const hash=[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(n=>n.toString(16).padStart(2,"0")).join("");
++    const value={key:link.closest("li").dataset.exportKey,url:link.href,name:link.download,hash,bytes:bytes.byteLength,width:image.width,height:image.height};image.close();return value;
++  })));
++  try {
++    await page.goto(origin);await page.waitForFunction(()=>document.querySelector("#engine-status").textContent==="Ready");
++    const fixture=await page.evaluate(async()=>{
++      const {createPhotoStory}=await import("./src/story/recipes.js"), {planStoryExports,StoryExportBatch}=await import("./src/story/export-plan.js");
++      const {createPillowEngine}=await import("./src/engine/pillow.js"), {planScene}=await import("./src/compositor/scene-spec.js");
++      const {writeStoryProject}=await import("./src/project/storage.js"), {getProcessingScheduler}=await import("./src/processing/client.js"), {enqueueScene}=await import("./src/processing/scene-client.js");
++      const hash=async bytes=>[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(n=>n.toString(16).padStart(2,"0")).join("");
++      const sources=new Map(),assets=[];
++      for(let index=0;index<6;index++){
++        const canvas=new OffscreenCanvas(index%2?180:240,index%2?240:180),ctx=canvas.getContext("2d");
++        ctx.fillStyle=["#dc8e63","#739cbb","#afbe88","#b78ea7","#cbaa5f","#86aaa0"][index];ctx.fillRect(0,0,canvas.width,canvas.height);
++        ctx.fillStyle="#313b51";ctx.fillRect(index*7+12,30,75,110);ctx.fillStyle="#ffe8b3";ctx.beginPath();ctx.arc(canvas.width*.7,canvas.height*.3,27,0,Math.PI*2);ctx.fill();
++        const blob=await canvas.convertToBlob(),bytes=await blob.arrayBuffer(),id=`export-photo-${index}`;sources.set(id,blob);
++        assets.push({id,kind:"image",name:`${index}.png`,type:"image/png",width:canvas.width,height:canvas.height,byteLength:blob.size,sha256:await hash(bytes),orientation:"upright"});
++      }
++      const project=createPhotoStory(assets,{title:"Export weekend"}),first=project.slides[0].nodeIds.find(id=>project.nodes[id].kind==="image");
++      project.nodes[first].crop={x:.1,y:.1,width:.8,height:.8};project.nodes[first].appearance={brightness:.9};
++      project.nodes[`${project.slides[0].id}:caption`].text="Keep these words";
++      const engine=await createPillowEngine(),serial=async plan=>{
++        const references={};
++        for(const item of plan.items){
++          const packets=await Promise.all(planScene(plan.project,item.slideId,item.variantId).assets.map(async asset=>({id:asset.id,bytes:await sources.get(asset.id).arrayBuffer()})));
++          const result=await engine.renderSlide({project:plan.project,slideId:item.slideId,variantId:item.variantId,format:plan.format,assets:packets});
++          references[item.key]=await hash(result.bytes);
++        }
++        return references;
++      };
++      const smaller=structuredClone(project);smaller.variants=[{id:"portrait",width:432,height:540},{id:"tall",width:432,height:768}];
++      const plan=planStoryExports(smaller,{variants:["portrait","tall"],format:"png"}),reference=await serial(plan),pool=getProcessingScheduler(),runs=[];
++      for(const concurrency of [1,4,8]){
++        pool.configure({fixedConcurrency:concurrency});let peak=0,violations=0;
++        const stop=pool.subscribe(state=>{peak=Math.max(peak,state.active);if(state.active>concurrency||state.estimatedBytes>state.memoryBudget)violations++;});
++        const batch=new StoryExportBatch(plan,{render:(item,{signal})=>enqueueScene({project:plan.project,slideId:item.slideId,variantId:item.variantId,format:"png",signal,readAsset:id=>sources.get(id)}).promise});
++        await batch.start();stop();const hashes=await Promise.all(batch.records.map(async record=>({key:record.item.key,status:record.status,hash:record.value?await hash(record.value.output):null,error:record.error})));
++        runs.push({concurrency,peak,violations,hashes});batch.dispose();
++      }
++      const expected=await serial(planStoryExports(project,{variants:["portrait","tall"],format:"png"}));
++      await writeStoryProject(project,{readAsset:id=>sources.get(id)});pool.close();
++      return {expected,reference,runs,project};
++    });
++    for(const run of fixture.runs){assert.equal(run.peak,run.concurrency);assert.equal(run.violations,0);for(const output of run.hashes){assert.equal(output.status,"ready",output.error);assert.equal(output.hash,fixture.reference[output.key]);}}
++    await page.reload();await page.locator("#empty-story-button").click();await button("Export weekend").click();await ready();
++    await page.locator("#story-export").click();
++    assert.match(await page.locator("[data-export-summary]").innerText(),/^4 files/);
++    await page.getByLabel("Story export shapes",{exact:true}).selectOption("both");await page.getByLabel("Story export format",{exact:true}).selectOption("png");
++    assert.match(await page.locator("[data-export-summary]").innerText(),/^8 files.*4 slides × 2 shapes/);
++    await page.evaluate(async()=>{
++      const pool=(await import("./src/processing/client.js")).getProcessingScheduler(),original=pool.enqueue;
++      window.exportCalls=[];window.exportPrepared=[];window.restoreExportQueue=()=>{pool.enqueue=original;};
++      pool.enqueue=function(request){
++        if(!request.workClass?.startsWith("scene:png:export:"))return original.call(this,request);
++        exportCalls.push(request.workClass);if(exportCalls.length===2)throw new Error("Injected one-output admission failure");
++        const prepare=request.prepare;return original.call(this,{...request,prepare:async()=>{const value=await prepare();exportPrepared.push(`${value.message.request.variantId}:${value.message.request.slideId}`);return value;}});
++      };
++    });
++    await button("Prepare files").click();
++    await page.waitForFunction(()=>document.querySelectorAll('[data-export-status="ready"]').length===7&&document.querySelectorAll('[data-export-status="failed"]').length===1);
++    await button("Retry 1 failed").waitFor();const partial=await outputs();assert.equal(partial.length,7);
++    for(const output of partial)assert.equal(output.hash,fixture.expected[output.key]);
++    await page.getByLabel("Only items needing attention",{exact:true}).check();assert.equal(await rows().filter({visible:true}).count(),1);
++    await button("Retry 1 failed").click();await page.waitForFunction(()=>document.querySelectorAll('[data-export-status="ready"]').length===8);
++    assert.match(await page.locator("[data-export-progress]").innerText(),/8 files ready/);
++    assert.equal(await rows().filter({visible:true}).count(),0);await page.getByLabel("Only items needing attention",{exact:true}).uncheck();
++    const complete=await outputs();assert.equal(complete.length,8);
++    assert.deepEqual(complete.map(item=>item.name),["portrait","tall"].flatMap(shape=>[1,2,3,4].map(index=>`export-weekend-${shape}-0${index}.png`)));
++    for(const output of complete){assert.equal(output.hash,fixture.expected[output.key]);assert.deepEqual([output.width,output.height],[1080,output.key.startsWith("portrait:")?1350:1920]);}
++    assert.ok(partial.every(item=>complete.find(next=>next.key===item.key).url===item.url),"successful outputs retain their original handles after retry");
++    assert.deepEqual(await page.evaluate(()=>({calls:exportCalls.length,prepared:exportPrepared.length,unique:new Set(exportPrepared).size})),{calls:9,prepared:8,unique:8});
++    await page.evaluate(()=>restoreExportQueue());
++    await button("Share all files").click();assert.deepEqual(await page.evaluate(()=>sharedExports),{active:true,names:complete.map(item=>item.name)});
++    const download=page.waitForEvent("download");await page.locator(".story-exports a").first().click();assert.equal((await download).suggestedFilename(),complete[0].name);
++
++    await page.evaluate(()=>{document.documentElement.style.fontSize="32px";});
++    assert.equal(await page.locator("#story-sheet").evaluate(element=>element.scrollWidth<=element.clientWidth),true,"200% text fits the phone export sheet");
++    assert.ok(await page.getByLabel("Story export shapes",{exact:true}).evaluate(element=>element.getBoundingClientRect().height>=44));
++    if(process.env.TINY_IMAGE_STAR_EXPORT_ARTIFACTS){await mkdir(process.env.TINY_IMAGE_STAR_EXPORT_ARTIFACTS,{recursive:true});await page.locator("#story-sheet").evaluate(element=>{element.scrollTop=0;});await page.screenshot({path:`${process.env.TINY_IMAGE_STAR_EXPORT_ARTIFACTS}/exports-phone-200.png`});}
++    await page.evaluate(()=>{document.documentElement.style.fontSize="";});
++    if(process.env.TINY_IMAGE_STAR_EXPORT_ARTIFACTS){await page.locator("#story-sheet").evaluate(element=>{element.scrollTop=0;});await page.screenshot({path:`${process.env.TINY_IMAGE_STAR_EXPORT_ARTIFACTS}/exports-phone.png`});}
++
++    // Delay real preparation after the first output, then cancel admission.
++    // Pausing must retain the first file and continue only the seven unfinished.
++    await page.getByLabel("Story export format",{exact:true}).selectOption("jpeg");await page.getByLabel("Story export format",{exact:true}).selectOption("png");
++    assert.equal(await page.evaluate(async url=>{try{await fetch(url);return false;}catch{return true;}},complete[0].url),true,"changing export choices releases earlier files");
++    await page.evaluate(async()=>{
++      const pool=(await import("./src/processing/client.js")).getProcessingScheduler(),original=pool.enqueue;pool.configure({fixedConcurrency:1});let count=0;
++      window.restoreExportQueue=()=>{pool.enqueue=original;};window.delayedExports=0;
++      pool.enqueue=function(request){
++        if(!request.workClass?.startsWith("scene:png:export:"))return original.call(this,request);
++        const order=count++,prepare=request.prepare;
++        return original.call(this,{...request,prepare:async()=>{
++          if(order>0){delayedExports++;await new Promise((_,reject)=>{const stop=()=>reject(new DOMException("Paused","AbortError"));request.signal.addEventListener("abort",stop,{once:true});if(request.signal.aborted)stop();});}
++          return prepare();
++        }});
++      };
++    });
++    await button("Prepare files").click();await page.waitForFunction(()=>document.querySelectorAll('[data-export-status="ready"]').length===1&&window.delayedExports>0);
++    const kept=(await outputs())[0];await button("Pause").click();await page.waitForFunction(()=>document.querySelectorAll('[data-export-status="pending"]').length===7);
++    assert.equal(await page.locator('[data-export-status="failed"]').count(),0);await page.evaluate(()=>restoreExportQueue());
++    await button("Continue preparing").click();await page.waitForFunction(()=>document.querySelectorAll('[data-export-status="ready"]').length===8);
++    const continued=await outputs();assert.equal(continued.find(item=>item.key===kept.key).url,kept.url);for(const output of continued)assert.equal(output.hash,fixture.expected[output.key]);
++    await page.evaluate(async()=>{
++      window.sharePool=(await import("./src/processing/client.js")).getProcessingScheduler();const original=navigator.share;
++      window.restoreShare=()=>Object.defineProperty(navigator,"share",{configurable:true,value:original});
++      Object.defineProperty(navigator,"share",{configurable:true,value:()=>new Promise(resolve=>{window.finishHeldShare=resolve;})});
++    });
++    await button("Share all files").click();
++    const sharedBytes=continued.reduce((sum,item)=>sum+item.bytes,0);
++    assert.deepEqual(await page.evaluate(()=>[...sharePool.retained].filter(([key])=>key.startsWith("story-share:")).map(([,bytes])=>bytes)),[sharedBytes]);
++    await page.locator("#story-sheet-cancel").click();await page.waitForFunction(()=>document.querySelector("#story-status").textContent==="Saved on this device");
++    assert.deepEqual(await page.evaluate(()=>[...sharePool.retained].filter(([key])=>key.startsWith("story-share:")).map(([,bytes])=>bytes)),[sharedBytes],"a pending share retains its own file budget after panel disposal");
++    await page.evaluate(()=>{finishHeldShare();restoreShare();});await page.waitForFunction(()=>![...sharePool.retained.keys()].some(key=>key.startsWith("story-share:")));
++    const stored=await page.evaluate(async()=>{const store=await import("./src/project/storage.js"),[entry]=await store.listStoryProjects();return(await store.readStoryProject(entry.key)).project;});
++    assert.deepEqual(stored.recipe.outputVariants,["portrait","tall"]);assert.equal(stored.recipe.outputVariant,"portrait");
++    assert.deepEqual(stored.nodes,fixture.project.nodes);assert.deepEqual(stored.slides,fixture.project.slides);
++    assert.equal(await page.evaluate(async url=>{try{await fetch(url);return false;}catch{return true;}},kept.url),true,"closing releases prepared output URLs");
++
++    await page.locator('[data-story-tool="look"]').click();await button("Save my style").click();await page.getByLabel("Style name",{exact:true}).fill("Both sizes");
++    await page.getByLabel("Include Look",{exact:true}).uncheck();await page.getByLabel("Include Text style",{exact:true}).uncheck();await page.getByLabel("Include Output",{exact:true}).check();await button("Save style").click();
++    await page.locator("[data-style-key]").filter({hasText:"Both sizes"}).waitFor();await page.locator("#story-sheet-cancel").click();await ready();
++    const savedStyle=await page.evaluate(async()=>{const library=await(await import("./src/styles/store.js")).readStyleLibrary();return library.records.find(record=>record.style.name==="Both sizes").style;});
++    assert.deepEqual(savedStyle.components.output.variants,["portrait","tall"]);assert.ok(savedStyle.requires.includes("export-variants-v1"));assert.deepEqual(Object.keys(savedStyle.components),["output"]);
++    await page.locator("#story-export").click();await page.getByLabel("Story export shapes",{exact:true}).selectOption("tall");await page.locator("#story-sheet-cancel").click();await ready();
++    await page.locator('[data-story-tool="look"]').click();await page.getByRole("navigation",{name:"Style library",exact:true}).getByRole("button",{name:"Saved",exact:true}).click();
++    await page.locator("[data-style-key]").filter({hasText:"Both sizes"}).click();await page.waitForFunction(()=>!document.querySelector("#story-sheet-apply").disabled);await page.locator("#story-sheet-apply").click();await ready();
++    await page.waitForFunction(()=>document.querySelector("#story-status").textContent==="Saved on this device");
++    await page.reload();await page.locator("#empty-story-button").click();await button("Export weekend").click();await ready();await page.locator("#story-export").click();
++    assert.equal(await page.getByLabel("Story export shapes",{exact:true}).inputValue(),"both");assert.equal(await page.getByLabel("Story export format",{exact:true}).inputValue(),"png");
++    assert.match(await page.locator("[data-export-summary]").innerText(),/^8 files/);assert.equal(await page.locator(".story-exports a").count(),0);
++    await page.evaluate(async()=>{
++      const pool=(await import("./src/processing/client.js")).getProcessingScheduler(),original=pool.enqueue;
++      window.exportClosingPool=pool;window.closingPreparation=false;window.restoreExportQueue=()=>{pool.enqueue=original;};
++      pool.enqueue=function(request){
++        if(!request.workClass?.startsWith("scene:png:export:"))return original.call(this,request);
++        return original.call(this,{...request,prepare:()=>{closingPreparation=true;return new Promise((_,reject)=>{const stop=()=>reject(new DOMException("Closed","AbortError"));request.signal.addEventListener("abort",stop,{once:true});if(request.signal.aborted)stop();});}});
++      };
++    });
++    await button("Prepare files").click();await page.waitForFunction(()=>window.closingPreparation);
++    await page.goBack();await page.waitForFunction(()=>!document.querySelector("#story-sheet").open);
++    await page.waitForFunction(()=>window.exportClosingPool.snapshot().active===0&&window.exportClosingPool.snapshot().queued===0);
++    await page.evaluate(()=>restoreExportQueue());assert.equal(await page.locator(".story-exports a").count(),0,"Back cannot resurrect an aborted output");
++    assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
++    console.log("story export observations: "+JSON.stringify({runs:fixture.runs.map(({concurrency,peak,violations,hashes})=>({concurrency,peak,violations,checked:hashes.length})),fullSizeOutputs:complete.length,retryPreserved:partial.length,pausePreserved:1,savedShapes:stored.recipe.outputVariants,sourceEditsUnchanged:true,reusableOutputStyle:true,activeBackCleanup:true,pendingShareRetained:true}));
++    console.log("  story exports: both shapes, frozen ordered outputs, exact 1/4/8 references, partial failure and retry-only-failed, pause/continue, phone 200% text, native decode/download, activated share, saved choices and cleanup");
++  } finally {await context.close();}
++}
+--- /dev/null
++++ b/tests/story-export.test.mjs
+@@ -0,0 +1,102 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import { createPhotoStory } from "../src/story/recipes.js";
++import { planStoryExports, StoryExportBatch } from "../src/story/export-plan.js";
++import { captureStoryStyle, parseStyle, serializeStyle, storyStyleCommand, validateStyle } from "../src/styles/model.js";
++import { applyProjectCommand } from "../src/project/history.js";
++
++function story() {
++  return createPhotoStory(Array.from({ length: 6 }, (_, index) => ({ id: `photo-${index}`, kind: "image", name: `${index}.png`, type: "image/png",
++    width: 300, height: 200, byteLength: 100, sha256: index.toString(16).padStart(64, "0"), orientation: "upright" })), { title: "Our weekend" });
++}
++const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
++const tick = () => new Promise(resolve => setImmediate(resolve));
++
++test("both shapes have a complete, ordered output manifest with unique filenames and independent metadata", () => {
++  const project = story(), plan = planStoryExports(project, { variants: ["tall", "portrait"], format: "png" });
++  assert.equal(plan.items.length, 8); assert.equal(new Set(plan.items.map(item => item.key)).size, 8);
++  assert.deepEqual(plan.items.map(item => [item.variantId, item.slideIndex]), ["portrait", "tall"].flatMap(id => [0,1,2,3].map(index => [id,index])));
++  assert.deepEqual(plan.items.map(item => item.name), ["portrait", "tall"].flatMap(id => [1,2,3,4].map(index => `our-weekend-${id}-0${index}.png`)));
++  assert.deepEqual(plan.items.map(item => [item.width, item.height]), [...Array(4).fill([1080,1350]), ...Array(4).fill([1080,1920])]);
++  const first = project.slides[0].nodeIds.find(id => project.nodes[id].kind === "image");
++  project.nodes[first].focal.x = .1; project.name = "Changed later"; project.slides.reverse();
++  assert.equal(plan.project.name, "Our weekend"); assert.equal(plan.project.nodes[first].focal.x, .5);
++  assert.throws(() => { plan.project.name = "Mutable"; }, TypeError);
++});
++
++test("legacy single-shape filenames and saved export selections survive without changing preview shape", () => {
++  const project = story(); project.recipe.outputVariant = "tall";
++  assert.deepEqual(planStoryExports(project).items.map(item => item.name), [1,2,3,4].map(index => `our-weekend-0${index}.jpg`));
++  project.recipe.outputVariants = ["portrait", "tall"]; project.recipe.outputFormat = "png";
++  assert.equal(planStoryExports(JSON.parse(JSON.stringify(project))).items.length, 8);
++  assert.equal(project.recipe.outputVariant, "tall");
++});
++
++test("invalid, unavailable, duplicate and unbounded export choices fail before rendering", () => {
++  const project = story();
++  for (const variants of [[], ["square"], ["tall", "tall"], ["portrait", "tall", "square"], "portrait", null]) assert.throws(() => planStoryExports(project, { variants }), /export shapes/);
++  assert.throws(() => planStoryExports(project, { format: "webp" }), /PNG or JPEG/);
++  project.variants = project.variants.filter(variant => variant.id === "portrait");
++  for (const node of Object.values(project.nodes)) if (node.variantFrames) delete node.variantFrames.tall;
++  assert.throws(() => planStoryExports(project, { variants: ["tall"] }), /export shapes/);
++  project.engine.compositor = "future"; assert.throws(() => planStoryExports(project), /renderer|compositor/i);
++});
++
++test("output-only saved styles retain both shapes and legacy styles still choose exactly one", () => {
++  const source = story(); source.recipe.outputVariants = ["portrait", "tall"]; source.recipe.outputFormat = "png";
++  const style = captureStoryStyle(source, source.slides[0].id, "Both sizes", { output: true });
++  assert.ok(style.requires.includes("export-variants-v1")); assert.deepEqual(style.assets, []);
++  const restored = parseStyle(serializeStyle(style)), target = story();
++  const applied = applyProjectCommand(target, storyStyleCommand(target, restored)).project;
++  assert.equal(planStoryExports(applied).items.length, 8); assert.deepEqual(applied.nodes, target.nodes);
++  const missing = structuredClone(style); missing.requires = missing.requires.filter(id => id !== "export-variants-v1");
++  assert.throws(() => validateStyle(missing), /required capability/);
++  for (const variants of [[], ["tall","tall"], ["unknown"]]) { const invalid=structuredClone(style); invalid.components.output.variants=variants; assert.throws(()=>validateStyle(invalid)); }
++  const legacySource=story(); legacySource.recipe.outputVariant="tall";
++  const legacy=captureStoryStyle(legacySource,legacySource.slides[0].id,"Tall only",{output:true});
++  const single=applyProjectCommand(applied,storyStyleCommand(applied,legacy)).project;
++  assert.equal(single.recipe.outputVariants,undefined); assert.equal(planStoryExports(single).items.length,4);
++  assert.ok(planStoryExports(single).items.every(item=>item.variantId==="tall"));
++});
++
++test("one failed output preserves all successes, ordered results and the exact frozen retry", async () => {
++  const plan = planStoryExports(story()), calls = [], pending = new Map();
++  const batch = new StoryExportBatch(plan, { render: (item, options) => { calls.push({ key: item.key, project: options.plan.project }); const task = deferred(); pending.set(item.key, task); return task.promise; } });
++  const running = batch.start(); assert.equal(batch.counts.processing, 4);
++  await assert.rejects(batch.start(), /already being prepared/);
++  pending.get(plan.items[3].key).resolve("last"); pending.get(plan.items[1].key).reject(new Error("Unreadable source"));
++  pending.get(plan.items[0].key).resolve("first"); pending.get(plan.items[2].key).resolve("third"); await running;
++  assert.deepEqual(batch.counts, { total: 4, ready: 3, failed: 1, pending: 0, processing: 0 });
++  assert.deepEqual(batch.records.map(record => record.value), ["first",null,"third","last"]);
++  const retry = batch.start({ retryFailed: true }); assert.equal(calls.length, 5); assert.equal(calls[4].key, plan.items[1].key);
++  assert.ok(calls.every(call => call.project === plan.project)); pending.get(plan.items[1].key).resolve("repaired"); await retry;
++  assert.deepEqual(batch.records.map(record => record.value), ["first","repaired","third","last"]);
++});
++
++test("pausing preserves ready files and rejects late output ownership; continuing runs only pending items", async () => {
++  const plan = planStoryExports(story()), calls = [], pending = [], retained = [];
++  const batch = new StoryExportBatch(plan, { render: item => { calls.push(item.key); const task = deferred(); pending.push(task); return task.promise; }, retain: value => { retained.push(value); return value; } });
++  const running = batch.start(); pending[0].resolve("keep"); await tick(); batch.pause();
++  pending[1].resolve("too late"); pending[2].reject(new DOMException("Cancelled", "AbortError")); pending[3].resolve("also late"); await running;
++  assert.deepEqual(retained, ["keep"]); assert.deepEqual(batch.counts, { total: 4, ready: 1, failed: 0, pending: 3, processing: 0 });
++  const continued = batch.start(); assert.deepEqual(calls.slice(4), plan.items.slice(1).map(item => item.key));
++  pending.slice(4).forEach((task, index) => task.resolve(index)); await continued; assert.equal(batch.counts.ready, 4);
++  batch.dispose(); assert.ok(batch.records.every(record => record.value === null), "closing drops held output references as well as cancelling work");
++});
++
++test("closing a batch cancels admitted work and ignores all later completion notifications", async () => {
++  const plan = planStoryExports(story()), pending = [], signals = []; let retained = 0, changed = 0;
++  const batch = new StoryExportBatch(plan, { render: (_, {signal}) => { signals.push(signal); const task = deferred(); pending.push(task); return task.promise; },
++    retain: () => retained++, changed: () => changed++ });
++  const running = batch.start(); const prior = changed; batch.dispose(); pending.forEach(task => task.resolve("late")); await running;
++  assert.equal(retained, 0); assert.equal(changed, prior); assert.ok(signals.every(signal => signal.aborted));
++  await assert.rejects(batch.start(), /closed/);
++});
++
++test("synchronous render and output-retention failures are isolated to their own output", async () => {
++  const plan = planStoryExports(story());
++  const batch = new StoryExportBatch(plan, { render: item => { if (item.index === 0) throw new Error("Admission failed"); return item.index; },
++    retain: value => { if (value === 1) throw new Error("File could not be retained"); return value; } });
++  await batch.start(); assert.equal(batch.counts.failed, 2); assert.equal(batch.counts.ready, 2);
++  assert.match(batch.records[0].error, /Admission/); assert.match(batch.records[1].error, /retained/);
++});

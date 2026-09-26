@@ -6,9 +6,8 @@ export function attachEditorOperations(editor) {
   const { elements, state } = editor;
 
   function rememberChange(before) {
-    if (!before || editor.sameOperations(before, state.operations)) return;
-    state.history.push(before);
-    state.future = [];
+    if (!before) return;
+    editor.commitProjectEdit();
     editor.renderDirtyAndHistory();
   }
 
@@ -23,9 +22,8 @@ export function attachEditorOperations(editor) {
   }
 
   function undo() {
-    if (!state.history.length) return;
-    state.future.push(editor.cloneOperations());
-    state.operations = state.history.pop();
+    if (!editor.projectUndo()) return;
+    state.controlEditBefore = null;
     editor.updateInspector();
     editor.renderDirtyAndHistory();
     editor.renderCanvas();
@@ -34,9 +32,8 @@ export function attachEditorOperations(editor) {
   }
 
   function redo() {
-    if (!state.future.length) return;
-    state.history.push(editor.cloneOperations());
-    state.operations = state.future.pop();
+    if (!editor.projectRedo()) return;
+    state.controlEditBefore = null;
     editor.updateInspector();
     editor.renderDirtyAndHistory();
     editor.renderCanvas();

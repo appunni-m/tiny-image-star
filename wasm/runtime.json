@@ -1,0 +1,12 @@
+{
+  "package": "pillow-rs",
+  "version": "12.2.0-alpha.1",
+  "integrity": "sha512-dPPpkm5JBKlsBce+C9cHLxVXfeJvW3HR9psDXhvxjD8PaloJgbR/PnXt5BqO5ftvQX+LdBG1LzhP01m2uvEJgw==",
+  "sourceCommit": "310788f9fcadc85b02263b383c5a6ea094b000c6",
+  "provenance": "https://registry.npmjs.org/-/npm/v1/attestations/pillow-rs@12.2.0-alpha.1",
+  "files": {
+    "pillow_rs_js.js": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed",
+    "pillow_rs_js_bg.wasm": "08dfff0b10424b6ece937574aefd4c07d1d4f8ac95643e7c4d5138ab720d5a96",
+    "PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405"
+  }
+}

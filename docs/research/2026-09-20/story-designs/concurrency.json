@@ -1,0 +1,59 @@
+{
+  "referenceHashes": [
+    "e22bcfd628ef5c8d950c197ffb8d01fc6ea59fe56626a0df8f6584bfa7cb0a4b",
+    "4794681f8f4bdaa435382174be9e55a8ca9b4f8349f24ab6db080fbe5463b836",
+    "a0ec5632dc5f5f90376b8d8843343e6d75c2ab8c482ab24235d0a256345cbf0d",
+    "68cbb1e963e09130385ca6d0e305fcd81d2f0e776f26486d8bdcfdb0d5921c8c",
+    "9345cdb0f424f2aa163e6fae292278f46b399c06a60b06c82dfbf80dfe21a0df",
+    "9ed1a82fb80c19875ce659b20c3998951c425e0ec532aa7deb1b7e2e334e5f28",
+    "5715620d9994a983b43a72532f0531d3333b44109b6588b3b9d0e7e453df944e",
+    "a37c1ea4413fbaa44bca61ff48cdb2c008d4a71e0e18f42bd64e6c8cd1d2fa12"
+  ],
+  "runs": [
+    {
+      "count": 1,
+      "peak": 1,
+      "violations": 0,
+      "hashes": [
+        "e22bcfd628ef5c8d950c197ffb8d01fc6ea59fe56626a0df8f6584bfa7cb0a4b",
+        "4794681f8f4bdaa435382174be9e55a8ca9b4f8349f24ab6db080fbe5463b836",
+        "a0ec5632dc5f5f90376b8d8843343e6d75c2ab8c482ab24235d0a256345cbf0d",
+        "68cbb1e963e09130385ca6d0e305fcd81d2f0e776f26486d8bdcfdb0d5921c8c",
+        "9345cdb0f424f2aa163e6fae292278f46b399c06a60b06c82dfbf80dfe21a0df",
+        "9ed1a82fb80c19875ce659b20c3998951c425e0ec532aa7deb1b7e2e334e5f28",
+        "5715620d9994a983b43a72532f0531d3333b44109b6588b3b9d0e7e453df944e",
+        "a37c1ea4413fbaa44bca61ff48cdb2c008d4a71e0e18f42bd64e6c8cd1d2fa12"
+      ]
+    },
+    {
+      "count": 4,
+      "peak": 4,
+      "violations": 0,
+      "hashes": [
+        "e22bcfd628ef5c8d950c197ffb8d01fc6ea59fe56626a0df8f6584bfa7cb0a4b",
+        "4794681f8f4bdaa435382174be9e55a8ca9b4f8349f24ab6db080fbe5463b836",
+        "a0ec5632dc5f5f90376b8d8843343e6d75c2ab8c482ab24235d0a256345cbf0d",
+        "68cbb1e963e09130385ca6d0e305fcd81d2f0e776f26486d8bdcfdb0d5921c8c",
+        "9345cdb0f424f2aa163e6fae292278f46b399c06a60b06c82dfbf80dfe21a0df",
+        "9ed1a82fb80c19875ce659b20c3998951c425e0ec532aa7deb1b7e2e334e5f28",
+        "5715620d9994a983b43a72532f0531d3333b44109b6588b3b9d0e7e453df944e",
+        "a37c1ea4413fbaa44bca61ff48cdb2c008d4a71e0e18f42bd64e6c8cd1d2fa12"
+      ]
+    },
+    {
+      "count": 8,
+      "peak": 8,
+      "violations": 0,
+      "hashes": [
+        "e22bcfd628ef5c8d950c197ffb8d01fc6ea59fe56626a0df8f6584bfa7cb0a4b",
+        "4794681f8f4bdaa435382174be9e55a8ca9b4f8349f24ab6db080fbe5463b836",
+        "a0ec5632dc5f5f90376b8d8843343e6d75c2ab8c482ab24235d0a256345cbf0d",
+        "68cbb1e963e09130385ca6d0e305fcd81d2f0e776f26486d8bdcfdb0d5921c8c",
+        "9345cdb0f424f2aa163e6fae292278f46b399c06a60b06c82dfbf80dfe21a0df",
+        "9ed1a82fb80c19875ce659b20c3998951c425e0ec532aa7deb1b7e2e334e5f28",
+        "5715620d9994a983b43a72532f0531d3333b44109b6588b3b9d0e7e453df944e",
+        "a37c1ea4413fbaa44bca61ff48cdb2c008d4a71e0e18f42bd64e6c8cd1d2fa12"
+      ]
+    }
+  ]
+}

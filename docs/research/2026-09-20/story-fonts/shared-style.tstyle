@@ -1,0 +1,109 @@
+{
+  "kind": "tiny-image-star/style",
+  "version": 1,
+  "id": "style-3729f847-8ab6-4afd-9557-a3481d2afae2",
+  "revision": 1,
+  "name": "Saved licensed type",
+  "description": "Your reusable story settings.",
+  "engine": {
+    "name": "pillow-rs",
+    "versions": [
+      "12.2.0-alpha.1"
+    ],
+    "compositors": [
+      "canvas-rgba-pillow-v1"
+    ]
+  },
+  "requires": [
+    "scene-v1",
+    "licensed-fonts-v1",
+    "photo-look-v1",
+    "builtin-text-v1"
+  ],
+  "supported": {
+    "photoCounts": {
+      "min": 6,
+      "max": 12
+    },
+    "variants": [
+      "portrait",
+      "tall"
+    ]
+  },
+  "seed": {
+    "mode": "project"
+  },
+  "assets": [
+    {
+      "id": "story-font-042fe2cc0b933e328410d7acbd0aa6a1873dca5aef81875f4bc214b08825c7b9",
+      "kind": "font",
+      "name": "Source Sans 3",
+      "type": "font/ttf",
+      "byteLength": 646340,
+      "sha256": "042fe2cc0b933e328410d7acbd0aa6a1873dca5aef81875f4bc214b08825c7b9",
+      "orientation": "upright",
+      "license": "OFL-1.1",
+      "fontFace": {
+        "weight": "200 900",
+        "style": "normal"
+      }
+    },
+    {
+      "id": "story-font-b400fc584e10aff25d0e775ce181b4fc1c5ea1b5dc37b81aeb2084375b945790",
+      "kind": "font",
+      "name": "Source Code Pro",
+      "type": "font/ttf",
+      "byteLength": 212340,
+      "sha256": "b400fc584e10aff25d0e775ce181b4fc1c5ea1b5dc37b81aeb2084375b945790",
+      "orientation": "upright",
+      "license": "OFL-1.1",
+      "fontFace": {
+        "weight": "200 900",
+        "style": "normal"
+      }
+    }
+  ],
+  "components": {
+    "look": {
+      "appearance": {
+        "brightness": 1.03,
+        "contrast": 0.97,
+        "saturation": 0.94
+      },
+      "paper": "#f4eee4",
+      "ink": "#292821",
+      "accent": "#947044"
+    },
+    "text": {
+      "caption": {
+        "style": {
+          "builtinFont": "system-serif",
+          "weight": 700,
+          "fontBasis": "width",
+          "fontSize": 0.1,
+          "minFontSize": 0.02,
+          "lineHeight": 1.15,
+          "fit": "shrink"
+        },
+        "color": "#292821",
+        "fontId": "story-font-042fe2cc0b933e328410d7acbd0aa6a1873dca5aef81875f4bc214b08825c7b9"
+      },
+      "number": {
+        "style": {
+          "builtinFont": "system-mono",
+          "weight": 400,
+          "fontBasis": "width",
+          "fontSize": 0.025,
+          "minFontSize": 0.02,
+          "lineHeight": 1.15,
+          "fit": "shrink"
+        },
+        "color": "#947044",
+        "fontId": "story-font-b400fc584e10aff25d0e775ce181b4fc1c5ea1b5dc37b81aeb2084375b945790"
+      }
+    }
+  },
+  "controls": [
+    "appearance-strength"
+  ]
+}

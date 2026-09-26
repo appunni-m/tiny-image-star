@@ -103,10 +103,12 @@ export class Image {
     }
     /**
      * @param {Image} src
+     * @param {any | null} [dest]
+     * @param {any | null} [source]
      */
-    alphaComposite(src) {
+    alphaComposite(src, dest, source) {
         _assertClass(src, Image);
-        const ret = wasm.image_alphaComposite(this.__wbg_ptr, src.__wbg_ptr);
+        const ret = wasm.image_alphaComposite(this.__wbg_ptr, src.__wbg_ptr, isLikeNone(dest) ? 0 : addToExternrefTable0(dest), isLikeNone(source) ? 0 : addToExternrefTable0(source));
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -123,6 +125,18 @@ export class Image {
      */
     boxBlur(r) {
         const ret = wasm.image_boxBlur(this.__wbg_ptr, r);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {number} rx
+     * @param {number} ry
+     * @returns {Image}
+     */
+    boxBlurXY(rx, ry) {
+        const ret = wasm.image_boxBlurXY(this.__wbg_ptr, rx, ry);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -152,6 +166,41 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * Transform a Color3DLUT table using a named parity-corpus callback.
+     * Table traversal, callback-result slice semantics, and final length
+     * validation remain in the shared Rust core; this binding only decodes
+     * the callback asset name used by the JS host.
+     * @param {Float64Array} table
+     * @param {number} size_x
+     * @param {number} size_y
+     * @param {number} size_z
+     * @param {number} channels_in
+     * @param {any} channels_out
+     * @param {boolean} with_normals
+     * @param {string} callback
+     * @returns {Float64Array}
+     */
+    static color3DLUTTransform(table, size_x, size_y, size_z, channels_in, channels_out, with_normals, callback) {
+        const ptr0 = passArrayF64ToWasm0(table, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(callback, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.image_color3DLUTTransform(ptr0, len0, size_x, size_y, size_z, channels_in, channels_out, with_normals, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v3;
+    }
+    /**
+     * @returns {any}
+     */
+    compatibilityInfo() {
+        const ret = wasm.image_compatibilityInfo(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * @param {string} m
      * @param {string | null} [dither]
      * @returns {Image}
@@ -166,6 +215,31 @@ export class Image {
             throw takeFromExternrefTable0(ret[1]);
         }
         return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} mode
+     * @param {any} matrix
+     * @param {any} dither
+     * @param {any} palette
+     * @param {any} colors
+     * @returns {Image}
+     */
+    convertWithInput(mode, matrix, dither, palette, colors) {
+        const ret = wasm.image_convertWithInput(this.__wbg_ptr, mode, matrix, dither, palette, colors);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {string} target_mode
+     * @returns {any}
+     */
+    convertedCompatibilityInfo(target_mode) {
+        const ptr0 = passStringToWasm0(target_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.image_convertedCompatibilityInfo(this.__wbg_ptr, ptr0, len0);
+        return ret;
     }
     /**
      * @returns {Image}
@@ -183,6 +257,17 @@ export class Image {
      */
     crop(l, t, r, b) {
         const ret = wasm.image_crop(this.__wbg_ptr, l, t, r, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} box_value
+     * @returns {Image}
+     */
+    cropWithInput(box_value) {
+        const ret = wasm.image_cropWithInput(this.__wbg_ptr, box_value);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -284,6 +369,18 @@ export class Image {
         return ret[0];
     }
     /**
+     * @param {Image} mask
+     * @returns {number}
+     */
+    entropyWithInput(mask) {
+        _assertClass(mask, Image);
+        const ret = wasm.image_entropyWithInput(this.__wbg_ptr, mask.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
      * @param {Uint8Array} lut
      * @returns {Image}
      */
@@ -310,6 +407,18 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @returns {string | undefined}
+     */
+    get format() {
+        const ret = wasm.image_format(this.__wbg_ptr);
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
      * @param {string} m
      * @param {number} w
      * @param {number} h
@@ -328,11 +437,39 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @param {string} m
+     * @param {number} w
+     * @param {number} h
+     * @param {Uint8Array} d
+     */
+    fromBytesInPlace(m, w, h, d) {
+        const ptr0 = passStringToWasm0(m, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(d, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.image_fromBytesInPlace(this.__wbg_ptr, ptr0, len0, w, h, ptr1, len1);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} r
      * @returns {Image}
      */
     gaussianBlur(r) {
         const ret = wasm.image_gaussianBlur(this.__wbg_ptr, r);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {number} rx
+     * @param {number} ry
+     * @returns {Image}
+     */
+    gaussianBlurXY(rx, ry) {
+        const ret = wasm.image_gaussianBlurXY(this.__wbg_ptr, rx, ry);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -373,16 +510,14 @@ export class Image {
     }
     /**
      * @param {boolean | null} [a]
-     * @returns {Uint32Array}
+     * @returns {any}
      */
     getbbox(a) {
         const ret = wasm.image_getbbox(this.__wbg_ptr, isLikeNone(a) ? 0xFFFFFF : a ? 1 : 0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
         }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * @param {number} ch
@@ -420,11 +555,24 @@ export class Image {
         return v1;
     }
     /**
+     * @param {number | null} [b]
      * @returns {any}
+     */
+    getdataFormatted(b) {
+        const ret = wasm.image_getdataFormatted(this.__wbg_ptr, isLikeNone(b) ? Number.MAX_SAFE_INTEGER : (b) >> 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @returns {Uint8Array}
      */
     getexif() {
         const ret = wasm.image_getexif(this.__wbg_ptr);
-        return ret;
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
     }
     /**
      * @returns {Array<any>}
@@ -439,21 +587,37 @@ export class Image {
     /**
      * @returns {any}
      */
+    getextremaFormatted() {
+        const ret = wasm.image_getextremaFormatted(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @returns {any}
+     */
     getim() {
         const ret = wasm.image_getim(this.__wbg_ptr);
         return ret;
     }
     /**
-     * @returns {Uint8Array}
+     * @param {string | null} [rawmode]
+     * @returns {Uint8Array | undefined}
      */
-    getpalette() {
-        const ret = wasm.image_getpalette(this.__wbg_ptr);
+    getpalette(rawmode) {
+        var ptr0 = isLikeNone(rawmode) ? 0 : passStringToWasm0(rawmode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.image_getpalette(this.__wbg_ptr, ptr0, len0);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
-        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v1;
+        let v2;
+        if (ret[0] !== 0) {
+            v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v2;
     }
     /**
      * @param {number} x
@@ -468,6 +632,18 @@ export class Image {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @returns {any}
+     */
+    getpixelFormatted(x, y) {
+        const ret = wasm.image_getpixelFormatted(this.__wbg_ptr, x, y);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * @returns {Array<any>}
@@ -508,6 +684,35 @@ export class Image {
      */
     histogram() {
         const ret = wasm.image_histogram(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {string} type_name
+     * @returns {Uint32Array}
+     */
+    histogramInvalidInput(type_name) {
+        const ptr0 = passStringToWasm0(type_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.image_histogramInvalidInput(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * @param {Image} mask
+     * @returns {Uint32Array}
+     */
+    histogramWithInput(mask) {
+        _assertClass(mask, Image);
+        const ret = wasm.image_histogramWithInput(this.__wbg_ptr, mask.__wbg_ptr);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -785,6 +990,29 @@ export class Image {
         }
     }
     /**
+     * @param {any} source
+     * @param {any | null} [box_value]
+     * @param {any | null} [mask]
+     */
+    pasteValue(source, box_value, mask) {
+        const ret = wasm.image_pasteValue(this.__wbg_ptr, source, isLikeNone(box_value) ? 0 : addToExternrefTable0(box_value), isLikeNone(mask) ? 0 : addToExternrefTable0(mask));
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} source
+     * @param {any | null | undefined} box_value
+     * @param {Image} mask
+     */
+    pasteValueMasked(source, box_value, mask) {
+        _assertClass(mask, Image);
+        const ret = wasm.image_pasteValueMasked(this.__wbg_ptr, source, isLikeNone(box_value) ? 0 : addToExternrefTable0(box_value), mask.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @returns {number | undefined}
      */
     pendingTransparencyIndex() {
@@ -817,10 +1045,62 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * Applies the floating-output form of Pillow's `Image.point` operation.
+     *
+     * The ordinary `point` export remains byte-oriented for compatibility.
+     * Keep the output mode explicit here because a `Float64Array` is needed
+     * to preserve fractional LUT values across the WASM boundary.
+     * @param {Float64Array} lut
+     * @param {string} mode
+     * @returns {Image}
+     */
+    pointWithMode(lut, mode) {
+        const ptr0 = passArrayF64ToWasm0(lut, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.image_pointWithMode(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {number} scale
+     * @param {number} offset
+     * @returns {Image}
+     */
+    pointWithTransform(scale, offset) {
+        const ret = wasm.image_pointWithTransform(this.__wbg_ptr, scale, offset);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @param {number} a
      */
     putalpha(a) {
         const ret = wasm.image_putalpha(this.__wbg_ptr, a);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {Image} alpha
+     */
+    putalphaImageInput(alpha) {
+        _assertClass(alpha, Image);
+        const ret = wasm.image_putalphaImageInput(this.__wbg_ptr, alpha.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} alpha
+     */
+    putalphaInput(alpha) {
+        const ret = wasm.image_putalphaInput(this.__wbg_ptr, alpha);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -832,6 +1112,17 @@ export class Image {
         const ptr0 = passArray8ToWasm0(d, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.image_putdata(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} data
+     * @param {number | null} [scale]
+     * @param {number | null} [offset]
+     */
+    putdataValues(data, scale, offset) {
+        const ret = wasm.image_putdataValues(this.__wbg_ptr, data, !isLikeNone(scale), isLikeNone(scale) ? 0 : scale, !isLikeNone(offset), isLikeNone(offset) ? 0 : offset);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -879,11 +1170,53 @@ export class Image {
         }
     }
     /**
+     * @param {number} x
+     * @param {number} y
+     * @param {any} value
+     */
+    putpixelValue(x, y, value) {
+        const ret = wasm.image_putpixelValue(this.__wbg_ptr, x, y, value);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} c
      * @returns {Image}
      */
     quantize(c) {
         const ret = wasm.image_quantize(this.__wbg_ptr, c);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} colors
+     * @param {any} method
+     * @param {any} kmeans
+     * @param {any} dither
+     * @param {any} palette
+     * @returns {Image}
+     */
+    quantizeWithInput(colors, method, kmeans, dither, palette) {
+        const ret = wasm.image_quantizeWithInput(this.__wbg_ptr, colors, method, kmeans, dither, palette);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} colors
+     * @param {any} method
+     * @param {any} kmeans
+     * @param {any} dither
+     * @param {Image} palette
+     * @returns {Image}
+     */
+    quantizeWithPaletteInput(colors, method, kmeans, dither, palette) {
+        _assertClass(palette, Image);
+        const ret = wasm.image_quantizeWithPaletteInput(this.__wbg_ptr, colors, method, kmeans, dither, palette.__wbg_ptr);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -913,6 +1246,18 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @param {any} factor
+     * @param {any} box_coords
+     * @returns {Image}
+     */
+    reduceWithInput(factor, box_coords) {
+        const ret = wasm.image_reduceWithInput(this.__wbg_ptr, factor, box_coords);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @param {Uint8Array} m
      * @returns {Image}
      */
@@ -924,6 +1269,13 @@ export class Image {
             throw takeFromExternrefTable0(ret[1]);
         }
         return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} other
+     */
+    replaceFrom(other) {
+        _assertClass(other, Image);
+        wasm.image_replaceFrom(this.__wbg_ptr, other.__wbg_ptr);
     }
     /**
      * @returns {string}
@@ -962,6 +1314,19 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @param {any} size
+     * @param {any} resample
+     * @param {any} box_coords
+     * @returns {Image}
+     */
+    resizeWithInput(size, resample, box_coords) {
+        const ret = wasm.image_resizeWithInput(this.__wbg_ptr, size, resample, box_coords);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @param {number} a
      * @returns {Image}
      */
@@ -973,10 +1338,40 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @param {number} angle
+     * @param {any} resample
+     * @param {any} expand
+     * @param {any} center
+     * @param {any} translate
+     * @param {any} fillcolor
+     * @returns {Image}
+     */
+    rotateWithInput(angle, resample, expand, center, translate, fillcolor) {
+        const ret = wasm.image_rotateWithInput(this.__wbg_ptr, angle, resample, expand, center, translate, fillcolor);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @returns {Uint8Array}
      */
     save() {
         const ret = wasm.image_save(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @param {any} format
+     * @param {any} extension
+     * @returns {Uint8Array}
+     */
+    saveWithInput(format, extension) {
+        const ret = wasm.image_saveWithInput(this.__wbg_ptr, format, extension);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -1037,6 +1432,16 @@ export class Image {
      */
     thumbnail(w, h) {
         const ret = wasm.image_thumbnail(this.__wbg_ptr, w, h);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} size
+     * @param {any} resample
+     */
+    thumbnailWithInput(size, resample) {
+        const ret = wasm.image_thumbnailWithInput(this.__wbg_ptr, size, resample);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1114,6 +1519,22 @@ export class Image {
         return Image.__wrap(ret[0]);
     }
     /**
+     * @param {any} size
+     * @param {number} method
+     * @param {any} data
+     * @param {number} resample
+     * @param {number} fill
+     * @param {any} fillcolor
+     * @returns {Image}
+     */
+    transformWithInput(size, method, data, resample, fill, fillcolor) {
+        const ret = wasm.image_transformWithInput(this.__wbg_ptr, size, method, data, resample, fill, fillcolor);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @param {string} m
      * @returns {Image}
      */
@@ -1172,12 +1593,14 @@ export class ImageChops {
     /**
      * @param {Image} a
      * @param {Image} b
+     * @param {number | null} [scale]
+     * @param {number | null} [offset]
      * @returns {Image}
      */
-    static add(a, b) {
+    static add(a, b, scale, offset) {
         _assertClass(a, Image);
         _assertClass(b, Image);
-        const ret = wasm.imagechops_add(a.__wbg_ptr, b.__wbg_ptr);
+        const ret = wasm.imagechops_add(a.__wbg_ptr, b.__wbg_ptr, !isLikeNone(scale), isLikeNone(scale) ? 0 : scale, !isLikeNone(offset), isLikeNone(offset) ? 0 : offset);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1377,12 +1800,12 @@ export class ImageChops {
     /**
      * @param {Image} img
      * @param {number} x
-     * @param {number} y
+     * @param {number | null} [y]
      * @returns {Image}
      */
     static offset(img, x, y) {
         _assertClass(img, Image);
-        const ret = wasm.imagechops_offset(img.__wbg_ptr, x, y);
+        const ret = wasm.imagechops_offset(img.__wbg_ptr, x, isLikeNone(y) ? Number.MAX_SAFE_INTEGER : (y) >> 0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1433,12 +1856,14 @@ export class ImageChops {
     /**
      * @param {Image} a
      * @param {Image} b
+     * @param {number | null} [scale]
+     * @param {number | null} [offset]
      * @returns {Image}
      */
-    static subtract(a, b) {
+    static subtract(a, b, scale, offset) {
         _assertClass(a, Image);
         _assertClass(b, Image);
-        const ret = wasm.imagechops_subtract(a.__wbg_ptr, b.__wbg_ptr);
+        const ret = wasm.imagechops_subtract(a.__wbg_ptr, b.__wbg_ptr, !isLikeNone(scale), isLikeNone(scale) ? 0 : scale, !isLikeNone(offset), isLikeNone(offset) ? 0 : offset);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1492,6 +1917,19 @@ export class ImageDraw {
         }
     }
     /**
+     * @param {any} xy
+     * @param {number} start
+     * @param {number} end
+     * @param {any} fill
+     * @param {number | null} [width]
+     */
+    arcWithInput(xy, start, end, fill, width) {
+        const ret = wasm.imagedraw_arcWithInput(this.__wbg_ptr, xy, start, end, fill, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} x
      * @param {number} y
      * @param {Image} bitmap
@@ -1503,6 +1941,19 @@ export class ImageDraw {
     bitmap(x, y, bitmap, fr, fg, fb, fa) {
         _assertClass(bitmap, Image);
         const ret = wasm.imagedraw_bitmap(this.__wbg_ptr, x, y, bitmap.__wbg_ptr, isLikeNone(fr) ? 0xFFFFFF : fr, isLikeNone(fg) ? 0xFFFFFF : fg, isLikeNone(fb) ? 0xFFFFFF : fb, isLikeNone(fa) ? 0xFFFFFF : fa);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {Image} bitmap
+     * @param {any} fill
+     */
+    bitmapWithInput(x, y, bitmap, fill) {
+        _assertClass(bitmap, Image);
+        const ret = wasm.imagedraw_bitmapWithInput(this.__wbg_ptr, x, y, bitmap.__wbg_ptr, fill);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1531,6 +1982,20 @@ export class ImageDraw {
         }
     }
     /**
+     * @param {any} xy
+     * @param {number} start
+     * @param {number} end
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    chordWithInput(xy, start, end, fill, outline, width) {
+        const ret = wasm.imagedraw_chordWithInput(this.__wbg_ptr, xy, start, end, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} cx
      * @param {number} cy
      * @param {number} radius
@@ -1546,6 +2011,19 @@ export class ImageDraw {
      */
     circle(cx, cy, radius, fr, fg, fb, fa, or, og, ob, oa, width) {
         const ret = wasm.imagedraw_circle(this.__wbg_ptr, cx, cy, radius, isLikeNone(fr) ? 0xFFFFFF : fr, isLikeNone(fg) ? 0xFFFFFF : fg, isLikeNone(fb) ? 0xFFFFFF : fb, isLikeNone(fa) ? 0xFFFFFF : fa, isLikeNone(or) ? 0xFFFFFF : or, isLikeNone(og) ? 0xFFFFFF : og, isLikeNone(ob) ? 0xFFFFFF : ob, isLikeNone(oa) ? 0xFFFFFF : oa, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} xy
+     * @param {number} radius
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    circleWithInput(xy, radius, fill, outline, width) {
+        const ret = wasm.imagedraw_circleWithInput(this.__wbg_ptr, xy, radius, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1567,6 +2045,18 @@ export class ImageDraw {
      */
     ellipse(x0, y0, x1, y1, fr, fg, fb, fa, or, og, ob, oa, width) {
         const ret = wasm.imagedraw_ellipse(this.__wbg_ptr, x0, y0, x1, y1, isLikeNone(fr) ? 0xFFFFFF : fr, isLikeNone(fg) ? 0xFFFFFF : fg, isLikeNone(fb) ? 0xFFFFFF : fb, isLikeNone(fa) ? 0xFFFFFF : fa, isLikeNone(or) ? 0xFFFFFF : or, isLikeNone(og) ? 0xFFFFFF : og, isLikeNone(ob) ? 0xFFFFFF : ob, isLikeNone(oa) ? 0xFFFFFF : oa, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} xy
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    ellipseWithInput(xy, fill, outline, width) {
+        const ret = wasm.imagedraw_ellipseWithInput(this.__wbg_ptr, xy, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1599,11 +2089,115 @@ export class ImageDraw {
         }
     }
     /**
-     * @param {Image} img
+     * @param {any} points
+     * @param {any} fill
+     * @param {number | null} [width]
+     * @param {string | null} [joint]
      */
-    constructor(img) {
+    lineWithColorInput(points, fill, width, joint) {
+        var ptr0 = isLikeNone(joint) ? 0 : passStringToWasm0(joint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_lineWithColorInput(this.__wbg_ptr, points, fill, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} points
+     * @param {number} r
+     * @param {number} g
+     * @param {number} b
+     * @param {number} a
+     * @param {number | null} [width]
+     * @param {string | null} [joint]
+     */
+    lineWithInput(points, r, g, b, a, width, joint) {
+        var ptr0 = isLikeNone(joint) ? 0 : passStringToWasm0(joint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_lineWithInput(this.__wbg_ptr, points, r, g, b, a, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {any} text
+     * @param {ImageFont | null | undefined} font
+     * @param {any} fill
+     * @param {number} spacing
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {boolean} embedded_color
+     * @param {number | null} [font_size]
+     */
+    multilineTextWithInput(x, y, text, font, fill, spacing, direction, features, language, stroke_width, anchor, embedded_color, font_size) {
+        let ptr0 = 0;
+        if (!isLikeNone(font)) {
+            _assertClass(font, ImageFont);
+            ptr0 = font.__destroy_into_raw();
+        }
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_multilineTextWithInput(this.__wbg_ptr, x, y, text, ptr0, fill, spacing, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3, embedded_color, !isLikeNone(font_size), isLikeNone(font_size) ? 0 : font_size);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {any} text
+     * @param {ImageFont | null | undefined} font
+     * @param {number} spacing
+     * @param {string} align
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {boolean} embedded_color
+     * @param {number | null} [font_size]
+     * @returns {Int32Array}
+     */
+    multilineTextbboxWithInput(x, y, text, font, spacing, align, direction, features, language, stroke_width, anchor, embedded_color, font_size) {
+        let ptr0 = 0;
+        if (!isLikeNone(font)) {
+            _assertClass(font, ImageFont);
+            ptr0 = font.__destroy_into_raw();
+        }
+        const ptr1 = passStringToWasm0(align, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len4 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_multilineTextbboxWithInput(this.__wbg_ptr, x, y, text, ptr0, spacing, ptr1, len1, ptr2, len2, features, ptr3, len3, stroke_width, ptr4, len4, embedded_color, !isLikeNone(font_size), isLikeNone(font_size) ? 0 : font_size);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v6 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v6;
+    }
+    /**
+     * @param {Image} img
+     * @param {string | null} [mode]
+     */
+    constructor(img, mode) {
         _assertClass(img, Image);
-        const ret = wasm.imagedraw_new(img.__wbg_ptr);
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_new(img.__wbg_ptr, ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1635,6 +2229,20 @@ export class ImageDraw {
         }
     }
     /**
+     * @param {any} xy
+     * @param {number} start
+     * @param {number} end
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    piesliceWithInput(xy, start, end, fill, outline, width) {
+        const ret = wasm.imagedraw_piesliceWithInput(this.__wbg_ptr, xy, start, end, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {Int32Array} pts
      * @param {number} r
      * @param {number} g
@@ -1645,6 +2253,16 @@ export class ImageDraw {
         const ptr0 = passArray32ToWasm0(pts, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.imagedraw_point(this.__wbg_ptr, ptr0, len0, r, g, b, a);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} points
+     * @param {any} fill
+     */
+    pointWithInput(points, fill) {
+        const ret = wasm.imagedraw_pointWithInput(this.__wbg_ptr, points, fill);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1670,6 +2288,18 @@ export class ImageDraw {
         }
     }
     /**
+     * @param {any} points
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    polygonWithInput(points, fill, outline, width) {
+        const ret = wasm.imagedraw_polygonWithInput(this.__wbg_ptr, points, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} x0
      * @param {number} y0
      * @param {number} x1
@@ -1686,6 +2316,32 @@ export class ImageDraw {
      */
     rectangle(x0, y0, x1, y1, fr, fg, fb, fa, or, og, ob, oa, width) {
         const ret = wasm.imagedraw_rectangle(this.__wbg_ptr, x0, y0, x1, y1, isLikeNone(fr) ? 0xFFFFFF : fr, isLikeNone(fg) ? 0xFFFFFF : fg, isLikeNone(fb) ? 0xFFFFFF : fb, isLikeNone(fa) ? 0xFFFFFF : fa, isLikeNone(or) ? 0xFFFFFF : or, isLikeNone(og) ? 0xFFFFFF : og, isLikeNone(ob) ? 0xFFFFFF : ob, isLikeNone(oa) ? 0xFFFFFF : oa, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} xy
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    rectangleWithInput(xy, fill, outline, width) {
+        const ret = wasm.imagedraw_rectangleWithInput(this.__wbg_ptr, xy, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} bounding_circle
+     * @param {any} n_sides
+     * @param {number} rotation
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    regularPolygonWithInput(bounding_circle, n_sides, rotation, fill, outline, width) {
+        const ret = wasm.imagedraw_regularPolygonWithInput(this.__wbg_ptr, bounding_circle, n_sides, rotation, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1713,6 +2369,30 @@ export class ImageDraw {
         }
     }
     /**
+     * @param {any} xy
+     * @param {number} radius
+     * @param {any} fill
+     * @param {any} outline
+     * @param {number | null} [width]
+     */
+    roundedRectangleWithInput(xy, radius, fill, outline, width) {
+        const ret = wasm.imagedraw_roundedRectangleWithInput(this.__wbg_ptr, xy, radius, fill, outline, isLikeNone(width) ? Number.MAX_SAFE_INTEGER : (width) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} points
+     * @param {any} fill
+     * @param {any} outline
+     */
+    shapeWithInput(points, fill, outline) {
+        const ret = wasm.imagedraw_shapeWithInput(this.__wbg_ptr, points, fill, outline);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {number} x
      * @param {number} y
      * @param {string} text
@@ -1730,6 +2410,97 @@ export class ImageDraw {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {any} text
+     * @param {ImageFont | null | undefined} font
+     * @param {any} fill
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {boolean} embedded_color
+     * @param {number | null} [font_size]
+     */
+    textWithInput(x, y, text, font, fill, direction, features, language, stroke_width, anchor, embedded_color, font_size) {
+        let ptr0 = 0;
+        if (!isLikeNone(font)) {
+            _assertClass(font, ImageFont);
+            ptr0 = font.__destroy_into_raw();
+        }
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_textWithInput(this.__wbg_ptr, x, y, text, ptr0, fill, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3, embedded_color, !isLikeNone(font_size), isLikeNone(font_size) ? 0 : font_size);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {any} text
+     * @param {ImageFont | null | undefined} font
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {boolean} embedded_color
+     * @param {number | null} [font_size]
+     * @returns {Int32Array}
+     */
+    textbboxWithInput(x, y, text, font, direction, features, language, stroke_width, anchor, embedded_color, font_size) {
+        let ptr0 = 0;
+        if (!isLikeNone(font)) {
+            _assertClass(font, ImageFont);
+            ptr0 = font.__destroy_into_raw();
+        }
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_textbboxWithInput(this.__wbg_ptr, x, y, text, ptr0, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3, embedded_color, !isLikeNone(font_size), isLikeNone(font_size) ? 0 : font_size);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v5 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v5;
+    }
+    /**
+     * @param {any} text
+     * @param {ImageFont | null | undefined} font
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {boolean} embedded_color
+     * @param {number | null} [font_size]
+     * @returns {number}
+     */
+    textlengthWithInput(text, font, direction, features, language, embedded_color, font_size) {
+        let ptr0 = 0;
+        if (!isLikeNone(font)) {
+            _assertClass(font, ImageFont);
+            ptr0 = font.__destroy_into_raw();
+        }
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.imagedraw_textlengthWithInput(this.__wbg_ptr, text, ptr0, ptr1, len1, features, ptr2, len2, embedded_color, !isLikeNone(font_size), isLikeNone(font_size) ? 0 : font_size);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
     }
 }
 if (Symbol.dispose) ImageDraw.prototype[Symbol.dispose] = ImageDraw.prototype.free;
@@ -1761,6 +2532,55 @@ export class ImageFont {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ImageFont.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} font
+     * @param {number | null} [size]
+     * @param {number | null} [index]
+     * @param {string | null} [encoding]
+     * @param {string | null} [layout_engine]
+     * @returns {ImageFont}
+     */
+    fontVariantWithOptions(font, size, index, encoding, layout_engine) {
+        var ptr0 = isLikeNone(encoding) ? 0 : passStringToWasm0(encoding, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(layout_engine) ? 0 : passStringToWasm0(layout_engine, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_fontVariantWithOptions(this.__wbg_ptr, font, !isLikeNone(size), isLikeNone(size) ? 0 : size, isLikeNone(index) ? Number.MAX_SAFE_INTEGER : (index) >>> 0, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ImageFont.__wrap(ret[0]);
+    }
+    /**
+     * @param {Uint8Array} data
+     * @param {number} size
+     * @param {number | null} [index]
+     * @param {string | null} [encoding]
+     * @param {string | null} [layout_engine]
+     * @returns {ImageFont}
+     */
+    static fromBytes(data, size, index, encoding, layout_engine) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(encoding) ? 0 : passStringToWasm0(encoding, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(layout_engine) ? 0 : passStringToWasm0(layout_engine, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_fromBytes(ptr0, len0, size, isLikeNone(index) ? Number.MAX_SAFE_INTEGER : (index) >>> 0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ImageFont.__wrap(ret[0]);
+    }
+    /**
+     * @returns {Uint32Array}
+     */
+    getMetrics() {
+        const ret = wasm.imagefont_getMetrics(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * @param {string} text
@@ -1848,6 +2668,54 @@ export class ImageFont {
         return v2;
     }
     /**
+     * @param {any} text
+     * @param {string | null | undefined} mode
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null} [anchor]
+     * @returns {Float64Array}
+     */
+    getbboxWithOptions(text, mode, direction, features, language, stroke_width, anchor) {
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_getbboxWithOptions(this.__wbg_ptr, text, ptr0, len0, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v5 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v5;
+    }
+    /**
+     * @param {any} text
+     * @param {string | null | undefined} mode
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null} [language]
+     * @returns {number}
+     */
+    getlengthWithOptions(text, mode, direction, features, language) {
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_getlengthWithOptions(this.__wbg_ptr, text, ptr0, len0, ptr1, len1, features, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
      * @param {string} text
      * @returns {Uint8Array}
      */
@@ -1872,6 +2740,63 @@ export class ImageFont {
         const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.imagefont_getmask2(this.__wbg_ptr, ptr0, len0, !isLikeNone(start_x), isLikeNone(start_x) ? 0 : start_x, !isLikeNone(start_y), isLikeNone(start_y) ? 0 : start_y);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ImageFontMask.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} text
+     * @param {string | null | undefined} mode
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {any} ink
+     * @param {any} start
+     * @param {boolean} stroke_filled
+     * @param {boolean} has_args
+     * @param {boolean} has_kwargs
+     * @returns {ImageFontMask}
+     */
+    getmask2WithOptions(text, mode, direction, features, language, stroke_width, anchor, ink, start, stroke_filled, has_args, has_kwargs) {
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_getmask2WithOptions(this.__wbg_ptr, text, ptr0, len0, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3, ink, start, stroke_filled, has_args, has_kwargs);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ImageFontMask.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} text
+     * @param {string | null | undefined} mode
+     * @param {string | null | undefined} direction
+     * @param {any} features
+     * @param {string | null | undefined} language
+     * @param {number} stroke_width
+     * @param {string | null | undefined} anchor
+     * @param {any} ink
+     * @param {any} start
+     * @returns {ImageFontMask}
+     */
+    getmaskWithOptions(text, mode, direction, features, language, stroke_width, anchor, ink, start) {
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(direction) ? 0 : passStringToWasm0(direction, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(language) ? 0 : passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(anchor) ? 0 : passStringToWasm0(anchor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.imagefont_getmaskWithOptions(this.__wbg_ptr, text, ptr0, len0, ptr1, len1, features, ptr2, len2, stroke_width, ptr3, len3, ink, start);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1949,12 +2874,30 @@ export class ImageFont {
         }
     }
     /**
+     * @param {any} axes
+     */
+    setVariationByAxesWithInput(axes) {
+        const ret = wasm.imagefont_setVariationByAxesWithInput(this.__wbg_ptr, axes);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * @param {Uint8Array} name
      */
     setVariationByName(name) {
         const ptr0 = passArray8ToWasm0(name, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.imagefont_setVariationByName(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {any} name
+     */
+    setVariationByNameWithInput(name) {
+        const ret = wasm.imagefont_setVariationByNameWithInput(this.__wbg_ptr, name);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
@@ -1985,6 +2928,21 @@ export class ImageFontMask {
     get height() {
         const ret = wasm.imagefontmask_height(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * @returns {string}
+     */
+    get mode() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.imagefontmask_mode(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * @returns {number}
@@ -2045,6 +3003,37 @@ export class ImageOps {
     }
     /**
      * @param {Image} img
+     * @param {number} c
+     * @param {string} type_name
+     * @returns {Image}
+     */
+    static autocontrastInvalidMask(img, c, type_name) {
+        _assertClass(img, Image);
+        const ptr0 = passStringToWasm0(type_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imageops_autocontrastInvalidMask(img.__wbg_ptr, c, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
+     * @param {number} c
+     * @param {Image} mask
+     * @returns {Image}
+     */
+    static autocontrastWithMask(img, c, mask) {
+        _assertClass(img, Image);
+        _assertClass(mask, Image);
+        const ret = wasm.imageops_autocontrastWithMask(img.__wbg_ptr, c, mask.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
      * @param {number} black_r
      * @param {number} black_g
      * @param {number} black_b
@@ -2079,11 +3068,41 @@ export class ImageOps {
      * @param {Image} img
      * @param {number} w
      * @param {number} h
+     * @param {any} method
+     * @returns {Image}
+     */
+    static containWithInput(img, w, h, method) {
+        _assertClass(img, Image);
+        const ret = wasm.imageops_containWithInput(img.__wbg_ptr, w, h, method);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
+     * @param {number} w
+     * @param {number} h
      * @returns {Image}
      */
     static cover(img, w, h) {
         _assertClass(img, Image);
         const ret = wasm.imageops_cover(img.__wbg_ptr, w, h);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
+     * @param {number} w
+     * @param {number} h
+     * @param {any} method
+     * @returns {Image}
+     */
+    static coverWithInput(img, w, h, method) {
+        _assertClass(img, Image);
+        const ret = wasm.imageops_coverWithInput(img.__wbg_ptr, w, h, method);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2116,6 +3135,20 @@ export class ImageOps {
     }
     /**
      * @param {Image} img
+     * @param {Image} mask
+     * @returns {Image}
+     */
+    static equalizeWithInput(img, mask) {
+        _assertClass(img, Image);
+        _assertClass(mask, Image);
+        const ret = wasm.imageops_equalizeWithInput(img.__wbg_ptr, mask.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
      * @param {number} border
      * @param {number} r
      * @param {number} g
@@ -2140,6 +3173,23 @@ export class ImageOps {
     static fit(img, w, h) {
         _assertClass(img, Image);
         const ret = wasm.imageops_fit(img.__wbg_ptr, w, h);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
+     * @param {number} w
+     * @param {number} h
+     * @param {any} method
+     * @param {number} bleed
+     * @param {any} centering
+     * @returns {Image}
+     */
+    static fitWithInput(img, w, h, method, bleed, centering) {
+        _assertClass(img, Image);
+        const ret = wasm.imageops_fitWithInput(img.__wbg_ptr, w, h, method, bleed, centering);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2213,6 +3263,23 @@ export class ImageOps {
     }
     /**
      * @param {Image} img
+     * @param {number} w
+     * @param {number} h
+     * @param {any} method
+     * @param {any} color
+     * @param {any} centering
+     * @returns {Image}
+     */
+    static padWithInput(img, w, h, method, color, centering) {
+        _assertClass(img, Image);
+        const ret = wasm.imageops_padWithInput(img.__wbg_ptr, w, h, method, color, centering);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
      * @param {number} b
      * @returns {Image}
      */
@@ -2232,6 +3299,20 @@ export class ImageOps {
     static scale(img, factor) {
         _assertClass(img, Image);
         const ret = wasm.imageops_scale(img.__wbg_ptr, factor);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
+     * @param {Image} img
+     * @param {number} factor
+     * @param {any} method
+     * @returns {Image}
+     */
+    static scaleWithInput(img, factor, method) {
+        _assertClass(img, Image);
+        const ret = wasm.imageops_scaleWithInput(img.__wbg_ptr, factor, method);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2278,11 +3359,40 @@ export class ImagePalette {
         return ImagePalette.__wrap(ret);
     }
     /**
-     * @returns {any}
+     * @param {any} color
+     * @param {any} _image
+     * @returns {number}
+     */
+    getcolor(color, _image) {
+        const ret = wasm.imagepalette_getcolor(this.__wbg_ptr, color, _image);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @returns {Uint8Array}
      */
     getdata() {
         const ret = wasm.imagepalette_getdata(this.__wbg_ptr);
-        return ret;
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {string}
+     */
+    get mode() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.imagepalette_mode(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     /**
      * @param {string} mode
@@ -2296,11 +3406,22 @@ export class ImagePalette {
         return this;
     }
     /**
-     * @returns {any}
+     * Construct a palette from the optional host-side constructor inputs.
+     * @param {string | null | undefined} mode
+     * @param {any} palette
+     * @returns {ImagePalette}
      */
-    save() {
-        const ret = wasm.imagepalette_save(this.__wbg_ptr);
-        return ret;
+    static newWithInput(mode, palette) {
+        var ptr0 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imagepalette_newWithInput(ptr0, len0, palette);
+        return ImagePalette.__wrap(ret);
+    }
+    /**
+     * @param {any} _fp
+     */
+    save(_fp) {
+        wasm.imagepalette_save(this.__wbg_ptr, _fp);
     }
     /**
      * @returns {Uint8Array}
@@ -2346,6 +3467,12 @@ export class ImageSequence {
 if (Symbol.dispose) ImageSequence.prototype[Symbol.dispose] = ImageSequence.prototype.free;
 
 export class ImageStat {
+    static __wrap(ptr) {
+        const obj = Object.create(ImageStat.prototype);
+        obj.__wbg_ptr = ptr;
+        ImageStatFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -2358,10 +3485,16 @@ export class ImageStat {
     }
     /**
      * @param {Image} img
+     * @param {Image | null} [mask]
      */
-    constructor(img) {
+    constructor(img, mask) {
         _assertClass(img, Image);
-        const ret = wasm.imagestat_new(img.__wbg_ptr);
+        let ptr0 = 0;
+        if (!isLikeNone(mask)) {
+            _assertClass(mask, Image);
+            ptr0 = mask.__destroy_into_raw();
+        }
+        const ret = wasm.imagestat_new(img.__wbg_ptr, ptr0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -2378,6 +3511,87 @@ export class ImageStat {
     }
 }
 if (Symbol.dispose) ImageStat.prototype[Symbol.dispose] = ImageStat.prototype.free;
+
+export class PilFont {
+    static __wrap(ptr) {
+        const obj = Object.create(PilFont.prototype);
+        obj.__wbg_ptr = ptr;
+        PilFontFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        PilFontFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_pilfont_free(ptr, 0);
+    }
+    /**
+     * @param {Uint8Array} metrics
+     * @param {Uint8Array} glyph_image
+     * @returns {PilFont}
+     */
+    static fromBytes(metrics, glyph_image) {
+        const ptr0 = passArray8ToWasm0(metrics, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(glyph_image, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.pilfont_fromBytes(ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return PilFont.__wrap(ret[0]);
+    }
+    /**
+     * @param {any} text
+     * @returns {Int32Array}
+     */
+    getbboxWithInput(text) {
+        const ret = wasm.pilfont_getbboxWithInput(this.__wbg_ptr, text);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {any} text
+     * @returns {number}
+     */
+    getlengthWithInput(text) {
+        const ret = wasm.pilfont_getlengthWithInput(this.__wbg_ptr, text);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * @param {any} text
+     * @returns {ImageFontMask}
+     */
+    getmaskWithInput(text) {
+        const ret = wasm.pilfont_getmaskWithInput(this.__wbg_ptr, text);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ImageFontMask.__wrap(ret[0]);
+    }
+    /**
+     * @returns {PilFont}
+     */
+    static loadDefault() {
+        const ret = wasm.pilfont_loadDefault();
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return PilFont.__wrap(ret[0]);
+    }
+}
+if (Symbol.dispose) PilFont.prototype[Symbol.dispose] = PilFont.prototype.free;
 
 /**
  * List currently active backends (priority order).
@@ -2402,6 +3616,21 @@ export function addModulo(a, b) {
     _assertClass(a, Image);
     _assertClass(b, Image);
     const ret = wasm.addModulo(a.__wbg_ptr, b.__wbg_ptr);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
+ * @param {Image} a
+ * @param {Image} b
+ * @returns {Image}
+ */
+export function alphaCompositeFn(a, b) {
+    _assertClass(a, Image);
+    _assertClass(b, Image);
+    const ret = wasm.alphaCompositeFn(a.__wbg_ptr, b.__wbg_ptr);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -2458,6 +3687,105 @@ export function blend(a, b, alpha) {
     _assertClass(a, Image);
     _assertClass(b, Image);
     const ret = wasm.blend(a.__wbg_ptr, b.__wbg_ptr, alpha);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
+ * @param {Float64Array} size
+ * @returns {Uint32Array}
+ */
+export function color3DLUTCheckSize(size) {
+    const ptr0 = passArrayF64ToWasm0(size, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.color3DLUTCheckSize(ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
+}
+
+/**
+ * @param {number} size_x
+ * @param {number} size_y
+ * @param {number} size_z
+ * @param {number} channels
+ * @param {string} callback
+ * @returns {Float64Array}
+ */
+export function color3DLUTGenerate(size_x, size_y, size_z, channels, callback) {
+    const ptr0 = passStringToWasm0(callback, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.color3DLUTGenerate(size_x, size_y, size_z, channels, ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v2;
+}
+
+/**
+ * @param {any} table
+ * @param {number} size_x
+ * @param {number} size_y
+ * @param {number} size_z
+ * @param {number} channels
+ * @returns {Float64Array}
+ */
+export function color3DLUTNew(table, size_x, size_y, size_z, channels) {
+    const ret = wasm.color3DLUTNew(table, size_x, size_y, size_z, channels);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v1;
+}
+
+/**
+ * @param {string} table_type
+ * @param {number} size_x
+ * @param {number} size_y
+ * @param {number} size_z
+ * @param {number} channels
+ * @param {string | null} [target_mode]
+ * @returns {string}
+ */
+export function color3DLUTRepr(table_type, size_x, size_y, size_z, channels, target_mode) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(table_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(target_mode) ? 0 : passStringToWasm0(target_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.color3DLUTRepr(ptr0, len0, size_x, size_y, size_z, channels, ptr1, len1);
+        deferred3_0 = ret[0];
+        deferred3_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * @param {Image} img
+ * @param {any} black
+ * @param {any} white
+ * @param {any} mid
+ * @param {number} blackpoint
+ * @param {number} midpoint
+ * @param {number} whitepoint
+ * @returns {Image}
+ */
+export function colorizeFn(img, black, white, mid, blackpoint, midpoint, whitepoint) {
+    _assertClass(img, Image);
+    const ret = wasm.colorizeFn(img.__wbg_ptr, black, white, mid, blackpoint, midpoint, whitepoint);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -2588,6 +3916,20 @@ export function effectMandelbrot(w, h, x0, y0, x1, y1, quality) {
 }
 
 /**
+ * @param {any} size
+ * @param {any} extent
+ * @param {number} quality
+ * @returns {Image}
+ */
+export function effectMandelbrotWithExtent(size, extent, quality) {
+    const ret = wasm.effectMandelbrotWithExtent(size, extent, quality);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
  * @param {number} width
  * @param {number} height
  * @param {number} sigma
@@ -2686,6 +4028,20 @@ export function exifRemoveOrientation(raw) {
 
 /**
  * @param {Image} img
+ * @param {boolean} in_place
+ * @returns {any}
+ */
+export function exifTransposeFn(img, in_place) {
+    _assertClass(img, Image);
+    const ret = wasm.exifTransposeFn(img.__wbg_ptr, in_place);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * @param {Image} img
  * @param {number} border
  * @param {number} fill_r
  * @param {number} fill_g
@@ -2731,6 +4087,51 @@ export function flipFn(img) {
 }
 
 /**
+ * @param {Float64Array} shape
+ * @param {string} typestr
+ * @param {string | null | undefined} mode
+ * @param {Uint8Array} data
+ * @returns {Image}
+ */
+export function fromArrayFn(shape, typestr, mode, data) {
+    const ptr0 = passArrayF64ToWasm0(shape, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(typestr, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    var ptr2 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.fromArrayFn(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
+ * @param {string} mode
+ * @param {number} w
+ * @param {number} h
+ * @param {Uint8Array} data
+ * @param {string | null} [decoder_name]
+ * @returns {Image}
+ */
+export function fromBytesFn(mode, w, h, data, decoder_name) {
+    const ptr0 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    var ptr2 = isLikeNone(decoder_name) ? 0 : passStringToWasm0(decoder_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len2 = WASM_VECTOR_LEN;
+    const ret = wasm.fromBytesFn(ptr0, len0, w, h, ptr1, len1, ptr2, len2);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
  * @param {string} color
  * @param {string} mode
  * @returns {any}
@@ -2741,6 +4142,20 @@ export function getColor(color, mode) {
     const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.getColor(ptr0, len0, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * @param {string} color
+ * @returns {any}
+ */
+export function getRgb(color) {
+    const ptr0 = passStringToWasm0(color, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.getRgb(ptr0, len0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -2807,6 +4222,23 @@ export function imageNewPaletteIndex(w, h, index) {
 }
 
 /**
+ * @param {string} mode
+ * @param {number} w
+ * @param {number} h
+ * @param {any} color
+ * @returns {Image}
+ */
+export function imageNewWithInput(mode, w, h, color) {
+    const ptr0 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.imageNewWithInput(ptr0, len0, w, h, color);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
  * @param {string} _path
  * @returns {Image}
  */
@@ -2818,6 +4250,23 @@ export function imageOpen(_path) {
         throw takeFromExternrefTable0(ret[1]);
     }
     return Image.__wrap(ret[0]);
+}
+
+/**
+ * @param {Float64Array} kernel
+ * @param {number | null | undefined} scale
+ * @param {number} offset
+ * @param {Uint32Array} size
+ */
+export function kernelPrepare(kernel, scale, offset, size) {
+    const ptr0 = passArrayF64ToWasm0(kernel, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray32ToWasm0(size, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.kernelPrepare(ptr0, len0, !isLikeNone(scale), isLikeNone(scale) ? 0 : scale, offset, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
 }
 
 /**
@@ -2929,6 +4378,27 @@ export function mergeFn(mode, bands) {
 }
 
 /**
+ * @param {string} mode
+ * @param {Image[]} bands
+ * @param {number} band_count
+ * @param {string | null} [invalid_type]
+ * @returns {Image}
+ */
+export function mergeWithInput(mode, bands, band_count, invalid_type) {
+    const ptr0 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayJsValueToWasm0(bands, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    var ptr2 = isLikeNone(invalid_type) ? 0 : passStringToWasm0(invalid_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    var len2 = WASM_VECTOR_LEN;
+    const ret = wasm.mergeWithInput(ptr0, len0, ptr1, len1, band_count, ptr2, len2);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
  * @param {Image} img
  * @returns {Image}
  */
@@ -2965,6 +4435,22 @@ export function multiply(a, b) {
 export function offset(img, xoffset, yoffset) {
     _assertClass(img, Image);
     const ret = wasm.offset(img.__wbg_ptr, xoffset, yoffset);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Image.__wrap(ret[0]);
+}
+
+/**
+ * @param {Uint8Array} data
+ * @param {any} mode
+ * @param {any} formats
+ * @returns {Image}
+ */
+export function openFn(data, mode, formats) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.openFn(ptr0, len0, mode, formats);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -3212,6 +4698,16 @@ export function setLogLevel(level) {
 }
 
 /**
+ * Enable bounded WASM image-pipeline execution telemetry for parity evidence.
+ * @param {boolean} enabled
+ * @returns {boolean}
+ */
+export function setPipelineTelemetry(enabled) {
+    const ret = wasm.setPipelineTelemetry(enabled);
+    return ret !== 0;
+}
+
+/**
  * @param {Image} a
  * @param {Image} b
  * @returns {Image}
@@ -3242,6 +4738,17 @@ export function solarizeFn(img, threshold) {
 
 /**
  * @param {Float64Array} data
+ * @returns {ImageStat}
+ */
+export function statFromHistogram(data) {
+    const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.statFromHistogram(ptr0, len0);
+    return ImageStat.__wrap(ret);
+}
+
+/**
+ * @param {Float64Array} data
  * @returns {any}
  */
 export function statFromList(data) {
@@ -3268,9 +4775,65 @@ export function subtractModulo(a, b) {
     }
     return Image.__wrap(ret[0]);
 }
+
+/**
+ * Take the most recent completed WASM image-pipeline receipt, or `null`.
+ * @returns {any}
+ */
+export function takePipelineTelemetry() {
+    const ret = wasm.takePipelineTelemetry();
+    return ret;
+}
+
+/**
+ * @param {any} mode
+ * @param {any} formats
+ */
+export function validateOpenInputs(mode, formats) {
+    const ret = wasm.validateOpenInputs(mode, formats);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * @param {Uint8Array} data
+ */
+export function validateOpenSource(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateOpenSource(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_boolean_get_fa956cfa2d1bd751: function(arg0) {
+            const v = arg0;
+            const ret = typeof(v) === 'boolean' ? v : undefined;
+            return isLikeNone(ret) ? 0xFFFFFF : ret ? 1 : 0;
+        },
+        __wbg___wbindgen_is_null_ea9085d691f535d3: function(arg0) {
+            const ret = arg0 === null;
+            return ret;
+        },
+        __wbg___wbindgen_is_object_a27215656b807791: function(arg0) {
+            const val = arg0;
+            const ret = typeof(val) === 'object' && val !== null;
+            return ret;
+        },
+        __wbg___wbindgen_is_undefined_c05833b95a3cf397: function(arg0) {
+            const ret = arg0 === undefined;
+            return ret;
+        },
+        __wbg___wbindgen_number_get_394265ed1e1b84ee: function(arg0, arg1) {
+            const obj = arg1;
+            const ret = typeof(obj) === 'number' ? obj : undefined;
+            getDataViewMemory0().setFloat64(arg0 + 8 * 1, isLikeNone(ret) ? 0 : ret, true);
+            getDataViewMemory0().setInt32(arg0 + 4 * 0, !isLikeNone(ret), true);
+        },
         __wbg___wbindgen_string_get_b0ca35b86a603356: function(arg0, arg1) {
             const obj = arg1;
             const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -3282,12 +4845,50 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
+        __wbg_from_13e323c65fc8f464: function(arg0) {
+            const ret = Array.from(arg0);
+            return ret;
+        },
+        __wbg_get_507a50627bffa49b: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
+        __wbg_get_unchecked_6e0ad6d2a41b06f6: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
+        __wbg_has_8374cf06984d8bfc: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.has(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_image_new: function(arg0) {
             const ret = Image.__wrap(arg0);
             return ret;
         },
         __wbg_image_unwrap: function(arg0) {
             const ret = Image.__unwrap(arg0);
+            return ret;
+        },
+        __wbg_instanceof_Uint8Array_309b927aaf7a3fc7: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof Uint8Array;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_isArray_82995d8620818ac5: function(arg0) {
+            const ret = Array.isArray(arg0);
+            return ret;
+        },
+        __wbg_length_1f0964f4a5e2c6d8: function(arg0) {
+            const ret = arg0.length;
+            return ret;
+        },
+        __wbg_length_370319915dc99107: function(arg0) {
+            const ret = arg0.length;
             return ret;
         },
         __wbg_new_32b398fb48b6d94a: function() {
@@ -3298,6 +4899,10 @@ function __wbg_get_imports() {
             const ret = new Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg_new_cd45aabdf6073e84: function(arg0) {
+            const ret = new Uint8Array(arg0);
+            return ret;
+        },
         __wbg_new_da52cf8fe3429cb2: function() {
             const ret = new Object();
             return ret;
@@ -3305,6 +4910,9 @@ function __wbg_get_imports() {
         __wbg_new_from_slice_77cdfb7977362f3c: function(arg0, arg1) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
+        },
+        __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
+            Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
         },
         __wbg_push_d2ae3af0c1217ae6: function(arg0, arg1) {
             const ret = arg0.push(arg1);
@@ -3373,6 +4981,9 @@ const ImageSequenceFinalization = (typeof FinalizationRegistry === 'undefined')
 const ImageStatFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_imagestat_free(ptr, 1));
+const PilFontFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_pilfont_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
@@ -3384,6 +4995,11 @@ function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
     }
+}
+
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
 }
 
 function getArrayI32FromWasm0(ptr, len) {

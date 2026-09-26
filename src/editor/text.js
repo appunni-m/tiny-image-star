@@ -1,4 +1,3 @@
-import { formatMime, formatLabel } from "../formats.js";
 import {
   BUILTIN_FONTS,
   fontFileSupported,
@@ -7,227 +6,21 @@ import {
   restoreStoredFonts,
 } from "./fonts.js";
 
-const MIN_TEXT_SIZE = 8;
-const MAX_TEXT_SIZE = 2048;
-
-function nextId() {
-  if (globalThis.crypto?.randomUUID) return `text-${globalThis.crypto.randomUUID()}`;
-  return `text-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function cloneLayer(layer) {
-  return layer && typeof layer === "object" ? { ...layer } : null;
-}
-
-export function cloneTextLayers(layers) {
-  return Array.isArray(layers) ? layers.map(cloneLayer).filter(Boolean) : [];
-}
-
-export function normalizeTextLayers(layers) {
-  return cloneTextLayers(layers).map((layer) => ({
-    id: String(layer.id ?? nextId()),
-    text: String(layer.text ?? "Your text").slice(0, 5000),
-    x: clamp(Number(layer.x), 0, 1, 0.5),
-    y: clamp(Number(layer.y), 0, 1, 0.5),
-    width: clamp(Number(layer.width), 0.08, 1.5, 0.72),
-    fontSize: clamp(Number(layer.fontSize), 0.015, 0.7, 0.12),
-    fontId: String(layer.fontId ?? "system-sans"),
-    fontFamily: String(layer.fontFamily ?? "Arial, Helvetica, sans-serif"),
-    color: validColor(layer.color) ? layer.color : "#ffffff",
-    align: ["left", "center", "right"].includes(layer.align) ? layer.align : "center",
-    weight: ["400", "600", "700", "800"].includes(String(layer.weight)) ? String(layer.weight) : "700",
-    style: layer.style === "italic" ? "italic" : "normal",
-    opacity: clamp(Number(layer.opacity), 0, 1, 1),
-    rotation: normalizeRotation(layer.rotation),
-    shadow: layer.shadow !== false,
-  }));
-}
-
-export function createTextLayer(width = 1000, height = 1000) {
-  return {
-    id: nextId(),
-    text: "Your text",
-    x: 0.5,
-    y: 0.5,
-    width: 0.72,
-    fontSize: clamp(96 / Math.max(1, height), 0.015, 0.7, 0.12),
-    fontId: "system-sans",
-    fontFamily: BUILTIN_FONTS[0].family,
-    color: "#ffffff",
-    align: "center",
-    weight: "700",
-    style: "normal",
-    opacity: 1,
-    rotation: 0,
-    shadow: true,
-  };
-}
-
-function clamp(value, min, max, fallback) {
-  return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
-}
-
-function normalizeRotation(value) {
-  const rotation = Number(value);
-  if (!Number.isFinite(rotation)) return 0;
-  return ((rotation % 360) + 360) % 360;
-}
-
-function validColor(value) {
-  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
-}
-
-function fontSizeForLayer(layer, height) {
-  return clamp(Number(layer.fontSize) * height, MIN_TEXT_SIZE, MAX_TEXT_SIZE, 48);
-}
-
-function wrapLine(ctx, text, maxWidth) {
-  const words = String(text).split(/\s+/).filter(Boolean);
-  if (!words.length) return [""];
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && ctx.measureText(candidate).width > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : [""];
-}
-
-function layerFont(ctx, layer, width, height, fonts) {
-  const font = fontRecordForLayer(fonts, layer);
-  const size = fontSizeForLayer(layer, height);
-  ctx.font = `${layer.style === "italic" ? "italic " : ""}${layer.weight ?? "700"} ${size}px ${font.family}`;
-  return { font, size };
-}
-
-export function textLayerMetrics(ctx, layer, width, height, fonts) {
-  const safeLayer = normalizeTextLayers([layer])[0] ?? createTextLayer(width, height);
-  const { font, size } = layerFont(ctx, safeLayer, width, height, fonts);
-  const boxWidth = clamp(safeLayer.width * width, 24, Math.max(24, width * 1.5), Math.max(24, width * 0.72));
-  const lineHeight = size * 1.2;
-  const lines = String(safeLayer.text).split("\n").flatMap((line) => wrapLine(ctx, line, boxWidth));
-  const textHeight = Math.max(lineHeight, lines.length * lineHeight);
-  return {
-    layer: safeLayer,
-    font,
-    size,
-    lines,
-    lineHeight,
-    box: {
-      x: safeLayer.x * width - boxWidth / 2,
-      y: safeLayer.y * height - textHeight / 2,
-      width: boxWidth,
-      height: textHeight,
-    },
-  };
-}
-
-export function drawTextLayers(ctx, layers, width, height, fonts, { selectionId = null } = {}) {
-  const metrics = [];
-  for (const sourceLayer of normalizeTextLayers(layers)) {
-    const metric = textLayerMetrics(ctx, sourceLayer, width, height, fonts);
-    metrics.push(metric);
-    const { layer, box, lines, lineHeight } = metric;
-    ctx.save();
-    ctx.translate(layer.x * width, layer.y * height);
-    ctx.rotate((layer.rotation * Math.PI) / 180);
-    ctx.globalAlpha = layer.opacity;
-    ctx.textAlign = layer.align;
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = layer.color;
-    if (layer.shadow) {
-      ctx.shadowColor = "rgba(0, 0, 0, .48)";
-      ctx.shadowBlur = Math.max(2, metric.size * 0.08);
-      ctx.shadowOffsetX = Math.max(1, metric.size * 0.03);
-      ctx.shadowOffsetY = Math.max(1, metric.size * 0.03);
-    }
-    const x = layer.align === "left" ? -box.width / 2 : layer.align === "right" ? box.width / 2 : 0;
-    const top = -box.height / 2 + lineHeight / 2;
-    for (let index = 0; index < lines.length; index += 1) {
-      ctx.fillText(lines[index], x, top + index * lineHeight, box.width);
-    }
-    ctx.restore();
-  }
-  return metrics;
-}
-
-function canvasBlob(canvas, type, quality) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The text layer could not be encoded.")), type, quality);
-  });
-}
-
-function signatureMatches(bytes, format) {
-  if (format === "png") return bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
-  if (format === "jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  if (format === "webp") {
-    const header = new TextDecoder().decode(bytes.slice(0, 12));
-    return header.startsWith("RIFF") && header.slice(8, 12) === "WEBP";
-  }
-  return false;
-}
-
-function textExportError(format) {
-  const error = new Error(`Text export is not available for ${formatLabel(format)} in this browser. Choose PNG, or remove the text layer.`);
-  error.userMessage = error.message;
-  error.code = "text-format-unavailable";
-  return error;
-}
-
-export async function composeTextOutput(editor, result, operations) {
-  const layers = normalizeTextLayers(operations?.textLayers);
-  if (!layers.length) return result;
-  await editor.state.fontsReady;
-  const format = String(result.format ?? operations?.format ?? "png").toLowerCase();
-  if (! ["png", "jpeg", "webp"].includes(format)) throw textExportError(format);
-  for (const layer of layers) {
-    if (layer.fontId && !BUILTIN_FONTS.some((font) => font.id === layer.fontId) && !editor.state.fonts?.has(layer.fontId)) {
-      const error = new Error(`The font for “${layer.text.slice(0, 24)}” is not loaded. Drop the font file again before downloading.`);
-      error.userMessage = error.message;
-      error.code = "font-missing";
-      throw error;
-    }
-  }
-  const inputBytes = result.output instanceof Uint8Array ? result.output : new Uint8Array(result.output);
-  const inputUrl = URL.createObjectURL(new Blob([inputBytes], { type: result.mime ?? formatMime(format) }));
-  try {
-    const image = await editor.loadImage(inputUrl);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(result.width));
-    canvas.height = Math.max(1, Math.round(result.height));
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("The text layer could not be drawn.");
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    drawTextLayers(ctx, layers, canvas.width, canvas.height, editor.state.fonts);
-    const mime = formatMime(format);
-    const quality = format === "png" ? undefined : Math.max(0.01, Math.min(1, Number(operations?.quality ?? 95) / 100));
-    const blob = await canvasBlob(canvas, mime, quality);
-    const output = new Uint8Array(await blob.arrayBuffer());
-    if (blob.type !== mime || !signatureMatches(output, format)) throw textExportError(format);
-    return {
-      ...result,
-      output,
-      outputBytes: output.byteLength,
-      mime,
-      format,
-    };
-  } finally {
-    URL.revokeObjectURL(inputUrl);
-  }
-}
+import { cloneTextLayers, normalizeTextLayers, createTextLayer, textLayerMetrics, drawTextLayers, clamp, validColor } from "../compositor/text.js";
+import { getProcessingScheduler } from "../processing/client.js";
+export { cloneTextLayers, normalizeTextLayers, createTextLayer, textLayerMetrics, drawTextLayers } from "../compositor/text.js";
 
 export function attachEditorText(editor) {
   const { elements, state } = editor;
   state.fonts ??= new Map();
   state.activeTextId ??= null;
+
+  function retainFont(record) {
+    const previous = state.fonts.get(record.id);
+    if (previous?.face && previous.face !== record.face) document.fonts.delete(previous.face);
+    state.fonts.set(record.id, record);
+    getProcessingScheduler().setRetainedBytes("editor-fonts", [...state.fonts.values()].reduce((sum, font) => sum + (font.bytes?.byteLength ?? 0) * 6, 0));
+  }
 
   function layers() {
     if (!state.operations) return [];
@@ -283,6 +76,8 @@ export function attachEditorText(editor) {
       const font = fontRecordForLayer(state.fonts, { fontId: value });
       active.fontId = value;
       active.fontFamily = font.family;
+      if (font.bytes) { active.fontBytes = font.bytes.byteLength; active.fontSha256 = font.sha256; }
+      else { delete active.fontBytes; delete active.fontSha256; }
     }
     if (field === "fontSize") active.fontSize = clamp(Number(value), 0.015, 0.7, active.fontSize);
     if (field === "color" && validColor(value)) active.color = value;
@@ -301,7 +96,7 @@ export function attachEditorText(editor) {
   async function importFont(file) {
     try {
       const record = await registerFontFile(file);
-      state.fonts.set(record.id, record);
+      retainFont(record);
       const active = activeTextLayer();
       if (active) {
         editor.editWith((next) => {
@@ -309,6 +104,8 @@ export function attachEditorText(editor) {
           if (!layer) return;
           layer.fontId = record.id;
           layer.fontFamily = record.family;
+          layer.fontBytes = record.bytes.byteLength;
+          layer.fontSha256 = record.sha256;
         }, `${record.name} added. Updating preview…`);
       }
       editor.renderAll();
@@ -466,7 +263,7 @@ export function attachEditorText(editor) {
 
   function restoreFonts() {
     state.fontsReady = restoreStoredFonts().then((records) => {
-      for (const record of records) state.fonts.set(record.id, record);
+      for (const record of records) retainFont(record);
       editor.renderTextPanel?.();
       editor.renderCanvas?.();
     });
@@ -492,7 +289,6 @@ export function attachEditorText(editor) {
     textPointToNormalized,
     drawTextOnCanvas,
     renderTextPanel,
-    composeTextOutput: (result, operations) => composeTextOutput(editor, result, operations),
     restoreFonts,
   });
   restoreFonts();

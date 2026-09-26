@@ -1,10 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, lstat, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants as zlibConstants } from "node:zlib";
 import { transform } from "esbuild";
+import { verifyRuntime } from "./stage-pillow-runtime.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -78,42 +78,6 @@ async function minifyCss(path) {
   };
 }
 
-async function runWasmOpt(path) {
-  const wasmOpt = process.env.WASM_OPT ?? "wasm-opt";
-  try {
-    execFileSync(wasmOpt, ["--version"], { stdio: "ignore" });
-  } catch {
-    if (process.env.WASM_OPT_REQUIRED === "1") {
-      throw new Error(`WASM_OPT_REQUIRED is set but ${wasmOpt} is not available`);
-    }
-    console.warn(`Pages optimization: ${wasmOpt} not found; keeping the release WASM bytes before Brotli compression.`);
-    return { sourceBytes: (await stat(path)).size, outputBytes: (await stat(path)).size, optimized: false };
-  }
-
-  const temporaryDirectory = await mkdtemp(join(dirname(path), ".tiny-image-star-wasm-opt-"));
-  const temporaryPath = join(temporaryDirectory, "optimized.wasm");
-  try {
-    execFileSync(wasmOpt, ["-Oz", "--strip-debug", path, "-o", temporaryPath], { stdio: "pipe" });
-    const source = await readFile(path);
-    const optimized = await readFile(temporaryPath);
-    if (optimized.byteLength < source.byteLength) await writeFile(path, optimized);
-    return {
-      sourceBytes: source.byteLength,
-      outputBytes: Math.min(source.byteLength, optimized.byteLength),
-      optimized: optimized.byteLength < source.byteLength,
-    };
-  } catch (error) {
-    if (process.env.WASM_OPT_REQUIRED === "1") {
-      throw new Error(`wasm-opt failed: ${error?.message ?? error}`);
-    }
-    console.warn(`Pages optimization: ${wasmOpt} could not optimize the release WASM; keeping the original bytes.`);
-    const size = (await stat(path)).size;
-    return { sourceBytes: size, outputBytes: size, optimized: false };
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  }
-}
-
 export async function optimizePagesArtifact(output) {
   assertOutputDirectory(output);
   await access(output, fsConstants.R_OK);
@@ -121,13 +85,16 @@ export async function optimizePagesArtifact(output) {
   if (!outputInfo.isDirectory() || outputInfo.isSymbolicLink()) throw new Error(`Pages output must be a real directory: ${output}`);
 
   const sourceFiles = (await walk(join(output, "src"))).filter((path) => extname(path) === ".js");
-  sourceFiles.push(join(output, "wasm/pillow_rs_js.js"));
   const javascript = [];
   for (const path of sourceFiles) javascript.push(await minifyJavaScript(path));
 
   const css = await minifyCss(join(output, "styles.css"));
   const wasmPath = join(output, "wasm/pillow_rs_js_bg.wasm");
-  const wasm = await runWasmOpt(wasmPath);
+  // Keep both generated files identical to the published release. Compression
+  // sidecars are transport-only and must decompress to those exact bytes.
+  await verifyRuntime(join(output, "wasm"));
+  const bindingPath = join(output, "wasm/pillow_rs_js.js");
+  await writeBrotliSidecar(bindingPath, await readFile(bindingPath));
   const wasmBytes = await readFile(wasmPath);
   const wasmBrotliBytes = await writeBrotliSidecar(wasmPath, wasmBytes);
 
@@ -139,7 +106,7 @@ export async function optimizePagesArtifact(output) {
   const jsTotals = totals(javascript);
   console.log(`Pages optimization: JS ${jsTotals.sourceBytes} -> ${jsTotals.outputBytes} bytes; Brotli sidecars ${jsTotals.brotliBytes} bytes.`);
   console.log(`Pages optimization: CSS ${css.sourceBytes} -> ${css.outputBytes} bytes; Brotli sidecar ${css.brotliBytes} bytes.`);
-  console.log(`Pages optimization: WASM ${wasm.sourceBytes} -> ${wasm.outputBytes} bytes${wasm.optimized ? " after wasm-opt -Oz" : ""}; Brotli sidecar ${wasmBrotliBytes} bytes.`);
+  console.log(`Pages optimization: published WASM unchanged (${wasmBytes.byteLength} bytes); Brotli sidecar ${wasmBrotliBytes} bytes.`);
 }
 
 const scriptPath = resolve(fileURLToPath(import.meta.url));

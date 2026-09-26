@@ -1,15 +1,167 @@
+import { waitForAsync } from "../tests/helpers/wait-for-async.mjs";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, extname, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { assertProjectStorage } from "../tests/project-storage.browser.mjs";
+import { assertTextCompositor } from "../tests/text-compositor.browser.mjs";
+import { assertCreatorStamp } from "../tests/creator-stamp.browser.mjs";
+import { assertFolderContracts } from "../tests/folder-contract.browser.mjs";
+import { assertFolderSamples } from "../tests/folder-sample.browser.mjs";
+import { assertFolderSources } from "../tests/folder-source.browser.mjs";
+import { assertSceneCollections } from "../tests/scene-collection.browser.mjs";
+import { assertStagedScenes } from "../tests/staged-scene.browser.mjs";
+import { assertSceneCompositor } from "../tests/scene-compositor.browser.mjs";
+import { assertStoryStorage } from "../tests/story-storage.browser.mjs";
+import { assertStoryWorkspace } from "../tests/story-workspace.browser.mjs";
+import { assertStoryExports } from "../tests/story-export.browser.mjs";
+import { assertStyleStorage } from "../tests/style-storage.browser.mjs";
+import { assertLegacyStyles } from "../tests/legacy-styles.browser.mjs";
+import { assertRecipeCatalog } from "../tests/recipe-catalog.browser.mjs";
+import { assertRecipeSelections, selectRecipeRevision } from "../tests/recipe-selection.browser.mjs";
+import { assertHistoricalRecovery } from "../tests/historical-recovery.browser.mjs";
+import { assertPhotoLooks } from "../tests/photo-look.browser.mjs";
+import { assertOriginAdmission } from "../tests/origin-admission.browser.mjs";
+import { assertMasks } from "../tests/masks.browser.mjs";
+import { assertMaskDetail } from "../tests/mask-detail.browser.mjs";
+import { assertDepthTitles } from "../tests/depth.browser.mjs";
+import { assertConnectedCutouts } from "../tests/connections.browser.mjs";
+import { assertCutoutEffects } from "../tests/cutout-effects.browser.mjs";
+import { assertStoryDesigns } from "../tests/story-designs.browser.mjs";
+import { assertStoryFonts } from "../tests/story-fonts.browser.mjs";
+import { assertWorkingCopies } from "../tests/working-copies.browser.mjs";
+import { assertSourceResolution } from "../tests/source-resolution.browser.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const serverRoot = resolve(process.env.TINY_IMAGE_STAR_BROWSER_ROOT ?? projectRoot);
 
 function assertPngBytes(bytes, label) {
   assert.deepEqual(Array.from(bytes.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10], `${label} is PNG`);
+}
+
+async function assertPublishedExports(page) {
+  const evidence = await page.evaluate(async () => {
+    const { createPillowEngine } = await import("./src/engine/pillow.js");
+    const engine = await createPillowEngine();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 32;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "rgba(80,120,160,0.5)";
+    context.fillRect(0, 0, 32, 32);
+    const inputPixel = Array.from(context.getImageData(16, 16, 1, 1).data);
+    const input = new Uint8Array(await (await new Promise((resolve) => canvas.toBlob(resolve, "image/png"))).arrayBuffer());
+    const outputs = [];
+    for (const format of engine.capabilities.outputFormats) {
+      const result = await engine.render({ name: "transparency.png", bytes: input }, {
+        format, rotation: 0, brightness: 1, contrast: 1,
+      });
+      const bitmap = await createImageBitmap(new Blob([result.bytes], { type: result.mime }));
+      context.clearRect(0, 0, 32, 32);
+      context.drawImage(bitmap, 0, 0);
+      outputs.push({ format, mime: result.mime, width: bitmap.width, height: bitmap.height,
+        pixel: Array.from(context.getImageData(16, 16, 1, 1).data) });
+      bitmap.close();
+    }
+    return { capabilities: engine.capabilities, inputPixel, outputs };
+  });
+  assert.deepEqual(evidence.capabilities.outputFormats, ["png", "jpeg"]);
+  assert.equal(evidence.capabilities.compression.quality, false, "published API has fixed settings");
+  for (const output of evidence.outputs) {
+    assert.equal(output.width, 32, `${output.format} independent decode width`);
+    assert.equal(output.height, 32, `${output.format} independent decode height`);
+    const expected = output.format === "png" ? evidence.inputPixel : [
+      ...evidence.inputPixel.slice(0, 3).map((channel) => Math.round(channel * evidence.inputPixel[3] / 255 + 255 - evidence.inputPixel[3])), 255,
+    ];
+    const tolerance = output.format === "jpeg" ? 3 : 1; // JPEG rounding; canvas premultiplication rounding.
+    output.pixel.forEach((channel, index) => assert.ok(Math.abs(channel - expected[index]) <= tolerance,
+      `${output.format} decoded channel ${index}: ${channel} versus ${expected[index]}`));
+  }
+}
+
+async function assertAppearance(page) {
+  for (const theme of ["light", "dark"]) {
+    await page.locator("#appearance-select").selectOption(theme);
+    assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+    const contrast = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const luminance = (token) => {
+        const hex = style.getPropertyValue(token).trim().slice(1);
+        const rgb = [0, 2, 4].map((offset) => parseInt(hex.slice(offset, offset + 2), 16) / 255)
+          .map((v) => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+        return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+      };
+      return [["--text", "--bg"], ["--text", "--panel"], ["--muted", "--panel"],
+        ["--accent", "--selected-bg"], ["--accent-ink", "--accent"], ["--warning", "--warning-bg"], ["--danger", "--danger-bg"]]
+        .map(([a, b]) => { const x = luminance(a), y = luminance(b); return { pair: `${a}/${b}`, ratio: (Math.max(x, y) + .05) / (Math.min(x, y) + .05) }; });
+    });
+    for (const pair of contrast) assert.ok(pair.ratio >= 4.5, `${theme} text contrast ${pair.pair}: ${pair.ratio}`);
+  }
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await page.locator("#appearance-select").inputValue(), "dark", "appearance survives reload");
+  await page.emulateMedia({ colorScheme: "light" });
+  assert.equal(await page.locator("html").getAttribute("data-theme"), "dark", "explicit appearance overrides system");
+  await page.locator("#appearance-select").selectOption("system");
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  await page.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
+}
+
+async function assertSharedScheduler(page, fixtureSource) {
+  const report = await page.evaluate(async (source) => {
+    const { getProcessingScheduler } = await import("./src/processing/client.js");
+    const { imageWork } = await import("./src/processing/policy.js");
+    const pool = getProcessingScheduler();
+    await pool.ready();
+    const original = Uint8Array.from(atob(source.trim()), (char) => char.charCodeAt(0));
+    const runs = [];
+    for (const count of [1, 2, 4, 8, 16].filter((count) => count <= pool.budget.cpu)) {
+      pool.configure({ fixedConcurrency: count });
+      let peak = 0;
+      let violations = 0;
+      const outputs = [];
+      const unsubscribe = pool.subscribe((snapshot) => {
+        peak = Math.max(peak, snapshot.active);
+        if (snapshot.estimatedBytes > snapshot.memoryBudget || snapshot.active > count) violations++;
+      });
+      const jobs = Array.from({ length: 24 }, (_, index) => pool.enqueue({
+        estimate: imageWork({ width: 8, height: 8, encodedBytes: original.byteLength }),
+        prepare: () => {
+          const bytes = original.slice().buffer;
+          return { message: { type: "process", revision: index, jobId: "concurrency-check", files: [{ id: index, name: "fixture.png", bytes }], settings: { format: "png", brightness: 1, contrast: 1 } }, transfer: [bytes] };
+        },
+        onMessage: (message) => { if (message.type === "result") outputs.push({ index: message.fileId, revision: message.revision, bytes: message.output }); },
+      }));
+      await Promise.all(jobs.map((job) => job.promise));
+      unsubscribe();
+      const hashes = await Promise.all(outputs.map(async (output) => ({ index: output.index, revision: output.revision,
+        hash: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", output.bytes)), (byte) => byte.toString(16).padStart(2, "0")).join("") })));
+      runs.push({ count, peak, violations, hashes });
+    }
+    pool.configure({ mode: "auto" });
+    return { runs, snapshot: pool.snapshot() };
+  }, fixtureSource);
+  const reference = report.runs[0].hashes[0]?.hash;
+  assert.ok(reference, "one-worker baseline produces real output");
+  for (const run of report.runs) {
+    assert.equal(run.violations, 0, `${run.count} workers obey shared admission`);
+    assert.equal(run.peak, run.count, `${run.count} simultaneous jobs are admitted`);
+    assert.deepEqual(run.hashes.map((output) => output.index).sort((a, b) => a - b), Array.from({ length: 24 }, (_, index) => index), "concurrency neither drops nor duplicates outputs");
+    for (const output of run.hashes) {
+      assert.equal(output.hash, reference, "worker count does not alter encoded output");
+      assert.equal(output.revision, output.index, "client revisions survive worker reuse and remapping");
+    }
+  }
+  assert.equal(report.snapshot.limit, 1, "returning to Auto restarts conservative calibration");
+  assert.equal(report.snapshot.active, 0);
+  assert.equal(report.snapshot.queued, 0);
+  assert.ok(report.snapshot.recent.length <= 64, "diagnostics remain bounded");
+  assert.doesNotMatch(JSON.stringify(report.snapshot), /fixture\.png|concurrency-check/, "diagnostics omit source names and user identifiers");
+  console.log(`  shared scheduler: 24 images each at ${report.runs.map((run) => run.count).join("/")} workers; identical outputs, no missing/duplicate items or admission violations`);
 }
 
 async function seedStoredFontRecord(page) {
@@ -177,6 +329,7 @@ function startStaticServer() {
 }
 
 async function assertNoLayoutCollisions(page, label, selectors) {
+  await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === String(matchMedia("(max-width: 650px)").matches));
   const report = await page.evaluate((requestedSelectors) => {
     const nodes = [...document.querySelectorAll(requestedSelectors.join(","))]
       .filter((node) => {
@@ -345,6 +498,9 @@ async function assertEditorResponsiveGeometry(page, label) {
       buttonCount: buttons.length,
       buttonIds: buttons.map((button) => button.id),
       mobileActionCount: mobileActions.length,
+      storedActionCount: document.querySelectorAll("#mobile-more-sheet #mobile-canvas-actions .button").length,
+      canvas: document.querySelector("#canvas-shell").getBoundingClientRect().toJSON(),
+      viewportHeight: innerHeight,
       clippedLabels,
       footerPosition: footer ? getComputedStyle(footer).position : "",
       railPosition: rail ? getComputedStyle(rail).position : "",
@@ -358,7 +514,9 @@ async function assertEditorResponsiveGeometry(page, label) {
     };
   });
   assert.deepEqual(report.buttonIds, ["move-tool", "text-tool", "crop-tool", "size-tool", "adjust-tool", "format-tool"], `${label}: the intentional editor tools, including Text and discoverable Format, remain visible`);
-  assert.equal(report.mobileActionCount, 7, `${label}: mobile quick actions remain present`);
+  assert.equal(report.mobileActionCount, 0, `${label}: quick actions leave room for the canvas when their sheet is closed`);
+  assert.equal(report.storedActionCount, 7, `${label}: quick actions are available in More`);
+  assert.ok(report.canvas.height >= report.viewportHeight * .55 - 1, `${label}: canvas occupies at least 55% of the phone viewport`);
   assert.deepEqual(report.clippedLabels, [], `${label}: mobile editor labels are readable: ${report.clippedLabels.join(", ")}`);
   assert.equal(report.footerPosition, "static", `${label}: stage footer stays in document flow`);
   assert.equal(report.railPosition, "static", `${label}: editing rail stays in document flow`);
@@ -367,6 +525,67 @@ async function assertEditorResponsiveGeometry(page, label) {
   assert.equal(report.pageOverflow, false, `${label}: page has horizontal overflow`);
   assert.equal(report.footerRailOverlap, false, `${label}: stage footer overlaps the tool rail (footer=${JSON.stringify(report.footerRect)}, rail=${JSON.stringify(report.railRect)})`);
   assert.deepEqual(report.rightOutside, [], `${label}: editor buttons escape viewport: ${report.rightOutside.join(", ")}`);
+}
+
+async function assertMobileSheets(page) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const initial = await editorChromeGeometry(page);
+  assert.ok(initial.topbarHeight <= 58, "phone header fits one 56px row");
+  const canvas = await page.locator("#canvas-shell").boundingBox();
+  assert.ok(canvas.y <= 110, "phone canvas starts near the top of the screen");
+  await page.locator("#mobile-more-button").click();
+  assert.equal(await page.locator("#mobile-more-sheet").evaluate((node) => node.matches(":modal")), true, "More uses native modal focus containment");
+  await page.locator("#appearance-select").focus();
+  await page.keyboard.press("Tab");
+  // Chromium may visit browser chrome at the end of a native dialog before
+  // returning to its first control; background page controls must stay inert.
+  if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press("Tab");
+  assert.equal(await page.locator("#mobile-more-sheet [data-close-sheet]").evaluate((node) => node === document.activeElement), true, "Tab wraps within More");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.id === "mobile-more-button");
+  await page.locator("#adjust-tool").click();
+  assert.equal(await page.locator("#mobile-inspector-sheet").isVisible(), true, "tool opens its settings sheet");
+  await page.locator("#grayscale-input").check();
+  await page.locator("#mobile-inspector-sheet [data-close-sheet]").click();
+  await page.waitForFunction(() => document.activeElement?.id === "adjust-tool");
+  assert.equal(await page.evaluate(() => window.tinyImageStarEditor.getSnapshot().operations.grayscale), true, "closing sheet preserves edits");
+  await assertStableEditorChrome(initial, await editorChromeGeometry(page), "phone after editing");
+  await page.locator("#mobile-inspector-toggle").click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === "false");
+  assert.equal(await page.locator("#editor-workspace > #editor-inspector").count(), 1, "desktop restores the same inspector");
+  assert.equal(await page.locator("#grayscale-input").isChecked(), true, "desktop keeps phone edits");
+  assert.equal(await page.locator("dialog[open]").count(), 0, "resizing releases modal inertness");
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.locator("#move-tool").click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#mobile-more-button").click();
+  await page.locator("#presets-button").click();
+  assert.equal(await page.locator("#mobile-more-sheet").isVisible(), false, "navigation dismisses More");
+  assert.equal(await page.locator("#presets-view").isVisible(), true, "presets remain reachable on phones");
+  await page.locator("#presets-view").getByRole("button", { name: "Close", exact: true }).click();
+  await page.locator("#mobile-batch-settings").click();
+  assert.equal(await page.locator("#tray-quality-control").isVisible(), false, "phone sheet keeps unsupported encoder quality hidden");
+  assert.equal(await page.locator("#tray-lossy-control").isVisible(), false, "phone sheet keeps unsupported lossy setting hidden");
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const smallPhone = await page.evaluate(() => ({
+    canvas: document.querySelector("#canvas-shell").getBoundingClientRect().toJSON(),
+    tools: document.querySelector(".tool-rail").getBoundingClientRect().toJSON(),
+  }));
+  assert.ok(smallPhone.canvas.height >= 667 * .55, "small phone keeps a dominant canvas");
+  assert.ok(smallPhone.tools.bottom <= 669, `small phone keeps the editing dock in the viewport: ${JSON.stringify(smallPhone)}`);
+  await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
+  assert.equal(await page.evaluate(() => document.body.scrollWidth > innerWidth + 1), false, "phone editor supports 200% text without horizontal scrolling");
+  await page.locator("#mobile-more-button").click();
+  await page.locator("#appearance-select").scrollIntoViewIfNeeded();
+  const appearance = await page.locator("#appearance-select").boundingBox();
+  assert.ok(appearance.x >= 0 && appearance.x + appearance.width <= 376, "200% sheet controls stay reachable");
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.scrollTo(0, 0));
 }
 
 async function assertEmptyEditorResponsiveGeometry(page, label) {
@@ -555,8 +774,11 @@ async function main() {
   const server = await startStaticServer();
   const address = server.address();
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const context = await browser.newContext();
+  const page = await context.newPage();
   await page.addInitScript(() => {
+    window.__tinystarRecoveryErrors = [];
+    window.addEventListener("tinystar:recovery-write-error", (event) => window.__tinystarRecoveryErrors.push(event.detail.message));
     window.__tinystarDisableLargeFolderJobs = true;
     const NativeWorker = window.Worker;
     window.__tinystarWorkerUrls = [];
@@ -597,6 +819,37 @@ async function main() {
   try {
     await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
+    await assertPublishedExports(page);
+    await assertAppearance(page);
+    await assertSharedScheduler(page, fixtureSource);
+    await assertTextCompositor(browser, page.url());
+    await assertCreatorStamp(browser, page.url());
+    await assertFolderContracts(browser, page.url());
+    await assertFolderSamples(browser, page.url());
+    await assertFolderSources(browser, page.url());
+    await assertSceneCollections(browser, page.url());
+    await assertStagedScenes(browser, page.url());
+    await assertSceneCompositor(browser, page.url());
+    await assertStoryStorage(browser, page.url());
+    await assertStoryDesigns(browser, page.url());
+    await assertStoryFonts(browser, page.url());
+    await assertWorkingCopies(browser, page.url());
+    await assertSourceResolution(browser, page.url());
+    await assertStyleStorage(browser, page.url());
+    await assertLegacyStyles(browser, page.url());
+    await assertRecipeCatalog(browser, page.url());
+    await assertRecipeSelections(browser, page.url());
+    await assertHistoricalRecovery(browser, page.url());
+    await assertPhotoLooks(browser, page.url());
+    await assertOriginAdmission(browser, page.url());
+    await assertMasks(browser, page.url());
+    await assertMaskDetail(browser, page.url());
+    await assertDepthTitles(browser, page.url());
+    await assertConnectedCutouts(browser, page.url());
+    await assertCutoutEffects(browser, page.url());
+    await assertStoryWorkspace(browser, page.url());
+    await assertStoryExports(browser, page.url());
+    await assertProjectStorage(page, fixtureSource);
     assert.equal(await page.locator("#engine-status").textContent(), "Ready", "fresh readiness");
     assert.equal(await page.locator("#engine-status").isVisible(), false, "healthy readiness badge stays quiet");
     assert.equal(await page.locator(".github-link").getAttribute("href"), "https://github.com/appunni-m/tiny-image-star", "footer links back to the project repository");
@@ -630,7 +883,7 @@ async function main() {
     await assertViewportMatrix(page, "empty editor actions", ["#empty-editor-actions .button"]);
     await assertEmptyEditorResponsiveGeometry(page, "empty editor chrome");
     await page.setViewportSize({ width: 390, height: 844 });
-    const emptyMobileTargets = await page.evaluate(() => [...document.querySelectorAll("#empty-editor-actions .button, .workspace-nav .button:not([hidden]), .footer-actions .button")]
+    const emptyMobileTargets = await page.evaluate(() => [...document.querySelectorAll("#empty-editor-actions .button, #mobile-more-button, .footer-actions .button")]
       .filter((button) => {
         const style = getComputedStyle(button);
         const rect = button.getBoundingClientRect();
@@ -647,15 +900,15 @@ async function main() {
     assert.equal(await page.locator("#format-tool").isVisible(), true, "Format stays discoverable even when PNG is the only verified choice");
     await page.getByRole("button", { name: "Rotate right", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector("#dirty-state")?.hidden && document.querySelector("#output-summary")?.textContent?.includes("Ready"));
-    await page.waitForFunction(async () => {
+    await waitForAsync(page, async () => {
       const database = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("tiny-image-star.session", 1);
+        const request = indexedDB.open("tiny-image-star.projects", 1);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
       const record = await new Promise((resolve, reject) => {
-        const transaction = database.transaction("snapshots", "readonly");
-        const request = transaction.objectStore("snapshots").get("active");
+        const transaction = database.transaction("records", "readonly");
+        const request = transaction.objectStore("records").get("active");
         let value = null;
         request.onsuccess = () => { value = request.result; };
         request.onerror = () => reject(request.error);
@@ -663,7 +916,7 @@ async function main() {
         transaction.onerror = () => reject(transaction.error);
       });
       database.close();
-      return record?.batch?.files?.length === 1 && record.batch.files[0]?.override?.rotation === 90;
+      return record?.session?.batch?.files?.length === 1 && record.session.batch.files[0]?.override?.rotation === 90;
     });
     // Allow the browser's storage commit to settle before simulating a refresh.
     await page.waitForTimeout(500);
@@ -712,6 +965,10 @@ async function main() {
     await page.locator("#lossy-toggle").uncheck();
     assert.equal(await page.locator("#output-format-select").inputValue(), "jpeg", "turning compression off does not silently change the chosen format");
     await page.locator("#lossy-toggle").check();
+    await page.waitForFunction(() => document.querySelector("#processing-status")?.textContent?.includes("Ready to download"));
+    // Deliberately overclaim AVIF to verify worker-side validation and recovery.
+    await page.evaluate(() => window.tinyImageStarEditor.setCapabilities({ outputFormats: ["png", "jpeg", "avif"] }));
+    await page.locator("#output-format-select").selectOption("avif");
     await page.waitForFunction(() => document.querySelector("#processing-status")?.textContent?.includes("output format is not available yet"));
     assert.equal(await page.locator("#save-button").isDisabled(), true, "single-image Download stays disabled when the selected format fails");
     await page.locator("#output-format-select").selectOption("png");
@@ -799,10 +1056,13 @@ async function main() {
     await assertViewportMatrix(page, "loaded editor header", topActionSelectors, true);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator("#mobile-more-button").click();
     await page.locator("#mobile-rotate-right").click();
     await page.waitForFunction(() => !document.querySelector("#dirty-state")?.hidden);
     await page.getByRole("button", { name: "Reset", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#dirty-state")?.hidden);
+    await page.locator("#mobile-more-sheet [data-close-sheet]").click();
+    await assertMobileSheets(page);
     await page.evaluate(() => {
       const canvas = document.querySelector("#editor-canvas");
       const rect = canvas.getBoundingClientRect();
@@ -1095,6 +1355,7 @@ async function main() {
     await page.locator("#preset-destination-input").selectOption("instagram-square");
     await page.locator("#preset-resize-mode-input").selectOption("crop");
     await page.getByRole("button", { name: "Save preset", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("#preset-dialog").open);
     await page.getByRole("button", { name: "Presets", exact: true }).click();
     assert.equal(await page.getByRole("button", { name: "Create a preset", exact: true }).count(), 1, "preset drawer create action");
     const savedRecipe = page.locator(".preset-card").filter({ hasText: "Smoke recipe" }).first();
@@ -1102,14 +1363,17 @@ async function main() {
     assert.match(await savedRecipe.textContent(), /1080 × 1080/, "destination choice becomes saved dimensions");
     await savedRecipe.locator(".preset-more summary").click();
     await savedRecipe.getByRole("button", { name: "Duplicate", exact: true }).click();
+    await page.getByRole("heading", { name: "Smoke recipe copy", exact: true }).waitFor();
     assert.equal(await page.getByRole("heading", { name: "Smoke recipe copy", exact: true }).count(), 1, "custom preset duplicated");
     page.once("dialog", (dialog) => dialog.accept());
     await savedRecipe.locator(".preset-more summary").click();
     await savedRecipe.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("heading", { name: "Smoke recipe", exact: true }).waitFor({ state: "detached" });
     const copiedRecipe = page.locator(".preset-card").filter({ hasText: "Smoke recipe copy" }).first();
     await copiedRecipe.locator(".preset-more summary").click();
     page.once("dialog", (dialog) => dialog.accept());
     await copiedRecipe.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("heading", { name: "Smoke recipe copy", exact: true }).waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Close", exact: true }).click();
 
     await page.locator("#batch-button").click();
@@ -1121,7 +1385,7 @@ async function main() {
     assert.equal(await page.locator("#batch-view").isVisible(), false, "multiple import stays in the canvas workspace");
     assert.equal(await page.locator("#tray-list .tray-item").count(), 2, "workspace tray contains both images");
     await page.waitForFunction(() => !document.querySelector("#tray-save-button")?.disabled);
-    await page.locator("#tray-preset-picker").selectOption("instagram-square");
+    await selectRecipeRevision(page, "#tray-preset-picker", "instagram-square");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 2 previews"));
     await page.locator("#batch-file-input").setInputFiles([exifFixture]);
     await page.waitForFunction(() => document.querySelector("#tray-count")?.textContent === "3 images" && document.querySelector("#batch-status")?.textContent?.includes("Ready — 3 previews"));
@@ -1136,7 +1400,7 @@ async function main() {
     await framingCard.getByRole("button", { name: "Remove image", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#tray-count")?.textContent === "2 images" && document.querySelector("#batch-framing-notice")?.hidden === true);
     await leaveReviewAndEnsureEditor(page);
-    await page.locator("#tray-preset-picker").selectOption("keep-original");
+    await selectRecipeRevision(page, "#tray-preset-picker", "keep-original");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 2 previews"));
     const traySelectAll = page.locator("#tray-select-all-button");
     assert.equal(await traySelectAll.textContent(), "Clear selection", "tray reflects default all-ready selection");
@@ -1146,17 +1410,20 @@ async function main() {
     assert.equal(await page.locator("#tray-save-button").isDisabled(), false, "tray select all enables save");
     for (const width of [320, 390]) {
       await page.setViewportSize({ width, height: 844 });
-      assert.equal(await page.locator("#tray-footer").isVisible(), true, `workspace tray keeps save footer visible at ${width}px`);
-      assert.equal(await page.getByRole("button", { name: /Save selected/ }).isVisible(), true, `workspace tray keeps Save selected visible at ${width}px`);
+      await page.locator("#mobile-batch-settings").click();
+      assert.equal(await page.locator("#tray-footer").isVisible(), true, `batch settings keeps save footer reachable at ${width}px`);
+      assert.equal(await page.getByRole("button", { name: /Save selected/ }).isVisible(), true, `batch settings keeps Save selected reachable at ${width}px`);
+      await page.locator("#tray-save-button").scrollIntoViewIfNeeded();
       const saveRect = await page.locator("#tray-save-button").boundingBox();
       const saveRight = saveRect ? saveRect.x + saveRect.width : null;
       const saveBottom = saveRect ? saveRect.y + saveRect.height : null;
       assert.ok(saveRect && saveRight <= width + 1 && saveBottom <= 844 + 1, `workspace tray save action stays in viewport at ${width}px: ${JSON.stringify(saveRect)}`);
+      await page.keyboard.press("Escape");
     }
     await assertViewportMatrix(page, "loaded workspace tray", traySelectors, true);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
-    await page.locator("#tray-preset-picker").selectOption("website-banner");
+    await selectRecipeRevision(page, "#tray-preset-picker", "website-banner");
     await page.waitForFunction(() => !document.querySelector("#tray-cancel-button")?.hidden);
     await page.locator("#tray-cancel-button").click();
     await page.waitForFunction(() => document.querySelector("#tray-cancel-button")?.hidden && document.querySelector("#batch-status")?.textContent?.includes("Updates cancelled"));
@@ -1193,7 +1460,7 @@ async function main() {
     await leaveReviewAndEnsureEditor(page);
     await page.waitForFunction(() => !document.querySelector("#image-tray")?.hidden);
     assert.ok(await page.locator("#tray-preset-picker option").allTextContents().then((options) => options.includes("Website Banner")), "tray destination picker uses human-readable names");
-    await page.locator("#tray-preset-picker").selectOption("website-banner");
+    await selectRecipeRevision(page, "#tray-preset-picker", "website-banner");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 2 previews"));
     await page.waitForFunction(() => document.querySelector("#output-summary")?.textContent?.includes("1600 × 600"));
     await page.locator("#batch-button").click();
@@ -1250,6 +1517,11 @@ async function main() {
     assert.equal(await page.locator("#tray-quality-select").inputValue(), "95", "shared Medium quality maps to 95");
     await page.locator("#tray-quality-select").selectOption("100");
     assert.equal(await page.locator("#tray-quality-select").inputValue(), "100", "shared High quality maps to 100");
+    await page.evaluate(() => window.tinyImageStarEditor.setCapabilities({
+      outputFormats: ["png", "jpeg", "avif"],
+      compression: { lossy: true, lossyFormats: ["jpeg", "avif"], quality: true },
+    }));
+    await page.locator("#tray-format-select").selectOption("avif");
     try {
       await page.waitForFunction(() => {
         const status = document.querySelector("#batch-status")?.textContent ?? "";
@@ -1265,7 +1537,7 @@ async function main() {
       })));
       throw error;
     }
-    assert.match(await page.locator(".batch-card").first().textContent(), /JPEG/, "failed shared format remains visible in the card metadata");
+    assert.match(await page.locator(".batch-card").first().textContent(), /AVIF/, "failed shared format remains visible in the card metadata");
     await page.locator("#batch-button").click();
     await page.waitForFunction(() => !document.querySelector("#batch-format-control")?.hidden);
     assert.ok(await page.locator("#batch-format-select option").allTextContents().then((options) => options.includes("JPEG")), "image-set surface exposes the same output formats");
@@ -1294,7 +1566,7 @@ async function main() {
     await page.locator("#quality-input").fill("55");
     await page.waitForFunction(() => document.querySelector("#quality-value")?.textContent === "55");
     await page.locator("#lossy-toggle").check();
-    await page.waitForFunction(() => document.querySelector("#processing-status")?.textContent?.includes("output format is not available yet"));
+    await page.waitForFunction(() => document.querySelector("#processing-status")?.textContent?.includes("Ready to download"));
     await page.locator("#batch-button").click();
     await page.waitForFunction(() => document.querySelector(".batch-card")?.textContent?.includes("JPEG"));
     assert.match(await page.locator(".batch-card").first().textContent(), /JPEG/, "manual format override returns to the image set");
@@ -1334,8 +1606,9 @@ async function main() {
     await page.locator("#preset-lossy-input").check();
     await page.locator("#preset-quality-input").selectOption("95");
     await page.getByRole("button", { name: "Save preset", exact: true }).click();
-    const savedFormatRecipe = await page.evaluate(() => {
-      const entries = JSON.parse(localStorage.getItem("tiny-image-star.presets.v1") ?? "[]");
+    await page.waitForFunction(() => !document.querySelector("#preset-dialog").open);
+    const savedFormatRecipe = await page.evaluate(async () => {
+      const entries = (await (await import("./src/styles/catalog.js")).readRecipeCatalog()).recipes;
       return entries.find((entry) => entry.name === "Format recipe");
     });
     assert.equal(savedFormatRecipe?.operations?.format, "jpeg", "saved preset retains selected output format");
@@ -1347,7 +1620,7 @@ async function main() {
     await savedFormatCard.locator(".preset-more summary").click();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#presets-view")?.hidden && !document.querySelector("#image-tray")?.hidden);
-    await page.locator("#tray-preset-picker").selectOption({ label: "Format recipe" });
+    await page.locator("#tray-preset-picker").selectOption({ label: "Format recipe · version 1" });
     await page.waitForFunction(() => {
       const status = document.querySelector("#batch-status")?.textContent ?? "";
       const cards = [...document.querySelectorAll(".batch-card")].map((card) => card.textContent ?? "");
@@ -1356,13 +1629,14 @@ async function main() {
     assert.match(await page.locator("#batch-grid").textContent(), /JPEG/, "applying a saved final-format recipe carries its format into the active batch");
     // Restore the shared destination used by the session-recovery assertions
     // before deleting the temporary custom recipe and reloading the page.
-    await page.locator("#tray-preset-picker").selectOption("website-banner");
+    await selectRecipeRevision(page, "#tray-preset-picker", "website-banner");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 2 previews"));
     await page.getByRole("button", { name: "Presets", exact: true }).click();
     const savedFormatCardAfterApply = page.locator(".preset-card").filter({ hasText: "Format recipe" }).first();
     page.once("dialog", (dialog) => dialog.accept());
     await savedFormatCardAfterApply.locator(".preset-more summary").click();
     await savedFormatCardAfterApply.getByRole("button", { name: "Delete", exact: true }).click();
+    await savedFormatCardAfterApply.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page.waitForTimeout(300);
     await page.reload({ waitUntil: "networkidle" });
@@ -1410,8 +1684,9 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("#batch-view")?.getAttribute("data-review") === "true");
     await page.waitForFunction(() => !document.querySelector("#batch-format-control")?.hidden);
     assert.ok(await page.locator("#batch-format-select option").allTextContents().then((options) => options.includes("JPEG")), "capability-gated batch format option");
-    await page.locator("#batch-format-select").selectOption("jpeg");
-    assert.match(await page.locator("#batch-preset-name").textContent(), /JPEG/, "batch format override label");
+    await page.evaluate(() => window.tinyImageStarEditor.setCapabilities({ outputFormats: ["png", "jpeg", "avif"] }));
+    await page.locator("#batch-format-select").selectOption("avif");
+    assert.match(await page.locator("#batch-preset-name").textContent(), /AVIF/, "batch format override label");
     assert.equal(await page.locator("#batch-format-reset").isVisible(), true, "batch recipe format reset");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("could not be updated"));
     assert.match(await page.locator(".batch-card").first().textContent(), /output format is not available yet/i, "unsupported claimed format fails honestly");
@@ -1424,7 +1699,9 @@ async function main() {
     await page.locator("#empty-folder-button").click();
     await page.locator("#batch-folder-input").setInputFiles(folderDirectory);
     try {
-      await page.waitForFunction(() => /^(one|two)\.png$/.test(document.querySelector("#file-name")?.textContent ?? "") && !document.querySelector("#image-tray")?.hidden && document.querySelector("#tray-count")?.textContent === "2 images", null, { timeout: 10000 });
+      // The filename/tray metadata arrive before the asynchronous first-image
+      // decode. Wait for the actual canvas to replace the empty editor too.
+      await page.waitForFunction(() => /^(one|two)\.png$/.test(document.querySelector("#file-name")?.textContent ?? "") && !document.querySelector("#image-tray")?.hidden && document.querySelector("#tray-count")?.textContent === "2 images" && document.querySelector("#empty-editor")?.hidden, null, { timeout: 10000 });
     } catch (error) {
       const folderState = await page.evaluate(() => ({
         fileName: document.querySelector("#file-name")?.textContent,
@@ -1662,7 +1939,7 @@ async function main() {
     assert.equal(await page.locator("#tray-scope-select").isVisible(), true, "editor tray exposes recipe scope for a multi-image set");
     assert.deepEqual(await page.locator("#tray-scope-select option").allTextContents(), ["All images", "Selected images", "This image"], "recipe scope choices are plain language");
     await page.locator("#tray-scope-select").selectOption("selected");
-    await page.locator("#tray-preset-picker").selectOption("profile-photo");
+    await selectRecipeRevision(page, "#tray-preset-picker", "profile-photo");
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 3 previews"));
     assert.match(await page.locator(".batch-card").nth(0).textContent(), /512 × 512/, "tray recipe applies to selected first image");
     assert.match(await page.locator(".batch-card").nth(1).textContent(), /512 × 512/, "tray recipe applies to selected second image");
@@ -1733,8 +2010,9 @@ async function main() {
     await page.locator("#preset-name-input").fill("Saved image correction");
     await page.locator("#preset-destination-input").selectOption("custom");
     await page.getByRole("button", { name: "Save preset", exact: true }).click();
-    const savedOverride = await page.evaluate(() => {
-      const entries = JSON.parse(localStorage.getItem("tiny-image-star.presets.v1") ?? "[]");
+    await page.waitForFunction(() => !document.querySelector("#preset-dialog").open);
+    const savedOverride = await page.evaluate(async () => {
+      const entries = (await (await import("./src/styles/catalog.js")).readRecipeCatalog()).recipes;
       return entries.find((entry) => entry.name === "Saved image correction");
     });
     assert.equal(savedOverride?.operations?.rotation, 90, "saved override keeps the manual rotation");
@@ -1765,6 +2043,7 @@ async function main() {
     await page.getByRole("button", { name: "Save recipe", exact: true }).click();
     await page.getByRole("textbox", { name: "Name", exact: true }).fill("Local data recipe");
     await page.getByRole("button", { name: "Save preset", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("#preset-dialog").open);
     await page.waitForTimeout(500);
     // Seed only the storage record so the cleanup contract has a non-zero
     // custom-font case without pretending that a bundled third-party font is
@@ -1775,19 +2054,33 @@ async function main() {
     await page.setViewportSize({ width: 390, height: 844 });
     await assertNoLayoutCollisions(page, "local data dialog mobile", ["#local-data-dialog .local-data-summary", "#local-data-dialog .dialog-actions .button"]);
     await page.setViewportSize({ width: 1280, height: 720 });
-    assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved recipes", "local data reports both saved recipes");
+    assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved styles and recipes", "local data reports both saved recipes");
     assert.equal(await page.locator("#local-data-font-count").textContent(), "1 saved font", "local data reports saved custom fonts");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "1 recovery copy", "local data reports one recovery copy");
     assert.match(await page.locator("#local-data-recovery-size").textContent(), /B|KB|MB/, "local data reports recovery storage");
+    const [projectBackup] = await Promise.all([
+      page.waitForEvent("download"), page.getByRole("button", { name: "Back up saved work", exact: true }).click(),
+    ]);
+    assert.match(projectBackup.suggestedFilename(), /^tiny-image-star-backup-.*\.tstar$/);
+    const backupFile = join(fixtureDirectory, "recovery-backup.tstar");
+    await projectBackup.saveAs(backupFile);
+    const backupBytes = await readFile(backupFile);
+    assert.equal(backupBytes.subarray(0, 7).toString(), "TSTAR1\n");
+    const backupHeader = JSON.parse(backupBytes.subarray(11, 11 + backupBytes.readUInt32BE(7)).toString());
+    assert.equal(backupHeader.records.length, 1, "backup contains the saved project");
+    assert.equal(backupHeader.extras.fonts.length, 1, "backup includes custom font data");
+    assert.equal(backupHeader.extras.recipeCatalog[0].entries.length, 2, "backup includes the active recipe catalog");
+    assert.equal(backupHeader.extras.styleLibrary.filter((entry) => entry.style?.kind === "tiny-image-star/legacy-style").length, 2, "backup includes saved recipe definitions");
+    assert.ok(backupHeader.assets.length >= 2, "backup contains original image and font binaries");
     page.once("dialog", (dialog) => dialog.dismiss());
     await page.getByRole("button", { name: "Clear saved data", exact: true }).click();
-    assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved recipes", "cancelled local-data clear keeps both recipes");
+    assert.equal(await page.locator("#local-data-preset-count").textContent(), "2 saved styles and recipes", "cancelled local-data clear keeps both recipes");
     assert.equal(await page.locator("#local-data-font-count").textContent(), "1 saved font", "cancelled local-data clear keeps saved font count");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "1 recovery copy", "cancelled local-data clear keeps recovery");
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Clear saved data", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#local-data-status")?.textContent?.includes("Cleared saved data"));
-    assert.equal(await page.locator("#local-data-preset-count").textContent(), "0 saved recipes", "clearing local data removes recipes");
+    assert.equal(await page.locator("#local-data-preset-count").textContent(), "0 saved styles and recipes", "clearing local data removes recipes");
     assert.equal(await page.locator("#local-data-font-count").textContent(), "0 saved fonts", "clearing local data removes saved fonts");
     assert.equal(await page.locator("#local-data-recovery-count").textContent(), "0 recovery copies", "clearing local data removes recovery copies");
     assert.equal(await page.locator("#local-data-recovery-size").textContent(), "0 B", "clearing local data removes stored bytes");
@@ -1883,11 +2176,28 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("#batch-view")?.dataset.largeJob === "true" && !document.querySelector("#folder-job-panel")?.hidden);
     await page.waitForFunction(() => document.querySelector("#folder-job-discovered")?.textContent === "3");
     assert.equal(await page.locator("#folder-job-source-name").textContent(), "large-source", "large-folder source is visible");
-    await page.locator("#folder-job-recipe").selectOption("instagram-square");
+    await page.evaluate(async () => {
+      const { openLargeJobDatabase } = await import("./src/jobs/store.js"), database = await openLargeJobDatabase();
+      const transaction = database.transaction(["jobs", "entries"], "readwrite");
+      window.__tinystarHoldRecipeCommit = true;
+      const keepOpen = () => {
+        const request = transaction.objectStore("jobs").get("recipe-commit-probe");
+        request.onsuccess = () => { if (window.__tinystarHoldRecipeCommit) keepOpen(); };
+      };
+      keepOpen();
+    });
+    try {
+      await selectRecipeRevision(page, "#folder-job-recipe", "instagram-square");
+      assert.equal(await page.locator("#folder-job-output-button").isDisabled(), true, "save-folder selection waits for the recipe commit");
+      assert.equal(await page.locator("#folder-job-recipe").isDisabled(), true, "overlapping recipe changes are disabled during the commit");
+      assert.equal(await page.locator("#folder-job-status").textContent(), "Saving your recipe choice…");
+    } finally { await page.evaluate(() => { window.__tinystarHoldRecipeCommit = false; }); }
+    await page.waitForFunction(() => !document.querySelector("#folder-job-recipe").disabled && document.querySelector("#folder-job-recipe-summary").textContent.includes("Fill frame · 1080 × 1080 · PNG"));
+    assert.equal(await page.evaluate(async () => (await (await import("./src/jobs/store.js")).listLargeJobs())[0].recipe.id), "instagram-square", "folder summary describes the durable recipe selection");
     assert.match(await page.locator("#folder-job-recipe-summary").textContent(), /Fill frame · 1080 × 1080 · PNG/, "large folder uses the same human-readable recipes");
     await page.locator("#folder-job-output-button").click();
-    assert.match(await page.locator("#folder-job-output-name").textContent(), /^tiny-image-star-\d{8}-\d{6}-instagram-post-square$/, "large output folder is unique and recipe-aware");
     await page.waitForFunction(() => !document.querySelector("#folder-job-start-button")?.disabled);
+    assert.match(await page.locator("#folder-job-output-name").textContent(), /^tiny-image-star-\d{8}-\d{6}-instagram-post-square-[a-f0-9]{8}$/, "large output folder has a job-specific suffix and recipe name");
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
     await page.locator("#folder-job-start-button").click();
     await page.waitForFunction(() => !document.querySelector("#folder-job-pause-button")?.hidden);
@@ -1895,8 +2205,27 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("#folder-job-status")?.textContent?.startsWith("Paused."));
     assert.equal(await page.getByRole("button", { name: "Resume remaining", exact: true }).isVisible(), true, "paused jobs expose a working continuation action");
     assert.equal(await page.getByRole("button", { name: /Retry .* failed/ }).isHidden(), true, "paused jobs do not compete with Retry failed");
-    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
+    const secondTab = await page.context().newPage();
+    await secondTab.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+    await secondTab.waitForFunction(() => document.querySelector("#folder-job-status")?.textContent?.includes("open in another tab"));
+    for (const selector of ["#folder-job-start-button", "#folder-job-forget-button", "#folder-job-source-button"]) {
+      assert.equal(await secondTab.locator(selector).isDisabled(), true, "another tab cannot mutate the owned job");
+    }
+    assert.match(await page.locator("#folder-job-status").textContent(), /^Paused\./, "opening a second tab leaves the owner's state intact");
+    await secondTab.close();
+    await page.evaluate(() => {
+      window.__tinystarTransaction = IDBDatabase.prototype.transaction;
+      IDBDatabase.prototype.transaction = function (stores, mode, ...rest) {
+        if (mode === "readwrite") throw new DOMException("Test storage quota exhausted", "QuotaExceededError");
+        return window.__tinystarTransaction.call(this, stores, mode, ...rest);
+      };
+    });
     await page.getByRole("button", { name: "Resume remaining", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#folder-job-status")?.textContent?.includes("out of space"));
+    assert.equal(await page.getByRole("button", { name: "Resume", exact: true }).isEnabled(), true, "a storage failure still leaves a usable recovery action");
+    await page.evaluate(() => { IDBDatabase.prototype.transaction = window.__tinystarTransaction; });
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
+    await page.getByRole("button", { name: "Resume", exact: true }).click();
     try {
       await page.waitForFunction(() => /^(Complete\.|.*need attention)/.test(document.querySelector("#folder-job-status")?.textContent ?? ""), null, { timeout: 20000 });
     } catch (error) {
@@ -1971,7 +2300,7 @@ async function main() {
     await page.waitForFunction(() => document.querySelector("#folder-job-discovered")?.textContent === "2" && document.querySelector("#folder-job-status")?.textContent?.includes("Choose a save folder"));
     await page.evaluate(async () => {
       const database = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("tiny-image-star.large-jobs", 1);
+        const request = indexedDB.open("tiny-image-star.large-jobs");
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
@@ -2011,7 +2340,7 @@ async function main() {
     assert.match(await page.locator("#folder-job-status").textContent(), /Choose a save folder/, "restored discovery returns to a ready metadata-only job");
     const largeManifestShape = await page.evaluate(async () => {
       const database = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("tiny-image-star.large-jobs", 1);
+        const request = indexedDB.open("tiny-image-star.large-jobs");
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
@@ -2032,11 +2361,18 @@ async function main() {
     assert.deepEqual(networkRequests.filter((request) => !request.url.startsWith(localOrigin) && !request.url.startsWith("blob:")), [], "the app makes no external network requests");
     assert.equal(consoleErrors.length, 0, `browser console errors: ${consoleErrors.join(" | ")}`);
     console.log("verify:browser PASS");
-    console.log("  readiness, unified one-or-many canvas/tray workspace, Results/Back-to-editor navigation, PNG/TIFF/ICO/JPEG import with local preview proxy, animated/unsupported-input handling, chooser/drop/paste import with text-entry protection, responsive five-tool editor/tray/results layout, result-first cards with hold comparison, mixed-shape framing warnings, decoded output/canvas pixel parity, visible format and Low/Medium/High quality controls, format-independent compression toggle, shared Apply-to-all edits plus preserved per-item overrides, preset format/quality round-trip, retryable format recovery, zoom/fit and keyboard shortcuts, crop presets/handles, adjustments, undo/redo/reset/dirty state, metadata-only download sheet, limits/cancellation/retry, selection, timestamped individual PNG and direct selected-folder bytes, keyboard save, safe recovery, local-data summary/clear, no upload or external network requests");
+    console.log("  editor/batch/folder workflows, six-tool phone layout and native sheets, theme/200% text checks, imports, real PNG/JPEG output, presets/overrides, edits/history, cancellation/retry, folder pause/resume, repaired-source retry, recovery, and local-data controls");
+    console.log("  no image uploads, external network requests, or browser console errors");
     console.log(`  individual download event: ${individualDownload ? "observed" : "not observed (browser sandbox boundary)"}`);
     return 0;
   } catch (error) {
     console.error("verify:browser FAIL");
+    console.error("browser state", await page.evaluate(() => ({
+      batch: document.querySelector("#batch-status")?.textContent,
+      processing: document.querySelector("#processing-status")?.textContent,
+      recovery: document.querySelector("#session-recovery-message")?.textContent,
+      recoveryErrors: window.__tinystarRecoveryErrors,
+    })).catch(() => null), consoleErrors);
     console.error(error);
     return 1;
   } finally {

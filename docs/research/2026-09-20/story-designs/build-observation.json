@@ -1,0 +1,18 @@
+{
+  "recorded_at": "2026-09-20T07:34:00.191113+00:00",
+  "build_command": "node scripts/assemble-pages.mjs _site",
+  "build_exit_code": 0,
+  "artifact_check_command": "npm run check:pages",
+  "artifact_check_exit_code": 0,
+  "packaged_file_count": 181,
+  "build_stdout_observed": [
+    "Pages optimization: JS 786213 -> 476246 bytes; Brotli sidecars 155348 bytes.",
+    "Pages optimization: CSS 71486 -> 62679 bytes; Brotli sidecar 9837 bytes.",
+    "Pages optimization: published WASM unchanged (4548741 bytes); Brotli sidecar 1170855 bytes.",
+    "Pages artifact assembled at _site/"
+  ],
+  "runtime_unchanged_from_prior_depth_style_archive": {
+    "wasm/pillow_rs_js.js": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed",
+    "wasm/pillow_rs_js_bg.wasm": "08dfff0b10424b6ece937574aefd4c07d1d4f8ac95643e7c4d5138ab720d5a96"
+  }
+}

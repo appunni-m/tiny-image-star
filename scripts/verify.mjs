@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
+import { checkDocumentPolicy } from "./security-policy.mjs";
 
 import * as pillowApi from "../wasm/pillow_rs_js.js";
 import { CAPABILITIES, exifOrientationFromBytes, previewWithApi, renderWithApi, runtimeCapabilities } from "../src/engine/pillow.js";
@@ -25,20 +26,22 @@ import {
   jobProgress,
   largeJobActionState,
   largeOutputFileName,
-  largeWorkerCount,
   outputRelativePath,
   settingsForLargeJob,
+  sourceRelativeParts,
+  validateSourceMetadata,
   virtualWindow,
 } from "../src/jobs/core.js";
 import { diffOperationConfig, mergeOperationConfig, mergeOverridePatch } from "../src/config.js";
 import { DEFAULT_QUALITY, normalizeQuality, qualityLabel, QUALITY_LEVELS } from "../src/quality.js";
 import { applyRelativeEditPatch, mergeRelativeSharedEdit, relativeEditPatch, removeAppliedKeys } from "../src/scoped-edits.js";
-import { batchBytesExceedLimit, duplicateKey, fingerprintBytes, imagePixelCount, inputProblem, isAnimatedImage, MAX_BATCH_BYTES, processingWorkerCount } from "../src/input.js";
+import { batchBytesExceedLimit, duplicateKey, fingerprintBytes, imagePixelCount, inputProblem, isAnimatedImage, MAX_BATCH_BYTES } from "../src/input.js";
 import { buildEditorSessionSnapshot, buildSessionSnapshot, editorSessionRecordIsUsable, MAX_SESSION_BYTES, SESSION_VERSION, sessionRecordIsUsable } from "../src/session.js";
 import { formatLocalBytes, PRESETS_STORAGE_KEY } from "../src/local-data.js";
 import { framingReviewForItems, shapeRatio, shapesDiffer } from "../src/framing.js";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+checkDocumentPolicy(await readFile(join(projectRoot, "index.html"), "utf8"));
 const fixturePath = join(projectRoot, "tests/fixtures/rgb-small.png.base64");
 const fixtureBytes = Buffer.from((await readFile(fixturePath, "utf8")).trim(), "base64");
 const wasmBytes = await readFile(join(projectRoot, "wasm/pillow_rs_js_bg.wasm"));
@@ -169,58 +172,6 @@ function makeIndexedPng() {
   ]));
 }
 
-class FakeImage {
-  constructor(width, height) {
-    this.width = width;
-    this.height = height;
-    this.mode = "RGBA";
-  }
-
-  crop(left, top, right, bottom) {
-    return new FakeImage(Math.max(1, right - left), Math.max(1, bottom - top));
-  }
-
-  transpose(operation) {
-    const rotated = operation === "ROTATE_90" || operation === "ROTATE_270";
-    return new FakeImage(rotated ? this.height : this.width, rotated ? this.width : this.height);
-  }
-
-  resize(width, height) {
-    return new FakeImage(width, height);
-  }
-
-  convert(mode) {
-    const next = new FakeImage(this.width, this.height);
-    next.mode = mode;
-    return next;
-  }
-
-  enhanceBrightness() { return new FakeImage(this.width, this.height); }
-  enhanceContrast() { return new FakeImage(this.width, this.height); }
-
-  encode(format, quality) {
-    if (format === "jpeg") return Uint8Array.from([0xff, 0xd8, 0xff, this.width, this.height, quality ?? 0]);
-    return Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, this.width, this.height]);
-  }
-
-  save() {
-    return this.encode("png");
-  }
-
-  free() {}
-}
-
-function fakeImageOpen(bytes) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  if (view.length === 6 && view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) {
-    return new FakeImage(view[3], view[4]);
-  }
-  if (view.length === 10 && view[0] === 137 && view[1] === 80 && view[2] === 78 && view[3] === 71) {
-    return new FakeImage(view[8], view[9]);
-  }
-  return new FakeImage(8, 8);
-}
-
 function fakePngOnlyApi() {
   return {
     Image: {
@@ -238,6 +189,8 @@ function fakePngOnlyApi() {
 async function run() {
   pillowApi.initSync({ module: wasmBytes });
   const file = { name: "fixture.png", bytes: new Uint8Array(fixtureBytes) };
+  await assert.rejects(() => renderWithApi(pillowApi, { ...file, memoryEstimate: { heap: 1, transient: 1 } }, settings()), /memory budget/, "the renderer checks the admitted budget before transformations");
+  assert.throws(() => previewWithApi(pillowApi, { ...file, memoryEstimate: { heap: 1, transient: 1 } }), /memory budget/, "preview cannot bypass the admitted budget");
 
   const original = await renderWithApi(pillowApi, file, settings());
   assertDimensions(original, 8, 8, "original");
@@ -246,6 +199,8 @@ async function run() {
   assert.equal(original.mime, "image/png", "output MIME is carried through the worker result");
 
   const runtime = runtimeCapabilities(pillowApi);
+  assert.deepEqual(runtime.outputFormats, ["png", "jpeg"], "qualified exports use the published container encoder");
+  assert.equal(runtime.compression.quality, false, "fixed-setting API never advertises quality control");
   assert.ok(runtime.outputFormats.includes("png"), "runtime probe keeps PNG operational");
   assert.throws(() => runtimeCapabilities(fakePngOnlyApi()), /verified output format/i, "a binding with no verified encoder cannot claim PNG");
   for (const format of runtime.outputFormats) {
@@ -283,9 +238,6 @@ async function run() {
   assert.equal(inputProblem(new Uint8Array([1, 2, 3])), null, "unknown non-animated bytes are left for the decoder");
   assert.equal(inputProblem(fixtureBytes, { width: 10000, height: 10000 })?.code, "too-large", "decoded pixel guard rejects oversized input");
   assert.equal(imagePixelCount(4, 4), 16, "pixel count is deterministic");
-  assert.equal(processingWorkerCount([{ width: 1000, height: 1000 }, { width: 1000, height: 1000 }], 8, 4), 2, "small image sets use available parallel workers");
-  assert.equal(processingWorkerCount([{ width: 10000, height: 8000 }, { width: 10000, height: 8000 }, { width: 10000, height: 8000 }], 8, 4), 2, "large image sets limit concurrent workers by pixel budget");
-  assert.equal(processingWorkerCount([{ width: 10000, height: 8000 }], 8, 4), 1, "one large image uses one worker");
   assert.equal(duplicateKey({ name: "a.png", size: 4 }, "hash"), duplicateKey({ name: "a.png", size: 4 }, "hash"), "same file identity is stable");
   assert.notEqual(duplicateKey({ name: "a.png", size: 4 }, "hash"), duplicateKey({ name: "b.png", size: 4 }, "hash"), "different names remain separately selectable");
   assert.equal(await fingerprintBytes(new Uint8Array([1, 2, 3])), await fingerprintBytes(new Uint8Array([1, 2, 3])), "content fingerprint is stable");
@@ -441,7 +393,7 @@ async function run() {
     compression: { lossy: true, lossyFormats: ["jpeg"], quality: true },
   });
   const jpegResult = await renderWithApi(
-    { Image: { open: fakeImageOpen } },
+    pillowApi,
     file,
     settings({ format: "jpeg", presetName: "Profile Photo", lossy: true, quality: 55, resizeWidth: 4, resizeHeight: 2 }),
     verifiedMultiFormat,
@@ -453,13 +405,25 @@ async function run() {
   assert.equal(jpegResult.width, 2, "JPEG result width");
   assert.equal(jpegResult.height, 2, "JPEG result height");
   const jpegLowerQuality = await renderWithApi(
-    { Image: { open: fakeImageOpen } },
+    pillowApi,
     file,
     settings({ format: "jpeg", presetName: "Profile Photo", lossy: true, quality: 20, resizeWidth: 4, resizeHeight: 2 }),
     verifiedMultiFormat,
   );
-  assert.notDeepEqual(Array.from(jpegLowerQuality.bytes), Array.from(jpegResult.bytes), "quality reaches the verified encoder path");
-  assert.equal(jpegLowerQuality.bytes.at(-1), 20, "lower quality reaches the encoder");
+  assert.deepEqual(jpegLowerQuality.bytes, jpegResult.bytes, "legacy quality values cannot be passed as extension hints");
+  assertDecodedDimensions(jpegResult.bytes, 2, 2, "real JPEG export");
+  for (const alpha of [0, 128, 255]) {
+    const solid = new pillowApi.Image("RGBA", 16, 16, 80, 120, 160, alpha);
+    const rgbaBytes = solid.save();
+    solid.free();
+    const output = await renderWithApi(pillowApi, { name: "alpha.png", bytes: rgbaBytes }, settings({
+      format: "jpeg", resizeWidth: 16, resizeHeight: 16, jpegBackground: [240, 230, 220],
+    }), runtime);
+    const pixel = decodedPixelRows(output.bytes)[8][8];
+    const expected = [80, 120, 160].map((channel, i) => Math.round((channel * alpha + [240, 230, 220][i] * (255 - alpha)) / 255));
+    for (let channel = 0; channel < 3; channel += 1) assert.ok(Math.abs(pixel[channel] - expected[channel]) <= 3, `JPEG alpha ${alpha}, channel ${channel}: ${pixel} vs ${expected}`);
+  }
+  await assert.rejects(() => renderWithApi(pillowApi, file, settings({ format: "jpeg", jpegBackground: [999, 0, 0] }), runtime), /invalid JPEG background/);
   await assert.rejects(
     () => renderWithApi(fakePngOnlyApi(), file, settings({ format: "jpeg" }), verifiedMultiFormat),
     /format unavailable/,
@@ -479,6 +443,10 @@ async function run() {
   const largeName = largeOutputFileName("nested/photo.JPG", "Website Banner", "png");
   assert.match(largeName, /^photo-jpg-website-banner-[a-z0-9]{7}\.png$/, "large-folder output names are deterministic and collision-resistant");
   assert.equal(outputRelativePath("nested/photo.JPG", "Website Banner", "png"), `nested/${largeName}`, "large-folder output preserves relative directories");
+  assert.deepEqual(sourceRelativeParts("café:/a|b.png"), ["café:", "a|b.png"], "valid source names are preserved instead of opening sanitized substitutes");
+  for (const path of ["../a.png", "/a.png", "a//b.png", "a/./b.png", "a/../b.png"]) assert.throws(() => sourceRelativeParts(path), /Invalid source path/);
+  assert.throws(() => validateSourceMetadata({ sourceBytes: 12, lastModified: 1 }, { size: 12, lastModified: 2 }), /source changed/);
+  assert.doesNotThrow(() => validateSourceMetadata({ sourceBytes: 12, lastModified: 1, allowSourceChange: true }, { size: 15, lastModified: 2 }));
   const largeRecipe = { id: "web", name: "Website Banner", operations: { ...settings({ resizeWidth: 1600, resizeHeight: 600 }), cropRelative: { x: 0.1, y: 0.2, width: 0.8, height: 0.6 } } };
   const largeJob = createLargeJob({ id: "job-1", sourceHandle: null, sourceName: "Photos", recipe: largeRecipe, createdAt: downloadMoment.getTime() });
   assert.equal(largeJob.outputFolderName, "tiny-image-star-20260802-090807-website-banner", "large jobs get one unique destination folder");
@@ -494,8 +462,6 @@ async function run() {
   const virtual = virtualWindow({ total: MAX_LARGE_FOLDER_FILES, scrollTop: 3_400_000, viewportHeight: 680 });
   assert.ok(virtual.count <= 26, "100k results render only a bounded visible window");
   assert.equal(virtual.totalHeight, MAX_LARGE_FOLDER_FILES * 68, "virtual result height represents every manifest entry");
-  assert.equal(largeWorkerCount({ preference: "balanced", hardwareConcurrency: 16, deviceMemory: 16 }), 2, "balanced processing stays bounded even on large machines");
-  assert.equal(largeWorkerCount({ preference: "fast", hardwareConcurrency: 16, deviceMemory: 16 }), 4, "fast processing has a hard worker ceiling");
   assert.deepEqual(jobProgress({ discovered: 100_000, completed: 99_998, failed: 1, skipped: 1, scanComplete: true }), { discovered: 100_000, finished: 100_000, remaining: 0, ratio: 1, complete: true }, "100k job completion includes failures and skips without retaining results");
   assert.deepEqual(
     largeJobActionState({ status: "paused", discovered: 10, completed: 4, failed: 1 }),
@@ -715,6 +681,7 @@ async function run() {
   const largeStoreSource = await readFile(join(projectRoot, "src/jobs/store.js"), "utf8");
   const largeControllerSource = await readFile(join(projectRoot, "src/jobs/controller.js"), "utf8");
   const largeWorkerSource = await readFile(join(projectRoot, "src/jobs/large-worker.js"), "utf8");
+  const largeOutputSource = await readFile(join(projectRoot, "src/jobs/output.js"), "utf8");
   const largePlanSource = await readFile(join(projectRoot, "LARGE_FOLDER_PLAN.md"), "utf8");
   const inputSource = await readFile(join(projectRoot, "src/input.js"), "utf8");
   const framingSource = await readFile(join(projectRoot, "src/framing.js"), "utf8");
@@ -821,7 +788,7 @@ async function run() {
   assert.match(stylesSource, /processing-indicator\[hidden\]/);
   assert.match(stylesSource, /status-pill\[data-state="ready"\]/);
   assert.match(stylesSource, /presets-drawer/);
-  assert.match(stylesSource, /editor-workspace\[data-inspector-open="true"\]/);
+  assert.match(indexSource, /<dialog id="mobile-inspector-sheet"/);
   assert.match(stylesSource, /data-empty="true"/);
   assert.match(stylesSource, /\.empty-editor-actions/);
   assert.match(stylesSource, /\.topbar-actions[^\n]*flex-wrap: nowrap/, "desktop header actions keep a stable row");
@@ -836,16 +803,13 @@ async function run() {
   assert.match(stylesSource, /\.topbar \{ position: relative; z-index: 30;/, "topbar stays clickable above the review drawer");
   assert.match(stylesSource, /\.presets-drawer \{ position: fixed; z-index: 35;/, "preset drawer stays above the review drawer");
   assert.match(stylesSource, /\.tool-button\[hidden\] \{ display: none; \}/, "hidden legacy tool controls cannot reappear from display rules");
-  assert.match(stylesSource, /\.tool-primary-group \{ display: grid; grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/, "mobile primary tools keep labels readable when Text and Format are available");
   assert.match(stylesSource, /\.editor-workspace\[data-has-tray="true"\] \{ grid-template-columns: minmax\(0, 1fr\); grid-template-rows: auto minmax\(420px, 1fr\)/, "tablet tray layout resets the desktop columns");
   assert.match(stylesSource, /\.editor-workspace\[data-empty="true"\] \.stage-footer/, "empty editor hides disabled stage controls");
   assert.match(stylesSource, /\.stage-footer \{ position: static;/, "mobile stage controls stay in document flow");
   assert.match(stylesSource, /\.tool-rail \{ order: 2; position: static;/, "mobile editing tools stay in document flow");
-  assert.match(stylesSource, /flex: 1 0 44px/);
   assert.match(mainSource, /attachEditorCanvas/);
   assert.match(mainSource, /attachEditorProcessing/);
   assert.match(mainSource, /setCapabilities: \(raw\) => editor\.setCapabilities\(raw\)/);
-  assert.match(mainSource, /composeTextOutput:/, "batch composition can use the editor text compositor");
   assert.match(viewSource, /function setEngineStatus/);
   assert.match(viewSource, /function setProcessingStatus/);
   assert.match(viewSource, /function setInspectorOpen/);
@@ -896,7 +860,6 @@ async function run() {
   assert.match(processingSource, /function requestPreviewProxy/);
   assert.match(processingSource, /function openExportDialog/);
   assert.match(processingSource, /function saveOrOpenExport/);
-  assert.match(processingSource, /composeTextOutput/);
   assert.match(browserSmokeSource, /async function assertPreviewMatchesGeneratedBytes/);
   assert.match(browserSmokeSource, /async function readLatestGeneratedBytes/);
   assert.match(browserSmokeSource, /direct single-format Download downloads the current preview bytes/);
@@ -912,9 +875,7 @@ async function run() {
   assert.match(operationsSource, /next\.lossy = Boolean\(next\.lossy &&/);
   assert.match(operationsSource, /function applyDestination/);
   assert.match(operationsSource, /next\.lossy = Boolean\(next\.lossy && state\.capabilities\.compression\.lossyFormats\.includes\(format\)\)/);
-  assert.match(textSource, /export async function composeTextOutput/);
   assert.match(textSource, /Download the font file from Google Fonts/);
-  assert.match(fontsSource, /new FontFace/);
   assert.match(fontsSource, /indexedDB\.open/);
   assert.match(fontsSource, /export async function clearStoredFonts/);
   assert.match(workerSource, /type: "cancelled", revision, jobId/);
@@ -929,7 +890,8 @@ async function run() {
   assert.match(batchSource, /trayFormat/);
   assert.match(batchSource, /function setBatchLossy/);
   assert.match(batchSource, /function setBatchFormat[\s\S]*?state\.batch\.lossyOverride = null/, "batch format changes clear stale compression state");
-  assert.match(batchSource, /function applyCapabilities[\s\S]*?state\.batch\.lossyOverride = null/, "capability downgrade clears batch compression state");
+  // Historical-recovery browser tests verify that capability announcements
+  // preserve unavailable saved output intent until an explicit replacement.
   assert.match(batchSource, /function applyPresetDestinationToDialog/);
   assert.match(batchSource, /function syncPresetCompression/);
   assert.match(batchSource, /if \(!lossy\) elements\.presetLossy\.checked = false/);
@@ -948,7 +910,6 @@ async function run() {
   assert.doesNotMatch(batchSource, /makeZip|zip-worker|application\/zip/, "multi-image save never creates an archive");
   assert.doesNotMatch(namesSource, /zipEntryName|zipArchiveName|downloadedZip/, "dead archive naming paths stay removed");
   assert.match(batchSource, /state\.batchWorkers/);
-  assert.match(batchSource, /processingWorkerCount\(/, "batch processing is memory-aware");
   assert.match(batchSource, /function createBatchWorker/);
   assert.match(batchSource, /function retireBatchWorker/);
   assert.match(batchSource, /function cancelActiveBatch/);
@@ -1023,7 +984,7 @@ async function run() {
   assert.match(batchSource, /attachLargeFolderJobs/);
   assert.match(batchSource, /supportsLargeFolderJobs/);
   assert.match(largeControllerSource, /async function\* walkDirectory/);
-  assert.match(largeControllerSource, /claimPendingEntries\(state\.job\.id, available\.length\)/, "scheduler claims no more entries than idle workers");
+  assert.match(largeControllerSource, /claimPendingEntries\(claimedJobId, available\.length, claimedOwner\)/, "scheduler claims no more entries than available logical clients under its owner fence");
   assert.match(largeControllerSource, /virtualWindow/);
   assert.match(largeControllerSource, /resetInterruptedEntries/);
   assert.match(largeControllerSource, /function continueJob/);
@@ -1035,16 +996,16 @@ async function run() {
   );
   assert.match(largeControllerSource, /continueJob\(\{ retryFailed: true \}\)/, "retry and resume share permission and restart checks");
   assert.match(largeControllerSource, /!job\?\.scanComplete/, "processing cannot start before durable discovery completes");
-  assert.match(largeControllerSource, /clearManifestEntries\(state\.job\.id\)/, "interrupted discovery is cleared before deterministic rescan");
-  assert.match(largeControllerSource, /if \(state\.job\) await deleteLargeJob\(state\.job\.id\)/, "replacing a folder job removes its now-inaccessible metadata manifest");
+  assert.match(largeControllerSource, /clearManifestEntries\(state\.job\.id, owner\(\)\)/, "interrupted discovery is cleared by its owner before deterministic rescan");
+  assert.match(largeControllerSource, /if \(state\.job\) await deleteLargeJob\(state\.job\.id, owner\(\)\)/, "replacing a folder job removes its now-inaccessible metadata manifest");
   assert.match(largeStoreSource, /\["jobId", "index"\]/, "manifest entries use durable compound keys");
-  assert.match(largeStoreSource, /export async function clearManifestEntries/, "manifest entries can be reset without deleting the durable job");
-  assert.match(largeStoreSource, /completedDelta[\s\S]*Number\(job\.completed/, "parallel completion counters increment from durable transaction state");
-  assert.match(largeControllerSource, /completedDelta: 1/, "workers commit completion deltas instead of stale absolute counters");
+  assert.match(largeStoreSource, /export function clearManifestEntries/, "manifest entries can be reset without deleting the durable job");
+  assert.match(largeStoreSource, /Number\(job\.completed \?\? 0\) \+ Number\(patch\.status === "completed"\)/, "completion counters derive from durable entry transitions");
+  assert.match(largeWorkerSource, /await saveJournaledOutput/, "workers durably commit before reporting results");
   assert.match(largeStoreSource, /status: "processing"/, "manifest claims are persisted before worker dispatch");
-  assert.match(largeWorkerSource, /OUTPUT_WRITE_CHUNK_BYTES = 4 \* 1024 \* 1024/);
-  assert.match(largeWorkerSource, /bytes\.subarray\(offset/, "large output is written through bounded stream chunks");
-  assert.match(largeWorkerSource, /await writable\.close\(\)/, "output is committed before completion is reported");
+  assert.match(largeOutputSource, /OUTPUT_WRITE_CHUNK_BYTES = 4 \* 1024 \* 1024/);
+  assert.match(largeOutputSource, /bytes\.subarray\(offset/, "large output is written through bounded stream chunks");
+  assert.match(largeOutputSource, /await writable\.close\(\)/, "output is committed before completion is reported");
   assert.doesNotMatch(largeWorkerSource, /output: result\.bytes|output: transfer/, "large workers never return output image bytes to the main thread");
   assert.match(largeCoreSource, /MAX_LARGE_FOLDER_FILES = 100_000/);
   assert.match(largePlanSource, /source and result bytes are never retained/);
@@ -1082,7 +1043,6 @@ async function run() {
   assert.match(inputSource, /MAX_BATCH_BYTES/);
   assert.match(inputSource, /export function batchBytesExceedLimit/);
   assert.match(inputSource, /skipSubBlocks/);
-  assert.match(inputSource, /export function processingWorkerCount/);
   assert.match(inputSource, /export function isAnimatedImage/);
   assert.match(framingSource, /export function framingReviewForItems/);
   assert.match(inputSource, /export async function fingerprintBytes/);
@@ -1105,14 +1065,14 @@ async function run() {
   assert.match(localDataSource, /export async function readLocalDataSummary/);
   assert.match(localDataSource, /export async function clearStoredLocalData/);
   assert.match(localDataSource, /tinystar:local-data-cleared/);
-  assert.match(packageSource, /"verify:all": "npm run verify && npm run verify:browser && npm run check:docs"/, "the full npm gate includes documentation links");
+  assert.match(packageSource, /"verify:all": "npm run verify && npm run verify:browser && npm run verify:staged-browser && npm run verify:security && npm run verify:folder-recovery && npm run check:docs"/, "the full npm gate includes staged storage, CSP, fault recovery and documentation links");
+  assert.match(browserSmokeSource, /assertCreatorStamp\(browser, page\.url\(\)\)/, "browser verification covers the mobile creator-stamp preset flow");
   assert.match(packageSource, /"esbuild": "\^0\.28\.1"/, "release optimization uses the locked minifier dependency");
   assert.match(makeSource, /\.DEFAULT_GOAL := help/);
   assert.match(makeSource, /package-pages:/);
   assert.match(makeSource, /check-docs:/);
   assert.match(workflowSource, /make verify/);
-  assert.match(workflowSource, /Install release optimization tools[\s\S]*apt-get install[\s\S]*binaryen/);
-  assert.match(workflowSource, /WASM_OPT_REQUIRED=1 make package-pages PAGES_DIR=_site/);
+  assert.doesNotMatch(workflowSource, /WASM_OPT_REQUIRED/, "release uses the published WASM unchanged");
   assert.match(workflowSource, /TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser/);
   assert.match(workflowSource, /make package-pages PAGES_DIR=_site/);
   assert.match(workflowSource, /actions\/checkout@v7/);
@@ -1128,7 +1088,7 @@ async function run() {
   assert.match(pagesAssemblerSource, /optimizePagesArtifact/);
   assert.match(pagesOptimizerSource, /minifyIdentifiers: true/);
   assert.match(pagesOptimizerSource, /BROTLI_PARAM_QUALITY.*11/);
-  assert.match(pagesOptimizerSource, /WASM_OPT_REQUIRED/);
+  assert.match(pagesOptimizerSource, /verifyRuntime/, "optimized artifact verifies the exact published pair");
   assert.match(engineSource, /new DecompressionStream\("brotli"\)/);
   assert.match(engineSource, /pillow_rs_js_bg\.wasm\.br/);
   assert.match(browserSmokeSource, /TINY_IMAGE_STAR_BROWSER_ROOT/);
@@ -1136,7 +1096,7 @@ async function run() {
   console.log("verify: PASS");
   console.log("  real WASM transforms: PNG fit/crop/rotate/flip/adjustments, exact decoded pixels, PNG bytes, decoded dimensions, output-size guard");
   console.log("  real input decoders: JPEG, BMP, WebP, GIF, TIFF, ICO, EXIF-JPEG fixture paths, corrupt-input rejection");
-  console.log(`  real format contract: runtime-verified output formats ${runtimeCapabilities(pillowApi).outputFormats.join(", ")}; synthetic JPEG signature path and rejection of PNG-only masquerading`);
+  console.log(`  real format contract: runtime-verified output formats ${runtimeCapabilities(pillowApi).outputFormats.join(", ")}; JPEG alpha flattening, fixed settings and rejection of PNG-only masquerading`);
   console.log("  large-folder contract: 100k metadata-only manifest, bounded virtual rows/workers, collision-safe paths, direct folder output, no archive path");
   console.log("  contract checks: editor modules, readiness separation, revisions, capability-driven formats, Low/Medium/High quality gating, metadata-only download, presets, selection, append imports, animated-input safety, duplicate identity, byte/output pixel guards, memory-aware worker parallelism, bounded worker failure handling, relative apply-to-all edits, shared-recipe/per-item override merge, explicit recipe scope, mixed-shape framing review, unified tray selection, versioned session and large-job recovery");
 }

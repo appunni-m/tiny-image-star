@@ -1,0 +1,3778 @@
+[
+  {
+    "name": "2000x1500-png-depth-finish-materialized",
+    "fixture": "2000x1500.png",
+    "finish": true,
+    "depth": true,
+    "variant": "materialized",
+    "servedSceneSha256": "7b8dbf368f345f6e3b9f040f0215e0047057849c192691dad4db75b7729d22f9",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 2000,
+      "height": 1500,
+      "inputBytes": 64047,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 349845581,
+      "transient": 122619388,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 114819072,
+    "elapsedMs": 4387.900000095367,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.2999999523162842,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:101:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 80019456,
+        "elapsedMs": 1676.6000001430511,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:43:11)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "getchannel",
+        "before": 80019456,
+        "after": 92078080,
+        "elapsedMs": 42.700000047683716,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:23)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "multiply",
+        "before": 92078080,
+        "after": 92078080,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 92078080,
+        "after": 104136704,
+        "elapsedMs": 81.09999990463257,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:92)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "load",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 1134
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "getchannel",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "multiply",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 2.5
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 2.1000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 2.6000001430511475
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "toBytes",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 27.899999856948853
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 2.3999998569488525
+      },
+      {
+        "operation": "toBytes",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 1.1000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 104136704,
+        "after": 104136704,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 104136704,
+        "after": 114819072,
+        "elapsedMs": 1,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:59:36)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.5999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "toBytes",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 1.8999998569488525
+      },
+      {
+        "operation": "toBytes",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "toBytes",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0.6000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 8.399999856948853
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 658.7000000476837
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 385.2999999523163
+      },
+      {
+        "operation": "free",
+        "before": 114819072,
+        "after": 114819072,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "d8e4ae78a5d3be95f781967fed7dda9b8231069465a36703d72c009065573169",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1247043
+    }
+  },
+  {
+    "name": "2000x1500-png-depth-finish-fork-materialized",
+    "fixture": "2000x1500.png",
+    "finish": true,
+    "depth": true,
+    "variant": "fork-materialized",
+    "servedSceneSha256": "c274dc654d1a4481b11fd767ecffa738cf3cd684f12b28a377326699860bd2d6",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 2000,
+      "height": 1500,
+      "inputBytes": 64047,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 349845581,
+      "transient": 122619388,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 122748928,
+    "elapsedMs": 4214.5,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.2999999523162842,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:102:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 80019456,
+        "elapsedMs": 244.20000004768372,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:42:32)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "load",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 1405.2999999523163
+      },
+      {
+        "operation": "getchannel",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "multiply",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 39.799999952316284
+      },
+      {
+        "operation": "free",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 80019456,
+        "after": 80019456,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 80019456,
+        "after": 101384192,
+        "elapsedMs": 1087,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:48:156)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "getchannel",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 2
+      },
+      {
+        "operation": "free",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 2.5999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 2.5999999046325684
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "toBytes",
+        "before": 101384192,
+        "after": 101384192,
+        "elapsedMs": 27.699999809265137
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101384192,
+        "after": 112066560,
+        "elapsedMs": 1.1000001430511475,
+        "caller": "    at renderCutoutDecoration (http://127.0.0.1:64278/src/compositor/cutout-effects.js:59:16)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:57:20)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)"
+      },
+      {
+        "operation": "free",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 2.5
+      },
+      {
+        "operation": "toBytes",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 1.1000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 112066560,
+        "after": 112066560,
+        "elapsedMs": 1.7000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 112066560,
+        "after": 122748928,
+        "elapsedMs": 1.2000000476837158,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:60:36)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 1.7000000476837158
+      },
+      {
+        "operation": "toBytes",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.8999998569488525
+      },
+      {
+        "operation": "toBytes",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 7.900000095367432
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 658.7999999523163
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 386.5
+      },
+      {
+        "operation": "free",
+        "before": 122748928,
+        "after": 122748928,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "d8e4ae78a5d3be95f781967fed7dda9b8231069465a36703d72c009065573169",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1247043
+    }
+  },
+  {
+    "name": "2000x1500-jpg-depth-finish-materialized",
+    "fixture": "2000x1500.jpg",
+    "finish": true,
+    "depth": true,
+    "variant": "materialized",
+    "servedSceneSha256": "7b8dbf368f345f6e3b9f040f0215e0047057849c192691dad4db75b7729d22f9",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 2000,
+      "height": 1500,
+      "inputBytes": 145318,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 350089394,
+      "transient": 122781930,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 122683392,
+    "elapsedMs": 4005,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.2000000476837158,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:101:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.8000001907348633
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.39999985694885254
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 78577664,
+        "elapsedMs": 1357.3000001907349,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:43:11)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "getchannel",
+        "before": 78577664,
+        "after": 78577664,
+        "elapsedMs": 43.10000014305115
+      },
+      {
+        "operation": "multiply",
+        "before": 78577664,
+        "after": 78577664,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 78577664,
+        "after": 90636288,
+        "elapsedMs": 96.5,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:92)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "free",
+        "before": 90636288,
+        "after": 90636288,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 90636288,
+        "after": 90636288,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 90636288,
+        "after": 90636288,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "load",
+        "before": 90636288,
+        "after": 101318656,
+        "elapsedMs": 997.5999999046326,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:156)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.4000000953674316
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.799999952316284
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.5
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.19999980926513672
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 26.800000190734863
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.6000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 112001024,
+        "elapsedMs": 2.9000000953674316,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:58:53)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "toBytes",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "toBytes",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 1.0999999046325684
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 112001024,
+        "after": 122683392,
+        "elapsedMs": 1.3999998569488525,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:59:36)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 1.2000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 2
+      },
+      {
+        "operation": "toBytes",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 1.2999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0.6000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 8.5
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 759.5
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "load",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 366
+      },
+      {
+        "operation": "free",
+        "before": 122683392,
+        "after": 122683392,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "e231e38ee6dfc1299bbd791966aa18f40379e492e113cc4bff16bb8331a92492",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1517175
+    }
+  },
+  {
+    "name": "2000x1500-jpg-depth-finish-fork-materialized",
+    "fixture": "2000x1500.jpg",
+    "finish": true,
+    "depth": true,
+    "variant": "fork-materialized",
+    "servedSceneSha256": "c274dc654d1a4481b11fd767ecffa738cf3cd684f12b28a377326699860bd2d6",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 2000,
+      "height": 1500,
+      "inputBytes": 145318,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 350089394,
+      "transient": 122781930,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 112001024,
+    "elapsedMs": 3879.5,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.5,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:102:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 67895296,
+        "elapsedMs": 181.79999995231628,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:42:32)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "load",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 1181.8999998569489
+      },
+      {
+        "operation": "getchannel",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 53.299999952316284
+      },
+      {
+        "operation": "free",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 67895296,
+        "after": 67895296,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "load",
+        "before": 67895296,
+        "after": 101318656,
+        "elapsedMs": 962.7000000476837,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:48:156)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.200000047683716
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.4000000953674316
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.799999952316284
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 28.40000009536743
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 2.3999998569488525
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "toBytes",
+        "before": 101318656,
+        "after": 101318656,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 101318656,
+        "after": 112001024,
+        "elapsedMs": 1,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:60:36)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.5999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "toBytes",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 1.5
+      },
+      {
+        "operation": "toBytes",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "toBytes",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.40000009536743164
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 8.299999952316284
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 750.5999999046326
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "load",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 364.5
+      },
+      {
+        "operation": "free",
+        "before": 112001024,
+        "after": 112001024,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "e231e38ee6dfc1299bbd791966aa18f40379e492e113cc4bff16bb8331a92492",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1517175
+    }
+  },
+  {
+    "name": "4000x3000-png-depth-finish-materialized",
+    "fixture": "4000x3000.png",
+    "finish": true,
+    "depth": true,
+    "variant": "materialized",
+    "servedSceneSha256": "7b8dbf368f345f6e3b9f040f0215e0047057849c192691dad4db75b7729d22f9",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 4000,
+      "height": 3000,
+      "inputBytes": 239709,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 566372567,
+      "transient": 123081372,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 385417216,
+    "elapsedMs": 5775.200000047684,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.2000000476837158,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:101:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.39999985694885254
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 289341440,
+        "elapsedMs": 2401,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:43:11)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "getchannel",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 167.69999980926514
+      },
+      {
+        "operation": "multiply",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 289341440,
+        "after": 337379328,
+        "elapsedMs": 332.2999999523163,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:92)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "free",
+        "before": 337379328,
+        "after": 337379328,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 337379328,
+        "after": 337379328,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 337379328,
+        "after": 337379328,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 337379328,
+        "after": 385417216,
+        "elapsedMs": 1328.5,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:156)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.39999985694885254
+      },
+      {
+        "operation": "getchannel",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 2.1000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 2.0999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 2.700000047683716
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 27.09999990463257
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 2.6000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 1.2999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 1.2000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.5999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 1.5
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 1.2999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.8000001907348633
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 8.700000047683716
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 685.2000000476837
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 459.2999999523163
+      },
+      {
+        "operation": "free",
+        "before": 385417216,
+        "after": 385417216,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "ce02cf5b3164314596d123fae75c62a17f1e90b44bad606b59a996a829f4c267",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1463222
+    }
+  },
+  {
+    "name": "4000x3000-png-depth-finish-fork-materialized",
+    "fixture": "4000x3000.png",
+    "finish": true,
+    "depth": true,
+    "variant": "fork-materialized",
+    "servedSceneSha256": "c274dc654d1a4481b11fd767ecffa738cf3cd684f12b28a377326699860bd2d6",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 4000,
+      "height": 3000,
+      "inputBytes": 239709,
+      "before": 2162688,
+      "after": 2162688
+    },
+    "estimate": {
+      "heap": 566372567,
+      "transient": 123081372,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 289341440,
+    "elapsedMs": 5257.700000047684,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2162688,
+        "after": 2162688,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2162688,
+        "after": 10485760,
+        "elapsedMs": 1.1999998092651367,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:102:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "convert",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.8000001907348633
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 10485760,
+        "after": 10485760,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 10485760,
+        "after": 289341440,
+        "elapsedMs": 935.0999999046326,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:42:32)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "load",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1462.2000000476837
+      },
+      {
+        "operation": "getchannel",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 163.20000004768372
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "load",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1159
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "getchannel",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 2.200000047683716
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 2.1000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 2.8000001907348633
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.19999980926513672
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 28.399999856948853
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 2.5
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1.1000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 2
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.6000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1.3999998569488525
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1.4000000953674316
+      },
+      {
+        "operation": "toBytes",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 1.2000000476837158
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.8999998569488525
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 8.800000190734863
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 685.8999998569489
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "load",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 450.09999990463257
+      },
+      {
+        "operation": "free",
+        "before": 289341440,
+        "after": 289341440,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "ce02cf5b3164314596d123fae75c62a17f1e90b44bad606b59a996a829f4c267",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1463222
+    }
+  },
+  {
+    "name": "4000x3000-jpg-depth-finish-materialized",
+    "fixture": "4000x3000.jpg",
+    "finish": true,
+    "depth": true,
+    "variant": "materialized",
+    "servedSceneSha256": "7b8dbf368f345f6e3b9f040f0215e0047057849c192691dad4db75b7729d22f9",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 4000,
+      "height": 3000,
+      "inputBytes": 496717,
+      "before": 2162688,
+      "after": 2686976
+    },
+    "estimate": {
+      "heap": 567143591,
+      "transient": 123595388,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 335478784,
+    "elapsedMs": 5387.799999952316,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2686976,
+        "after": 2686976,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2686976,
+        "after": 2686976,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2686976,
+        "after": 11010048,
+        "elapsedMs": 1.7000000476837158,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:101:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "convert",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.5999999046325684
+      },
+      {
+        "operation": "load",
+        "before": 11010048,
+        "after": 239403008,
+        "elapsedMs": 1929.6000001430511,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:43:11)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "getchannel",
+        "before": 239403008,
+        "after": 287440896,
+        "elapsedMs": 175.70000004768372,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:23)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "multiply",
+        "before": 287440896,
+        "after": 287440896,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 287440896,
+        "after": 335478784,
+        "elapsedMs": 381.5,
+        "caller": "    at multiplyAlpha (http://127.0.0.1:64278/src/compositor/scene.js:14:92)\n    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:47:19)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:108:40)"
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "load",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1205.5
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.39999985694885254
+      },
+      {
+        "operation": "getchannel",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 2.0999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 2
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 2.9000000953674316
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 29.40000009536743
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.2000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 2.799999952316284
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.1000001430511475
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.2999999523162842
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.0999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.7999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 1.7000000476837158
+      },
+      {
+        "operation": "toBytes",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.7000000476837158
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 8.799999952316284
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 738.2000000476837
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "load",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 554.7999999523163
+      },
+      {
+        "operation": "free",
+        "before": 335478784,
+        "after": 335478784,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "e9be06899235537ce062adf0df8e6ff42d3a61a73a34575247f8c3908a9e7904",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1770723
+    }
+  },
+  {
+    "name": "4000x3000-jpg-depth-finish-fork-materialized",
+    "fixture": "4000x3000.jpg",
+    "finish": true,
+    "depth": true,
+    "variant": "fork-materialized",
+    "servedSceneSha256": "c274dc654d1a4481b11fd767ecffa738cf3cd684f12b28a377326699860bd2d6",
+    "status": "pass",
+    "initialHeap": 2162688,
+    "inspection": {
+      "width": 4000,
+      "height": 3000,
+      "inputBytes": 496717,
+      "before": 2162688,
+      "after": 2686976
+    },
+    "estimate": {
+      "heap": 567143591,
+      "transient": 123595388,
+      "output": 9508864,
+      "cpu": 1
+    },
+    "finalHeap": 239403008,
+    "elapsedMs": 4840.099999904633,
+    "trace": [
+      {
+        "operation": "free",
+        "before": 2686976,
+        "after": 2686976,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "render-start",
+        "before": 2686976,
+        "after": 2686976,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "new Image",
+        "before": 2686976,
+        "after": 11010048,
+        "elapsedMs": 1.3999998569488525,
+        "caller": "    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:102:13)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)\n    at async self.onmessage (http://127.0.0.1:64278/scripts/research/scene-memory-worker.js:60:22)"
+      },
+      {
+        "operation": "open",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "convert",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceBrightness",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceContrast",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "enhanceColor",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "free",
+        "before": 11010048,
+        "after": 11010048,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 11010048,
+        "after": 239403008,
+        "elapsedMs": 698.8999998569489,
+        "caller": "    at renderImage (http://127.0.0.1:64278/src/compositor/scene.js:42:32)\n    at renderScene (http://127.0.0.1:64278/src/compositor/scene.js:109:40)\n    at async renderSlideWithApi (http://127.0.0.1:64278/src/engine/pillow.js:247:18)"
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.5
+      },
+      {
+        "operation": "load",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1220.0999999046326
+      },
+      {
+        "operation": "getchannel",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "multiply",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 205.5
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "transformWithInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "load",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1023.5999999046326
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "getchannel",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 2.299999952316284
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "multiply",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "putalphaImageInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 2.0999999046325684
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "getchannel",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 3.1000001430511475
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.09999990463256836
+      },
+      {
+        "operation": "gaussianBlur",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.20000004768371582
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 28.600000143051147
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.6000001430511475
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 2.5
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1.0999999046325684
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1.5999999046325684
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.9000000953674316
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.19999980926513672
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "crop",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.7999999523162842
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1.4000000953674316
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1.0999999046325684
+      },
+      {
+        "operation": "toBytes",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1.3000001907348633
+      },
+      {
+        "operation": "fromBytesFn",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 1
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.10000014305114746
+      },
+      {
+        "operation": "alphaComposite",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 8.699999809265137
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "saveWithInput",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 746.6000001430511
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      },
+      {
+        "operation": "open",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0.2999999523162842
+      },
+      {
+        "operation": "load",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 543.5
+      },
+      {
+        "operation": "free",
+        "before": 239403008,
+        "after": 239403008,
+        "elapsedMs": 0
+      }
+    ],
+    "output": {
+      "sha256": "e9be06899235537ce062adf0df8e6ff42d3a61a73a34575247f8c3908a9e7904",
+      "width": 1080,
+      "height": 1920,
+      "byteLength": 1770723
+    }
+  }
+]

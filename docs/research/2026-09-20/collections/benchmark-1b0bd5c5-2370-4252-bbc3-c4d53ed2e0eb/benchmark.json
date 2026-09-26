@@ -1,0 +1,2045 @@
+{
+  "schema": "migration-parity/benchmark-result@1",
+  "identity": {
+    "run_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb",
+    "started_at": "2026-09-20T05:41:51.515Z",
+    "finished_at": "2026-09-20T06:17:47.605Z",
+    "manifest": {
+      "path": "tests/fixtures/manifest.yaml",
+      "schema": "migration-parity/manifest@2",
+      "sha256": "5a6cd23b9deac2c795b89f9ced246938eb57d350353ef7120cf0e41973a1ee48"
+    },
+    "inputs": [
+      {
+        "path": "tests/fixtures/inputs/parity/engine.json",
+        "schema": "migration-parity/parity-input@1",
+        "sha256": "4620f41c763ac213209e22c81b45e37642d0d679e5a0e45048bf6d2dcb8b3879"
+      },
+      {
+        "path": "tests/fixtures/inputs/coverage/engine.json",
+        "schema": "migration-parity/coverage-input@1",
+        "sha256": "07c0c9f505a3f23cf2ee409f86951f2ea74e06217087927b57121674e014df89"
+      },
+      {
+        "path": "tests/fixtures/inputs/benchmark/engine.json",
+        "schema": "migration-parity/benchmark-input@1",
+        "sha256": "b2b60998aee91ec964c9879ed7a05cff719c0714ecf580d5a3d18896f2411e00"
+      },
+      {
+        "path": "tests/fixtures/inputs/benchmark/collections.json",
+        "schema": "migration-parity/benchmark-input@1",
+        "sha256": "63516d2e317e095b8fdaf88dc21f37b9c58e8c88aa1ef4c2364195f465323fdd"
+      }
+    ],
+    "assets": [
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-cold-auto",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/small.json",
+        "sha256": "74132613b82ef483d5ce2b341c510c2dae8ec6229ac2a28f7c0a5943623853f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "coast-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.jpg",
+        "sha256": "aeb0a584c4ff61244e982a92f2acab15057ebb18459478418f4c3fa674aa1519"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "coast-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/coast-small.png",
+        "sha256": "9c49011ccca82e68d9f16ccbeead1b61787cc44bdea573a439cfe2400a4e36f9"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "cat-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.jpg",
+        "sha256": "2adf54b90b201373b3133772d75304028874661cc7f3e8e479fe0ac099d76973"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "cat-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/cat-small.png",
+        "sha256": "86f47eb2b7d5beae17622e8af562d9f3d04be2f2a41168c42bcbb8e96afa417d"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "food-small-jpg",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.jpg",
+        "sha256": "1d18ed81a5529fc046b590c33b22d8f1029a6c38f58631a1f508761d76e8307f"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.small-warm-auto",
+        "asset_id": "food-small-png",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/derived/food-small.png",
+        "sha256": "75f6843120055907180e060e2e2f145636f792655673d374475f04b202f27f22"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-cold-auto",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "command-input",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/camera.json",
+        "sha256": "4607727ef06fa59e374256690350fc1a4ff5766363b70226f397849121a9e866"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "corpus",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/corpus.json",
+        "sha256": "272c292ca3680239b8856e0d6f029d52a480566a5904ea2a8b026bb995781c93"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "coast",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/coast.jpg",
+        "sha256": "7e04ff95e47636399eaa2459685d0c8c1aca8ae6a4c439fd1345e2cc4f9634cc"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "cat",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/cat.jpg",
+        "sha256": "00414a33196666414be4e4e65a49e561c38c313cc0d24a94d2b72c40722e7876"
+      },
+      {
+        "input_path": "tests/fixtures/inputs/benchmark/collections.json",
+        "item_id": "collection.camera-warm-auto",
+        "asset_id": "food",
+        "kind": "ref",
+        "locator": "tests/fixtures/corpus/collections-v1/originals/food.jpg",
+        "sha256": "4c4d2244285ee28b8f91e2f596529c45703297f1c24f895ddc13bebfc4ffa651"
+      }
+    ],
+    "oracles": [
+      {
+        "oracle_id": "legacy",
+        "name": "Tiny Image Star legacy browser engine",
+        "version": "89cc88c",
+        "runtime": "v24.18.0"
+      }
+    ],
+    "targets": [
+      {
+        "target_profile": "node-wasm",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "v24.18.0",
+        "backend": "wasm-cpu",
+        "features": [
+          "png"
+        ]
+      },
+      {
+        "target_profile": "browser-1",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:1"
+        ]
+      },
+      {
+        "target_profile": "browser-2",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:2"
+        ]
+      },
+      {
+        "target_profile": "browser-4",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:4"
+        ]
+      },
+      {
+        "target_profile": "browser-8",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:8"
+        ]
+      },
+      {
+        "target_profile": "browser-16",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:16"
+        ]
+      },
+      {
+        "target_profile": "browser-auto",
+        "target_id": "app-engine",
+        "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:da67f48291b42524f1774c6af44061155496d449d2dd639ce3d6a02d623734af",
+        "dirty": true,
+        "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+        "backend": "wasm-cpu",
+        "features": [
+          "png",
+          "jpeg",
+          "folder-journal",
+          "concurrency:auto"
+        ]
+      }
+    ],
+    "command": {
+      "command_id": "benchmark",
+      "argv": [
+        "node",
+        "scripts/migration/run.mjs",
+        "benchmark"
+      ],
+      "cwd": ".",
+      "timeout_seconds": 14400
+    }
+  },
+  "status": "completed",
+  "environment": {
+    "machine_id": "86a02180df2189be",
+    "os": "darwin 24.6.0",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Pro",
+    "memory_bytes": 19327352832,
+    "power_mode": "unknown",
+    "toolchain": "Node v24.18.0, V8 13.6.233.17-node.50; Chromium 151.0.7922.34"
+  },
+  "summary": {
+    "workloads_selected": 9,
+    "workloads_measured": 9,
+    "workloads_not_run": 0,
+    "budgets_passed": 15,
+    "budgets_failed": 2,
+    "budgets_not_proven": 4
+  },
+  "workloads": [
+    {
+      "workload_id": "engine.png-warm",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.performance"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 5,
+        "measurement_iterations": 100,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "warm",
+        "correctness_gate": "parity_pass"
+      },
+      "correctness": {
+        "gate": "parity_pass",
+        "outcome": "pass",
+        "evidence_id": "parity-8b1fdbf0-450e-45b8-bf00-1df29eeb4e18"
+      },
+      "subjects": [
+        {
+          "kind": "oracle",
+          "id": "legacy",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 0.04694917000000004,
+                "median": 0.049899159999999936,
+                "mean": 0.053573081999999994,
+                "p95": 0.06964416999999998,
+                "p99": 0.06964416999999998,
+                "max": 0.06964416999999998,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.008282196513668086
+              },
+              "raw_samples_ref": "engine.png-warm-legacy.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 14358.70367900142,
+                "median": 20040.417514042347,
+                "mean": 19047.803646384436,
+                "p95": 21299.631069090236,
+                "p99": 21299.631069090236,
+                "max": 21299.631069090236,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 2478.2328594005803
+              },
+              "raw_samples_ref": "engine.png-warm-legacy.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "node-wasm",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 0.07872457999999995,
+                "median": 0.09230457999999998,
+                "mean": 0.09024291399999995,
+                "p95": 0.09827708000000002,
+                "p99": 0.09827708000000002,
+                "max": 0.09827708000000002,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.006520442410007484
+              },
+              "raw_samples_ref": "engine.png-warm-node-wasm.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 10175.312494022002,
+                "median": 10833.69860953812,
+                "mean": 11142.81025408665,
+                "p95": 12702.512988954666,
+                "p99": 12702.512988954666,
+                "max": 12702.512988954666,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 854.6448569128381
+              },
+              "raw_samples_ref": "engine.png-warm-node-wasm.json"
+            }
+          ]
+        }
+      ],
+      "budgets": [
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.performance",
+          "subject_id": "node-wasm",
+          "baseline_subject": "legacy",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.5,
+          "observed": 1.8498223216583225,
+          "unit": "ratio",
+          "outcome": "fail"
+        }
+      ]
+    },
+    {
+      "workload_id": "collection.small-cold",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 0,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "cold",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.small-cold-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-1",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 24499.5,
+                "median": 24579.89999985695,
+                "mean": 24578.519999980927,
+                "p95": 24692.099999904633,
+                "p99": 24692.099999904633,
+                "max": 24692.099999904633,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 71.69402761455584
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 1.9439415845628922,
+                "median": 1.9528151050362024,
+                "mean": 1.9529413488157101,
+                "p95": 1.9592236576256659,
+                "p99": 1.9592236576256659,
+                "max": 1.9592236576256659,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.0056908755533318
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-2",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 12588.800000190735,
+                "median": 12662,
+                "mean": 12671.440000009537,
+                "p95": 12757.799999952316,
+                "p99": 12757.799999952316,
+                "max": 12757.799999952316,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 55.13784901715921
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 3.762404176282698,
+                "median": 3.790870320644448,
+                "mean": 3.788117883704431,
+                "p95": 3.812913065524335,
+                "p99": 3.812913065524335,
+                "max": 3.812913065524335,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.01647664456611953
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-4",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 6609.700000047684,
+                "median": 6658.700000047684,
+                "mean": 6662.760000038147,
+                "p95": 6729.700000047684,
+                "p99": 6729.700000047684,
+                "max": 6729.700000047684,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 44.37601150094439
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 7.1325616297397945,
+                "median": 7.208614294029806,
+                "mean": 7.204540719878695,
+                "p95": 7.262054253544596,
+                "p99": 7.262054253544596,
+                "max": 7.262054253544596,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.04790320338792908
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-8",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 4174.700000047684,
+                "median": 4208,
+                "mean": 4213.000000047684,
+                "p95": 4263.600000143051,
+                "p99": 4263.600000143051,
+                "max": 4263.600000143051,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 32.32986236786034
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 11.258091753070062,
+                "median": 11.406844106463879,
+                "mean": 11.393975580012201,
+                "p95": 11.497832179426483,
+                "p99": 11.497832179426483,
+                "max": 11.497832179426483,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.08720015454280118
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-16",
+          "status": "not_run",
+          "measurements": []
+        }
+      ],
+      "budgets": []
+    },
+    {
+      "workload_id": "collection.small-cold-auto",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-16"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 0,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "cold",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.small-cold-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-auto",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 7114,
+                "median": 7180.899999856949,
+                "mean": 7159.47999997139,
+                "p95": 7200.5,
+                "p99": 7200.5,
+                "max": 7200.5,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 35.96166846482985
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 6.666203735851677,
+                "median": 6.684398891637011,
+                "mean": 6.704566939638323,
+                "p95": 6.747258926061288,
+                "p99": 6.747258926061288,
+                "max": 6.747258926061288,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.03372800293554586
+              },
+              "raw_samples_ref": "collection.small-cold-samples.json"
+            }
+          ]
+        }
+      ],
+      "budgets": [
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-1",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-1",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.2921452080723982,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-2",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-2",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.5671220976036131,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-4",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-4",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.0784237163118215,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-8",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-8",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.7064876425515563,
+          "unit": "ratio",
+          "outcome": "fail"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-16",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-16",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": null,
+          "unit": "ratio",
+          "outcome": "not_proven"
+        }
+      ]
+    },
+    {
+      "workload_id": "collection.small-warm",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 1,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "warm",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.small-warm-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-1",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 23975.199999809265,
+                "median": 24123.5,
+                "mean": 24202.399999952315,
+                "p95": 24535,
+                "p99": 24535,
+                "max": 24535,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 209.2693862479818
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 1.9563888322804157,
+                "median": 1.9897610214106576,
+                "mean": 1.9834220511972211,
+                "p95": 2.0020688044471733,
+                "p99": 2.0020688044471733,
+                "max": 2.0020688044471733,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.01707804446962884
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-2",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 12381.399999856949,
+                "median": 12492.400000095367,
+                "mean": 12479.15999994278,
+                "p95": 12536.299999952316,
+                "p99": 12536.299999952316,
+                "max": 12536.299999952316,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 55.77944426671762
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 3.828880929794483,
+                "median": 3.8423361403440146,
+                "mean": 3.846489848445489,
+                "p95": 3.87678291635474,
+                "p99": 3.87678291635474,
+                "max": 3.87678291635474,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.017251214161402392
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-4",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 6468.700000047684,
+                "median": 6486,
+                "mean": 6499.9,
+                "p95": 6549.299999952316,
+                "p99": 6549.299999952316,
+                "max": 6549.299999952316,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 29.191300059219962
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 7.329027529713019,
+                "median": 7.400555041628122,
+                "mean": 7.384877499344475,
+                "p95": 7.420347210358522,
+                "p99": 7.420347210358522,
+                "max": 7.420347210358522,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.033066807095331385
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-8",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 3927,
+                "median": 3935.300000190735,
+                "mean": 3973.32000002861,
+                "p95": 4062.0999999046326,
+                "p99": 4062.0999999046326,
+                "max": 4062.0999999046326,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 53.639589804518195
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 11.816548091166371,
+                "median": 12.197291184324841,
+                "mean": 12.082759552003584,
+                "p95": 12.223071046600458,
+                "p99": 12.223071046600458,
+                "max": 12.223071046600458,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.16164211766255987
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-16",
+          "status": "not_run",
+          "measurements": []
+        }
+      ],
+      "budgets": []
+    },
+    {
+      "workload_id": "collection.small-warm-auto",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-16"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 1,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "warm",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.small-warm-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-auto",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 3410.9000000953674,
+                "median": 3462.199999809265,
+                "mean": 3481.439999961853,
+                "p95": 3576.600000143051,
+                "p99": 3576.600000143051,
+                "max": 3576.600000143051,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 64.16786117408965
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 13.420567018419776,
+                "median": 13.8640170997182,
+                "mean": 13.792054819243992,
+                "p95": 14.072532175865003,
+                "p99": 14.072532175865003,
+                "max": 14.072532175865003,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.25265518378879304
+              },
+              "raw_samples_ref": "collection.small-warm-samples.json"
+            }
+          ]
+        }
+      ],
+      "budgets": [
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-1",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-1",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.14351980433225964,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-2",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-2",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.27714450384096206,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-4",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-4",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.5337958679940279,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-8",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-8",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.8797804486675629,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-16",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-16",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": null,
+          "unit": "ratio",
+          "outcome": "not_proven"
+        }
+      ]
+    },
+    {
+      "workload_id": "collection.camera-cold",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 0,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "cold",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.camera-cold-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-1",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 20095.199999809265,
+                "median": 20658.400000095367,
+                "mean": 20692,
+                "p95": 21733.099999904633,
+                "p99": 21733.099999904633,
+                "max": 21733.099999904633,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 589.8662187215579
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 1.1043063345820576,
+                "median": 1.1617550245851183,
+                "mean": 1.160792726151911,
+                "p95": 1.1943150603242465,
+                "p99": 1.1943150603242465,
+                "max": 1.1943150603242465,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.03242885239594874
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-2",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 10610,
+                "median": 10878.700000047684,
+                "mean": 10928.640000057221,
+                "p95": 11256.600000143051,
+                "p99": 11256.600000143051,
+                "max": 11256.600000143051,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 241.15414660780655
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.1320825115661037,
+                "median": 2.206145954929799,
+                "mean": 2.197132177667347,
+                "p95": 2.2620169651272386,
+                "p99": 2.2620169651272386,
+                "max": 2.2620169651272386,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.04838386042608511
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-4",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 10143.099999904633,
+                "median": 10638.799999952316,
+                "mean": 10513.299999952316,
+                "p95": 10829.099999904633,
+                "p99": 10829.099999904633,
+                "max": 10829.099999904633,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 271.96468151313945
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.216250657968932,
+                "median": 2.2558935218358807,
+                "mean": 2.284363351833748,
+                "p95": 2.3661405290518336,
+                "p99": 2.3661405290518336,
+                "max": 2.3661405290518336,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.05956117027285998
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-8",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 10048.700000047684,
+                "median": 10536.200000047684,
+                "mean": 10428.560000038147,
+                "p95": 10709,
+                "p99": 10709,
+                "max": 10709,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 251.57559980611822
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.24110561210197,
+                "median": 2.277861088427648,
+                "mean": 2.3027260854550606,
+                "p95": 2.3883686446889763,
+                "p99": 2.3883686446889763,
+                "max": 2.3883686446889763,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.05612079369094685
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-16",
+          "status": "not_run",
+          "measurements": []
+        }
+      ],
+      "budgets": []
+    },
+    {
+      "workload_id": "collection.camera-cold-auto",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-16"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 0,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "cold",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.camera-cold-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-auto",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 10568,
+                "median": 11408.100000143051,
+                "mean": 11399.37999997139,
+                "p95": 12324.899999856949,
+                "p99": 12324.899999856949,
+                "max": 12324.899999856949,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 566.8932435243944
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 1.9472774627200675,
+                "median": 2.1037683750755214,
+                "mean": 2.1105547056486023,
+                "p95": 2.2710068130204393,
+                "p99": 2.2710068130204393,
+                "max": 2.2710068130204393,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.10427113282282104
+              },
+              "raw_samples_ref": "collection.camera-cold-samples.json"
+            }
+          ]
+        }
+      ],
+      "budgets": [
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-1",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-1",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.5522257290056533,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-2",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-2",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.048663902864593,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-4",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-4",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.072310786949109,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-8",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-8",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.082752795134054,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-16",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-16",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": null,
+          "unit": "ratio",
+          "outcome": "not_proven"
+        }
+      ]
+    },
+    {
+      "workload_id": "collection.camera-warm",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 1,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "warm",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.camera-warm-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-1",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 19107.199999809265,
+                "median": 19746.400000095367,
+                "mean": 19836.13999991417,
+                "p95": 20871.799999952316,
+                "p99": 20871.799999952316,
+                "max": 20871.799999952316,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 572.5720412706619
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 1.1498768673547481,
+                "median": 1.215411416758705,
+                "mean": 1.2109007822261786,
+                "p95": 1.2560710098936305,
+                "p99": 1.2560710098936305,
+                "max": 1.2560710098936305,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.03424279866543687
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-2",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 9773.099999904633,
+                "median": 10193,
+                "mean": 10051.2,
+                "p95": 10294.100000143051,
+                "p99": 10294.100000143051,
+                "max": 10294.100000143051,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 221.37522903298714
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.331432568137718,
+                "median": 2.3545570489551655,
+                "mean": 2.3889419888944254,
+                "p95": 2.455720293482538,
+                "p99": 2.455720293482538,
+                "max": 2.455720293482538,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.053005223561787565
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-4",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 9655.299999952316,
+                "median": 10060.5,
+                "mean": 10055.980000019073,
+                "p95": 10390.100000143051,
+                "p99": 10390.100000143051,
+                "max": 10390.100000143051,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 276.28998099862764
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.3098911463479244,
+                "median": 2.385567317727747,
+                "mean": 2.3884513039946453,
+                "p95": 2.485681439221829,
+                "p99": 2.485681439221829,
+                "max": 2.485681439221829,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.06595277345957452
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-8",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 9502.700000047684,
+                "median": 9833.200000047684,
+                "mean": 9939.659999990463,
+                "p95": 10539.399999856949,
+                "p99": 10539.399999856949,
+                "max": 10539.399999856949,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 354.66014485479013
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.2771694783693333,
+                "median": 2.44071106047712,
+                "mean": 2.417589965902425,
+                "p95": 2.5255979879275965,
+                "p99": 2.5255979879275965,
+                "max": 2.5255979879275965,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.084694786972478
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            }
+          ]
+        },
+        {
+          "kind": "target_profile",
+          "id": "browser-16",
+          "status": "not_run",
+          "measurements": []
+        }
+      ],
+      "budgets": []
+    },
+    {
+      "workload_id": "collection.camera-warm-auto",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-16"
+      ],
+      "measurement_policy": {
+        "boundary": "whole_workflow",
+        "step_ids": [],
+        "metrics": [
+          "latency",
+          "throughput"
+        ],
+        "warmup_iterations": 1,
+        "measurement_iterations": 1,
+        "samples": 5,
+        "concurrency": 1,
+        "cache_state": "warm",
+        "correctness_gate": "successful_execution"
+      },
+      "correctness": {
+        "gate": "successful_execution",
+        "outcome": "pass",
+        "evidence_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb/collection.camera-warm-samples.json"
+      },
+      "subjects": [
+        {
+          "kind": "target_profile",
+          "id": "browser-auto",
+          "status": "completed",
+          "measurements": [
+            {
+              "metric": "latency",
+              "unit": "millisecond",
+              "sample_count": 5,
+              "statistics": {
+                "min": 9700.399999856949,
+                "median": 10101.200000047684,
+                "mean": 10206.519999980927,
+                "p95": 10763.299999952316,
+                "p99": 10763.299999952316,
+                "max": 10763.299999952316,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 394.6582592404385
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            },
+            {
+              "metric": "throughput",
+              "unit": "images_per_second",
+              "sample_count": 5,
+              "statistics": {
+                "min": 2.229799410971201,
+                "median": 2.375955332028542,
+                "mean": 2.3549359566909387,
+                "p95": 2.474124778396141,
+                "p99": 2.474124778396141,
+                "max": 2.474124778396141,
+                "total": null,
+                "weighted_mean": null,
+                "standard_deviation": 0.09049273600748452
+              },
+              "raw_samples_ref": "collection.camera-warm-samples.json"
+            }
+          ]
+        }
+      ],
+      "budgets": [
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-1",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-1",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.5115464084592077,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-2",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-2",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 0.9909938192924246,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-4",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-4",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.004045524581053,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-8",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-8",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": 1.0272546068419945,
+          "unit": "ratio",
+          "outcome": "pass"
+        },
+        {
+          "requirement_id": "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-16",
+          "subject_id": "browser-auto",
+          "baseline_subject": "browser-16",
+          "metric": "latency",
+          "statistic": "median",
+          "operator": "less_than_or_equal",
+          "required": 1.1,
+          "observed": null,
+          "unit": "ratio",
+          "outcome": "not_proven"
+        }
+      ]
+    }
+  ],
+  "suites": [],
+  "infrastructure_errors": []
+}

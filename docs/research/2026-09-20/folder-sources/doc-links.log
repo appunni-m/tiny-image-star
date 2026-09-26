@@ -1,0 +1,5 @@
+
+> check:docs
+> node scripts/check-doc-links.mjs
+
+Documentation links OK: 86 Markdown files checked.

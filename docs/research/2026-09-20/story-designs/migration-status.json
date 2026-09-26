@@ -1,0 +1,742 @@
+{
+  "schema": "migration-parity/status-report@1",
+  "manifest": {
+    "path": "tests/fixtures/manifest.yaml",
+    "schema": "migration-parity/manifest@2",
+    "sha256": "5a6cd23b9deac2c795b89f9ced246938eb57d350353ef7120cf0e41973a1ee48"
+  },
+  "target_profiles": [
+    {
+      "target_profile": "node-wasm",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "v24.18.0",
+      "backend": "wasm-cpu",
+      "features": [
+        "png"
+      ]
+    },
+    {
+      "target_profile": "browser-1",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:1"
+      ]
+    },
+    {
+      "target_profile": "browser-2",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:2"
+      ]
+    },
+    {
+      "target_profile": "browser-4",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:4"
+      ]
+    },
+    {
+      "target_profile": "browser-8",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:8"
+      ]
+    },
+    {
+      "target_profile": "browser-16",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:16"
+      ]
+    },
+    {
+      "target_profile": "browser-auto",
+      "target_id": "app-engine",
+      "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:34e8ed67215a4e6cb451d6c49039204a5b0e6a59a26fc7d5e4824b45bcf1f1c0",
+      "dirty": true,
+      "runtime": "Playwright 1.62.1; Chromium executable SHA-256 a596b1cfc6353e987fcec8d71a23a28cd6a9e7a6b4e20b908e4c4fcffe51158e",
+      "backend": "wasm-cpu",
+      "features": [
+        "png",
+        "jpeg",
+        "folder-journal",
+        "concurrency:auto"
+      ]
+    }
+  ],
+  "evidence": [],
+  "completeness": [
+    {
+      "dimension": "inventory_representation",
+      "target_profile": null,
+      "numerator": 2,
+      "denominator": 2,
+      "evidence_id": null
+    },
+    {
+      "dimension": "operation_contracts",
+      "target_profile": null,
+      "numerator": 2,
+      "denominator": 2,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "node-wasm",
+      "numerator": 34,
+      "denominator": 34,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "node-wasm",
+      "numerator": 33,
+      "denominator": 33,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "node-wasm",
+      "numerator": 1,
+      "denominator": 1,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-1",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-1",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-1",
+      "numerator": 4,
+      "denominator": 4,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-2",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-2",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-2",
+      "numerator": 4,
+      "denominator": 4,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-4",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-4",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-4",
+      "numerator": 4,
+      "denominator": 4,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-8",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-8",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-8",
+      "numerator": 4,
+      "denominator": 4,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-16",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-16",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-16",
+      "numerator": 4,
+      "denominator": 4,
+      "evidence_id": null
+    },
+    {
+      "dimension": "parity_input_mapping",
+      "target_profile": "browser-auto",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "coverage_input_mapping",
+      "target_profile": "browser-auto",
+      "numerator": 0,
+      "denominator": 0,
+      "evidence_id": null
+    },
+    {
+      "dimension": "benchmark_input_mapping",
+      "target_profile": "browser-auto",
+      "numerator": 24,
+      "denominator": 24,
+      "evidence_id": null
+    }
+  ],
+  "operations": [
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "node-wasm",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.original",
+        "TinyImageStar.Engine.renderWithApi.fit",
+        "TinyImageStar.Engine.renderWithApi.fill",
+        "TinyImageStar.Engine.renderWithApi.crop",
+        "TinyImageStar.Engine.renderWithApi.crop-clamp",
+        "TinyImageStar.Engine.renderWithApi.relative-crop",
+        "TinyImageStar.Engine.renderWithApi.rotate90",
+        "TinyImageStar.Engine.renderWithApi.rotate180",
+        "TinyImageStar.Engine.renderWithApi.rotate270",
+        "TinyImageStar.Engine.renderWithApi.flip-x",
+        "TinyImageStar.Engine.renderWithApi.flip-y",
+        "TinyImageStar.Engine.renderWithApi.grayscale",
+        "TinyImageStar.Engine.renderWithApi.brightness",
+        "TinyImageStar.Engine.renderWithApi.contrast",
+        "TinyImageStar.Engine.renderWithApi.chain",
+        "TinyImageStar.Engine.renderWithApi.output-limit",
+        "TinyImageStar.Engine.renderWithApi.unsupported-output",
+        "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp",
+        "TinyImageStar.Engine.renderWithApi.performance"
+      ],
+      "parity": {
+        "applicability": "required",
+        "input_ids": [
+          "TinyImageStar.Engine.renderWithApi.original",
+          "TinyImageStar.Engine.renderWithApi.fit",
+          "TinyImageStar.Engine.renderWithApi.fill",
+          "TinyImageStar.Engine.renderWithApi.crop",
+          "TinyImageStar.Engine.renderWithApi.crop-clamp",
+          "TinyImageStar.Engine.renderWithApi.relative-crop",
+          "TinyImageStar.Engine.renderWithApi.rotate90",
+          "TinyImageStar.Engine.renderWithApi.rotate180",
+          "TinyImageStar.Engine.renderWithApi.rotate270",
+          "TinyImageStar.Engine.renderWithApi.flip-x",
+          "TinyImageStar.Engine.renderWithApi.flip-y",
+          "TinyImageStar.Engine.renderWithApi.grayscale",
+          "TinyImageStar.Engine.renderWithApi.brightness",
+          "TinyImageStar.Engine.renderWithApi.contrast",
+          "TinyImageStar.Engine.renderWithApi.chain",
+          "TinyImageStar.Engine.renderWithApi.output-limit",
+          "TinyImageStar.Engine.renderWithApi.unsupported-output",
+          "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets.dirty"
+        ]
+      },
+      "coverage": {
+        "applicability": "required",
+        "input_ids": [
+          "engine.public-and-regression"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets.dirty"
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "engine.png-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-1",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold",
+          "collection.small-warm",
+          "collection.camera-cold",
+          "collection.camera-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-2",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold",
+          "collection.small-warm",
+          "collection.camera-cold",
+          "collection.camera-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-4",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold",
+          "collection.small-warm",
+          "collection.camera-cold",
+          "collection.camera-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-8",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold",
+          "collection.small-warm",
+          "collection.camera-cold",
+          "collection.camera-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-16",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold",
+          "collection.small-warm",
+          "collection.camera-cold",
+          "collection.camera-warm"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "renderWithApi",
+      "target_profile": "browser-auto",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-small-cold-auto-vs-16",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-small-warm-auto-vs-16",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-cold-auto-vs-16",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-1",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-2",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-4",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-8",
+        "TinyImageStar.Engine.renderWithApi.collection-camera-warm-auto-vs-16"
+      ],
+      "parity": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "coverage": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "This profile is outside the declared lane scope."
+        ]
+      },
+      "benchmark": {
+        "applicability": "required",
+        "input_ids": [
+          "collection.small-cold-auto",
+          "collection.small-warm-auto",
+          "collection.camera-cold-auto",
+          "collection.camera-warm-auto"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets",
+          "targets.dirty"
+        ]
+      }
+    },
+    {
+      "surface": "TinyImageStar.Engine",
+      "operation": "previewWithApi",
+      "target_profile": "node-wasm",
+      "classification": "endpoint",
+      "support": "supported",
+      "requirements": [
+        "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+      ],
+      "parity": {
+        "applicability": "required",
+        "input_ids": [
+          "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets.dirty"
+        ]
+      },
+      "coverage": {
+        "applicability": "required",
+        "input_ids": [
+          "engine.public-and-regression"
+        ],
+        "outcome": "not_proven",
+        "evidence_id": null,
+        "details": [
+          "targets.dirty"
+        ]
+      },
+      "benchmark": {
+        "applicability": "not_applicable",
+        "input_ids": [],
+        "outcome": "not_applicable",
+        "evidence_id": null,
+        "details": [
+          "Preview startup and mobile performance are qualified by separate browser workloads; this slice benchmarks the complete transform path."
+        ]
+      }
+    }
+  ],
+  "stale_or_incompatible_evidence": [
+    {
+      "lane": "parity",
+      "run_id": "parity-2261e174-989f-41ef-9a24-8006cb1e5c72",
+      "reason": "targets.dirty",
+      "identity_diff": [
+        "targets.dirty"
+      ]
+    },
+    {
+      "lane": "coverage",
+      "run_id": "coverage-2b4340e2-ff7e-4075-b910-bd755a797370",
+      "reason": "targets.dirty",
+      "identity_diff": [
+        "targets.dirty"
+      ]
+    },
+    {
+      "lane": "benchmark",
+      "run_id": "benchmark-1b0bd5c5-2370-4252-bbc3-c4d53ed2e0eb",
+      "reason": "targets, targets.dirty",
+      "identity_diff": [
+        "targets",
+        "targets.dirty"
+      ]
+    }
+  ]
+}

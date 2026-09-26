@@ -1,0 +1,62 @@
+✖ initial Auto admission follows real arrivals, then stops speculative growth at the first useful result (23.475916ms)
+✔ a completed short probe cannot be enlarged merely by later arrivals or header inspection (2.234959ms)
+✔ cancelled initial work and pressure do not reopen the speculative arrival phase (1.818875ms)
+✔ a wider initial limit still counts retained sources, terminal outputs and actual reads against memory (0.647875ms)
+✖ Auto challenges an unproven initial size when 1 workers already saturate useful throughput (9.006334ms)
+✔ Auto challenges an unproven initial size when 2 workers already saturate useful throughput (3.359125ms)
+✖ an unfinished downward probe does not replace a measured good limit across idle or cancellation (2.162375ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 4
+ℹ fail 3
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 125.621917
+
+✖ failing tests:
+
+test at tests/processing-startup.test.mjs:31:1
+✖ initial Auto admission follows real arrivals, then stops speculative growth at the first useful result (23.475916ms)
+  AssertionError [ERR_ASSERTION]: five workers fit two waves of substantive work and half the reported CPU budget
+  
+  2 !== 5
+  
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/processing-startup.test.mjs:34:32)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 5,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/processing-startup.test.mjs:66:3
+✖ Auto challenges an unproven initial size when 1 workers already saturate useful throughput (9.006334ms)
+  AssertionError [ERR_ASSERTION]: a resource hint must not permanently retain a needlessly large pool when only 1 workers help
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/processing-startup.test.mjs:75:12)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }
+
+test at tests/processing-startup.test.mjs:80:1
+✖ an unfinished downward probe does not replace a measured good limit across idle or cancellation (2.162375ms)
+  AssertionError [ERR_ASSERTION]: failed expansion should test whether fewer than the provisional initial workers suffice
+      at TestContext.<anonymous> (file:///Users/lazytrot/work/tiny-image-star/tests/processing-startup.test.mjs:88:10)
+      at async Test.run (node:internal/test_runner/test:1332:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:911:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

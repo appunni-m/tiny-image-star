@@ -1,0 +1,182 @@
+{
+  "recordedAt": "2026-09-17T04:39:31.076Z",
+  "note": "One public-domain portrait with a pre-existing research mask. Visual effect example, not a representative quality gate or automatic selection feature.",
+  "sourceSha256": "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5",
+  "maskSha256": "d73c95595c9b35af8088ef1e4f1abf51351b942043ae76a02d57f26df259be5d",
+  "project": {
+    "kind": "tiny-image-star/project",
+    "version": 1,
+    "id": "cutout-finish-photo-proof",
+    "revision": 0,
+    "name": "Untitled story",
+    "createdAt": 1789619954902,
+    "seed": 1,
+    "engine": {
+      "name": "pillow-rs",
+      "version": "12.2.0-alpha.1",
+      "adapter": "legacy-v1",
+      "javascriptSha256": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed",
+      "wasmSha256": "08dfff0b10424b6ece937574aefd4c07d1d4f8ac95643e7c4d5138ab720d5a96",
+      "compositor": "canvas-rgba-pillow-v1"
+    },
+    "models": [],
+    "recipe": null,
+    "assets": {
+      "photo": {
+        "id": "photo",
+        "kind": "image",
+        "name": "NASA Eileen Collins portrait",
+        "width": 512,
+        "height": 512,
+        "type": "image/png",
+        "orientation": "upright",
+        "byteLength": 791555,
+        "sha256": "88431cd9653ccd539741b555fb0a46b61558b301d4110412b5bc28b5e3ea6cb5"
+      },
+      "mask": {
+        "id": "mask",
+        "kind": "mask",
+        "name": "Research portrait mask",
+        "width": 512,
+        "height": 512,
+        "type": "image/png",
+        "orientation": "upright",
+        "byteLength": 15071,
+        "sha256": "d73c95595c9b35af8088ef1e4f1abf51351b942043ae76a02d57f26df259be5d"
+      }
+    },
+    "nodes": {
+      "paper": {
+        "id": "paper",
+        "kind": "shape",
+        "space": "slide",
+        "frame": {
+          "x": 0,
+          "y": 0,
+          "width": 1,
+          "height": 1
+        },
+        "color": "#eadbcd"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "space": "slide",
+        "frame": {
+          "x": 0.07,
+          "y": 0.06,
+          "width": 0.86,
+          "height": 0.15
+        },
+        "text": "GO BEYOND",
+        "color": "#183d49",
+        "style": {
+          "builtinFont": "system-sans",
+          "fontBasis": "width",
+          "fontSize": 0.12,
+          "minFontSize": 0.1,
+          "weight": 800,
+          "fit": "shrink"
+        }
+      },
+      "subject": {
+        "id": "subject",
+        "kind": "image",
+        "space": "slide",
+        "frame": {
+          "x": 0.1,
+          "y": 0.25,
+          "width": 0.8,
+          "height": 0.66
+        },
+        "assetId": "photo",
+        "maskId": "mask",
+        "fit": "contain",
+        "rotation": -3,
+        "cutoutEffects": {
+          "schema": 1,
+          "outline": {
+            "color": "#fff9f2",
+            "width": 0.006
+          },
+          "shadow": {
+            "color": "#273443",
+            "opacity": 0.45,
+            "blur": 0.01,
+            "x": 0.01,
+            "y": 0.015
+          }
+        }
+      },
+      "caption": {
+        "id": "caption",
+        "kind": "text",
+        "space": "slide",
+        "frame": {
+          "x": 0.07,
+          "y": 0.955,
+          "width": 0.86,
+          "height": 0.03
+        },
+        "text": "NASA · Eileen Collins · Public-domain photo",
+        "color": "#183d49",
+        "style": {
+          "builtinFont": "system-sans",
+          "fontBasis": "width",
+          "fontSize": 0.02,
+          "minFontSize": 0.02,
+          "weight": 400,
+          "fit": "shrink"
+        }
+      }
+    },
+    "slides": [
+      {
+        "id": "slide-b1890a1c-2942-4dfa-9eca-2b900168e361",
+        "nodeIds": [
+          "paper",
+          "heading",
+          "subject",
+          "caption"
+        ],
+        "overrides": {}
+      }
+    ],
+    "shared": {
+      "appearance": {}
+    },
+    "variants": [
+      {
+        "id": "portrait",
+        "width": 1080,
+        "height": 1350
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "name": "plain",
+      "sha256": "3dfc261e167528d7d497428f98440e65ffff82596d20dca06fd250da4c5561cc",
+      "width": 1080,
+      "height": 1350
+    },
+    {
+      "name": "outline",
+      "sha256": "fe241fdc624e212861c80bcead9d87038ee3baa472d90e331ca08ca745a65383",
+      "width": 1080,
+      "height": 1350
+    },
+    {
+      "name": "shadow",
+      "sha256": "809620bf7fbfcf7266a0d148e51943cece1fe13486540796e7a4a12b9e8e06d2",
+      "width": 1080,
+      "height": 1350
+    },
+    {
+      "name": "combined",
+      "sha256": "7d93ed24ee77a718b0c6ca1349c8fcf2eee828afbd5e3850ac417f5142a17dd7",
+      "width": 1080,
+      "height": 1350
+    }
+  ]
+}

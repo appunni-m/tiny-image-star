@@ -107,16 +107,16 @@ export function attachEditorView(editor) {
     elements.exportFormat.textContent = formatLabel(selected);
     elements.saveButton.setAttribute("aria-label", `Download current ${formatLabel(selected)}`);
     elements.saveButton.title = `Download current ${formatLabel(selected)} (Cmd/Ctrl+S)`;
-    elements.saveButton.textContent = "Download current";
+    elements.saveButton.textContent = "Export";
     elements.inspectorSaveButton.textContent = `Download ${formatLabel(selected)}`;
     elements.exportDownloadButton.textContent = `Download ${formatLabel(selected)}`;
     const compression = state.capabilities.compression;
     const formatCanBeLossy = compression.lossy && compression.lossyFormats.includes(selected);
     elements.formatTool.hidden = !state.image;
     elements.outputFormatDetails.hidden = false;
-    elements.compressionOptions.hidden = !formatCanBeLossy;
+    elements.compressionOptions.hidden = !formatCanBeLossy || !compression.quality;
     elements.lossyToggle.checked = Boolean(state.operations?.lossy);
-    elements.lossyToggle.disabled = !state.image || !formatCanBeLossy;
+    elements.lossyToggle.disabled = !state.image || !formatCanBeLossy || !compression.quality;
     elements.qualityDetails.hidden = !formatCanBeLossy || !compression.quality;
     const quality = state.operations?.quality ?? DEFAULT_QUALITY;
     elements.quality.value = String(quality);
@@ -128,7 +128,9 @@ export function attachEditorView(editor) {
       button.disabled = !state.image || !formatCanBeLossy || !compression.quality;
       button.setAttribute("aria-pressed", String(Number(button.dataset.qualityPreset) === activeQuality));
     }
-    elements.formatHelp.textContent = formatCanBeLossy
+    elements.formatHelp.textContent = formatCanBeLossy && !compression.quality
+      ? "JPEG uses fixed lossy encoder settings. Transparent areas are saved on white. Choose PNG to preserve transparency."
+      : formatCanBeLossy
       ? `Available here: ${formatListLabel(formats)}. Choose Low, Medium, or High quality below.`
       : `Available here: ${formatListLabel(formats)}. ${formatLabel(selected)} is saved at full quality; Low, Medium, and High appear only for verified compressed formats.`;
     elements.outputFormatSelect.replaceChildren();
@@ -335,6 +337,7 @@ export function attachEditorView(editor) {
     elements.workspace.dataset.inspectorOpen = String(state.inspectorOpen);
     elements.mobileInspectorToggle.setAttribute("aria-expanded", String(state.inspectorOpen));
     elements.mobileInspectorToggle.textContent = state.inspectorOpen ? "Hide controls" : "Controls";
+    editor.syncMobileInspector?.();
   }
 
   Object.assign(editor, {

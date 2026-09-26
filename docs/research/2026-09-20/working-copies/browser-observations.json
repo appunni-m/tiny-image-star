@@ -1,0 +1,102 @@
+{
+  "camera": {
+    "originalWidth": 4032,
+    "originalHeight": 3024,
+    "width": 2048,
+    "height": 1536,
+    "sourceBytes": 2546597,
+    "copyBytes": 3697204,
+    "peakReserved": 420021810,
+    "budget": 536870912
+  },
+  "runs": [
+    {
+      "count": 1,
+      "peak": 1,
+      "violations": 0,
+      "hashes": [
+        "30778437218a661be2e2768784de3611d167cd1ddd12c8ccb4404d387d58b153",
+        "411d15311334df0eb3221f1bdcccde696452cf53adce448fe21b9fe397af93cd",
+        "e1d38f00d6fa9936d0c6086bd4c552b91f284abb777f5746b3ae8955e0e7a864",
+        "dc85b631f7ff34fed28c1d6585d0ebafdc588cd1aae4bb0c93c8ebb9f484e6ce",
+        "a3b245fd12d1b605e24dbac755c36c838c15140d692bffa309f70219cc8aa335",
+        "0fbb75019071749b98f48536b49414fb7b4674aa3bd7e06fa823b9bfb571c96a",
+        "7db67c159dd6b7afec9cec92ba093026b2e337c5a467b5bdab1a039ca42de9ba",
+        "329037bc1728023d75e33dd63a07e9a67759900a57aa66f44094c307daac243c"
+      ],
+      "differences": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "count": 4,
+      "peak": 4,
+      "violations": 0,
+      "hashes": [
+        "30778437218a661be2e2768784de3611d167cd1ddd12c8ccb4404d387d58b153",
+        "411d15311334df0eb3221f1bdcccde696452cf53adce448fe21b9fe397af93cd",
+        "e1d38f00d6fa9936d0c6086bd4c552b91f284abb777f5746b3ae8955e0e7a864",
+        "dc85b631f7ff34fed28c1d6585d0ebafdc588cd1aae4bb0c93c8ebb9f484e6ce",
+        "a3b245fd12d1b605e24dbac755c36c838c15140d692bffa309f70219cc8aa335",
+        "0fbb75019071749b98f48536b49414fb7b4674aa3bd7e06fa823b9bfb571c96a",
+        "7db67c159dd6b7afec9cec92ba093026b2e337c5a467b5bdab1a039ca42de9ba",
+        "329037bc1728023d75e33dd63a07e9a67759900a57aa66f44094c307daac243c"
+      ],
+      "differences": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "count": 8,
+      "peak": 8,
+      "violations": 0,
+      "hashes": [
+        "30778437218a661be2e2768784de3611d167cd1ddd12c8ccb4404d387d58b153",
+        "411d15311334df0eb3221f1bdcccde696452cf53adce448fe21b9fe397af93cd",
+        "e1d38f00d6fa9936d0c6086bd4c552b91f284abb777f5746b3ae8955e0e7a864",
+        "dc85b631f7ff34fed28c1d6585d0ebafdc588cd1aae4bb0c93c8ebb9f484e6ce",
+        "a3b245fd12d1b605e24dbac755c36c838c15140d692bffa309f70219cc8aa335",
+        "0fbb75019071749b98f48536b49414fb7b4674aa3bd7e06fa823b9bfb571c96a",
+        "7db67c159dd6b7afec9cec92ba093026b2e337c5a467b5bdab1a039ca42de9ba",
+        "329037bc1728023d75e33dd63a07e9a67759900a57aa66f44094c307daac243c"
+      ],
+      "differences": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "alpha": [
+    128
+  ],
+  "heavy": {
+    "estimatedBytes": 492458449,
+    "budget": 536870912,
+    "outputWidth": 288,
+    "outputHeight": 512,
+    "maximumEffects": {
+      "estimatedBytes": 641997265,
+      "rejectedBeforeRead": true
+    }
+  }
+}

@@ -17,19 +17,6 @@ export function batchBytesExceedLimit(existingBytes, incomingBytes, maxBytes = M
   return safeByteCount(existingBytes) + safeByteCount(incomingBytes) > limit;
 }
 
-export function processingWorkerCount(items, hardwareConcurrency = 2, maxWorkers = 4) {
-  const queueLength = Array.isArray(items) ? items.length : 0;
-  if (!queueLength) return 0;
-  const hardwareLimit = Math.max(1, Number(hardwareConcurrency) || 2);
-  const workerLimit = Math.max(1, Number(maxWorkers) || 1);
-  const largestItemPixels = Math.max(
-    1,
-    ...items.map((item) => imagePixelCount(item?.width, item?.height)),
-  );
-  const memoryLimit = Math.max(1, Math.floor(MAX_BATCH_PIXELS / largestItemPixels));
-  return Math.min(queueLength, workerLimit, hardwareLimit, memoryLimit);
-}
-
 function bytesView(bytes) {
   if (bytes instanceof Uint8Array) return bytes;
   if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);

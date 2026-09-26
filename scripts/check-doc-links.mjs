@@ -4,7 +4,7 @@ import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const ignoredDirectories = new Set([".git", "node_modules", "_site"]);
+const ignoredDirectories = new Set([".git", "node_modules", "_site", ".segmentation-cache"]);
 
 async function markdownFiles(directory) {
   const files = [];

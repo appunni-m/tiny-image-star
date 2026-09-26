@@ -1,0 +1,221 @@
+{
+  "schema": 1,
+  "runId": "segmentation-9d12b32c-2708-4203-9075-cde1e3db0945",
+  "startedAt": "2026-09-17T03:46:28.635Z",
+  "manifestSha256": "e6662d0e7b8d1db47f4ef589d355c132401318eab72204d60d384dd02bd315e1",
+  "sdk": {
+    "name": "@mediapipe/tasks-vision",
+    "version": "1.0.1",
+    "integrity": "sha512-rvRE2FmAZ6ZxKSw7wq+e+jQDpN3t1B/tD2mJz9SmAzb1msoDkd4dMoE4wAh8Z30Um0PQwLiHr9QtomhmXk3aUQ=="
+  },
+  "requestedCases": [
+    "selfie-CPU"
+  ],
+  "repetitions": 5,
+  "notes": [
+    "One inference worker at a time; each is terminated after its case.",
+    "Local HTTP files; modelReadMs is not internet download latency.",
+    "Wasm linear memory only, not process RSS or complete JS/GPU memory.",
+    "Three public-domain/CC0 probes have no ground-truth mattes and do not qualify visual quality or subgroup fairness.",
+    "The 2023 MagicTouch card does not establish the 2026 v2 artifact's exact model/license identity."
+  ],
+  "cases": [
+    {
+      "id": "selfie-CPU",
+      "modelSha256": "191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b",
+      "type": "result",
+      "model": "selfie.tflite",
+      "delegate": "CPU",
+      "noSimd": false,
+      "bundleMs": 6,
+      "modelReadMs": 2.1000001430511475,
+      "initMs": 86.09999990463257,
+      "labels": [
+        "selfie"
+      ],
+      "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
+      "fileset": {
+        "wasmLoaderPath": "/sdk/wasm/vision_wasm_internal.js",
+        "wasmBinaryPath": "/sdk/wasm/vision_wasm_internal.wasm"
+      },
+      "timeline": [
+        {
+          "stage": "ready",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "astronaut.png:0",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "astronaut.png:1",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "astronaut.png:2",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "astronaut.png:3",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "astronaut.png:4",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "chelsea.png:0",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "chelsea.png:1",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "chelsea.png:2",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "chelsea.png:3",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "chelsea.png:4",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "coffee.png:0",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "coffee.png:1",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "coffee.png:2",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "coffee.png:3",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "coffee.png:4",
+          "wasmBytes": 19070976
+        },
+        {
+          "stage": "closed",
+          "wasmBytes": 19070976
+        }
+      ],
+      "reports": [
+        {
+          "file": "astronaut.png",
+          "width": 512,
+          "height": 512,
+          "decodeMs": 2.1999998092651367,
+          "encodeMs": null,
+          "timings": [
+            41.200000047683716,
+            7.799999952316284,
+            7.200000047683716,
+            6.6000001430511475,
+            7.099999904632568
+          ],
+          "maskWidth": 512,
+          "maskHeight": 512,
+          "channels": 1,
+          "ranges": [
+            {
+              "min": 0,
+              "max": 1,
+              "mean": 0.54184763440751
+            }
+          ],
+          "maskHash": "6072dffe181fd1702ca7fe14634dc3c75fb7d74dd798fb1a3f00a4881d4b76f6"
+        },
+        {
+          "file": "chelsea.png",
+          "width": 451,
+          "height": 300,
+          "decodeMs": 1.5,
+          "encodeMs": null,
+          "timings": [
+            6.3999998569488525,
+            5.5,
+            5.5,
+            5.6000001430511475,
+            5.599999904632568
+          ],
+          "maskWidth": 451,
+          "maskHeight": 300,
+          "channels": 1,
+          "ranges": [
+            {
+              "min": 0,
+              "max": 1,
+              "mean": 0.8938182120811256
+            }
+          ],
+          "maskHash": "91e48cb007eb4dc04998fb3a881e371964894926a66efb3bd36726e4563d6e10"
+        },
+        {
+          "file": "coffee.png",
+          "width": 600,
+          "height": 400,
+          "decodeMs": 2.0999999046325684,
+          "encodeMs": null,
+          "timings": [
+            7.400000095367432,
+            6.3999998569488525,
+            6.5,
+            6.400000095367432,
+            6.299999952316284
+          ],
+          "maskWidth": 600,
+          "maskHeight": 400,
+          "channels": 1,
+          "ranges": [
+            {
+              "min": 0,
+              "max": 1,
+              "mean": 0.2341594665766541
+            }
+          ],
+          "maskHash": "a35c7f73b095e4794f6fdf9708384e58cd34e3ee5037e026aa03053ea6e237ff"
+        }
+      ],
+      "wallMs": 246,
+      "maxMainThreadIntervalGapMs": 27.199999809265137,
+      "browserHints": {
+        "hardwareConcurrency": 12,
+        "deviceMemory": 16,
+        "crossOriginIsolated": false
+      },
+      "externalRequests": [
+        "https://odml.pa.googleapis.com/v1/log"
+      ],
+      "console": [
+        {
+          "type": "warning",
+          "text": "W0917 03:46:28.873999 2196592 gl_context.cc:1119] OpenGL error checking is disabled"
+        },
+        {
+          "type": "error",
+          "text": "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."
+        },
+        {
+          "type": "warning",
+          "text": "W0917 03:46:28.896999 2196592 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors."
+        }
+      ]
+    }
+  ],
+  "browser": "151.0.7922.34",
+  "platform": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v24.18.0"
+  },
+  "finishedAt": "2026-09-17T03:46:29.467Z"
+}

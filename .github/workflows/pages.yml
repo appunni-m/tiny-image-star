@@ -36,11 +36,20 @@ jobs:
       - name: Install locked dependencies
         run: make install
 
-      - name: Install Chromium and system dependencies
-        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium"
+      - name: Verify published package signatures and provenance
+        run: npm audit signatures
+
+      - name: Install Chromium, WebKit and system dependencies
+        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium webkit"
 
       - name: Run deterministic and browser checks
-        run: make verify
+        run: TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit make verify
+
+      - name: Verify folder ownership and interrupted writes
+        run: npm run verify:folder-recovery
+
+      - name: Verify engine migration contracts and exact output parity
+        run: npm run migration:check && npm run migration:parity && npm run migration:coverage
 
   build:
     needs: verify
@@ -57,22 +66,20 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
 
-      - name: Install release optimization tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y binaryen
-
       - name: Install locked build dependencies
         run: make install
 
       - name: Assemble and validate the static site
-        run: WASM_OPT_REQUIRED=1 make package-pages PAGES_DIR=_site
+        run: make package-pages PAGES_DIR=_site
 
-      - name: Install Chromium and system dependencies for release smoke
-        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium"
+      - name: Install Chromium, WebKit and system dependencies for release smoke
+        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium webkit"
 
       - name: Smoke-test the optimized Pages artifact
         run: TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser
+
+      - name: Verify document and HTTP worker policies on the packaged artifact
+        run: TINY_IMAGE_STAR_BROWSER_ROOT=_site TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit npm run verify:security
 
       - name: Upload the Pages artifact
         if: github.event_name != 'pull_request'

@@ -1,0 +1,16 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+page.evaluate: Error: A font used by this edit is missing. Drop the font file again.
+    at textError (http://127.0.0.1:62319/src/compositor/fonts.js:14:17)
+    at verifyFontRecord (http://127.0.0.1:62319/src/compositor/fonts.js:59:67)
+    at folderRenderContext (http://127.0.0.1:62319/src/jobs/render-context.js:23:28)
+    at async eval (eval at evaluate (:311:30), <anonymous>:34:23)
+    at async <anonymous>:337:30
+    at assertFolderContracts (/Users/lazytrot/work/tiny-image-star/tests/folder-contract.browser.mjs:90:30)
+    at async file:///private/tmp/tinystar-folder-contract-focused.mjs:19:6 {
+  log: []
+}
+
+Node.js v24.18.0
