@@ -4,26 +4,28 @@ Checkpoint: 26 September 2026. The current source and optimized Pages artifact
 pass the automated browser, security and recovery gates. Auto bulk scheduling
 now uses a resource-gated eight-worker start and grows beyond eight only when a
 full same-class wave is still queued. A focused small-image comparison meets
-the 1.10 Auto budget; the full matrix for this tuned revision remains open. The
-full [migration plan](../MIGRATION_PLAN.md) remains incomplete; automated checks
-do not establish production readiness.
+the 1.10 Auto budget. Its canonical cold/warm small and camera matrix is now
+complete: all 16 eligible Auto concurrency comparisons passed. The separate
+PNG engine timing budget failed at 1.807× against 1.50×, and four fixed-16
+comparisons were unavailable under the host's 11-token CPU budget. The full
+[migration plan](../MIGRATION_PLAN.md) remains incomplete; automated checks do
+not establish production readiness.
 The original plan estimated 12–16 weeks with two experienced engineers, design
 and physical-device QA for the complete delivery; that is not an estimate of
 time remaining now.
 
 ## Verification and qualification still open
 
-The last full canonical collection matrix, on the clean pre-tuning revision,
-completed with 14 passing, 3 failing and 4 unproven budgets. Auto missed the
-small-collection comparison in both cold and warm blocks, and the engine PNG
-microbenchmark measured 1.726× against a 1.50× limit. The tuned scheduler's
-five-sample focused cold-small run passed at 1.051× fixed-eight latency; see the
-[dated record](research/2026-09-26/auto-concurrency/README.md). Re-run the full
-cold/warm small and camera matrix on the clean tuned revision. Integrate the
-maintained WebKit staged-export gate in CI and retain versioned release evidence.
-Real phones and share destinations are separate release gates. The tested
-WebKit private window cannot persist Blobs; the app explains the failure and
-preserves prior data.
+The full canonical matrix on clean revision `bfa9439` completed with 16 passing,
+1 failing and 4 unproven budgets. Auto passed every eligible comparison across
+cold/warm small and camera workloads; fixed-16 was unavailable under the real
+11-token CPU budget. The PNG engine microbenchmark measured 1.807× against its
+1.50× limit. The earlier pre-tuning failures and focused follow-up are retained
+in the [dated record](research/2026-09-26/auto-concurrency/README.md). Integrate
+the maintained WebKit staged-export gate in CI and retain versioned release
+evidence. Real phones and share destinations are separate release gates. The
+tested WebKit private window cannot persist Blobs; the app explains the failure
+and preserves prior data.
 
 ## Engineering still open
 
@@ -50,10 +52,9 @@ preserves prior data.
   complete EXIF, sRGB/P3/HDR/alpha and metadata/privacy policy qualification.
 - Offline and recovery: versioned PWA updates, offline packs, archive import,
   eviction/update handling, complete source/application identity and lifetime.
-- Performance and capacity: resolve the tiny-PNG timing failure, run the full
-  canonical matrix on the committed tuned revision, qualify heavy effects and
-  complete retained/native memory, then run sustained real collections at 100,
-  1,000 and 10,000 before advertising them.
+- Performance and capacity: resolve the tiny-PNG timing failure, qualify heavy
+  effects and complete retained/native memory, then run sustained real
+  collections at 100, 1,000 and 10,000 before advertising them.
 
 ## Release work that needs people, devices or deployment access
 

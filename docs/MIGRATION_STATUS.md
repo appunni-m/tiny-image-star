@@ -16,13 +16,14 @@ of comparable work before expanding further.
 Automated checks for this tree pass: `npm run verify:all` (40 scheduler and
 151 project/model tests, Chromium workflows, WebKit staged export, security,
 folder recovery and documentation); `make package-pages` (251-file artifact);
-and the optimized `_site` Chromium suite. The last full canonical collection
-matrix completed on the preceding clean revision: 14 timing budgets passed, 3
-failed and 4 were not proven. The focused follow-up for the scheduler change
-passed all 19 small-cold reference, gate and measurement jobs, with Auto at
-1.051× fixed-eight latency. A full cold/warm small and camera matrix on the
-current committed revision remains open, as do phone hardware, external share
-destinations, deployment headers, pilot results and final release-owner approval.
+and the optimized `_site` Chromium suite. The canonical cold/warm small and
+camera matrix on clean code revision `bfa9439` completed as run
+`benchmark-c5234be6-994b-4535-94d1-251b1e93106c`: 16 budgets passed, one PNG
+engine timing budget failed at 1.807× against 1.50×, and four fixed-16
+comparisons were unavailable under the host's 11-token CPU budget. Auto passed
+every eligible comparison. The earlier focused scheduler run measured Auto at
+1.051× fixed-eight latency. Phone hardware, external share destinations,
+deployment headers, pilot results and final release-owner approval remain open.
 
 ## Previous checkpoint: mobile batch staging
 

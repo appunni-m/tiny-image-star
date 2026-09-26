@@ -47,12 +47,35 @@ journal completed without failures.
 | Auto | 5.982, 5.807, 5.818, 6.087, 5.743 | 5.818 s | 8 |
 
 Auto was 1.051× the fixed-eight median, within the declared 1.10 comparison
-for this cold-small slice. The broader experiment does not qualify warm small
-collections, camera photos on the changed scheduler, physical phones, sustained
-thermal behavior or the engine PNG budget. Run the full canonical matrix on a
-clean commit before using this result as release evidence.
+for this cold-small slice. At the time, warm small collections, camera photos
+on the changed scheduler, physical phones, sustained thermal behavior and the
+engine PNG budget remained unqualified. The full canonical result below
+supersedes the open scheduler-matrix item; the device and engine gates remain.
 
-The full baseline JSON and the focused raw browser sample are retained in the
-local ignored `.migration-results` directory. This note keeps the machine,
-workload, sample and budget summary without adding the multi-megabyte raw jobs
-to the deployed application artifact.
+## Canonical full matrix on the tuned revision
+
+The clean tuned code revision `bfa94390ca93fcd802820d51845ccc399ac8b8c7`
+completed canonical run `benchmark-c5234be6-994b-4535-94d1-251b1e93106c` on
+the same M3 Pro / Chromium 151 host. All nine workloads ran, their outputs
+matched the live serial reference byte-for-byte, journals completed, and there
+were no infrastructure errors. Auto met its 1.10 comparison against every
+eligible fixed setting:
+
+| Collection | Fixed 8 median | Auto median | Auto / fixed 8 |
+| --- | ---: | ---: | ---: |
+| 48 small images, cold | 4.70 s | 5.06 s | 1.077 |
+| 48 small images, warm | 4.45 s | 4.34 s | 0.975 |
+| 24 camera photos, cold | 10.45 s | 10.42 s | 0.997 |
+| 24 camera photos, warm | 9.97 s | 9.91 s | 0.994 |
+
+The canonical ledger is **16 pass, 1 fail, 4 not proven**. The only failure is
+the separate `TinyImageStar.Engine.renderWithApi.performance` PNG measurement:
+1.807× against its 1.50× limit. Fixed-16 was not eligible because this host
+reports 11 scheduler CPU tokens, so its four comparisons remain unproven. Auto
+peaked at eight active workers for small images and six/eight for cold/warm
+camera photos. This closes the scheduler matrix; the PNG budget and all
+physical-device and release qualification remain open.
+
+The full raw report and per-job records remain in the local ignored
+`.migration-results` directory. The versioned result is summarized here without
+adding multi-megabyte raw jobs to the deployed application artifact.
