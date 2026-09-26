@@ -43,7 +43,7 @@ jobs:
         run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium webkit"
 
       - name: Run deterministic and browser checks
-        run: TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit make verify
+        run: TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY=4 TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit make verify
 
       - name: Verify folder ownership and interrupted writes
         run: npm run verify:folder-recovery

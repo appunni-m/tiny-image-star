@@ -774,6 +774,18 @@ async function main() {
   const server = await startStaticServer();
   const address = server.address();
   const browser = await chromium.launch({ headless: true });
+  // Keep the complete browser suite reproducible on small CI runners and
+  // model the same CPU limits on every isolated page, not just one test.
+  const hardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);
+  const hasHardwareConcurrencyOverride = Number.isSafeInteger(hardwareConcurrencyOverride) && hardwareConcurrencyOverride > 0;
+  if (hasHardwareConcurrencyOverride) {
+    const newContext = browser.newContext.bind(browser);
+    browser.newContext = async (...options) => {
+      const context = await newContext(...options);
+      await context.addInitScript((value) => Object.defineProperty(navigator, "hardwareConcurrency", { configurable: true, value }), hardwareConcurrencyOverride);
+      return context;
+    };
+  }
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.addInitScript(() => {
@@ -822,9 +834,8 @@ async function main() {
     await assertPublishedExports(page);
     await assertAppearance(page);
     await assertSharedScheduler(page, fixtureSource);
-    const textHardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);
-    await assertTextCompositor(browser, page.url(), Number.isSafeInteger(textHardwareConcurrencyOverride) && textHardwareConcurrencyOverride > 0
-      ? { hardwareConcurrency: textHardwareConcurrencyOverride } : undefined);
+    await assertTextCompositor(browser, page.url(), hasHardwareConcurrencyOverride
+      ? { hardwareConcurrency: hardwareConcurrencyOverride } : undefined);
     await assertCreatorStamp(browser, page.url());
     await assertFolderContracts(browser, page.url());
     await assertFolderSamples(browser, page.url());
