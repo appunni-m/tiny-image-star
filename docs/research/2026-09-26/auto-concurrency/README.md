@@ -52,7 +52,7 @@ on the changed scheduler, physical phones, sustained thermal behavior and the
 engine PNG budget remained unqualified. The full canonical result below
 supersedes the open scheduler-matrix item; the device and engine gates remain.
 
-## Canonical full matrix on the tuned revision
+## Previous canonical full matrix on the tuned revision
 
 The clean tuned code revision `bfa94390ca93fcd802820d51845ccc399ac8b8c7`
 completed canonical run `benchmark-c5234be6-994b-4535-94d1-251b1e93106c` on
@@ -73,9 +73,33 @@ the separate `TinyImageStar.Engine.renderWithApi.performance` PNG measurement:
 1.807× against its 1.50× limit. Fixed-16 was not eligible because this host
 reports 11 scheduler CPU tokens, so its four comparisons remain unproven. Auto
 peaked at eight active workers for small images and six/eight for cold/warm
-camera photos. This closes the scheduler matrix; the PNG budget and all
-physical-device and release qualification remain open.
+camera photos. At that checkpoint the run appeared to close the scheduler
+matrix; the later canonical run below supersedes that conclusion. Physical
+device and release qualification remained open.
 
-The full raw report and per-job records remain in the local ignored
-`.migration-results` directory. The versioned result is summarized here without
-adding multi-megabyte raw jobs to the deployed application artifact.
+This run was superseded by the 26 September output-validation optimization
+below. Its raw report and per-job records remain in the local ignored
+`.migration-results` directory.
+
+## Latest canonical matrix after the PNG optimization
+
+The clean code revision `7680d1e0537479d0b1e753cccf92ad2d4172bd6d` completed
+canonical run `benchmark-19439c73-4f05-49b9-98a3-cc38b2ea3766` on the same M3
+Pro / Chromium 151 host. All nine workloads ran, all eligible outputs matched
+the live serial reference byte-for-byte, journals completed, and there were no
+infrastructure errors. The full ledger is **16 pass, 1 fail, 4 not proven**.
+
+The PNG engine ratio is now **1.378× against a 1.50× limit** (legacy median
+0.0483 ms, target median 0.0665 ms), so that regression is closed. The sole
+failure is Auto versus fixed-eight for cold small images: fixed-eight median
+4.627 s, Auto 5.100 s, ratio **1.102×** against 1.10. This is 0.0022 above the
+declared ratio. Both reached eight active workers; the Auto trace advanced
+through limits 1, 2, 3, 4, 5 and 8 during startup. That trace makes startup
+ramping a candidate for follow-up, but this run does not establish it as the
+cause of the small timing difference. Warm small Auto measured 1.028× fixed
+eight. Camera Auto comparisons ranged from 0.506× to 1.037× and passed.
+
+Four fixed-16 comparisons remain unproven because this host reports 11 scheduler
+CPU tokens. The full raw report and per-job records remain in the local ignored
+`.migration-results` directory; this summary keeps those large artifacts out of
+the deployed application.

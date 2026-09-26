@@ -3,11 +3,11 @@
 Checkpoint: 26 September 2026. The current source and optimized Pages artifact
 pass the automated browser, security and recovery gates. Auto bulk scheduling
 now uses a resource-gated eight-worker start and grows beyond eight only when a
-full same-class wave is still queued. A focused small-image comparison meets
-the 1.10 Auto budget. Its canonical cold/warm small and camera matrix is now
-complete: all 16 eligible Auto concurrency comparisons passed. The separate
-PNG engine timing budget failed at 1.807× against 1.50×, and four fixed-16
-comparisons were unavailable under the host's 11-token CPU budget. The full
+full same-class wave is still queued. The latest canonical matrix passes the
+PNG engine timing budget at 1.378× against 1.50×. Its only measured failure is
+cold-small Auto versus fixed-eight at 1.102× against 1.10; the remaining 15
+eligible concurrency comparisons pass. Four fixed-16 comparisons are
+unproven under the host's 11-token CPU budget. The full
 [migration plan](../MIGRATION_PLAN.md) remains incomplete; automated checks do
 not establish production readiness.
 The original plan estimated 12–16 weeks with two experienced engineers, design
@@ -16,12 +16,13 @@ time remaining now.
 
 ## Verification and qualification still open
 
-The full canonical matrix on clean revision `bfa9439` completed with 16 passing,
-1 failing and 4 unproven budgets. Auto passed every eligible comparison across
-cold/warm small and camera workloads; fixed-16 was unavailable under the real
-11-token CPU budget. The PNG engine microbenchmark measured 1.807× against its
-1.50× limit. The earlier pre-tuning failures and focused follow-up are retained
-in the [dated record](research/2026-09-26/auto-concurrency/README.md). Integrate
+The latest full canonical matrix on clean revision `7680d1e` completed as run
+`benchmark-19439c73-4f05-49b9-98a3-cc38b2ea3766`: 16 budgets passed, one
+cold-small Auto-versus-eight comparison missed its limit by 0.0022, and four
+fixed-16 comparisons were unavailable under the real 11-token CPU budget. The
+PNG engine budget now passes. The [dated record](research/2026-09-26/auto-concurrency/README.md)
+contains the current timings and earlier scheduler measurements. Follow up on
+the small cold-start comparison with repeatable targeted evidence. Integrate
 the maintained WebKit staged-export gate in CI and retain versioned release
 evidence. Real phones and share destinations are separate release gates. The
 tested WebKit private window cannot persist Blobs; the app explains the failure
@@ -52,9 +53,10 @@ and preserves prior data.
   complete EXIF, sRGB/P3/HDR/alpha and metadata/privacy policy qualification.
 - Offline and recovery: versioned PWA updates, offline packs, archive import,
   eviction/update handling, complete source/application identity and lifetime.
-- Performance and capacity: resolve the tiny-PNG timing failure, qualify heavy
-  effects and complete retained/native memory, then run sustained real
-  collections at 100, 1,000 and 10,000 before advertising them.
+- Performance and capacity: confirm the marginal cold-small Auto timing miss
+  with repeatable measurements; qualify heavy effects and retained/native
+  memory; then run sustained real collections at 100, 1,000 and 10,000 before
+  advertising those scales.
 
 ## Release work that needs people, devices or deployment access
 

@@ -11,19 +11,22 @@ typography starters and can be saved as part of a reusable full image recipe.
 Standalone overlay-only presets and broader layered typography/layout,
 cutout presets and size variants remain open. Auto batch scheduling now starts
 with up to eight workers on well-provisioned devices and requires a queued wave
-of comparable work before expanding further.
+of comparable work before expanding further. The latest engine optimization
+avoids decoding identical small PNG output twice while retaining full decode
+validation whenever rendered bytes differ.
 
 Automated checks for this tree pass: `npm run verify:all` (40 scheduler and
-151 project/model tests, Chromium workflows, WebKit staged export, security,
+155 project/model tests, Chromium workflows, WebKit staged export, security,
 folder recovery and documentation); `make package-pages` (251-file artifact);
-and the optimized `_site` Chromium suite. The canonical cold/warm small and
-camera matrix on clean code revision `bfa9439` completed as run
-`benchmark-c5234be6-994b-4535-94d1-251b1e93106c`: 16 budgets passed, one PNG
-engine timing budget failed at 1.807× against 1.50×, and four fixed-16
-comparisons were unavailable under the host's 11-token CPU budget. Auto passed
-every eligible comparison. The earlier focused scheduler run measured Auto at
-1.051× fixed-eight latency. Phone hardware, external share destinations,
-deployment headers, pilot results and final release-owner approval remain open.
+and the optimized `_site` Chromium suite. Parity passes 33/33 and the declared
+coverage slice passes 28/36 functions against its 70% threshold. Canonical run
+`benchmark-19439c73-4f05-49b9-98a3-cc38b2ea3766` on clean revision `7680d1e`
+completed all nine workloads with no infrastructure errors: 16 budgets pass,
+one cold-small Auto-versus-eight comparison narrowly fails at 1.102× against
+1.10, and four fixed-16 comparisons are unproven under the host's 11-token CPU
+budget. The PNG engine budget now passes at 1.378× against 1.50×. Phone
+hardware, external share destinations, deployment headers, pilot results and
+final release-owner approval remain open.
 
 ## Previous checkpoint: mobile batch staging
 
