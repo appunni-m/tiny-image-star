@@ -95,8 +95,14 @@ try {
   });
   assert.equal(await b.evaluate(async () => await locks.acquireJobOwnership("closed-tab") === null), true);
   await closingTab.close();
-  const automaticHandoff = await b.evaluate(async () => {
+  // Page.close() can return before the browser publishes the released Web Lock
+  // to another tab. Poll the non-blocking acquisition instead of assuming the
+  // lock manager has completed that handoff in the same task.
+  await waitForAsync(b, async () => {
     window.ownership = await locks.acquireJobOwnership("closed-tab");
+    return window.ownership !== null;
+  }, undefined, { label: "closed owner tab releases its Web Lock" });
+  const automaticHandoff = await b.evaluate(async () => {
     const epoch = ownership.owner.epoch;
     await ownership.release(); window.ownership = null;
     return epoch;
