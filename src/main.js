@@ -7,7 +7,7 @@ import { attachEditorProject } from "./editor/project.js";
 import { attachEditorText } from "./editor/text.js";
 import { attachEditorProcessing } from "./editor/processing.js";
 import { bindEditorEvents } from "./editor/events.js";
-import { attachMobileShell } from "./editor/mobile-shell.js";
+import { attachMobileShell } from "./editor/mobile-shell.js?v=20260927-responsive";
 import { attachProcessingControls } from "./processing/controls.js";
 import { attachLocalDataControls } from "./local-data.js";
 import { attachStoryWorkspace } from "./story/workspace.js";

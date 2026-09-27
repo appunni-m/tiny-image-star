@@ -329,7 +329,7 @@ function startStaticServer() {
 }
 
 async function assertNoLayoutCollisions(page, label, selectors) {
-  await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === String(matchMedia("(max-width: 650px)").matches));
+  await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === String(matchMedia("(max-width: 1000px), (max-height: 800px) and (max-width: 1200px)").matches));
   const report = await page.evaluate((requestedSelectors) => {
     const nodes = [...document.querySelectorAll(requestedSelectors.join(","))]
       .filter((node) => {
@@ -499,6 +499,10 @@ async function assertEditorResponsiveGeometry(page, label) {
       buttonIds: buttons.map((button) => button.id),
       mobileActionCount: mobileActions.length,
       storedActionCount: document.querySelectorAll("#mobile-more-sheet #mobile-canvas-actions .button").length,
+      compactLayout: document.documentElement.dataset.mobileLayout,
+      moreButtonVisible: document.querySelector("#mobile-more-button").getBoundingClientRect().width > 0,
+      batchControlsStored: Boolean(document.querySelector("#mobile-batch-content .tray-heading")),
+      inspectorStored: Boolean(document.querySelector("#mobile-inspector-content #editor-inspector")),
       canvas: document.querySelector("#canvas-shell").getBoundingClientRect().toJSON(),
       viewportHeight: innerHeight,
       clippedLabels,
@@ -516,8 +520,12 @@ async function assertEditorResponsiveGeometry(page, label) {
   assert.deepEqual(report.buttonIds, ["move-tool", "text-tool", "crop-tool", "size-tool", "adjust-tool", "format-tool"], `${label}: the intentional editor tools, including Text and discoverable Format, remain visible`);
   assert.equal(report.mobileActionCount, 0, `${label}: quick actions leave room for the canvas when their sheet is closed`);
   assert.equal(report.storedActionCount, 7, `${label}: quick actions are available in More`);
-  assert.ok(report.canvas.height >= report.viewportHeight * .55 - 1, `${label}: canvas occupies at least 55% of the phone viewport`);
-  assert.deepEqual(report.clippedLabels, [], `${label}: mobile editor labels are readable: ${report.clippedLabels.join(", ")}`);
+  assert.equal(report.compactLayout, "true", `${label}: compact-width layout uses the canvas-first shell`);
+  assert.equal(report.moreButtonVisible, true, `${label}: secondary actions are reachable through More`);
+  assert.equal(report.batchControlsStored, true, `${label}: batch controls stay available in their sheet`);
+  assert.equal(report.inspectorStored, true, `${label}: editor controls stay available in their sheet`);
+  assert.ok(report.canvas.height >= report.viewportHeight * .55 - 1, `${label}: canvas occupies at least 55% of the compact viewport`);
+  assert.deepEqual(report.clippedLabels, [], `${label}: compact editor labels are readable: ${report.clippedLabels.join(", ")}`);
   assert.equal(report.footerPosition, "static", `${label}: stage footer stays in document flow`);
   assert.equal(report.railPosition, "static", `${label}: editing rail stays in document flow`);
   assert.deepEqual(report.overlaps, [], `${label}: editor buttons overlap: ${report.overlaps.join(", ")}`);
@@ -622,40 +630,36 @@ async function assertEmptyEditorResponsiveGeometry(page, label) {
 
 async function assertTabletEditorResponsiveGeometry(page, label) {
   const report = await page.evaluate(() => {
-    const workspace = document.querySelector("#editor-workspace");
     const tray = document.querySelector("#image-tray");
     const stage = document.querySelector(".stage-panel");
     const toolRail = document.querySelector(".tool-rail");
-    const inspector = document.querySelector(".inspector");
     const rect = (node) => node?.getBoundingClientRect().toJSON();
-    const workspaceRect = rect(workspace);
     const trayRect = rect(tray);
     const stageRect = rect(stage);
     const toolRailRect = rect(toolRail);
-    const inspectorRect = rect(inspector);
     return {
-      columns: workspace ? getComputedStyle(workspace).gridTemplateColumns : "",
       bodyOverflow: document.body.scrollWidth > innerWidth + 1,
-      workspaceRect,
       trayRect,
       stageRect,
       toolRailRect,
-      inspectorRect,
+      compactLayout: document.documentElement.dataset.mobileLayout,
+      moreButtonVisible: document.querySelector("#mobile-more-button").getBoundingClientRect().width > 0,
+      movedBatchControls: Boolean(document.querySelector("#mobile-batch-content .tray-heading")),
+      movedInspector: Boolean(document.querySelector("#mobile-inspector-content #editor-inspector")),
     };
   });
   assert.equal(report.bodyOverflow, false, `${label}: page has horizontal overflow`);
-  assert.ok(!report.columns.includes("220px 420px 300px"), `${label}: desktop tray columns leaked into tablet layout (${report.columns})`);
+  assert.equal(report.compactLayout, "true", `${label}: portrait tablet uses the compact canvas-first shell`);
+  assert.equal(report.moreButtonVisible, true, `${label}: tablet actions are reachable through More`);
+  assert.equal(report.movedBatchControls, true, `${label}: tablet batch controls move into the batch sheet`);
+  assert.equal(report.movedInspector, true, `${label}: tablet inspector moves into its contextual sheet`);
   assert.ok(report.stageRect?.width > 600, `${label}: canvas remains wide enough for tablet editing (${JSON.stringify(report.stageRect)})`);
   assert.ok(report.trayRect?.width > 600, `${label}: image tray spans the tablet workspace (${JSON.stringify(report.trayRect)})`);
-  assert.equal(Math.round(report.stageRect?.left ?? -1), Math.round(report.trayRect?.left ?? -2), `${label}: tray and canvas do not share the tablet column`);
-  assert.equal(Math.round(report.stageRect?.right ?? -1), Math.round(report.trayRect?.right ?? -2), `${label}: tray and canvas widths differ on tablet`);
-  for (const [name, bounds] of [["canvas", report.stageRect], ["tools", report.toolRailRect], ["inspector", report.inspectorRect]]) {
-    assert.ok(bounds && bounds.left >= (report.workspaceRect?.left ?? 0) - 1 && bounds.right <= (report.workspaceRect?.right ?? innerWidth) + 1, `${label}: ${name} escapes the workspace (${JSON.stringify(bounds)})`);
-  }
+  assert.ok(report.toolRailRect?.width > 600, `${label}: tablet dock spans the workspace (${JSON.stringify(report.toolRailRect)})`);
 }
 
 async function assertViewportMatrix(page, label, selectors, editor = false) {
-  for (const width of [320, 375, 390, 768, 1024, 1440]) {
+  for (const width of [320, 375, 390, 768, 900, 1000, 1024, 1440]) {
     // Tablet-sized layouts commonly have a taller portrait viewport; keep the
     // generic control check focused on horizontal escape/overlap rather than
     // treating ordinary scrollable content below a short desktop fold as a bug.
@@ -663,8 +667,16 @@ async function assertViewportMatrix(page, label, selectors, editor = false) {
     await page.setViewportSize({ width, height });
     await page.evaluate(() => window.scrollTo(0, 0));
     await assertNoLayoutCollisions(page, `${label} ${width}px`, selectors);
-    if (editor && width <= 650) await assertEditorResponsiveGeometry(page, `${label} editor controls ${width}px`);
+    if (editor && width <= 1000) await assertEditorResponsiveGeometry(page, `${label} editor controls ${width}px`);
     if (editor && width === 768) await assertTabletEditorResponsiveGeometry(page, `${label} tablet editor`);
+  }
+  if (editor) {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === "true");
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await assertEditorResponsiveGeometry(page, `${label} short landscape tablet editor`);
+    await page.setViewportSize({ width: 1024, height: 844 });
+    await page.waitForFunction(() => document.documentElement.dataset.mobileLayout === "false");
   }
 }
 

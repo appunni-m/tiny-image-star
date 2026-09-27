@@ -1,8 +1,8 @@
 // Move the real controls, including their listeners and state, into native
-// dialogs on phones. Comments retain their desktop positions across resizing.
+// dialogs at compact widths. Comments retain desktop positions across resizing.
 export function attachMobileShell(editor) {
   const { elements, state } = editor;
-  const media = matchMedia("(max-width: 650px)");
+  const media = matchMedia("(max-width: 1000px), (max-height: 800px) and (max-width: 1200px)");
   const more = document.querySelector("#mobile-more-sheet");
   const batch = document.querySelector("#mobile-batch-sheet");
   const inspector = document.querySelector("#mobile-inspector-sheet");
