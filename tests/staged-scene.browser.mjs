@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import {mkdir} from "node:fs/promises";
 
 export async function assertStagedScenes(browser,origin){
- const context=await browser.newContext({viewport:{width:375,height:667},isMobile:true,hasTouch:true}),page=await context.newPage(),errors=[];
+ const context=await browser.newContext({viewport:{width:375,height:667},isMobile:true,hasTouch:true});
+ // These cases control quota by replacing estimate() below. Some WebKit
+ // persistent contexts omit StorageManager entirely, so supply the estimate
+ // capability for this staged-workflow test; the native storage probe runs
+ // separately, and the app still feature-gates browser output on this API.
+ await context.addInitScript(()=>{
+  if(typeof navigator.storage?.estimate==="function")return;
+  Object.defineProperty(navigator,"storage",{configurable:true,value:{estimate:async()=>({quota:512*1024*1024,usage:0})}});
+ });
+ const page=await context.newPage(),errors=[];
  page.on("pageerror",error=>errors.push(error.message));
  const install=()=>page.evaluate(async()=>{
   const client=await import("./src/jobs/scene-client.js"),store=await import("./src/jobs/store.js"),storage=await import("./src/project/storage.js");
