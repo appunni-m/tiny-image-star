@@ -22,7 +22,9 @@ jobs:
       matrix:
         node: [20, 24]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The complete browser, storage, security, and migration gates exceed the
+    # default-sized window on hosted runners; leave time for all of them.
+    timeout-minutes: 45
     steps:
       - name: Check out the app
         uses: actions/checkout@v7

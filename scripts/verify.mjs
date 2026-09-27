@@ -1072,6 +1072,7 @@ async function run() {
   assert.match(makeSource, /package-pages:/);
   assert.match(makeSource, /check-docs:/);
   assert.match(workflowSource, /make verify/);
+  assert.match(workflowSource, /timeout-minutes: 45/, "the full Node-version verification gate has enough time for browser and migration checks");
   assert.doesNotMatch(workflowSource, /WASM_OPT_REQUIRED/, "release uses the published WASM unchanged");
   assert.match(workflowSource, /TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser/);
   assert.match(workflowSource, /make package-pages PAGES_DIR=_site/);
