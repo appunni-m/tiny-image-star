@@ -1,22 +1,31 @@
 import assert from "node:assert/strict";
 import {mkdir} from "node:fs/promises";
 
+const storageEstimateShim = `const estimate=async()=>({quota:512*1024*1024,usage:0});
+const storage=navigator.storage;
+if(storage)Object.defineProperty(storage,"estimate",{configurable:true,writable:true,value:estimate});
+else Object.defineProperty(navigator,"storage",{configurable:true,value:{estimate}});`;
+
 export async function assertStagedScenes(browser,origin){
  const context=await browser.newContext({viewport:{width:375,height:667},isMobile:true,hasTouch:true});
- // These cases control quota by replacing estimate() below. Some WebKit
- // persistent contexts omit StorageManager entirely, so supply the estimate
- // capability for this staged-workflow test; the native storage probe runs
- // separately, and the app still feature-gates browser output on this API.
- await context.addInitScript(()=>{
-  if(typeof navigator.storage?.estimate==="function")return;
-  Object.defineProperty(navigator,"storage",{configurable:true,value:{estimate:async()=>({quota:512*1024*1024,usage:0})}});
+ // These cases control quota by replacing estimate() below. Install the same
+ // deterministic capability in the page and folder-worker realms: persistent
+ // WebKit can expose a page method while workers return unusable quota data.
+ // The separate storage-window probe remains unshimmed and checks native support.
+ await context.addInitScript(storageEstimateShim);
+ let workerBootstraps=0;
+ await context.route("**/__staged_scene_worker__.js",route=>{
+  workerBootstraps++;
+  return route.fulfill({contentType:"text/javascript",body:`${storageEstimateShim}\nawait import("./src/jobs/large-worker.js");`});
  });
  const page=await context.newPage(),errors=[];
  page.on("pageerror",error=>errors.push(error.message));
  const install=()=>page.evaluate(async()=>{
   const client=await import("./src/jobs/scene-client.js"),store=await import("./src/jobs/store.js"),storage=await import("./src/project/storage.js");
   const {acquireJobOwnership}=await import("./src/jobs/ownership.js"),{getProcessingScheduler}=await import("./src/processing/client.js"),{prepareStagedFiles}=await import("./src/jobs/staged-export.js"),{digestBytes}=await import("./src/jobs/output.js");
-  window.h={client,store,storage,acquireJobOwnership,pool:getProcessingScheduler(),prepareStagedFiles,digestBytes};
+  const pool=getProcessingScheduler(),factory=pool.workerFactory;
+  pool.workerFactory=kind=>kind==="folder"?new Worker("./__staged_scene_worker__.js",{type:"module"}):factory(kind);
+  window.h={client,store,storage,acquireJobOwnership,pool,prepareStagedFiles,digestBytes};
   h.outputs=async id=>{
    const entries=await store.getManifestPage(id,0,32),rows=[];
    for(const entry of entries.filter(value=>value.status==="completed")){
@@ -135,6 +144,7 @@ export async function assertStagedScenes(browser,origin){
   const resumed=await page.evaluate(async()=>{const lock=await h.acquireJobOwnership("storage-stop"),saved=await h.client.runSceneCollection("storage-stop",lock.owner),outputs=await h.outputs(saved.id);await lock.release();return {completed:saved.completed,outputs,library:(await h.storage.listStoryProjects()).length};});
   assert.equal(resumed.completed,16);assert.equal(resumed.library,0);assert.deepEqual(resumed.outputs,references.png);
   const cleanup=await page.evaluate(async()=>{const lock=await h.acquireJobOwnership("staged-1"),group=await h.prepareStagedFiles("staged-1");await h.store.deleteLargeJob("staged-1",lock.owner);await lock.release();let missing=false;try{await h.store.readStagedSceneOutput("staged-1",0);}catch{missing=true;}const usable=await createImageBitmap(group.files[0]);usable.close();group.dispose();return {missing,retained:h.pool.retainedBytes()};});assert.deepEqual(cleanup,{missing:true,retained:0});
-  assert.deepEqual(errors,[]);console.log(`staged scene observations: ${JSON.stringify({cpuBudget,runs,outputs:48,lowStorage:true,atomicQuota:true,storagePause:true,preservedOnStoragePause:pressure.completed,reservations:true,corruptOutput:true,windowed:true,crossTabAdmission:true,phoneCreate:true,download:true,shareActivation:true,shareLifetime:true,browserBack:true,text200:true,reloadWithoutLibrary:true,cleanup:true})}`);
+  assert.ok(workerBootstraps>0,"staged folder work uses the deterministic worker storage capability");
+  assert.deepEqual(errors,[]);console.log(`staged scene observations: ${JSON.stringify({cpuBudget,runs,outputs:48,workerBootstraps,lowStorage:true,atomicQuota:true,storagePause:true,preservedOnStoragePause:pressure.completed,reservations:true,corruptOutput:true,windowed:true,crossTabAdmission:true,phoneCreate:true,download:true,shareActivation:true,shareLifetime:true,browserBack:true,text200:true,reloadWithoutLibrary:true,cleanup:true})}`);
  }finally{await context.close();}
 }
