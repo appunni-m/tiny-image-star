@@ -37,10 +37,21 @@ export async function folderRecipeDigest(recipe) {
   return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+export function folderJobDigest(job) {
+  // Story batches carry an independent format on each immutable story group;
+  // ordinary folder jobs pin their selected output format beside the recipe.
+  return folderRecipeDigest(job?.kind === "scene-collection"
+    ? job.recipe
+    : { recipe: job?.recipe, format: job?.format ?? job?.recipe?.style?.recipe?.operations?.format ?? job?.recipe?.operations?.format ?? "png" });
+}
+
 export async function assertFolderRecipe(job, recipe = job?.recipe) {
   const contract = assertFolderContract(job);
   if (canonicalJSON(recipe) !== canonicalJSON(job.recipe)) fail("The queued recipe no longer matches this folder job. Start a new job to change its edits.");
-  const sha256 = await folderRecipeDigest(job.recipe);
+  // Version-2 jobs written before job-level formats were introduced hash only
+  // the recipe. Keep those jobs readable; newly created and first-rendered
+  // jobs own an explicit format and bind it into their digest.
+  const sha256 = Object.hasOwn(job, "format") ? await folderJobDigest(job) : await folderRecipeDigest(job.recipe);
   if (contract.recipeSha256 !== null && contract.recipeSha256 !== sha256) fail("The saved folder recipe changed after processing began. Existing outputs have been preserved.");
   return sha256;
 }

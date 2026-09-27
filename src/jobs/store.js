@@ -1,5 +1,7 @@
 import { canonicalJSON } from "../project/model.js";
 import { storageTransactionError } from "../project/storage-errors.js";
+import { normalizeFormat } from "../formats.js";
+import { outputFormatForJob } from "./core.js";
 import { assertFolderContract } from "./render-contract.js";
 import { stagingPlan, remainingStagingBytes, assertStagingCapacity, stagedGroupPlan, stagedOutputAllowance } from "./staging-plan.js";
 import { bindSourceIdentity } from "./source-contract.js";
@@ -132,7 +134,16 @@ export function beginJobOwnership(jobId, token) {
 export function patchLargeJob(jobId, patch, owner) {
   return mutate(jobId, owner, ({ jobs }, job) => {
     if ("version" in patch || "renderContract" in patch || "kind" in patch) throw new Error("A folder job's rendering contract cannot be replaced.");
-    if(job.kind==="scene-collection" && ["recipe","sourceHandle","outputHandle","outputBaseHandle","outputFolderName","outputMode","staging","stagingSpent","importDigests","photoCache","photoCacheSpent"].some(key=>key in patch)) throw new Error("A story batch's inputs and destination are frozen. Start a new batch to change them.");
+    if(job.kind==="scene-collection" && ["recipe","format","sourceHandle","outputHandle","outputBaseHandle","outputFolderName","outputMode","staging","stagingSpent","importDigests","photoCache","photoCacheSpent"].some(key=>key in patch)) throw new Error("A story batch's inputs and destination are frozen. Start a new batch to change them.");
+    if ("format" in patch) {
+      const format = normalizeFormat(patch.format);
+      if (!format) throw new Error("Choose a supported output format.");
+      patch = { ...patch, format };
+      if (format !== outputFormatForJob(job)
+        && (job.outputHandle || job.renderContract?.recipeSha256 || job.completed || job.failed || ["running", "pausing", "paused"].includes(job.status))) {
+        throw new Error("This folder job's output format is frozen. Start a new job to choose a different format.");
+      }
+    }
     if ("recipe" in patch && canonicalJSON(patch.recipe) !== canonicalJSON(job.recipe)
       && (job.renderContract?.recipeSha256 || job.completed || job.failed || ["running", "pausing", "paused"].includes(job.status))) {
       throw new Error("This folder recipe is frozen. Start a new job to use different edits.");
@@ -384,10 +395,11 @@ export async function sealSceneCollection(jobId,owner) {
 
 // The contract and its private font bytes commit together. Concurrent admitted
 // workers keep the first complete snapshot; none can replace it mid-job.
-export function freezeLargeJob(jobId, expectedRecipe, contract, records, owner) {
+export function freezeLargeJob(jobId, expectedRecipe, contract, records, owner, expectedFormat = null) {
   return mutate(jobId, owner, async ({ jobs, fonts }, job) => {
     assertFolderContract(job);
     if (canonicalJSON(job.recipe) !== canonicalJSON(expectedRecipe)) throw new Error("The folder recipe changed before its fonts were saved. Start it again.");
+    if (expectedFormat !== null && outputFormatForJob(job) !== expectedFormat) throw new Error("The folder output format changed before its fonts were saved. Start it again.");
     if (job.renderContract.recipeSha256 !== null) return job;
     assertFolderContract({ ...job, renderContract: contract });
     if (!contract.recipeSha256 || records.length !== contract.fonts.length) throw new Error("Incomplete folder font snapshot.");
@@ -396,7 +408,7 @@ export function freezeLargeJob(jobId, expectedRecipe, contract, records, owner) 
       if (!(record?.bytes instanceof ArrayBuffer) || record.bytes.byteLength !== reference.byteLength || record.sha256 !== reference.sha256) throw new Error("Incomplete folder font snapshot.");
       fonts.put({ jobId, id: record.id, family: record.family, sha256: record.sha256, byteLength: reference.byteLength, bytes: new Blob([record.bytes]) });
     }
-    const next = touch(job, { renderContract: contract }); jobs.put(next); return next;
+    const next = touch(job, { format: expectedFormat ?? outputFormatForJob(job), renderContract: contract }); jobs.put(next); return next;
   });
 }
 

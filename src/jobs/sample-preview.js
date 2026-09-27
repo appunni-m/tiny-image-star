@@ -1,7 +1,7 @@
 import { getProcessingScheduler } from "../processing/client.js";
 import { imageWork, inspectionWork, workClass } from "../processing/policy.js";
 import { isAnimatedImage } from "../input.js";
-import { settingsForLargeJob, sourceRelativeParts, validateSourceMetadata } from "./core.js";
+import { outputFormatForJob, settingsForLargeJob, sourceRelativeParts, validateSourceMetadata } from "./core.js";
 import { getManifestPage } from "./store.js";
 import { readFolderFontRecords } from "./render-context.js";
 import { createFolderSampleSelector } from "./sample-plan.js";
@@ -24,7 +24,7 @@ export async function selectFolderSamples(job, signal) {
 
 export async function renderFolderSample(job, entry, { signal, priority = 1 } = {}) {
   const pool = getProcessingScheduler(), owner = {};
-  const settings = settingsForLargeJob(job.recipe);
+  const settings = settingsForLargeJob(job.recipe, outputFormatForJob(job));
   const parts = sourceRelativeParts(entry.relativePath), name = parts.pop(); let directory = job.sourceHandle;
   for (const part of parts) { cancelled(signal); directory = await directory.getDirectoryHandle(part); }
   const handle = await directory.getFileHandle(name), metadata = await handle.getFile();

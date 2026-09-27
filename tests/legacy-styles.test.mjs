@@ -42,6 +42,7 @@ test("unsupported output and compression intents remain identifiable until an ex
   assert.equal(frozen.operations.format, "avif"); assert.match(legacyRecipeProblem(frozen), /avif output is unavailable/);
   assert.equal(createLargeJob({ id: "job", recipe: frozen }).recipe.operations.format, "avif");
   assert.throws(() => settingsForLargeJob(frozen), /avif output is unavailable/);
+  assert.equal(settingsForLargeJob(frozen, "jpeg").format, "jpeg", "an explicit folder-job format can replace unsupported saved output without rewriting the recipe");
   source.operations.format = "future-format"; assert.match(legacyRecipeProblem(source), /future-format output/);
   source.operations.format = "jpeg"; source.operations.lossy = true; assert.match(legacyRecipeProblem(source), /adjustable compression/);
   source.operations.lossy = false; assert.equal(legacyRecipeProblem(source), "");

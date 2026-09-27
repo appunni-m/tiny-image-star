@@ -375,11 +375,16 @@
               <span><strong>Recipe</strong><small id="folder-job-recipe-summary">Choose a recipe.</small></span>
               <select id="folder-job-recipe" aria-label="Recipe for this folder"></select>
             </label>
-            <div class="folder-job-step"><span class="folder-job-step-number">3</span><div><strong>Photo look</strong><small id="folder-job-look-summary">No photo look</small></div><button id="folder-job-look-button" class="button secondary" type="button" disabled>Choose photo look</button></div>
-            <div class="folder-job-step"><span class="folder-job-step-number">4</span><div><strong>Text overlay</strong><small id="folder-job-text-stamp-summary">No text overlay</small></div><button id="folder-job-text-stamp" class="button secondary" type="button" disabled>Add text overlay</button></div>
+            <label class="folder-job-step">
+              <span class="folder-job-step-number">3</span>
+              <span><strong>Output format</strong><small>Saved with this job</small></span>
+              <select id="folder-job-format" aria-label="Output format for this folder"></select>
+            </label>
+            <div class="folder-job-step"><span class="folder-job-step-number">4</span><div><strong>Photo look</strong><small id="folder-job-look-summary">No photo look</small></div><button id="folder-job-look-button" class="button secondary" type="button" disabled>Choose photo look</button></div>
+            <div class="folder-job-step"><span class="folder-job-step-number">5</span><div><strong>Text overlay</strong><small id="folder-job-text-stamp-summary">No text overlay</small></div><button id="folder-job-text-stamp" class="button secondary" type="button" disabled>Add text overlay</button></div>
             <div class="folder-job-step">
-              <span class="folder-job-step-number">5</span>
-              <div><strong>Save results to</strong><span id="folder-job-output-name">No save folder chosen</span><small>Choosing a save folder fixes this job's recipe, photo look and text overlay.</small></div>
+              <span class="folder-job-step-number">6</span>
+              <div><strong>Save results to</strong><span id="folder-job-output-name">No save folder chosen</span><small>Choosing a save folder fixes this job's recipe, output format, photo look and text overlay.</small></div>
               <button id="folder-job-output-button" class="button secondary" type="button">Choose save folder</button>
             </div>
           </div>

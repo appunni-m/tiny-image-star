@@ -1,5 +1,6 @@
 import { action } from "../story/view.js";
-import { formatJobBytes } from "./core.js";
+import { formatLabel } from "../formats.js";
+import { formatJobBytes, outputFormatForJob } from "./core.js";
 import { durationLabel, processingEstimate } from "./sample-plan.js";
 import { renderFolderSample, selectFolderSamples } from "./sample-preview.js";
 
@@ -22,7 +23,7 @@ export function openFolderSamplePanel(job, { measured = () => {}, onClose = () =
   header.append(title, action("Done", () => dialog.close()));
   const content = document.createElement("div"); content.className = "story-sheet-content";
   const summary = document.createElement("p"); summary.className = "story-note";
-  summary.textContent = `${job.discovered.toLocaleString()} planned files · one output per image · ${job.recipe.name}. ${job.outputHandle ? `Save to ${job.outputFolderName}.` : "Choose a save folder after reviewing."}`;
+  summary.textContent = `${job.discovered.toLocaleString()} planned files · one ${formatLabel(outputFormatForJob(job))} output per image · ${job.recipe.name}. ${job.outputHandle ? `Save to ${job.outputFolderName}.` : "Choose a save folder after reviewing."}`;
   const explanation = document.createElement("p"); explanation.className = "story-note";
   explanation.textContent = "Check crops and text on these sample photos. This preview saves no files.";
   const selection = document.createElement("details"), selectionTitle = document.createElement("summary"), selectionNote = document.createElement("p");
@@ -75,7 +76,7 @@ export function openFolderSamplePanel(job, { measured = () => {}, onClose = () =
       // it includes preview overhead and excludes destination write time.
       if (!retryOnly && !failed && ready.length) {
         const elapsedMs = performance.now() - started, seconds = processingEstimate({ elapsedMs, completed: ready.length, remaining: job.discovered });
-        if (seconds !== null) { status.textContent += ` · Estimated processing: about ${durationLabel(seconds)}. Saving and device changes can take longer.`; measured({ jobId: job.id, recipe: job.recipe, elapsedMs, completed: ready.length, seconds }); }
+        if (seconds !== null) { status.textContent += ` · Estimated processing: about ${durationLabel(seconds)}. Saving and device changes can take longer.`; measured({ jobId: job.id, recipe: job.recipe, format: outputFormatForJob(job), elapsedMs, completed: ready.length, seconds }); }
       }
       if (!records.length) status.textContent = "There are no images to preview.";
     } catch (error) { if (!closed) status.textContent = error.message; }

@@ -72,7 +72,8 @@ export function outputRelativePath(relativePath, recipeName, format) {
 
 export function createLargeJob({ id, sourceHandle, sourceName, recipe, createdAt = Date.now() }) {
   const safeRecipe = clone(recipe) ?? {};
-  const format = normalizeFormat(safeRecipe.operations?.format) ?? safeRecipe.operations?.format ?? "png";
+  const sourceFormat = legacyRecipeOperations(safeRecipe)?.format ?? safeRecipe.operations?.format;
+  const format = normalizeFormat(sourceFormat) ?? sourceFormat ?? "png";
   if (!safeRecipe.operations) safeRecipe.operations = {};
   safeRecipe.operations.format = format;
   return {
@@ -87,6 +88,7 @@ export function createLargeJob({ id, sourceHandle, sourceName, recipe, createdAt
     outputHandle: null,
     outputFolderName: exportFolderName(safeRecipe.name ?? "images", new Date(createdAt)),
     recipe: safeRecipe,
+    format,
     renderContract: pendingFolderContract(),
     discovered: 0,
     sourceBytes: 0,
@@ -97,6 +99,13 @@ export function createLargeJob({ id, sourceHandle, sourceName, recipe, createdAt
     scanComplete: false,
     error: null,
   };
+}
+
+export function outputFormatForJob(job) {
+  const saved = job?.format;
+  if (saved != null) return normalizeFormat(saved) ?? saved;
+  const recipeFormat = legacyRecipeOperations(job?.recipe)?.format;
+  return normalizeFormat(recipeFormat) ?? recipeFormat ?? "png";
 }
 
 export function createManifestEntry({ jobId, index, relativePath, file }) {
@@ -119,14 +128,15 @@ export function createManifestEntry({ jobId, index, relativePath, file }) {
   };
 }
 
-export function settingsForLargeJob(recipe) {
+export function settingsForLargeJob(recipe, outputFormat = null) {
   if (recipe?.recovery) throw new Error("Recovered edits belong to one image. Save a reusable recipe before processing a folder.");
   if (recipe?.style) {
-    const problem = legacyRecipeProblem(recipe); if (problem) throw new Error(problem);
+    const problem = legacyRecipeProblem(recipe, undefined, outputFormat); if (problem) throw new Error(problem);
   }
   const operations = recipe ? legacyRecipeOperations(recipe) ?? {} : {};
-  if (operations.format != null && !normalizeFormat(operations.format)) throw new Error(`Saved ${operations.format} output is unavailable. Choose a supported replacement.`);
-  const format = normalizeFormat(operations.format) ?? operations.format ?? "png";
+  const requestedFormat = outputFormat ?? operations.format;
+  if (requestedFormat != null && !normalizeFormat(requestedFormat)) throw new Error(`Saved ${requestedFormat} output is unavailable. Choose a supported replacement.`);
+  const format = normalizeFormat(requestedFormat) ?? "png";
   return {
     crop: null,
     cropRelative: operations.cropRelative ?? null,

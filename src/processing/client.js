@@ -41,7 +41,7 @@ export function createProcessingClient({ kind = "image", priority = 1, latestOnl
     const controller = new AbortController();
     operations.add(controller);
     const base = { kind, priority, signal: controller.signal };
-    const settings = kind === "folder" ? settingsForLargeJob(message.recipe) : message.files?.[0]?.settings ?? message.settings ?? {};
+    const settings = kind === "folder" ? settingsForLargeJob(message.recipe, message.format) : message.files?.[0]?.settings ?? message.settings ?? {};
     const run = async () => {
       let metadata = source;
       if (kind === "folder") {

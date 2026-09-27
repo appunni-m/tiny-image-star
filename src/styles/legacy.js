@@ -78,11 +78,11 @@ export function legacyRecipeOperations(recipe) {
   return clone(recipe.style ? validateLegacyStyle(recipe.style).recipe.operations : recipe.operations);
 }
 
-export function legacyRecipeProblem(recipe, capabilities = { outputFormats: ["png", "jpeg"], compression: { quality: false } }) {
+export function legacyRecipeProblem(recipe, capabilities = { outputFormats: ["png", "jpeg"], compression: { quality: false } }, formatOverride = null) {
   try {
     const source = recipe.style ? validateLegacyStyle(recipe.style).recipe : validateLegacyRecipe(originalRecipe(recipe));
     if (recipe.style && canonicalJSON(recipe.style.engine) !== canonicalJSON(ENGINE_IDENTITY)) return "This saved recipe needs its original renderer. Choose a current recipe instead.";
-    const operations = source.operations, format = normalizeFormat(operations.format ?? "png");
+    const operations = source.operations, format = normalizeFormat(formatOverride ?? operations.format ?? "png");
     if (operations.photoLook) photoLookAppearance(operations.photoLook, ENGINE_IDENTITY);
     if (!format || !capabilities.outputFormats.includes(format)) return `Saved ${operations.format ?? "PNG"} output is unavailable. Choose a supported replacement below.`;
     if (operations.lossy && !capabilities.compression?.quality) return "This recipe requests adjustable compression. Choose a supported fixed-setting output below.";

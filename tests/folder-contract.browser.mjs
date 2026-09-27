@@ -154,7 +154,7 @@ export async function assertFolderContracts(browser, origin) {
         const outputs = await Promise.all(entries.map(entry => run(job,ownership.owner,entry))); stop(); runs.push({ concurrency,batchSize,peak,violations,outputs });
       }
       const rejected = [];
-      for (const patch of [{ recipe: { ...job.recipe, name: "Changed" } }, { renderContract: job.renderContract }, { outputHandle: job.outputHandle }]) {
+      for (const patch of [{ recipe: { ...job.recipe, name: "Changed" } }, { format: job.format === "png" ? "jpeg" : "png" }, { renderContract: job.renderContract }, { outputHandle: job.outputHandle }]) {
         try { await store.patchLargeJob(job.id,patch,ownership.owner); rejected.push(false); } catch { rejected.push(true); }
       }
       job = await store.getLargeJob(job.id);

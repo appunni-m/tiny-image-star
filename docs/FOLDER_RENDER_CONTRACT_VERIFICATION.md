@@ -2,7 +2,8 @@
 
 This advances migration §5B's immutable-job requirement. Large-folder text already
 uses the shared compositor; this change makes its custom-font inputs independent
-of subsequent font-library changes. Grouped stories, multiple output variants,
+of subsequent font-library changes. Each folder job stores its output format
+separately from its immutable recipe. Grouped stories, multiple output variants,
 the full bulk compositor and physical-device/large-corpus qualification remain
 part of the migration.
 
@@ -11,7 +12,7 @@ part of the migration.
 New jobs store format version 2 and a versioned rendering contract. It identifies
 the published Pillow package, its JS/WASM hashes and the declared adapter and
 compositor versions. Before the first full render, an admitted worker hashes the
-copied recipe and saves the required custom fonts in a separate IndexedDB object
+copied recipe and selected output format, then saves the required custom fonts in a separate IndexedDB object
 store. The font references and their private byte snapshots commit atomically.
 Concurrent workers use the first complete snapshot. Metadata reads and result
 pagination do not read every font into memory.
@@ -22,10 +23,11 @@ uses a snapshot committed by another worker, even if the library has since been
 cleared. This short preparation step is separate from rendering; completed-file
 writes continue to share the gate and run concurrently.
 
-Subsequent renders verify the saved recipe, renderer identity and font hashes.
+Subsequent renders verify the saved recipe and output format, renderer identity and font hashes.
 They use the job's saved source and destination handles. The output journal also
-records the rendering-contract digest and checks it before writing. Changing a
-recipe or directory after processing starts requires a new job. Owner epochs
+records the rendering-contract digest and checks it before writing. Choosing a
+destination locks the job format; changing a recipe, format or directory after
+processing starts requires a new job. Owner epochs
 and per-entry claims continue to reject stale writers.
 
 Removing a custom font from the library does not remove its job-owned copy.

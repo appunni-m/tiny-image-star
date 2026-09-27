@@ -1,7 +1,8 @@
 import { readFontRecord } from "../editor/fonts.js";
 import { textFontRequirements, verifyFontRecord, MAX_TEXT_FONT_BYTES, textError } from "../compositor/fonts.js";
-import { settingsForLargeJob } from "./core.js";
-import { assertFolderRecipe, folderRecipeDigest } from "./render-contract.js";
+import { normalizeFormat } from "../formats.js";
+import { outputFormatForJob, settingsForLargeJob } from "./core.js";
+import { assertFolderRecipe, folderJobDigest, folderRecipeDigest } from "./render-contract.js";
 import { getLargeJob, getClaimedEntry, freezeLargeJob, readLargeJobFont } from "./store.js";
 import { withJobSnapshotGate } from "./ownership.js";
 
@@ -12,6 +13,7 @@ export async function folderRenderJob(message) {
 export async function folderRenderRequest(message) {
   const job = await getLargeJob(message.jobId);
   await assertFolderRecipe(job, message.recipe);
+  if (message.format != null && normalizeFormat(message.format) !== outputFormatForJob(job)) throw new Error("The queued output format no longer matches this folder job.");
   const entry = await getClaimedEntry(message.jobId, message.entry.index, message.entry.claimId, message.owner);
   if (entry.status !== "processing") throw new Error("This image is no longer processing.");
   return { job, entry };
@@ -21,7 +23,7 @@ export async function folderRenderRequest(message) {
 // reserves eight times the bounded font bytes for reads, hashes, storage copies
 // and rasterization; metadata inspection never reads the font snapshots.
 export async function folderRenderContext(message, job) {
-  const settings = settingsForLargeJob(job.recipe);
+  const settings = settingsForLargeJob(job.recipe, outputFormatForJob(job));
   const requirements = textFontRequirements(settings.textLayers).required;
   if (job.renderContract.recipeSha256 === null) {
     job = await withJobSnapshotGate(job.id, async () => {
@@ -36,9 +38,9 @@ export async function folderRenderContext(message, job) {
         if (bytes > MAX_TEXT_FONT_BYTES) throw textError("The fonts in this job exceed the 32 MiB font limit.", "font-limit");
         records.push(record);
       }
-      const contract = { ...current.renderContract, recipeSha256: await folderRecipeDigest(current.recipe),
+      const contract = { ...current.renderContract, recipeSha256: await folderJobDigest(current),
         fonts: records.map(record => ({ id: record.id, sha256: record.sha256, byteLength: record.bytes.byteLength })).sort((a,b) => a.id.localeCompare(b.id)) };
-      const frozen = await freezeLargeJob(current.id, current.recipe, contract, records, message.owner);
+      const frozen = await freezeLargeJob(current.id, current.recipe, contract, records, message.owner, outputFormatForJob(current));
       records = null;
       return frozen;
     });
@@ -53,7 +55,7 @@ export async function folderRenderContext(message, job) {
 // Before that, they validate library bytes without freezing an editable recipe.
 export async function readFolderFontRecords(job, { allowLibrary = false } = {}) {
   await assertFolderRecipe(job);
-  const requirements = textFontRequirements(settingsForLargeJob(job.recipe).textLayers).required;
+  const requirements = textFontRequirements(settingsForLargeJob(job.recipe, outputFormatForJob(job)).textLayers).required;
   if (job.renderContract.recipeSha256 === null) {
     if (!allowLibrary) throw textError("This job's font snapshot is not ready.", "font-missing");
     const records = []; let bytes = 0;

@@ -17,6 +17,7 @@ import {
   formatJobBytes,
   jobProgress,
   largeJobActionState,
+  outputFormatForJob,
   settingsForLargeJob,
   sourceRelativeParts,
   virtualWindow,
@@ -51,6 +52,7 @@ const elements = {
   outputName: document.querySelector("#folder-job-output-name"),
   recipe: document.querySelector("#folder-job-recipe"),
   recipeSummary: document.querySelector("#folder-job-recipe-summary"),
+  format: document.querySelector("#folder-job-format"),
   photoLook: document.querySelector("#folder-job-look-button"),
   photoLookSummary: document.querySelector("#folder-job-look-summary"),
   textStamp: document.querySelector("#folder-job-text-stamp"),
@@ -153,6 +155,7 @@ export function attachLargeFolderJobs({
     ownership: null,
     restoring: false,
     recipeSaving: false,
+    formatSaving: false,
     lookEditing: false,
     stampEditing: false,
     sampleEditing: false,
@@ -188,7 +191,37 @@ export function attachLargeFolderJobs({
       elements.recipe.append(option);
     }
     if ([...elements.recipe.options].some((option) => option.value === selected)) elements.recipe.value = selected;
+    renderFormatOptions();
     renderRecipeSummary();
+  }
+
+  function selectedOutputFormat() {
+    if (state.job) return outputFormatForJob(state.job);
+    try { return normalizeFormat(legacyRecipeOperations(selectedRecipe())?.format) ?? "png"; }
+    catch { return "png"; }
+  }
+
+  function renderFormatOptions() {
+    if (!elements.format) return;
+    const capabilities = normalizeCapabilities(getCapabilities?.());
+    const selected = selectedOutputFormat();
+    elements.format.replaceChildren();
+    for (const format of capabilities.outputFormats) {
+      const option = document.createElement("option");
+      option.value = format;
+      option.textContent = formatLabel(format);
+      option.selected = format === selected;
+      elements.format.append(option);
+    }
+    if (!capabilities.outputFormats.includes(selected)) {
+      const option = document.createElement("option");
+      option.value = selected;
+      option.textContent = `Saved ${String(selected).toUpperCase()} — unavailable`;
+      option.disabled = true;
+      option.selected = true;
+      elements.format.append(option);
+    }
+    elements.format.value = selected;
   }
 
   function renderRecipeSummary() {
@@ -201,7 +234,7 @@ export function attachLargeFolderJobs({
       return;
     }
     const operations = recipe.operations ?? {};
-    const problem = legacyRecipeProblem(recipe, normalizeCapabilities(getCapabilities?.()));
+    const problem = legacyRecipeProblem(recipe, normalizeCapabilities(getCapabilities?.()), state.job ? outputFormatForJob(state.job) : null);
     if (problem) { elements.recipeSummary.textContent = problem; return; }
     const dimensions = operations.resizeWidth && operations.resizeHeight
       ? `${operations.resizeWidth} × ${operations.resizeHeight}`
@@ -209,7 +242,7 @@ export function attachLargeFolderJobs({
     const fit = operations.resizeMode === "crop" ? "Fill frame" : "Keep whole image";
     const textNote = operations.textLayers?.length ? " · Includes text" : "";
     const fontNote = state.job?.renderContract?.fonts?.length ? " · Text fonts kept with this job" : "";
-    elements.recipeSummary.textContent = `${fit} · ${dimensions} · ${formatLabel(operations.format)}${textNote}${fontNote}`;
+    elements.recipeSummary.textContent = `${fit} · ${dimensions} · ${formatLabel(state.job ? outputFormatForJob(state.job) : operations.format)}${textNote}${fontNote}`;
   }
 
   function setStatus(message, { error = false } = {}) {
@@ -237,7 +270,7 @@ export function attachLargeFolderJobs({
     } else if (!state.ownership) {
       setStatus("This job is open in another tab. Close that tab, then return here to continue.");
     } else if (state.recipeSaving) {
-      setStatus("Saving your recipe choice…");
+      setStatus(state.formatSaving ? "Saving output format…" : "Saving your recipe choice…");
     } else if (job.error) {
       setStatus(job.error, { error: true });
     } else if (job.status === "scanning") {
@@ -258,7 +291,8 @@ export function attachLargeFolderJobs({
     }
 
     const progress = jobProgress(job);
-    if (state.sampleEstimate && (state.sampleEstimate.jobId !== job?.id || JSON.stringify(state.sampleEstimate.recipe) !== JSON.stringify(job?.recipe))) state.sampleEstimate = null;
+    if (state.sampleEstimate && (state.sampleEstimate.jobId !== job?.id || JSON.stringify(state.sampleEstimate.recipe) !== JSON.stringify(job?.recipe)
+      || state.sampleEstimate.format !== outputFormatForJob(job))) state.sampleEstimate = null;
     const runningEstimate = job?.status === "running" && state.runMeasure?.jobId === job.id
       ? processingEstimate({ elapsedMs: performance.now() - state.runMeasure.started, completed: progress.finished - state.runMeasure.finished, remaining: progress.remaining }) : null;
     elements.estimate.textContent = runningEstimate !== null
@@ -285,6 +319,7 @@ export function attachLargeFolderJobs({
     if (elements.source) elements.source.disabled = !supported || ["running", "pausing", "paused"].includes(job?.status);
     if (elements.output) elements.output.disabled = !supported || !job?.sourceHandle || job.completed > 0 || job.failed > 0 || ["running", "pausing", "paused"].includes(job?.status);
     if (elements.recipe) elements.recipe.disabled = Boolean(job && (job.outputHandle || job.completed || ["running", "pausing", "paused"].includes(job.status)));
+    if (elements.format) elements.format.disabled = !job || !state.ownership || Boolean(job.outputHandle || job.completed || job.failed || ["running", "pausing", "paused"].includes(job.status));
     elements.photoLook.disabled = !job?.scanComplete || !state.ownership || Boolean(job.outputHandle || job.completed || job.failed || ["running", "pausing", "paused"].includes(job.status));
     if (elements.textStamp) elements.textStamp.disabled = !job?.scanComplete || !state.ownership || Boolean(job.outputHandle || job.completed || job.failed || ["running", "pausing", "paused"].includes(job.status));
     if (elements.textStampSummary) {
@@ -306,7 +341,7 @@ export function attachLargeFolderJobs({
     }
     if (elements.forget) elements.forget.disabled = !job || ["running", "pausing"].includes(job.status);
     if (job && !state.ownership) {
-      for (const control of [elements.source, elements.output, elements.recipe, elements.start, elements.pause, elements.retry, elements.forget]) {
+      for (const control of [elements.source, elements.output, elements.recipe, elements.format, elements.start, elements.pause, elements.retry, elements.forget]) {
         if (control) control.disabled = true;
       }
     } else {
@@ -314,7 +349,7 @@ export function attachLargeFolderJobs({
       if (elements.retry) elements.retry.disabled = false;
     }
     if (state.recipeSaving || state.lookEditing || state.stampEditing || state.sampleEditing) {
-      for (const control of [elements.source, elements.output, elements.recipe, elements.photoLook, elements.textStamp, elements.sample, elements.start, elements.retry, elements.forget]) {
+      for (const control of [elements.source, elements.output, elements.recipe, elements.format, elements.photoLook, elements.textStamp, elements.sample, elements.start, elements.retry, elements.forget]) {
         if (control) control.disabled = true;
       }
     }
@@ -379,6 +414,7 @@ export function attachLargeFolderJobs({
       state.ownership = await acquireJobOwnership(state.job.id);
       if (!state.ownership) throw new Error("This job is open in another tab.");
       acceptJob(state.ownership.job);
+      refreshRecipeOptions();
       render();
       void discover(state.job.id, state.scanToken);
       return true;
@@ -559,6 +595,7 @@ export function attachLargeFolderJobs({
           sourceRoot: state.job.sourceHandle,
           outputRoot: state.job.outputHandle,
           recipe: state.job.recipe,
+          format: outputFormatForJob(state.job),
           entry,
         }, source: { encodedBytes: entry.sourceBytes } });
       }
@@ -589,7 +626,9 @@ export function attachLargeFolderJobs({
     if (!state.ownership) return;
     try {
       assertFolderContract(state.job);
-      const problem = legacyRecipeProblem(state.job.recipe, normalizeCapabilities(getCapabilities?.()));
+      const capabilities = normalizeCapabilities(getCapabilities?.());
+      if (!capabilities.outputFormats.includes(outputFormatForJob(state.job))) throw new Error(`Saved ${formatLabel(outputFormatForJob(state.job))} output is unavailable. Choose a supported replacement or start a new job.`);
+      const problem = legacyRecipeProblem(state.job.recipe, capabilities, outputFormatForJob(state.job));
       if (problem) throw new Error(problem);
       if (workersActive() > 0) {
         await persistJob({ status: "pausing" });
@@ -771,6 +810,19 @@ export function attachLargeFolderJobs({
         measured(value) { state.sampleEstimate = value; }, onClose() { state.sampleEditing = false; render(); } });
     } catch (error) { state.sampleEditing = false; render(); setStatus(friendlyError(error), { error: true }); }
   });
+  elements.format?.addEventListener("change", async () => {
+    const format = normalizeFormat(elements.format.value);
+    const capabilities = normalizeCapabilities(getCapabilities?.());
+    if (!format || !capabilities.outputFormats.includes(format) || state.recipeSaving || state.lookEditing || state.stampEditing
+      || state.sampleEditing || !state.job || !state.ownership || state.job.outputHandle || state.job.completed || state.job.failed
+      || ["running", "pausing", "paused"].includes(state.job.status)) {
+      refreshRecipeOptions(); render(); return;
+    }
+    state.recipeSaving = true; state.formatSaving = true; render();
+    try { await persistJob({ format }); }
+    catch (error) { await stopForStorageError(error); }
+    finally { state.recipeSaving = false; state.formatSaving = false; refreshRecipeOptions(); render(); }
+  });
   elements.recipe?.addEventListener("change", async () => {
     renderRecipeSummary();
     if (state.recipeSaving || state.lookEditing || state.stampEditing || state.sampleEditing || !state.job || !state.ownership || state.job.outputHandle || state.job.completed || ["running", "pausing", "paused"].includes(state.job.status)) return;
@@ -779,10 +831,10 @@ export function attachLargeFolderJobs({
     let recipe = selected.builtIn && currentOperations.photoLook
       ? recipeWithPhotoLook(selected, currentOperations.photoLook) : selected;
     if (hasCreatorStamp(currentOperations.textLayers)) recipe = recipeWithCreatorStamp(recipe, currentOperations.textLayers);
-    // Choosing a destination must use the committed recipe, including when
-    // another database transaction delays this update.
+    // Choosing a destination must use the committed recipe and its default
+    // format, including when another transaction delays this update.
     state.recipeSaving = true; render();
-    try { await persistJob({ recipe, outputFolderName: createLargeJob({ id: state.job.id, recipe, createdAt: state.job.createdAt }).outputFolderName }); }
+    try { await persistJob({ recipe, format: outputFormatForJob({ recipe }), outputFolderName: createLargeJob({ id: state.job.id, recipe, createdAt: state.job.createdAt }).outputFolderName }); }
     catch (error) { await stopForStorageError(error); }
     finally { state.recipeSaving = false; refreshRecipeOptions(); render(); }
   });
@@ -801,7 +853,7 @@ export function attachLargeFolderJobs({
         if (file.size > MAX_SOURCE_BYTES) throw new Error("The sample image is too large to preview. Choose a smaller source image.");
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (isAnimatedImage(bytes)) throw new Error("The first image is animated and cannot be previewed. Use a supported still image.");
-        return { id: String(entry.index), name: file.name, bytes, operations: settingsForLargeJob(originalRecipe) };
+        return { id: String(entry.index), name: file.name, bytes, operations: settingsForLargeJob(originalRecipe, outputFormatForJob(state.job)) };
       },
       commit: async (look) => {
         if (state.job?.id !== jobId || state.job.outputHandle || !state.ownership || recipeKey(state.job.recipe) !== recipeKey(originalRecipe)) throw new Error("The folder job changed. Reopen Photo look before applying.");

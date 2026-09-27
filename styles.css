@@ -484,7 +484,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .folder-job-setup { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .folder-job-step { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr); gap: 8px 10px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--control-bg); }
 .folder-job-step-number { display: grid; width: 26px; height: 26px; grid-row: 1 / span 2; place-items: center; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: .72rem; font-weight: 950; }
-.folder-job-step > div, .folder-job-recipe-step > span:nth-child(2) { display: grid; min-width: 0; gap: 3px; }
+.folder-job-step > div, .folder-job-step > span:nth-child(2) { display: grid; min-width: 0; gap: 3px; }
 .folder-job-step strong { font-size: .78rem; }
 .folder-job-step span:not(.folder-job-step-number), .folder-job-step small { min-width: 0; overflow: hidden; color: var(--muted); font-size: .7rem; text-overflow: ellipsis; white-space: nowrap; }
 .folder-job-step .button, .folder-job-step select { grid-column: 2; min-width: 0; width: 100%; }

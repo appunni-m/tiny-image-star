@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createLargeJob } from "../src/jobs/core.js";
+import { createLargeJob, outputFormatForJob, settingsForLargeJob } from "../src/jobs/core.js";
 import { ENGINE_IDENTITY } from "../src/project/model.js";
-import { assertFolderContract, assertFolderRecipe, folderRecipeDigest } from "../src/jobs/render-contract.js";
+import { assertFolderContract, assertFolderRecipe, folderJobDigest, folderRecipeDigest } from "../src/jobs/render-contract.js";
 
 const job = () => createLargeJob({ id: "folder", recipe: { id: "recipe", name: "Caption", operations: { format: "png", brightness: 1 } } });
 const font = (id, bytes = 1024) => ({ id: `font-${id.toString(16).padStart(16,"0")}`, sha256: "a".repeat(64), byteLength: bytes });
@@ -29,6 +29,21 @@ test("recipe hashes are canonical and include actual text and all recipe paramet
   assert.equal(await folderRecipeDigest({ a: 1, b: { c: 2, d: 3 } }), await folderRecipeDigest({ b: { d: 3, c: 2 }, a: 1 }));
   assert.notEqual(await folderRecipeDigest({ text: "Trip" }), await folderRecipeDigest({ text: "Trip!" }));
   await assert.rejects(() => folderRecipeDigest({ text: "あ".repeat(800_000) }), /too large/);
+});
+
+test("folder jobs persist an output format override and freeze it with the rendering contract", async () => {
+  const value = job();
+  assert.equal(value.format, "png");
+  assert.equal(outputFormatForJob(value), "png");
+  assert.equal(settingsForLargeJob(value.recipe, "jpeg").format, "jpeg");
+  value.renderContract.recipeSha256 = await folderJobDigest(value);
+  await assertFolderRecipe(value);
+  value.format = "jpeg";
+  await assert.rejects(() => assertFolderRecipe(value), /changed after processing began/);
+  const old = job(); delete old.format;
+  assert.equal(outputFormatForJob(old), "png", "older saved jobs infer format from their saved recipe");
+  old.renderContract.recipeSha256 = await folderRecipeDigest(old.recipe);
+  await assertFolderRecipe(old);
 });
 
 test("both stale queued edits and altered persisted recipes fail against the frozen identity", async () => {

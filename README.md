@@ -153,10 +153,12 @@ read/write access and Web Locks. It discovers supported files into an IndexedDB 
 manifest, processes a bounded number in parallel, and writes completed files
 straight to the selected destination.
 
-Choose the source folder, then the recipe and optional **Photo look**. Preview
-the look on the first source photo before applying it. Finally choose the save
-folder and start processing. Selecting the save folder fixes the job's recipe
-and look, so every file uses the same copied settings even if the library changes.
+Choose the source folder, then a recipe and output format. The format starts
+from the recipe and can be changed for this job without changing the saved
+recipe. Add an optional **Photo look** or text overlay, and preview the result
+on source photos before applying it. Finally choose the save folder and start
+processing. Selecting the save folder fixes the job's recipe, format, look and
+text overlay, so every file uses the same copied settings even if the library changes.
 
 One tab owns each saved job. A journal verifies completed files after an
 interrupted save and prevents duplicate completion counts; conflicting files

@@ -1,6 +1,6 @@
 import { createPillowEngine, describeError } from "../engine/pillow.js";
 import { isAnimatedImage } from "../input.js";
-import { outputRelativePath, sourceRelativeParts, settingsForLargeJob, validateSourceMetadata } from "./core.js";
+import { outputFormatForJob, outputRelativePath, sourceRelativeParts, settingsForLargeJob, validateSourceMetadata } from "./core.js";
 import { MAX_SOURCE_BYTES } from "../processing/policy.js";
 import { digestBytes, saveJournaledOutput } from "./output.js";
 import { folderRenderRequest, folderRenderContext } from "./render-context.js";
@@ -52,7 +52,7 @@ async function processEntry(message) {
     { schema: FOLDER_SOURCE_SCHEMA, sha256: sourceDigest, bytes: source.size, lastModified: source.lastModified }, message.owner);
   message = { ...message, entry: boundEntry };
   if (isAnimatedImage(sourceBytes)) throw new Error("Animated images are not supported yet.");
-  const settings = context?.settings ?? settingsForLargeJob(job.recipe);
+  const settings = context?.settings ?? settingsForLargeJob(job.recipe, outputFormatForJob(job));
   if (message.type === "inspect") {
     const metadata = engine.inspect({ bytes: sourceBuffer });
     self.postMessage({ type: "inspect-result", jobId: message.jobId, index: message.entry.index, ...metadata, sourceDigest, heapBytes: engine.heapBytes() });

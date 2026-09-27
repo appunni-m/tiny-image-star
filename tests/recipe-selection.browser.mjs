@@ -74,15 +74,28 @@ export async function assertRecipeSelections(browser, origin) {
     await mutate(1, "delete");
     await page.waitForFunction(() => !document.querySelector('[data-preset-id="revision-choice"]'));
     assert.equal(await page.locator("#folder-job-recipe option:checked").textContent(), "Shared look · version 2", "deleting the library entry keeps the frozen folder choice visible");
+    await page.locator("#folder-job-format").selectOption("jpeg");
+    await waitForAsync(page, async () => (await (await import("./src/jobs/store.js")).listLargeJobs())[0]?.format === "jpeg");
+    const desktopViewport = page.viewportSize();
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.locator("#folder-job-format").scrollIntoViewIfNeeded();
+    const mobileFormat = await page.locator("#folder-job-format").evaluate((element) => { const rect = element.getBoundingClientRect(); return { height: rect.height, fits: rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth }; });
+    assert.equal(mobileFormat.fits, true, "the folder output format stays within a phone viewport");
+    assert.ok(mobileFormat.height >= 44, `mobile output format target height: ${mobileFormat.height}`);
+    await page.setViewportSize(desktopViewport);
+    assert.match(await page.locator("#folder-job-recipe-summary").textContent(), /JPEG$/, "the job summary reflects its independent output format");
     await page.locator("#folder-job-output-button").click(); await page.waitForFunction(() => !document.querySelector("#folder-job-start-button").disabled);
+    assert.equal(await page.locator("#folder-job-format").isDisabled(), true, "choosing a destination freezes the job format");
     await page.locator("#folder-job-start-button").click(); await page.waitForFunction(() => document.querySelector("#folder-job-status").textContent.startsWith("Complete."));
     const folder = await page.evaluate(async (source) => {
       const job = (await (await import("./src/jobs/store.js")).listLargeJobs())[0], { createPillowEngine } = await import("./src/engine/pillow.js"), { settingsForLargeJob } = await import("./src/jobs/core.js");
-      const expected = await (await createPillowEngine()).render({ name: "photo.png", bytes: new Uint8Array(source) }, settingsForLargeJob(job.recipe));
-      const files = []; for await (const [, handle] of job.outputHandle.entries()) if (handle.kind === "file") files.push([...new Uint8Array(await (await handle.getFile()).arrayBuffer())]);
-      return { files, expected: [...expected.bytes], revision: job.recipe.style.revision };
+      const expected = await (await createPillowEngine()).render({ name: "photo.png", bytes: new Uint8Array(source) }, settingsForLargeJob(job.recipe, job.format));
+      const files = [], names = []; for await (const [name, handle] of job.outputHandle.entries()) if (handle.kind === "file") { names.push(name); files.push([...new Uint8Array(await (await handle.getFile()).arrayBuffer())]); }
+      return { files, names, expected: [...expected.bytes], revision: job.recipe.style.revision, format: job.format, recipeFormat: job.recipe.style.recipe.operations.format };
     }, bytes);
-    assert.equal(folder.revision, 2); assert.deepEqual(folder.files, [folder.expected], "the deleted library recipe's frozen revision actually renders through the folder worker");
+    assert.equal(folder.revision, 2); assert.equal(folder.format, "jpeg"); assert.deepEqual(folder.files, [folder.expected], "the deleted library recipe's frozen revision and job format render through the folder worker");
+    assert.equal(folder.recipeFormat, "png", "a job-specific choice does not mutate its saved recipe revision");
+    assert.match(folder.names[0], /\.(?:jpg|jpeg)$/i);
     await waitForAsync(page, async () => {
       const saved = await (await import("./src/session.js")).readSession();
       return saved?.recipeReferences?.items[saved.batch.files[0].id] === '["revision-choice",2]';
