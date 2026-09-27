@@ -1,0 +1,88 @@
+{
+  "schema": "migration-parity/coverage-input@1",
+  "plans": [
+    {
+      "plan_id": "engine.public-and-regression",
+      "covers": [
+        "TinyImageStar.Engine.renderWithApi.original",
+        "TinyImageStar.Engine.renderWithApi.fit",
+        "TinyImageStar.Engine.renderWithApi.fill",
+        "TinyImageStar.Engine.renderWithApi.crop",
+        "TinyImageStar.Engine.renderWithApi.crop-clamp",
+        "TinyImageStar.Engine.renderWithApi.relative-crop",
+        "TinyImageStar.Engine.renderWithApi.rotate90",
+        "TinyImageStar.Engine.renderWithApi.rotate180",
+        "TinyImageStar.Engine.renderWithApi.rotate270",
+        "TinyImageStar.Engine.renderWithApi.flip-x",
+        "TinyImageStar.Engine.renderWithApi.flip-y",
+        "TinyImageStar.Engine.renderWithApi.grayscale",
+        "TinyImageStar.Engine.renderWithApi.brightness",
+        "TinyImageStar.Engine.renderWithApi.contrast",
+        "TinyImageStar.Engine.renderWithApi.chain",
+        "TinyImageStar.Engine.renderWithApi.output-limit",
+        "TinyImageStar.Engine.renderWithApi.unsupported-output",
+        "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+        "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp",
+        "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+      ],
+      "target_profile": "node-wasm",
+      "selectors": {
+        "parity_case_ids": [
+          "TinyImageStar.Engine.renderWithApi.original",
+          "TinyImageStar.Engine.renderWithApi.fit",
+          "TinyImageStar.Engine.renderWithApi.fill",
+          "TinyImageStar.Engine.renderWithApi.crop",
+          "TinyImageStar.Engine.renderWithApi.crop-clamp",
+          "TinyImageStar.Engine.renderWithApi.relative-crop",
+          "TinyImageStar.Engine.renderWithApi.rotate90",
+          "TinyImageStar.Engine.renderWithApi.rotate180",
+          "TinyImageStar.Engine.renderWithApi.rotate270",
+          "TinyImageStar.Engine.renderWithApi.flip-x",
+          "TinyImageStar.Engine.renderWithApi.flip-y",
+          "TinyImageStar.Engine.renderWithApi.grayscale",
+          "TinyImageStar.Engine.renderWithApi.brightness",
+          "TinyImageStar.Engine.renderWithApi.contrast",
+          "TinyImageStar.Engine.renderWithApi.chain",
+          "TinyImageStar.Engine.renderWithApi.output-limit",
+          "TinyImageStar.Engine.renderWithApi.unsupported-output",
+          "TinyImageStar.Engine.renderWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-exif-orientation6-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.previewWithApi.decode-p-small-gif",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-bmp",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-ico",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-jpg",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-png",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-tiff",
+          "TinyImageStar.Engine.renderWithApi.decode-rgb-small-webp",
+          "TinyImageStar.Engine.previewWithApi.decode-rgb-small-webp"
+        ],
+        "command_ids": [
+          "regression"
+        ]
+      },
+      "component_ids": [
+        "engine-adapter"
+      ],
+      "command_id": "coverage"
+    }
+  ]
+}
