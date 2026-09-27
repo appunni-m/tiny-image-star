@@ -39,10 +39,11 @@
 .story-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
 .story-head .button { min-height: 44px; padding: 8px 12px; flex: none; }
 .story-head .story-history { width: 44px; padding: 4px; font-size: 1.5rem; }
-.story-intro { overflow-y: auto; display: grid; align-content: center; gap: 40px; padding: 28px clamp(20px, 6vw, 80px); max-width: 960px; width: 100%; margin: auto; box-sizing: border-box; max-height: 100%; }
+.story-intro { overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; gap: 40px; padding: 28px clamp(20px, 6vw, 80px); max-width: 960px; width: 100%; margin: auto; box-sizing: border-box; max-height: 100%; }
+.story-intro > * { min-width: 0; }
 .story-intro h1 { margin: 14px 0; font-size: clamp(2.4rem, 7vw, 4.6rem); line-height: 1.02; letter-spacing: -.055em; }
 .story-intro p { max-width: 38em; line-height: 1.6; color: var(--muted); }
-.story-intro .button { min-height: 48px; }
+.story-intro .button { min-height: 48px; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.2; text-align: left; }
 .story-library h2 { font-size: 1rem; }.story-library > div { display: flex; flex-wrap: wrap; gap: 10px; }
 .story-library .button { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .story-body { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) 82px auto; background: var(--stage); }
@@ -124,8 +125,8 @@
 .story-group-paging { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .story-font-options summary, .story-import-options summary { min-height: 44px; padding-block: 12px; cursor: pointer; }
 .story-font-options > a { display: inline-flex; align-items: center; min-height: 44px; padding-block: 8px; }
-.story-intro .story-check { display: flex; align-items: center; gap: 12px; min-height: 44px; }
-.story-intro .story-check input { width: 24px; height: 24px; flex: 0 0 24px; accent-color: var(--accent); }
+.story-intro .story-check { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; min-width: 0; }
+.story-intro .story-check input { width: 24px; height: 24px; flex: 0 0 24px; margin-top: .25em; accent-color: var(--accent); }
 .story-exports { display: grid; gap: 10px; padding-left: 24px; }.story-exports a { display: flex; align-items: center; justify-content: center; text-decoration: none; }
 @media (max-width: 650px) { .story-intro { align-content: start; padding: 28px 22px; gap: 24px; }.story-head .button { padding-inline: 9px; }.story-stage { padding: 8px; } }
 @media (max-height: 480px) { .story-body { grid-template-rows: minmax(0, 1fr) 66px auto; }.story-filmstrip button { height: 50px; width: 42px; }.story-dock button { min-height: 44px; } }
