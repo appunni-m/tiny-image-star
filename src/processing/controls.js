@@ -2,7 +2,7 @@ import { getProcessingScheduler } from "./client.js";
 
 export function attachProcessingControls() {
   const pool = getProcessingScheduler();
-  const controls = [...document.querySelectorAll("#processing-mode-select, #folder-job-performance")];
+  const controls = [...document.querySelectorAll("#processing-mode-select, #folder-job-performance, #batch-job-speed")];
   const status = document.querySelector("#processing-resource-status");
   for (const control of controls) control.addEventListener("change", () => {
     pool.configure({ mode: control.value });

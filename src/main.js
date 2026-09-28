@@ -6,9 +6,9 @@ import { attachEditorOperations } from "./editor/operations.js";
 import { attachEditorProject } from "./editor/project.js";
 import { attachEditorText } from "./editor/text.js";
 import { attachEditorProcessing } from "./editor/processing.js";
-import { bindEditorEvents } from "./editor/events.js";
+import { bindEditorEvents } from "./editor/events.js?v=20260928-figma-slice-2";
 import { attachMobileShell } from "./editor/mobile-shell.js?v=20260927-responsive";
-import { attachProcessingControls } from "./processing/controls.js";
+import { attachProcessingControls } from "./processing/controls.js?v=20260928-figma-slice-2";
 import { attachLocalDataControls } from "./local-data.js";
 import { attachStoryWorkspace } from "./story/workspace.js";
 
@@ -76,6 +76,6 @@ window.tinyImageStarEditor = {
   },
 };
 
-import("./batch.js").catch(() => {
+import("./batch.js?v=20260928-figma-slice-2").catch(() => {
   window.dispatchEvent(new CustomEvent("tinystar:batch-error"));
 });

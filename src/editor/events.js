@@ -1,5 +1,6 @@
 // DOM event wiring. Keeping this file declarative makes the editor entry point
 // easy to scan and keeps interaction behavior beside its implementation.
+import { openContextMenu } from "../context-menu.js?v=20260928-figma-slice-2";
 
 function isTextEntry(target) {
   return target instanceof HTMLInputElement
@@ -74,6 +75,19 @@ export function bindEditorEvents(editor) {
   });
   elements.canvasShell.addEventListener("dragleave", () => delete elements.canvasShell.dataset.dragging);
   elements.canvasShell.addEventListener("drop", editor.onDrop);
+  elements.canvasShell.addEventListener("contextmenu", (event) => {
+    if (!state.image || !isRendered(document.querySelector("#editor-view"))) return;
+    event.preventDefault();
+    openContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      anchor: elements.canvasShell,
+      items: [{
+        label: "Save edits as recipe…",
+        action: () => window.dispatchEvent(new CustomEvent("tinystar:save-preset")),
+      }],
+    });
+  });
   elements.canvas.addEventListener("pointerdown", editor.pointerDown);
   elements.canvas.addEventListener("pointermove", editor.pointerMove);
   elements.canvas.addEventListener("pointerup", editor.pointerUp);

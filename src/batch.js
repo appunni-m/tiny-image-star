@@ -51,8 +51,10 @@ import {
   sessionFile,
   writeSession,
 } from "./session.js";
+import { openContextMenu } from "./context-menu.js?v=20260928-figma-slice-2";
 
 const MAX_BATCH_FILES = 40;
+let batchJobMetricsTimer = null;
 const elements = {
   sessionRecovery: document.querySelector("#session-recovery"),
   sessionRecoveryMessage: document.querySelector("#session-recovery-message"),
@@ -80,6 +82,13 @@ const elements = {
   batchFileInput: document.querySelector("#batch-file-input"),
   batchFolderInput: document.querySelector("#batch-folder-input"),
   batchCancel: document.querySelector("#batch-cancel-button"),
+  batchJobBar: document.querySelector("#batch-job-bar"),
+  batchJobTitle: document.querySelector("#batch-job-title"),
+  batchJobStatus: document.querySelector("#batch-job-status"),
+  batchJobProgress: document.querySelector("#batch-job-progress"),
+  batchJobMetrics: document.querySelector("#batch-job-metrics"),
+  batchJobSpeed: document.querySelector("#batch-job-speed"),
+  batchJobPause: document.querySelector("#batch-job-pause"),
   batchClearCompleted: document.querySelector("#batch-clear-completed-button"),
   batchSave: document.querySelector("#batch-save-button"),
   batchDropZone: document.querySelector("#batch-drop-zone"),
@@ -837,7 +846,7 @@ function applyPresetToScope(presetId) {
   renderBatchPresetPicker();
   renderBatchGrid();
   if (targets.some((item) => item.id === state.batch.activeId)) refreshActiveBatchEditor();
-  if (targets.length) void runBatch(targets);
+  if (targets.length) void runBatch(targets, `Applying ${preset.name} in place`);
   scheduleSessionSave(0);
 }
 
@@ -1310,7 +1319,9 @@ function setBatchQuality(value) {
 function openPresetDialog(operations, width, height, suggestedName = "My image recipe", context = null) {
   state.pendingSave = { operations: clone(operations), width, height, context: clone(context) };
   elements.presetForm.querySelector("[data-preset-save-error]")?.remove();
-  elements.presetDialogHeading.textContent = context?.kind === "batch-override" ? "Save override as preset" : "Save as preset";
+  elements.presetDialogHeading.textContent = context?.kind === "batch-override"
+    ? "Save override as preset"
+    : context?.kind === "batch-image" ? "Save image recipe" : "Save as preset";
   elements.presetName.value = suggestedName;
   elements.presetDestination.replaceChildren();
   for (const destination of [...DESTINATION_PRESETS, { id: "custom", name: "Custom recipe" }]) {
@@ -1734,7 +1745,7 @@ function batchItemsReady(items) {
   return items.filter((item) => item.bytes && item.width && item.height && (item.status !== "error" || item.retryable));
 }
 
-async function runBatch(items = state.batch.files) {
+async function runBatch(items = state.batch.files, label = "Updating image previews in place") {
   let readyItems = batchItemsReady(items);
   if (!readyItems.length) {
     elements.batchStatus.textContent = state.batch.files.some((item) => item.status === "error")
@@ -1774,9 +1785,10 @@ async function runBatch(items = state.batch.files) {
     // memory before even the first worker can start. Copies belong to dispatch.
     return { id: item.id, name: item.name, settings };
   });
-  state.batch.job = { revision: state.batch.revision, total: queue.length, queue, active: 0, completed: 0, pendingCompositions: 0 };
+  state.batch.job = { revision: state.batch.revision, total: queue.length, queue, active: 0, completed: 0, pendingCompositions: 0, startedAt: performance.now(), paused: false, label };
   elements.batchStatus.textContent = `Updating ${readyItems.length} preview${readyItems.length === 1 ? "" : "s"}…`;
   elements.batchCancel.hidden = false;
+  renderBatchJobBar();
   // Logical clients bound metadata dispatch; the shared scheduler decides
   // how many physical workers can actually run across all surfaces.
   const workerCount = Math.min(readyItems.length, getProcessingScheduler().budget.cpu);
@@ -1942,7 +1954,7 @@ function retireBatchWorker(worker, job, message) {
   worker.terminate();
   state.batchWorkers = state.batchWorkers.filter((candidate) => candidate !== worker);
   state.batchWorker = state.batchWorkers[0] ?? null;
-  if (!state.batchWorkers.length && job.queue.length) {
+  if (!state.batchWorkers.length && job.queue.length && !job.paused) {
     while (job.queue.length) {
       const file = job.queue.shift();
       const item = state.batch.files.find((candidate) => candidate.id === file.id);
@@ -1960,7 +1972,7 @@ function retireBatchWorker(worker, job, message) {
 
 function dispatchBatchWork(worker) {
   const job = state.batch.job;
-  if (!job || job.revision !== state.batch.revision || worker.currentFile) return;
+  if (!job || job.revision !== state.batch.revision || job.paused || worker.currentFile) return;
   const queued = job.queue.shift();
   if (!queued) {
     finishBatchJobIfReady();
@@ -2042,7 +2054,14 @@ function handleBatchWorkerMessage(worker, message, job) {
 
 function finishBatchJobIfReady() {
   const job = state.batch.job;
-  if (!job || job.active || job.queue.length || job.pendingCompositions) return;
+  if (!job || job.active || job.pendingCompositions) return;
+  if (job.paused && job.queue.length) {
+    elements.batchStatus.textContent = `Paused — ${job.completed} of ${job.total} images processed.`;
+    renderBatchGrid();
+    return;
+  }
+  job.paused = false;
+  if (job.queue.length) return;
   state.batch.processing = false;
   const ready = state.batch.files.filter((item) => state.batch.results.has(item.id)).length;
   const errors = state.batch.files.filter((item) => item.status === "error").length;
@@ -2054,7 +2073,26 @@ function finishBatchJobIfReady() {
   state.batchWorkers = [];
   state.batchWorker = null;
   state.batch.job = null;
+  renderBatchJobBar();
   scheduleSessionSave(0);
+}
+
+function toggleBatchPause() {
+  const job = state.batch.job;
+  if (!job) return;
+  job.paused = !job.paused;
+  if (!job.paused) {
+    if (!state.batchWorkers.length && job.queue.length) {
+      const workerCount = Math.min(job.queue.length, getProcessingScheduler().budget.cpu);
+      state.batchWorkers = Array.from({ length: workerCount }, () => createBatchWorker(job));
+      state.batchWorker = state.batchWorkers[0] ?? null;
+    }
+    for (const worker of state.batchWorkers) dispatchBatchWork(worker);
+    elements.batchStatus.textContent = `Resumed — updating ${job.total - job.completed} remaining images…`;
+  } else {
+    elements.batchStatus.textContent = `Pausing after ${job.active} active image${job.active === 1 ? "" : "s"}…`;
+  }
+  renderBatchGrid();
 }
 
 function trayStatus(item, result) {
@@ -2166,6 +2204,7 @@ function renderWorkspaceTray() {
     });
     selectLabel.append(select);
     row.append(open, details, selectLabel);
+    row.addEventListener("contextmenu", (event) => openBatchImageContextMenu(event, item));
     elements.trayList.append(row);
   }
   const selectedReadyCount = selectedItems().length;
@@ -2173,7 +2212,7 @@ function renderWorkspaceTray() {
   elements.traySelection.textContent = selectedReadyCount
     ? `${selectedReadyCount} selected to download`
     : "Select completed images to download";
-  elements.trayCancelButton.hidden = !state.batch.processing || state.view === "batch";
+  elements.trayCancelButton.hidden = true;
   elements.traySelectAllButton.disabled = readyCount === 0;
   elements.traySelectAllButton.textContent = selectedReadyCount === readyCount && readyCount > 0 ? "Clear selection" : "Select all";
   elements.traySaveButton.disabled = selectedReadyCount === 0 || state.saveInFlight || Boolean(state.individualSave);
@@ -2300,12 +2339,12 @@ function renderBatchGrid() {
     if (item.presetOverride) {
       addButton(actions, "Use shared destination", "button secondary", () => resetBatchRecipe(item));
     }
-    if (item.override) {
-      addButton(actions, "Save adjustment as recipe", "button secondary", () => saveBatchOverride(item));
-    }
+    addButton(actions, item.override ? "Save adjustment as recipe" : "Save image as recipe", "button secondary", () => saveBatchImageRecipe(item));
+    addButton(actions, "Apply recipe to selected", "button secondary", () => focusSelectedRecipePicker(item));
     if (result) addButton(actions, `Download ${formatLabel(result.format)}`, "button secondary", () => saveSingleBatchItem(item));
     more.append(moreSummary, actions);
     card.append(header, compare, compareButton, meta, more);
+    card.addEventListener("contextmenu", (event) => openBatchImageContextMenu(event, item));
     elements.batchGrid.append(card);
   }
   const readyCount = state.batch.files.filter((item) => state.batch.results.has(item.id)).length;
@@ -2314,6 +2353,7 @@ function renderBatchGrid() {
   elements.batchClear.disabled = !hasFiles;
   elements.batchClearCompleted.disabled = readyCount === 0 || state.batch.processing;
   elements.batchCancel.hidden = !state.batch.processing;
+  renderBatchJobBar();
   elements.batchSave.disabled = selectedReadyCount === 0 || state.saveInFlight || Boolean(state.individualSave);
   elements.batchSelectAll.textContent = selectedReadyCount === readyCount && readyCount > 0 ? "Clear selection" : "Select all";
   elements.batchSave.textContent = state.saveInFlight || state.individualSave
@@ -2347,6 +2387,138 @@ function batchPane(label, url, name, placeholder) {
     pane.append(empty);
   }
   return pane;
+}
+
+function saveBatchImageRecipe(item) {
+  if (!item?.bytes || !item.width || !item.height) {
+    elements.batchStatus.textContent = "Wait until this image is ready before saving its recipe.";
+    return;
+  }
+  const preset = recipeForItem(item);
+  const isOverride = Boolean(item.override);
+  openPresetDialog(
+    effectiveOperationsForItem(item, preset),
+    item.width,
+    item.height,
+    `${item.name.replace(/\.[^.]+$/, "")} ${isOverride ? "adjustment" : "recipe"}`,
+    {
+      kind: isOverride ? "batch-override" : "batch-image",
+      fileId: item.id,
+      presetId: preset.id,
+      recipeKey: recipeKey(preset),
+      ...(isOverride ? {
+        sharedOperations: sharedOperationsForItem(item, preset),
+        overridePatch: clone(item.override),
+      } : {}),
+    },
+  );
+}
+
+function focusSelectedRecipePicker(item) {
+  if (!state.batch.selected.has(item.id)) {
+    state.batch.selected.clear();
+    state.batch.selected.add(item.id);
+  }
+  state.batch.selectionTouched = true;
+  state.batch.activeId = item.id;
+  state.batch.recipeScope = "selected";
+  renderBatchPresetPicker();
+  renderWorkspaceTray();
+  renderBatchGrid();
+  (elements.batchPresetPicker.querySelector("button:not(:disabled)") ?? elements.batchPresetPicker).focus?.({ preventScroll: true });
+}
+
+function applyContextRecipe(preset, projectId, selectedIds) {
+  if (state.batch.projectId !== projectId) {
+    elements.batchStatus.textContent = "The image page changed. Open its context menu again to choose targets.";
+    return;
+  }
+  const currentIds = selectedIds.filter((id) => state.batch.files.some((item) => item.id === id));
+  if (!currentIds.length) {
+    elements.batchStatus.textContent = "Those images are no longer on this page.";
+    return;
+  }
+  state.batch.selected.clear();
+  for (const id of currentIds) state.batch.selected.add(id);
+  state.batch.selectionTouched = true;
+  state.batch.activeId = currentIds.includes(state.batch.activeId) ? state.batch.activeId : currentIds[0];
+  state.batch.recipeScope = "selected";
+  renderBatchPresetPicker();
+  renderWorkspaceTray();
+  try {
+    applyPresetToScope(recipeKey(preset));
+  } catch (error) {
+    elements.batchStatus.textContent = error.message || "This recipe could not be applied.";
+  }
+}
+
+function openBatchImageContextMenu(event, item) {
+  event.preventDefault();
+  if (!state.batch.selected.has(item.id)) {
+    state.batch.selected.clear();
+    state.batch.selected.add(item.id);
+    state.batch.selectionTouched = true;
+    state.batch.activeId = item.id;
+    renderBatchGrid();
+  }
+  const projectId = state.batch.projectId;
+  const selectedIds = [...state.batch.selected];
+  const recipes = allPresets().filter((preset) => !preset.recovery);
+  const items = [
+    { type: "heading", label: `${selectedIds.length} image${selectedIds.length === 1 ? "" : "s"} selected` },
+    { label: item.override ? "Save this adjustment as recipe…" : "Save this image as recipe…", disabled: !item.bytes || !item.width || !item.height, action: () => saveBatchImageRecipe(item) },
+    { type: "separator" },
+    { type: "heading", label: "Apply recipe to selection" },
+    ...recipes.map((preset) => {
+      const problem = legacyRecipeProblem(preset, state.capabilities);
+      return {
+        label: recipeLabel(preset, allPresets()),
+        disabled: Boolean(problem),
+        title: problem || undefined,
+        action: () => applyContextRecipe(preset, projectId, selectedIds),
+      };
+    }),
+  ];
+  openContextMenu({ x: event.clientX, y: event.clientY, anchor: event.currentTarget, items });
+}
+
+function renderBatchJobBar() {
+  const job = state.batch.job;
+  elements.batchJobBar.hidden = !job;
+  if (!job) {
+    if (batchJobMetricsTimer != null) window.clearInterval(batchJobMetricsTimer);
+    batchJobMetricsTimer = null;
+    return;
+  }
+  if (batchJobMetricsTimer == null) {
+    batchJobMetricsTimer = window.setInterval(() => {
+      if (state.batch.job !== job) {
+        window.clearInterval(batchJobMetricsTimer);
+        batchJobMetricsTimer = null;
+        return;
+      }
+      renderBatchJobBar();
+    }, 1000);
+  }
+  const elapsed = Math.max(.001, (performance.now() - job.startedAt) / 1000);
+  const rate = job.completed / elapsed;
+  const remaining = Math.max(0, job.total - job.completed);
+  const eta = rate > 0 && remaining ? Math.ceil(remaining / rate) : null;
+  const etaLabel = eta == null ? "estimating time" : eta < 60 ? `${eta}s left` : `${Math.floor(eta / 60)}m ${eta % 60}s left`;
+  elements.batchJobTitle.textContent = job.paused
+    ? job.active ? "Pausing recipe job" : "Recipe job paused"
+    : job.label;
+  elements.batchJobStatus.textContent = job.paused && job.active
+    ? `Finishing ${job.active} active image${job.active === 1 ? "" : "s"} before pausing.`
+    : job.paused ? "No new images will start until you resume."
+      : job.active ? `Processing ${job.active} image${job.active === 1 ? "" : "s"}; ${job.queue.length} waiting.`
+        : "Preparing the next image…";
+  elements.batchJobProgress.max = Math.max(1, job.total);
+  elements.batchJobProgress.value = Math.min(job.completed, job.total);
+  elements.batchJobMetrics.textContent = `${job.completed} of ${job.total} · ${rate < 1 ? "<1" : rate.toFixed(1)} images/s · ${etaLabel}`;
+  elements.batchJobPause.textContent = job.paused ? job.active ? "Pausing…" : "Resume" : "Pause";
+  elements.batchJobPause.disabled = Boolean(job.paused && job.active);
+  elements.batchJobSpeed.value = getProcessingScheduler().mode;
 }
 
 function downloadBytes(bytes, mime, name) {
@@ -2595,18 +2767,6 @@ function resetBatchRecipe(item) {
   runBatch([item]);
 }
 
-function saveBatchOverride(item) {
-  const preset = recipeForItem(item);
-  const operations = effectiveOperationsForItem(item, preset);
-  openPresetDialog(operations, item.width, item.height, `${item.name.replace(/\.[^.]+$/, "")} adjustment`, {
-    kind: "batch-override",
-    fileId: item.id,
-    presetId: preset.id,
-    sharedOperations: sharedOperationsForItem(item, preset),
-    overridePatch: clone(item.override),
-  });
-}
-
 function returnFromEditor(event) {
   const detail = event.detail;
   if (!detail?.context) return;
@@ -2698,6 +2858,7 @@ elements.batchFolderInput.addEventListener("change", () => {
   importBatchFiles(files, { focusFirst });
 });
 elements.batchCancel.addEventListener("click", cancelActiveBatch);
+elements.batchJobPause.addEventListener("click", toggleBatchPause);
 elements.batchClearCompleted.addEventListener("click", clearCompletedBatchItems);
 elements.batchClear.addEventListener("click", startNewBatch);
 elements.batchFormat.addEventListener("change", () => setBatchFormat(elements.batchFormat.value));

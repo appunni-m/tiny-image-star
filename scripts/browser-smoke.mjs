@@ -365,6 +365,167 @@ async function assertNoLayoutCollisions(page, label, selectors) {
   assert.equal(report.bodyOverflow, false, `${label}: page has horizontal overflow`);
 }
 
+async function assertBulkRecipeContext(browser, address) {
+  const isolated = await browser.newContext();
+  await isolated.addInitScript(() => {
+    Object.defineProperty(navigator, "hardwareConcurrency", { configurable: true, value: 4 });
+    window.__tinystarDisableLargeFolderJobs = true;
+    window.__tinystarTestDelayWorkers = false;
+    const NativeWorker = window.Worker;
+    window.Worker = class DelayedWorker extends NativeWorker {
+      postMessage(message, transfer) {
+        if (!window.__tinystarTestDelayWorkers) return super.postMessage(message, transfer);
+        setTimeout(() => super.postMessage(message, transfer), 700);
+      }
+    };
+  });
+  const page = await isolated.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
+    const files = await page.evaluate(async () => {
+      const files = [];
+      for (let index = 0; index < 10; index += 1) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 24;
+        canvas.height = 18;
+        const context = canvas.getContext("2d");
+        context.fillStyle = `hsl(${index * 31} 70% 55%)`;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        files.push({ name: `context-${index}.png`, mimeType: "image/png", buffer: [...new Uint8Array(await blob.arrayBuffer())] });
+      }
+      return files;
+    });
+    const firstFile = files[0];
+    const editorIsolated = await browser.newContext();
+    await editorIsolated.addInitScript(() => {
+      Object.defineProperty(navigator, "hardwareConcurrency", { configurable: true, value: 4 });
+      window.__tinystarDisableLargeFolderJobs = true;
+    });
+    const editorPage = await editorIsolated.newPage();
+    await editorPage.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
+    await editorPage.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
+    await editorPage.locator("#file-input").setInputFiles({ ...firstFile, buffer: Buffer.from(firstFile.buffer) });
+    const waitForEditorPreview = async () => {
+      await editorPage.waitForFunction(() => document.querySelector("#processing-status")?.textContent === "Ready to download.", null, { timeout: 15_000 });
+      await editorPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    await waitForEditorPreview();
+    const sourceDigest = await editorPage.evaluate(async () => {
+      const bytes = window.tinyImageStarEditor.getSnapshot().file.bytes;
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      window.__tinystarEditorCanvas = document.querySelector("#editor-canvas");
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    });
+    const previewAtBrightness = async (value) => {
+      await editorPage.locator("#brightness-input").evaluate((input, nextValue) => {
+        input.value = String(nextValue);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }, value);
+      await waitForEditorPreview();
+      return editorPage.evaluate(async () => {
+        const canvas = document.querySelector("#editor-canvas");
+        const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        const digest = await crypto.subtle.digest("SHA-256", pixels);
+        const source = window.tinyImageStarEditor.getSnapshot().file.bytes;
+        const sourceHash = await crypto.subtle.digest("SHA-256", source);
+        return {
+          sameCanvas: canvas === window.__tinystarEditorCanvas,
+          sameSource: [...new Uint8Array(sourceHash)].map((byte) => byte.toString(16).padStart(2, "0")).join("") === window.__tinystarExpectedSourceDigest,
+          pixels: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+        };
+      });
+    };
+    await editorPage.evaluate((digest) => { window.__tinystarExpectedSourceDigest = digest; }, sourceDigest);
+    const firstPreview = await previewAtBrightness(1.25);
+    await previewAtBrightness(0.75);
+    const repeatedPreview = await previewAtBrightness(1.25);
+    assert.equal(firstPreview.sameCanvas, true, "edit previews stay on the same canvas object");
+    assert.equal(firstPreview.sameSource, true, "the original image bytes stay pinned in memory while editing");
+    assert.equal(repeatedPreview.sameSource, true, "every slider edit keeps the original source bytes unchanged");
+    assert.equal(repeatedPreview.pixels, firstPreview.pixels, "changing an edit away and back rerenders deterministically from the original image");
+    await editorIsolated.close();
+
+    await page.locator("#batch-file-input").setInputFiles(files.map((file) => ({ ...file, buffer: Buffer.from(file.buffer) })));
+    await page.waitForFunction((count) => document.querySelectorAll(".batch-card").length === count
+      && document.querySelector("#batch-status")?.textContent?.includes(`Ready — ${count} previews`), 10, { timeout: 30_000 });
+    await page.locator("#batch-button").click();
+    const firstCard = page.locator(".batch-card").first();
+    await firstCard.click({ button: "right" });
+    assert.equal(await page.getByRole("menu").isVisible(), true, "image right-click opens the app context menu");
+    await page.getByRole("menuitem", { name: "Save this image as recipe…", exact: true }).click();
+    assert.equal(await page.locator("#preset-dialog").isVisible(), true, "image context action opens recipe save");
+    assert.equal(await page.locator("#preset-dialog-heading").textContent(), "Save image recipe");
+    await page.locator("#preset-name-input").fill("Context recipe smoke");
+    await page.locator("#preset-save-button").click();
+    await page.waitForFunction(() => !document.querySelector("#preset-dialog")?.open);
+
+    const selectAll = page.locator("#batch-select-all");
+    if (await selectAll.textContent() === "Select all") await selectAll.click();
+    assert.equal(await selectAll.textContent(), "Clear selection", "all page images can be selected before the recipe action");
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
+    await page.locator(".batch-card").first().click({ button: "right" });
+    const contextMenu = page.getByRole("menu");
+    assert.match(await contextMenu.textContent(), /10 images selected/);
+    await contextMenu.getByRole("menuitem", { name: "Profile Photo", exact: true }).click();
+    await page.locator("#batch-job-bar").waitFor({ state: "visible" });
+    await page.locator("#batch-job-speed").selectOption("max-speed");
+    assert.equal(await page.locator("#processing-mode-select").inputValue(), "max-speed", "job-bar speed updates the shared processing scheduler live");
+    await page.locator("#batch-job-pause").click();
+    await page.waitForFunction(() => document.querySelector("#batch-job-pause")?.textContent === "Resume", null, { timeout: 15_000 });
+    const paused = await page.evaluate(() => ({
+      value: Number(document.querySelector("#batch-job-progress")?.value),
+      max: Number(document.querySelector("#batch-job-progress")?.max),
+      label: document.querySelector("#batch-job-title")?.textContent,
+    }));
+    assert.equal(paused.label, "Recipe job paused");
+    assert.ok(paused.value > 0 && paused.value < paused.max, `pause drains active renders and holds queued images: ${JSON.stringify(paused)}`);
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
+    await page.locator("#batch-job-pause").click();
+    await page.waitForFunction(() => document.querySelector("#batch-job-bar")?.hidden === true, null, { timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 10 previews"));
+    const results = await page.locator(".batch-card").allTextContents();
+    assert.equal(results.length, 10, "bulk recipe keeps all image objects on the page");
+    assert.ok(results.every((text) => text.includes("512 × 512") && text.includes("PNG")), "the selected recipe updates each image object and retains its recipe output format");
+    await page.getByRole("button", { name: "Back to editor", exact: true }).click();
+    assert.equal(await page.locator(".tray-item").count(), 10, "the selected image objects stay available in the editor page layer list");
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
+    await page.locator(".tray-item").first().click({ button: "right" });
+    assert.match(await page.getByRole("menu").textContent(), /10 images selected/);
+    await page.getByRole("menuitem", { name: "Profile Photo", exact: true }).click();
+    await page.locator("#batch-job-bar").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#editor-view").isVisible(), true, "the recipe job remains on the page with the canvas open");
+    await page.locator("#batch-job-speed").selectOption("low-resource");
+    assert.equal(await page.locator("#processing-mode-select").inputValue(), "low-resource", "the workspace job bar changes the shared speed mode");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileJobBar = await page.evaluate(() => {
+      const bar = document.querySelector("#batch-job-bar");
+      const bounds = bar.getBoundingClientRect();
+      const controls = [...bar.querySelectorAll("button, select")].filter((node) => !node.hidden);
+      return {
+        bounds: { left: bounds.left, right: bounds.right, bottom: bounds.bottom },
+        viewport: innerWidth,
+        controls: controls.map((node) => {
+          const rect = node.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, height: rect.height };
+        }),
+      };
+    });
+    assert.ok(mobileJobBar.bounds.left >= 0 && mobileJobBar.bounds.right <= mobileJobBar.viewport, `the in-place job bar fits a phone viewport: ${JSON.stringify(mobileJobBar)}`);
+    assert.ok(mobileJobBar.controls.every((control) => control.left >= 0 && control.right <= mobileJobBar.viewport && control.height >= 40), `job-bar controls fit phone touch targets: ${JSON.stringify(mobileJobBar)}`);
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
+    await page.waitForFunction(() => document.querySelector("#batch-job-bar")?.hidden === true, null, { timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Ready — 10 previews"));
+    assert.deepEqual(errors, [], `bulk recipe context browser errors: ${errors.join(" | ")}`);
+    console.log("  editor page and result cards support recipe context actions; source bytes/pixels stay stable, multi-selection previews update in place, and the fixed speed/pause job bar fits mobile");
+  } finally {
+    await isolated.close();
+  }
+}
+
 async function assertResultsResponsiveGeometry(page, label) {
   const report = await page.evaluate(() => {
     const root = document.querySelector('#batch-view[data-review="true"]');
@@ -786,6 +947,20 @@ async function main() {
   const server = await startStaticServer();
   const address = server.address();
   const browser = await chromium.launch({ headless: true });
+  if (process.argv.includes("--bulk-recipe-context-only")) {
+    try {
+      await assertBulkRecipeContext(browser, address);
+      console.log("verify:bulk-context PASS");
+      return 0;
+    } catch (error) {
+      console.error("verify:bulk-context FAIL", error);
+      return 1;
+    } finally {
+      await browser.close();
+      await new Promise((resolve) => server.close(resolve));
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  }
   // Keep the complete browser suite reproducible on small CI runners and
   // model the same CPU limits on every isolated page, not just one test.
   const hardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);
@@ -1449,9 +1624,9 @@ async function main() {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
     await selectRecipeRevision(page, "#tray-preset-picker", "website-banner");
-    await page.waitForFunction(() => !document.querySelector("#tray-cancel-button")?.hidden);
-    await page.locator("#tray-cancel-button").click();
-    await page.waitForFunction(() => document.querySelector("#tray-cancel-button")?.hidden && document.querySelector("#batch-status")?.textContent?.includes("Updates cancelled"));
+    await page.waitForFunction(() => !document.querySelector("#batch-cancel-button")?.hidden);
+    await page.locator("#batch-cancel-button").click();
+    await page.waitForFunction(() => document.querySelector("#batch-cancel-button")?.hidden && document.querySelector("#batch-status")?.textContent?.includes("Updates cancelled"));
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
     assert.equal(await page.locator("#batch-button").textContent(), "Results (2)", "an active image set uses one contextual Results action");
     assert.equal(await page.locator("#batch-button").getAttribute("aria-label"), "View results for 2 images", "Results action names the active set for assistive technology");
@@ -1750,8 +1925,8 @@ async function main() {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = true; });
     await page.locator("#batch-file-input").setInputFiles([firstFixture, secondFixture]);
-    await page.waitForFunction(() => !document.querySelector("#tray-cancel-button")?.hidden);
-    assert.equal(await page.locator("#batch-cancel-button").isHidden(), true, "the shared canvas tray owns cancellation while the set is active");
+    await page.waitForFunction(() => !document.querySelector("#batch-cancel-button")?.hidden);
+    assert.equal(await page.locator("#tray-cancel-button").isHidden(), true, "the global processing bar owns cancellation while the set is active");
     await page.getByRole("button", { name: "Cancel updates", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#batch-status")?.textContent?.includes("Updates cancelled"));
     await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
@@ -2380,6 +2555,7 @@ async function main() {
     });
     assert.ok(largeManifestShape.every((entry) => !entry.hasBytes && !entry.hasOutput), "large manifest stores metadata only after recovery");
 
+    await assertBulkRecipeContext(browser, address);
     const localOrigin = `http://127.0.0.1:${address.port}/`;
     const uploadRequests = networkRequests.filter((request) => request.hasBody || ["POST", "PUT", "PATCH"].includes(request.method));
     assert.deepEqual(uploadRequests, [], "image bytes are never sent in a request body");

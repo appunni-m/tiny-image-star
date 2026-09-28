@@ -9,7 +9,7 @@
     <title>Tiny Image Star — private image editor</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111723'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='42' fill='%23c4c9ff'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E" />
     <script src="./src/theme-bootstrap.js"></script>
-    <link rel="stylesheet" href="./styles.css?v=20260927-responsive" />
+    <link rel="stylesheet" href="./styles.css?v=20260928-figma-slice-2" />
   </head>
   <body>
     <main class="app-shell">
@@ -41,6 +41,19 @@
           <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,image/tiff,image/x-icon,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff,.ico" multiple />
         </div>
       </header>
+
+      <section id="batch-job-bar" class="batch-job-bar" hidden aria-label="Recipe processing">
+        <div class="batch-job-overview">
+          <div class="batch-job-copy"><strong id="batch-job-title">Applying recipe</strong><span id="batch-job-status" aria-live="polite">Preparing images…</span></div>
+          <progress id="batch-job-progress" max="1" value="0" aria-label="Images processed">0%</progress>
+          <span id="batch-job-metrics" class="batch-job-metrics">0 of 0 · 0 images/s</span>
+        </div>
+        <label class="batch-job-speed" for="batch-job-speed"><span>Speed</span>
+          <select id="batch-job-speed"><option value="auto">Auto</option><option value="max-speed">Max speed</option><option value="low-resource">Low resource</option></select>
+        </label>
+        <button id="batch-job-pause" class="button secondary" type="button">Pause</button>
+        <button id="batch-cancel-button" class="button secondary" type="button" hidden>Cancel updates</button>
+      </section>
 
       <aside id="session-recovery" class="session-recovery" hidden aria-live="polite" aria-label="Recover your last work">
         <div>
@@ -440,7 +453,6 @@
         <div class="batch-toolbar">
           <span id="batch-status" aria-live="polite">Add images, make an edit, then download the results.</span>
           <div class="batch-selection-actions">
-            <button id="batch-cancel-button" class="button secondary" type="button" hidden>Cancel updates</button>
             <button id="batch-clear-completed-button" class="button secondary" type="button" disabled>Clear completed</button>
             <button id="batch-save-button" class="button primary" type="button" disabled aria-keyshortcuts="Meta+S Control+S">Save selected</button>
             <button id="batch-select-all" class="button secondary" type="button" disabled>Select all</button>
@@ -545,6 +557,8 @@
       <div id="mobile-inspector-content" class="mobile-sheet-content"></div>
     </dialog>
 
-    <script type="module" src="./src/main.js?v=20260927-responsive"></script>
+    <div id="image-context-menu" class="image-context-menu" role="menu" aria-label="Image actions" tabindex="-1" hidden></div>
+
+    <script type="module" src="./src/main.js?v=20260928-figma-slice-2"></script>
   </body>
 </html>
