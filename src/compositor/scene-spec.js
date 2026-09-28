@@ -44,6 +44,7 @@ export function planScene(project, slideId, variantId, { preview = false, previe
     return { ...node, bounds, canonicalViewport, originX };
   };
   for (const raw of resolved.nodes) {
+    if (raw.visible === false) continue;
     if (linkedTitles.has(raw.id)) continue;
     const node = prepare(raw);
     if (node.depthTextId) node.depthText = prepare(resolved.nodes.find((entry) => entry.id === node.depthTextId));

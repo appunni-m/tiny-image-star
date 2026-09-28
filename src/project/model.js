@@ -210,8 +210,11 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape"].includes(node.kind), "Unsupported layer kind.");
+    if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
+    if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
+    if (node.locked != null) check(typeof node.locked === "boolean", "Invalid layer lock state.");
     if (["legacy-image", "image"].includes(node.kind)) check(project.assets[node.assetId]?.kind === "image", "An image layer needs a source asset.");
     if (node.maskId != null) check(project.assets[node.maskId]?.kind === "mask", "A layer mask is missing.");
     if (node.fontId != null) check(project.assets[node.fontId]?.kind === "font", "A layer font is missing.");

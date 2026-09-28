@@ -91,11 +91,15 @@ pause/resume, and cancel. The browser check verifies byte-stable in-memory
 source editing, same-canvas preview updates, deterministic return to an earlier
 edit value, multi-image in-place updates, and phone-width job-bar controls.
 
-The remaining product migration is the larger workspace rebuild. The existing
-single-image editor, results gallery, and story composer are still separate
-interaction models; there is not yet a shared Figma-style page canvas with
-general image layers, frame/group/shape objects, a complete layer tree, and a
-context-sensitive property inspector. Calling the app a Figma copy or claiming
+The shared project model now has a first page/layer foundation: a single page
+can contain up to 200 independently named, visible/hidden, locked/unlocked
+image layers; range and toggle selection stays transient; layer rename,
+visibility, locking, and order are reversible history commands; and the scene
+renderer omits hidden layers. These are model capabilities, not yet the visible
+Figma-style workspace. The existing single-image editor, results gallery, and
+story composer remain separate interaction models; the app still lacks the
+shared page canvas, complete layer tree, context-sensitive inspector, and
+general frame/group/vector editing. Calling the app a Figma copy or claiming
 full parity would be premature.
 
 ## Migration sequence
@@ -113,6 +117,10 @@ Use one document model for pages, frames, image objects, text, shapes, layer
 order, and per-object operation state. Reuse the existing scene node/asset
 schema and history where they fit. Add selection identity and page membership
 without duplicating source image bytes for each preview or recipe revision.
+The first step is in place: `src/project/design-page.js` constructs a verified
+single-page multi-image document and supplies serializable layer commands and
+selection snapshots. Connect those capabilities to the workspace before
+expanding object types or page-level editing.
 
 ### 2. Establish the live image contract
 
