@@ -171,6 +171,7 @@ export function resizeFrameChildren(project, pageId, frameId, nextFrame) {
   if (!page || !parent || parent.kind !== "frame" || !nextFrame) throw new Error("Choose a frame and a new frame size.");
   const commands = [];
   const resizeChildren = (container, oldFrame, newFrame) => {
+    if (container.style?.layout) return;
     for (const id of page.nodeIds) {
       const child = project.nodes[id]; if (child.parentId !== container.id) continue;
       const constraints = child.constraints ?? { horizontal: "left", vertical: "top" };
@@ -183,6 +184,85 @@ export function resizeFrameChildren(project, pageId, frameId, nextFrame) {
   };
   resizeChildren(parent, parent.frame, nextFrame);
   return commands;
+}
+
+/** Change a frame's Auto Layout flow while preserving each layer's current pixel size. */
+export function setFrameLayoutCommand(project, pageId, frameId, direction) {
+  const page = project.slides.find((entry) => entry.id === pageId), frame = project.nodes[frameId];
+  if (!page || frame?.kind !== "frame" || !["manual", "horizontal", "vertical"].includes(direction))
+    throw new Error("Choose a frame and a supported layout flow.");
+  const variant = project.variants[0], resolvedByVariant = new Map(project.variants.map((shape) => [shape.id, resolveLayerFrames(project, pageId, shape.id)]));
+  const resolved = resolvedByVariant.get(variant.id), world = resolved.get(frameId);
+  if (!world) throw new Error("The frame is not on this page.");
+  const commands = [], parent = clone(frame), children = page.nodeIds.filter((id) => project.nodes[id]?.parentId === frameId);
+  const measuredSize = (id, variantId = variant.id) => {
+    const shape = project.variants.find((entry) => entry.id === variantId), bounds = resolvedByVariant.get(variantId)?.get(id)?.frame;
+    if (!shape) return null;
+    return bounds ? { width: Math.max(.01, bounds.width * shape.width), height: Math.max(.01, bounds.height * shape.height) } : null;
+  };
+  const localFrame = (id, containerId, variantId) => {
+    const shape = project.variants.find((entry) => entry.id === variantId), child = resolvedByVariant.get(variantId)?.get(id), container = resolvedByVariant.get(variantId)?.get(containerId);
+    if (!child || !container || !shape || container.frame.width <= 0 || container.frame.height <= 0) return null;
+    const width = child.frame.width / container.frame.width, height = child.frame.height / container.frame.height;
+    const dx = (child.frame.x + child.frame.width / 2 - container.frame.x - container.frame.width / 2) * shape.width;
+    const dy = (child.frame.y + child.frame.height / 2 - container.frame.y - container.frame.height / 2) * shape.height;
+    const angle = -container.rotation * Math.PI / 180, xOffset = dx * Math.cos(angle) - dy * Math.sin(angle);
+    const yOffset = dx * Math.sin(angle) + dy * Math.cos(angle);
+    return { x: .5 + xOffset / (container.frame.width * shape.width) - width / 2,
+      y: .5 + yOffset / (container.frame.height * shape.height) - height / 2, width, height };
+  };
+  const storeManualFrame = (id, node) => {
+    if (id === frameId) {
+      if (node.parentId) node.frame = localFrame(id, node.parentId, variant.id) ?? node.frame;
+      else node.frame = { ...node.frame, width: world.frame.width, height: world.frame.height };
+      const variants = {};
+      for (const shape of project.variants.slice(1)) {
+        if (node.parentId) variants[shape.id] = localFrame(id, node.parentId, shape.id) ?? node.frame;
+        else {
+          const bounds = resolvedByVariant.get(shape.id)?.get(frameId)?.frame;
+          if (bounds) variants[shape.id] = { ...node.frame, width: bounds.width, height: bounds.height };
+        }
+      }
+      if (Object.keys(variants).length) node.variantFrames = variants;
+      else delete node.variantFrames;
+    } else if (node.parentId === frameId) {
+      node.frame = localFrame(id, frameId, variant.id) ?? node.frame;
+      const variants = {};
+      for (const shape of project.variants.slice(1)) variants[shape.id] = localFrame(id, frameId, shape.id) ?? node.frame;
+      if (Object.keys(variants).length) node.variantFrames = variants;
+      else delete node.variantFrames;
+    }
+  };
+  parent.layoutSize ??= measuredSize(frameId);
+  parent.layoutSizing ??= { width: "fixed", height: "fixed" };
+  parent.layoutSizing = { width: "fixed", height: "fixed", ...parent.layoutSizing };
+  parent.style = { ...parent.style };
+  if (direction === "manual") {
+    delete parent.style.layout;
+    for (const axis of ["width", "height"]) if (parent.layoutSizing[axis] === "hug") parent.layoutSizing[axis] = "fixed";
+    parent.layoutSize = measuredSize(frameId);
+    storeManualFrame(frameId, parent);
+  } else {
+    const previous = parent.style.layout;
+    parent.style.layout = { direction, gap: previous?.gap ?? 0, rowGap: previous?.rowGap, columnGap: previous?.columnGap,
+      padding: previous?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 }, justify: previous?.justify ?? "start",
+      align: previous?.align ?? "center", wrap: previous?.wrap ?? false };
+    for (const key of Object.keys(parent.style.layout)) if (parent.style.layout[key] == null) delete parent.style.layout[key];
+  }
+  commands.push({ type: "node", id: frameId, value: parent });
+  for (const id of children) {
+    const child = clone(project.nodes[id]), size = measuredSize(id);
+    child.layoutSize ??= size;
+    child.layoutSizing ??= { width: "fixed", height: "fixed" };
+    child.layoutSizing = { width: "fixed", height: "fixed", ...child.layoutSizing };
+    if (direction === "manual") {
+      child.layoutSize = size;
+      for (const axis of ["width", "height"]) if (child.layoutSizing[axis] === "fill") child.layoutSizing[axis] = "fixed";
+      storeManualFrame(id, child);
+    }
+    commands.push({ type: "node", id, value: child });
+  }
+  return { type: "group", commands };
 }
 
 export function deleteLayersCommand(project, nodeIds) {

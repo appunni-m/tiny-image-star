@@ -1,7 +1,7 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  reorderLayerCommand, resizeFrameChildren, updatePageSelection } from "../project/design-page.js";
+  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, newId, resolveLayerFrames } from "../project/model.js";
 import { ProjectHistory } from "../project/history.js";
 import { listDesignProjects, readDesignProject, writeDesignProject } from "../project/storage.js";
@@ -43,11 +43,21 @@ export function attachDesignWorkspace() {
   }
   function storeWorldGeometry(id, world) {
     const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
-    if (!node || !world?.frame) return null;
+    if (!node || !resolved || !world?.frame) return null;
     const next = { ...clone(node), frame: clone(world.frame) };
     if (world.rotation != null) next.rotation = world.rotation;
+    const variant = project.variants[0];
+    const changedWidth = Math.abs(world.frame.width - resolved?.frame.width) > 1e-9;
+    const changedHeight = Math.abs(world.frame.height - resolved?.frame.height) > 1e-9;
+    if (node.layoutSizing || node.layoutSize) {
+      next.layoutSizing = { width: "fixed", height: "fixed", ...node.layoutSizing };
+      next.layoutSize = { width: node.layoutSize?.width ?? resolved.frame.width * variant.width,
+        height: node.layoutSize?.height ?? resolved.frame.height * variant.height };
+      if (changedWidth) { next.layoutSizing.width = "fixed"; next.layoutSize.width = world.frame.width * variant.width; }
+      if (changedHeight) { next.layoutSizing.height = "fixed"; next.layoutSize.height = world.frame.height * variant.height; }
+    }
     if (!node.parentId) return next;
-    const parent = resolvedLayerMap().get(node.parentId), variant = project.variants[0];
+    const parent = resolvedLayerMap().get(node.parentId);
     if (!resolved || !parent || parent.frame.width <= 0 || parent.frame.height <= 0) return null;
     const localWidth = world.frame.width / parent.frame.width, localHeight = world.frame.height / parent.frame.height;
     if (project.nodes[node.parentId]?.style?.layout) {
@@ -167,6 +177,14 @@ export function attachDesignWorkspace() {
     get("frame-clip-field").hidden = node.kind !== "frame";
     get("frame-radius-field").hidden = node.kind !== "frame";
     get("frame-layout-field").hidden = node.kind !== "frame";
+    const parentHasLayout = Boolean(node.parentId && project.nodes[node.parentId]?.style?.layout), canHug = node.kind === "frame" && Boolean(node.style?.layout);
+    get("resizing-options").hidden = !parentHasLayout && !canHug;
+    for (const axis of ["width", "height"]) {
+      const control = get(`layout-sizing-${axis}`);
+      control.value = node.layoutSizing?.[axis] ?? "fixed";
+      control.querySelector('option[value="hug"]').disabled = !canHug;
+      control.querySelector('option[value="fill"]').disabled = !parentHasLayout;
+    }
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
     get("x").title = world.layoutManaged ? "Auto Layout controls this child's X position." : "";
     get("y").title = world.layoutManaged ? "Auto Layout controls this child's Y position." : "";
@@ -179,6 +197,9 @@ export function attachDesignWorkspace() {
       const layout = node.style?.layout; get("frame-layout").value = layout?.direction ?? "manual";
       get("frame-layout-options").hidden = !layout;
       get("layout-gap").value = String(layout?.gap ?? 0);
+      get("layout-row-gap").value = String(layout?.rowGap ?? layout?.gap ?? 0);
+      get("layout-column-gap").value = String(layout?.columnGap ?? layout?.gap ?? 0);
+      get("layout-wrap").checked = Boolean(layout?.wrap);
       for (const edge of ["left", "right", "top", "bottom"]) get(`layout-padding-${edge}`).value = String(layout?.padding?.[edge] ?? 0);
       get("layout-justify").value = layout?.justify ?? "start"; get("layout-align").value = layout?.align ?? "center";
     }
@@ -996,11 +1017,8 @@ export function attachDesignWorkspace() {
   get("frame-radius").addEventListener("change", () => commitEdit("Change frame corner radius"));
   get("frame-layout").addEventListener("change", () => {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
-    const style = { ...node.style };
-    if (get("frame-layout").value === "manual") delete style.layout;
-    else style.layout = { direction: get("frame-layout").value, gap: style.layout?.gap ?? 0,
-      padding: style.layout?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 }, justify: style.layout?.justify ?? "start", align: style.layout?.align ?? "center" };
-    history.apply({ type: "node", id, value: { ...clone(node), style } }, "Change frame layout"); edited("Auto Layout updated.");
+    try { history.apply(setFrameLayoutCommand(history.document, currentPage().id, id, get("frame-layout").value), "Change frame layout"); edited("Auto Layout updated."); }
+    catch (error) { setStatus(error.message); }
   });
   function updateFrameLayout(key, value) {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame" || !node.style?.layout) return;
@@ -1010,7 +1028,8 @@ export function attachDesignWorkspace() {
     else layout[key] = value;
     previewNode(id, { style: { ...node.style, layout } });
   }
-  for (const [field, key] of [["layout-gap", "gap"], ["layout-padding-left", "padding.left"], ["layout-padding-right", "padding.right"],
+  for (const [field, key] of [["layout-gap", "gap"], ["layout-row-gap", "rowGap"], ["layout-column-gap", "columnGap"],
+    ["layout-padding-left", "padding.left"], ["layout-padding-right", "padding.right"],
     ["layout-padding-top", "padding.top"], ["layout-padding-bottom", "padding.bottom"]]) {
     get(field).addEventListener("input", () => { const value = Number(get(field).value); if (Number.isFinite(value) && value >= 0) updateFrameLayout(key, value); });
     get(field).addEventListener("change", () => commitEdit("Change Auto Layout spacing"));
@@ -1020,6 +1039,21 @@ export function attachDesignWorkspace() {
       updateFrameLayout(key, get(field).value); commitEdit("Change Auto Layout alignment");
     });
   }
+  get("layout-wrap").addEventListener("change", () => {
+    updateFrameLayout("wrap", get("layout-wrap").checked); commitEdit("Change Auto Layout wrapping");
+  });
+  for (const axis of ["width", "height"]) get(`layout-sizing-${axis}`).addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id), mode = get(`layout-sizing-${axis}`).value;
+    const parentHasLayout = Boolean(node?.parentId && layer(node.parentId)?.style?.layout);
+    if (!node || mode === "fill" && !parentHasLayout || mode === "hug" && (node.kind !== "frame" || !node.style?.layout)) return;
+    const world = worldLayer(id), variant = renderProject().variants[0];
+    const layoutSize = { width: node.layoutSize?.width ?? world.frame.width * variant.width,
+      height: node.layoutSize?.height ?? world.frame.height * variant.height };
+    layoutSize[axis] = world.frame[axis] * variant[axis];
+    const layoutSizing = { width: "fixed", height: "fixed", ...node.layoutSizing, [axis]: mode };
+    history.apply({ type: "node", id, value: { ...clone(node), layoutSizing, layoutSize } }, "Change layer resizing");
+    edited("Layer resizing updated.");
+  });
   for (const [field, axis] of [["constraint-horizontal", "horizontal"], ["constraint-vertical", "vertical"]]) {
     get(field).addEventListener("change", () => {
       const id = currentSelection()[0], node = id && layer(id); if (!node?.parentId) return;

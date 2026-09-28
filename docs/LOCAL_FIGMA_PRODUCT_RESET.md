@@ -91,25 +91,55 @@ pause/resume, and cancel. The browser check verifies byte-stable in-memory
 source editing, same-canvas preview updates, deterministic return to an earlier
 edit value, multi-image in-place updates, and phone-width job-bar controls.
 
-The shared project model now has a first page/layer foundation: a single page
-can contain up to 200 independently named, visible/hidden, locked/unlocked
-image layers; range and toggle selection stays transient; layer rename,
-visibility, locking, and order are reversible history commands; and the scene
-renderer omits hidden layers. These are model capabilities, not yet the visible
-Figma-style workspace. The existing single-image editor, results gallery, and
-story composer remain separate interaction models; the app still lacks the
-shared page canvas, complete layer tree, context-sensitive inspector, and
-general frame/group/vector editing. Calling the app a Figma copy or claiming
-full parity would be premature.
+The visible design workspace now has a page navigator, layer tree, zoomable
+canvas, selection tools, and contextual inspector. It edits image, text, shape,
+and nested frame layers in a local project with undo/redo and browser recovery.
+Frames support inherited transforms, clipping, corner radius, constraints, and
+horizontal/vertical Auto Layout. Auto Layout now includes wrap, independent row
+and column spacing, padding, alignment/justification, and per-axis Fixed, Fill,
+and Hug sizing. The Pillow-RS WASM scene renderer updates the same page preview;
+design image bytes remain local and retained by the active project.
+
+This is a material workspace milestone, not complete Figma parity. The app
+still keeps its older single-image, batch, and story workspaces as separate
+interaction models, and the design workspace lacks a general vector-path
+editor, components/variants, variables, layout grids, effects and advanced fill
+systems, prototype interactions, and many established keyboard/accessibility
+behaviors. Auto Layout still lacks grid flow, min/max sizing, aspect-ratio
+controls, and several advanced wrap/alignment behaviors. The supported-feature
+inventory and cross-device release gates below remain open; do not describe the
+project as a production-ready Figma copy.
+
+## Figma Design parity inventory
+
+| Area | Status | Current boundary |
+| --- | --- | --- |
+| Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | A local design workspace exists, but legacy image, batch, and story workspaces are not one shared editor. |
+| Images and Pillow-RS editing | Partial | Local WASM previews and exports work; not every legacy image operation is yet an editable design-layer control. |
+| Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
+| Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gap, basic alignment, and per-axis Fixed/Fill/Hug work. Grid, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment are pending. |
+| Shapes and vectors | Partial | Primitive rectangle, rounded rectangle, and ellipse shapes exist; paths, pen editing, boolean operations, and SVG import/export are pending. |
+| Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
+| Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
+| Components and design systems | Pending | Components, instances, variants, properties, libraries, and variables/tokens are not implemented. |
+| Prototyping and interaction | Pending | Connections, triggers, transitions, overlays, and local prototype playback are not implemented. |
+| Collaboration and file history | Pending | Local undo, redo, and recovery exist; comments, multiplayer editing, shared libraries, and file/version history do not. |
+| Bulk recipes and processing bar | Supported, separate workflow | Recipes freeze their revision and target snapshot; processing updates selected images in place and exposes progress, pause/resume, cancel, and speed controls. |
+| Phone/tablet editing | Partial | The canvas and core controls reflow to phone width; physical-device, keyboard, screen-reader, and tablet qualification is still required. |
+
+This inventory targets the Figma Design editor rather than FigJam, Slides,
+Dev Mode, or Make. It is a working parity checklist; every partial and pending
+row remains part of the requested end state unless explicitly removed after
+product review.
 
 ## Migration sequence
 
-### 0. Freeze the product boundary
+### 0. Keep the product boundary explicit
 
-Resolve whether “all features” means the Design editor model or the full Figma
-product family. Create a finite parity inventory with explicit supported,
-deferred, and excluded rows. Do not begin a wholesale UI replacement while
-“all” is undefined.
+Treat the requested target as the Figma Design editor model plus the single
+bulk-recipe feature. Keep that boundary explicit in the parity inventory above;
+do not silently narrow it to the current implementation or extend it to
+unrelated Figma products.
 
 ### 1. Make one document/page the center of the app
 
@@ -117,10 +147,10 @@ Use one document model for pages, frames, image objects, text, shapes, layer
 order, and per-object operation state. Reuse the existing scene node/asset
 schema and history where they fit. Add selection identity and page membership
 without duplicating source image bytes for each preview or recipe revision.
-The first step is in place: `src/project/design-page.js` constructs a verified
-single-page multi-image document and supplies serializable layer commands and
-selection snapshots. Connect those capabilities to the workspace before
-expanding object types or page-level editing.
+`src/project/design-page.js` constructs a verified multi-page image document
+and supplies serializable layer commands and selection snapshots. The visible
+canvas now uses the page/layer model; unifying it with legacy editor, batch,
+and story state is still required.
 
 ### 2. Establish the live image contract
 
@@ -131,13 +161,14 @@ stack. A stale worker result can never replace a newer revision. Display the
 latest result in the same canvas object; commit edits to document history, not
 to repeatedly re-encoded source bytes.
 
-### 3. Rebuild the editor shell around the canvas
+### 3. Finish the editor shell and responsive interaction model
 
-Move from the current tray-plus-editor destinations to a Figma-like layout:
-left pages/layers, central pan/zoom canvas, contextual right inspector, and a
-compact toolbar. Keep image adjustments and crop/resize controls contextual to
-image selection. Make the same document usable at phone width with full-screen
-canvas, sheets, and touch equivalents for pointer/context actions.
+The first Figma-like shell is in place: left pages/layers, central pan/zoom
+canvas, contextual inspector, and a compact toolbar. Finish direct image
+operation controls, complete layer manipulation and selection behavior, and
+make the same document usable at phone/tablet widths with touch equivalents for
+pointer and context actions. Then remove duplicated state between the design,
+legacy image, batch, and story workspaces.
 
 ### 4. Add context-menu bulk recipes — initial slice delivered
 

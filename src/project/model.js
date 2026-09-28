@@ -110,9 +110,11 @@ function validateNodeStyle(node) {
     check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
     if (style.layout != null) {
       const layout = style.layout; check(object(layout), "Invalid frame layout.");
-      keys(layout, ["direction", "gap", "padding", "justify", "align"]);
+      keys(layout, ["direction", "gap", "rowGap", "columnGap", "padding", "justify", "align", "wrap"]);
       check(["horizontal", "vertical"].includes(layout.direction), "Invalid frame layout direction.");
       if (layout.gap != null) check(number(layout.gap, 0, 16384), "Invalid frame layout gap.");
+      for (const key of ["rowGap", "columnGap"]) if (layout[key] != null) check(number(layout[key], 0, 16384), "Invalid frame layout gap.");
+      if (layout.wrap != null) check(typeof layout.wrap === "boolean", "Invalid frame wrapping setting.");
       if (layout.padding != null) {
         check(object(layout.padding), "Invalid frame layout padding."); keys(layout.padding, ["top", "right", "bottom", "left"]);
         for (const value of Object.values(layout.padding)) check(number(value, 0, 16384), "Invalid frame layout padding.");
@@ -230,7 +232,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -287,6 +289,20 @@ export function validateProject(project) {
         check(["left", "right", "left-right", "center", "scale"].includes(node.constraints.horizontal)
           && ["top", "bottom", "top-bottom", "center", "scale"].includes(node.constraints.vertical), "Invalid frame constraints.");
       } else check(node.constraints == null, "Frame constraints require a parent frame.");
+      if (node.layoutSizing != null) {
+        check(object(node.layoutSizing), "Invalid layer resizing settings."); keys(node.layoutSizing, ["width", "height"]);
+        for (const mode of Object.values(node.layoutSizing)) {
+          check(["fixed", "fill", "hug"].includes(mode), "Invalid layer resizing mode.");
+          if (mode === "fill") check(node.parentId != null && project.nodes[node.parentId]?.style?.layout,
+            "Fill sizing requires a child of an Auto Layout frame.");
+          if (mode === "hug") check(node.kind === "frame" && node.style?.layout,
+            "Hug sizing requires an Auto Layout frame.");
+        }
+      }
+      if (node.layoutSize != null) {
+        check(object(node.layoutSize), "Invalid fixed layer size."); keys(node.layoutSize, ["width", "height"]);
+        check(number(node.layoutSize.width, .01, 16384) && number(node.layoutSize.height, .01, 16384), "Invalid fixed layer size.");
+      }
       if (node.opacity != null) check(number(node.opacity, 0, 1), "Invalid opacity.");
       if (node.rotation != null) check(number(node.rotation, -360, 360), "Invalid rotation.");
       if (node.kind === "text") check(typeof node.text === "string" && node.text.length <= 5000, "Invalid caption.");
@@ -332,40 +348,118 @@ export function createSceneProject({ id = newId("project"), name = "Untitled sto
     slides: clone(slides ?? [{ id: newId("slide"), nodeIds: Object.keys(nodes), overrides: {} }]), shared: { appearance: {} }, variants: clone(variants) });
 }
 
-function arrangedFrame(project, slide, parentId, childId, childFrame, parentFrame, variant, layout) {
-  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === parentId), index = childIds.indexOf(childId);
-  if (index < 0) return childFrame;
-  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding }, gap = layout.gap ?? 0;
-  const frames = childIds.map((id) => {
-    const source = project.nodes[id], patch = slide.overrides[id] ?? {};
-    return id === childId ? childFrame : patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame;
+function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) {
+  const node = project.nodes[nodeId], layout = node?.style?.layout;
+  const fallback = { width: node?.layoutSize?.width ?? (node?.frame?.width ?? 0) * variant.width,
+    height: node?.layoutSize?.height ?? (node?.frame?.height ?? 0) * variant.height };
+  if (!layout || stack.has(nodeId)) return fallback;
+  const nextStack = new Set(stack); nextStack.add(nodeId);
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === nodeId && project.nodes[id]?.visible !== false);
+  const children = childIds.map((id) => {
+    const child = project.nodes[id], patch = slide.overrides[id] ?? {};
+    const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? child.variantFrames?.[variant.id] ?? child.frame;
+    const own = child.kind === "frame" && child.style?.layout
+      ? intrinsicFrameSize(project, slide, id, variant, nextStack)
+      : { width: child.layoutSize?.width ?? frame.width * fallback.width,
+        height: child.layoutSize?.height ?? frame.height * fallback.height };
+    return {
+      width: child.layoutSizing?.width === "hug" ? own.width : child.layoutSize?.width ?? frame.width * fallback.width,
+      height: child.layoutSizing?.height === "hug" ? own.height : child.layoutSize?.height ?? frame.height * fallback.height,
+    };
   });
+  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+  const horizontal = layout.direction === "horizontal", mainGap = horizontal ? (layout.columnGap ?? layout.gap ?? 0) : (layout.rowGap ?? layout.gap ?? 0);
+  const crossGap = horizontal ? (layout.rowGap ?? layout.gap ?? 0) : (layout.columnGap ?? layout.gap ?? 0);
+  const mainValues = children.map((child) => horizontal ? child.width : child.height);
+  const crossValues = children.map((child) => horizontal ? child.height : child.width);
+  const mainPadding = horizontal ? padding.left + padding.right : padding.top + padding.bottom;
+  const crossPadding = horizontal ? padding.top + padding.bottom : padding.left + padding.right;
+  const flowMain = mainValues.reduce((sum, value) => sum + value, 0) + mainGap * Math.max(0, children.length - 1) + mainPadding;
+  let flowCross = Math.max(0, ...crossValues) + crossPadding;
+  const mainMode = node.layoutSizing?.[horizontal ? "width" : "height"] ?? "fixed";
+  const fixedMain = node.layoutSize?.[horizontal ? "width" : "height"];
+  if (layout.wrap && fixedMain != null && mainMode !== "hug") {
+    const mainAvailable = Math.max(0, fixedMain - mainPadding), lines = [];
+    let line = [], occupied = 0, lineCross = 0;
+    for (let index = 0; index < children.length; index++) {
+      const size = mainValues[index], cross = crossValues[index], addition = size + (line.length ? mainGap : 0);
+      if (line.length && occupied + addition > mainAvailable) { lines.push(lineCross); line = []; occupied = 0; lineCross = 0; }
+      line.push(index); occupied += size + (line.length > 1 ? mainGap : 0); lineCross = Math.max(lineCross, cross);
+    }
+    if (line.length) lines.push(lineCross);
+    flowCross = lines.reduce((sum, value) => sum + value, 0) + crossGap * Math.max(0, lines.length - 1) + crossPadding;
+  }
+  const widthMode = node.layoutSizing?.width ?? "fixed", heightMode = node.layoutSizing?.height ?? "fixed";
+  const hasFillWidth = childIds.some((id) => project.nodes[id].layoutSizing?.width === "fill");
+  const hasFillHeight = childIds.some((id) => project.nodes[id].layoutSizing?.height === "fill");
+  const widthIsHug = widthMode === "hug" && !hasFillWidth, heightIsHug = heightMode === "hug" && !hasFillHeight;
+  if (horizontal) return { width: widthIsHug ? flowMain : fallback.width, height: heightIsHug ? flowCross : fallback.height };
+  return { width: widthIsHug ? flowCross : fallback.width, height: heightIsHug ? flowMain : fallback.height };
+}
+
+function layoutChildren(project, slide, parentId, parentFrame, variant, layout) {
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === parentId && project.nodes[id]?.visible !== false), result = new Map();
   const parentWidth = parentFrame.width * variant.width, parentHeight = parentFrame.height * variant.height;
-  if (parentWidth <= 0 || parentHeight <= 0) return childFrame;
-  const horizontal = layout.direction === "horizontal";
-  const mainExtent = horizontal ? parentWidth : parentHeight, crossExtent = horizontal ? parentHeight : parentWidth;
+  if (!childIds.length || parentWidth <= 0 || parentHeight <= 0) return result;
+  const horizontal = layout.direction === "horizontal", mainExtent = horizontal ? parentWidth : parentHeight;
+  const crossExtent = horizontal ? parentHeight : parentWidth;
+  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
   const mainStart = horizontal ? padding.left : padding.top, mainEnd = horizontal ? padding.right : padding.bottom;
   const crossStart = horizontal ? padding.top : padding.left, crossEnd = horizontal ? padding.bottom : padding.right;
-  const mainSizes = frames.map((frame) => horizontal ? frame.width * parentWidth : frame.height * parentHeight);
-  const crossSizes = frames.map((frame) => horizontal ? frame.height * parentHeight : frame.width * parentWidth);
-  const mainAvailable = Math.max(0, mainExtent - mainStart - mainEnd);
-  const crossAvailable = Math.max(0, crossExtent - crossStart - crossEnd);
-  const naturalGap = gap, occupied = mainSizes.reduce((sum, value) => sum + value, 0) + naturalGap * Math.max(0, frames.length - 1);
-  const free = Math.max(0, mainAvailable - occupied), justify = layout.justify ?? "start";
-  const offset = justify === "center" ? free / 2 : justify === "end" ? free : 0;
-  const effectiveGap = justify === "space-between" && frames.length > 1 ? naturalGap + free / (frames.length - 1) : naturalGap;
-  const align = layout.align ?? "center", childMain = mainSizes[index], childCross = align === "stretch" ? crossAvailable : crossSizes[index];
-  const crossOffset = align === "center" ? Math.max(0, (crossAvailable - childCross) / 2)
-    : align === "end" ? Math.max(0, crossAvailable - childCross) : 0;
-  const mainPosition = mainStart + offset + mainSizes.slice(0, index).reduce((sum, value) => sum + value + effectiveGap, 0);
-  const crossPosition = crossStart + crossOffset, x = horizontal ? mainPosition : crossPosition, y = horizontal ? crossPosition : mainPosition;
-  const width = horizontal ? childMain : childCross, height = horizontal ? childCross : childMain;
-  return { x: x / parentWidth, y: y / parentHeight, width: width / parentWidth, height: height / parentHeight };
+  const mainAvailable = Math.max(0, mainExtent - mainStart - mainEnd), crossAvailable = Math.max(0, crossExtent - crossStart - crossEnd);
+  const mainGap = horizontal ? (layout.columnGap ?? layout.gap ?? 0) : (layout.rowGap ?? layout.gap ?? 0);
+  const crossGap = horizontal ? (layout.rowGap ?? layout.gap ?? 0) : (layout.columnGap ?? layout.gap ?? 0);
+  const records = childIds.map((id) => {
+    const node = project.nodes[id], patch = slide.overrides[id] ?? {};
+    const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
+    const size = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant)
+      : { width: 0, height: 0 };
+    const width = node.layoutSizing?.width === "hug" ? size.width : node.layoutSize?.width ?? frame.width * parentWidth;
+    const height = node.layoutSizing?.height === "hug" ? size.height : node.layoutSize?.height ?? frame.height * parentHeight;
+    return { id, node, width, height, main: horizontal ? width : height, cross: horizontal ? height : width,
+      mainSizing: node.layoutSizing?.[horizontal ? "width" : "height"] ?? "fixed",
+      crossSizing: node.layoutSizing?.[horizontal ? "height" : "width"] ?? "fixed" };
+  });
+  const lines = []; let line = [], occupied = 0, lineCross = 0;
+  for (const item of records) {
+    const addition = item.main + (line.length ? mainGap : 0);
+    if (layout.wrap && line.length && occupied + addition > mainAvailable) {
+      lines.push({ items: line, cross: lineCross }); line = []; occupied = 0; lineCross = 0;
+    }
+    line.push(item); occupied += item.main + (line.length > 1 ? mainGap : 0); lineCross = Math.max(lineCross, item.cross);
+  }
+  if (line.length) lines.push({ items: line, cross: lineCross });
+  const align = layout.align ?? "center", justify = layout.justify ?? "start";
+  let crossCursor = crossStart;
+  for (const row of lines) {
+    const lineCrossExtent = layout.wrap ? row.cross : crossAvailable;
+    const fillCount = row.items.filter((item) => item.mainSizing === "fill").length;
+    const fixedMain = row.items.filter((item) => item.mainSizing !== "fill").reduce((sum, item) => sum + item.main, 0);
+    const distributedMain = fillCount ? Math.max(0, (mainAvailable - fixedMain - mainGap * Math.max(0, row.items.length - 1)) / fillCount) : 0;
+    const mainSizes = row.items.map((item) => item.mainSizing === "fill" ? distributedMain : item.main);
+    const occupiedMain = mainSizes.reduce((sum, value) => sum + value, 0) + mainGap * Math.max(0, row.items.length - 1);
+    const free = Math.max(0, mainAvailable - occupiedMain), offset = justify === "center" ? free / 2 : justify === "end" ? free : 0;
+    const effectiveGap = justify === "space-between" && row.items.length > 1 && !fillCount
+      ? mainGap + free / (row.items.length - 1) : mainGap;
+    let mainCursor = mainStart + offset;
+    row.items.forEach((item, index) => {
+      const stretch = align === "stretch" || item.crossSizing === "fill";
+      const childCross = stretch ? lineCrossExtent : item.cross;
+      const crossOffset = align === "center" && !stretch ? Math.max(0, (lineCrossExtent - childCross) / 2)
+        : align === "end" && !stretch ? Math.max(0, lineCrossExtent - childCross) : 0;
+      const x = horizontal ? mainCursor : crossCursor + crossOffset, y = horizontal ? crossCursor + crossOffset : mainCursor;
+      const width = horizontal ? mainSizes[index] : childCross, height = horizontal ? childCross : mainSizes[index];
+      result.set(item.id, { x: x / parentWidth, y: y / parentHeight, width: width / parentWidth, height: height / parentHeight });
+      mainCursor += mainSizes[index] + effectiveGap;
+    });
+    crossCursor += lineCrossExtent + crossGap;
+  }
+  return result;
 }
 
 function layerFrameMap(project, slideId, variantId) {
   const slideIndex = project.slides.findIndex((slide) => slide.id === slideId), slide = project.slides[slideIndex];
-  const variant = project.variants.find((entry) => entry.id === variantId), cache = new Map();
+  const variant = project.variants.find((entry) => entry.id === variantId), cache = new Map(), layoutCache = new Map();
   check(slide && variant, "Missing slide or output variant.");
   const resolve = (id) => {
     if (cache.has(id)) return cache.get(id);
@@ -374,7 +468,19 @@ function layerFrameMap(project, slideId, variantId) {
     let frame = clone(patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame);
     if (source.parentId) {
       const parent = resolve(source.parentId), parentNode = project.nodes[source.parentId];
-      if (parentNode.style?.layout) frame = arrangedFrame(project, slide, source.parentId, id, frame, parent.frame, variant, parentNode.style.layout);
+      if (parentNode.style?.layout) {
+        if (!layoutCache.has(source.parentId)) layoutCache.set(source.parentId,
+          layoutChildren(project, slide, source.parentId, parent.frame, variant, parentNode.style.layout));
+        frame = layoutCache.get(source.parentId).get(id) ?? frame;
+      } else if (source.kind === "frame" && source.style?.layout) {
+        const intrinsic = intrinsicFrameSize(project, slide, id, variant), parentWidth = parent.frame.width * variant.width;
+        const parentHeight = parent.frame.height * variant.height, widthMode = source.layoutSizing?.width ?? "fixed";
+        const heightMode = source.layoutSizing?.height ?? "fixed";
+        if (widthMode === "hug") frame.width = intrinsic.width / parentWidth;
+        else if (source.layoutSize?.width != null) frame.width = source.layoutSize.width / parentWidth;
+        if (heightMode === "hug") frame.height = intrinsic.height / parentHeight;
+        else if (source.layoutSize?.height != null) frame.height = source.layoutSize.height / parentHeight;
+      }
       const width = frame.width * parent.frame.width, height = frame.height * parent.frame.height;
       const parentCenterX = (parent.frame.x + parent.frame.width / 2) * variant.width;
       const parentCenterY = (parent.frame.y + parent.frame.height / 2) * variant.height;
@@ -392,6 +498,18 @@ function layerFrameMap(project, slideId, variantId) {
       const resolved = { frame, rotation: parent.rotation + (source.rotation ?? 0), clipFrames,
         visible: parent.visible && source.visible !== false, locked: parent.locked || source.locked === true };
       cache.set(id, resolved); return resolved;
+    }
+    if (source.kind === "frame" && source.style?.layout) {
+      const intrinsic = intrinsicFrameSize(project, slide, id, variant), hasFillWidth = slide.nodeIds.some((childId) => project.nodes[childId]?.parentId === id
+        && project.nodes[childId].visible !== false
+        && project.nodes[childId].layoutSizing?.width === "fill"), hasFillHeight = slide.nodeIds.some((childId) => project.nodes[childId]?.parentId === id
+        && project.nodes[childId].visible !== false
+        && project.nodes[childId].layoutSizing?.height === "fill");
+      const widthMode = source.layoutSizing?.width ?? "fixed", heightMode = source.layoutSizing?.height ?? "fixed";
+      if (widthMode === "hug" && !hasFillWidth) frame.width = intrinsic.width / variant.width;
+      else if (source.layoutSize?.width != null) frame.width = source.layoutSize.width / variant.width;
+      if (heightMode === "hug" && !hasFillHeight) frame.height = intrinsic.height / variant.height;
+      else if (source.layoutSize?.height != null) frame.height = source.layoutSize.height / variant.height;
     }
     const anchor = source.space === "story" ? project.slides.findIndex((item) => item.id === source.anchorSlideId) - slideIndex : 0;
     frame.x += anchor;

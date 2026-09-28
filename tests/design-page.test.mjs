@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
-  setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+  setFrameLayoutCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
@@ -191,6 +191,105 @@ test("frame Auto Layout resolves horizontal and vertical flow with pixel spacing
   close(vertical.get("second").frame.y, .236); // vertical flow applies padding and the 8px gap
   const invalid = structuredClone(project); invalid.nodes.frame.style.layout.justify = "unknown";
   assert.throws(() => validateProject(invalid), /alignment/);
+});
+
+test("Auto Layout wraps in flow order and distributes Fill sizing on both axes", () => {
+  const project = createSceneProject({ id: "layout-wrap", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "second", "third"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: .1, y: .1, width: .5, height: .4 },
+        layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 200, height: 120 },
+        style: { layout: { direction: "horizontal", wrap: true, gap: 10, rowGap: 8,
+          padding: { top: 10, right: 10, bottom: 10, left: 10 }, align: "start" } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .2, height: .25 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 80, height: 30 } },
+      second: { id: "second", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .15, height: .2 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 60, height: 20 } },
+      third: { id: "third", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .2, height: .3 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 80, height: 40 } },
+    } });
+  const wrapped = resolveLayerFrames(project, "page-one"), close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-9, `${value} ≈ ${expected}`);
+  close(wrapped.get("first").frame.x, .125);
+  close(wrapped.get("second").frame.x, .35);
+  close(wrapped.get("second").frame.y, .13333333333333333);
+  close(wrapped.get("third").frame.y, .26);
+  project.nodes.frame.style.layout.direction = "vertical";
+  const wrappedVertical = resolveLayerFrames(project, "page-one");
+  close(wrappedVertical.get("second").frame.y, .26);
+  close(wrappedVertical.get("third").frame.x, .35);
+
+  project.nodes.frame.style.layout.direction = "horizontal";
+  project.nodes.frame.style.layout.wrap = false;
+  project.slides[0].nodeIds = ["frame", "first", "second"];
+  delete project.nodes.third;
+  project.nodes.first.layoutSize = { width: 50, height: 30 };
+  project.nodes.second.layoutSizing.width = "fill";
+  project.nodes.second.layoutSizing.height = "fill";
+  project.nodes.second.layoutSize = { width: 20, height: 20 };
+  const filled = resolveLayerFrames(project, "page-one");
+  close(filled.get("second").frame.width, .3); // 120px fills the 180px inner width after 50px + 10px gap.
+  close(filled.get("second").frame.height, 1 / 3); // Fill uses the 100px inner cross-axis of a 300px page.
+});
+
+test("Auto Layout Hug sizes a frame around fixed children and Fill makes the parent fixed on that axis", () => {
+  const project = createSceneProject({ id: "layout-hug", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: .1, y: .1, width: .5, height: .4 },
+        layoutSizing: { width: "hug", height: "hug" }, layoutSize: { width: 200, height: 120 },
+        style: { layout: { direction: "horizontal", gap: 10, padding: { top: 8, right: 10, bottom: 8, left: 10 } } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .2, height: .25 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 80, height: 30 } },
+      second: { id: "second", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .15, height: .2 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 60, height: 20 } },
+    } });
+  const hug = resolveLayerFrames(project, "page-one").get("frame");
+  assert.ok(Math.abs(hug.frame.width * 400 - 170) < 1e-8);
+  assert.ok(Math.abs(hug.frame.height * 300 - 46) < 1e-8);
+  project.nodes.second.layoutSizing.width = "fill";
+  const fixedByFill = resolveLayerFrames(project, "page-one").get("frame");
+  assert.ok(Math.abs(fixedByFill.frame.width * 400 - 200) < 1e-8,
+    "a Fill child keeps its parent fixed on that axis instead of creating a Hug cycle");
+  project.nodes.second.visible = false;
+  const hiddenFill = resolveLayerFrames(project, "page-one").get("frame");
+  assert.ok(Math.abs(hiddenFill.frame.width * 400 - 100) < 1e-8,
+    "hidden Fill children no longer reserve Auto Layout space or force the parent to Fixed");
+  const invalid = structuredClone(project); invalid.nodes.first.layoutSizing.width = "fill"; invalid.nodes.frame.style.layout = null;
+  assert.throws(() => validateProject(invalid), /Auto Layout/);
+});
+
+test("a nested Hug frame resolves its content size inside a manually positioned parent", () => {
+  const project = createSceneProject({ id: "nested-hug", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["outer", "inner", "child"], overrides: {} }], nodes: {
+      outer: { id: "outer", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 } },
+      inner: { id: "inner", kind: "frame", space: "slide", parentId: "outer", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: .1, y: .1, width: .5, height: .3 }, layoutSizing: { width: "hug", height: "hug" }, layoutSize: { width: 200, height: 90 },
+        style: { layout: { direction: "vertical", gap: 4, padding: { top: 5, right: 5, bottom: 5, left: 5 } } } },
+      child: { id: "child", kind: "shape", space: "slide", parentId: "inner", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .25, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 100, height: 20 } },
+    } });
+  const resolved = resolveLayerFrames(project, "page-one");
+  assert.ok(Math.abs(resolved.get("inner").frame.width * 400 - 110) < 1e-8);
+  assert.ok(Math.abs(resolved.get("inner").frame.height * 300 - 30) < 1e-8);
+});
+
+test("turning Auto Layout off keeps the current child positions and Fill-resolved size", () => {
+  const project = createSceneProject({ id: "layout-toggle", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: .1, y: .1, width: .5, height: .4 },
+        layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 200, height: 120 },
+        style: { layout: { direction: "horizontal", gap: 10, padding: { top: 10, right: 10, bottom: 10, left: 10 } } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .125, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 50, height: 30 } },
+      second: { id: "second", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .05, height: .1 }, layoutSizing: { width: "fill", height: "fixed" }, layoutSize: { width: 20, height: 30 } },
+    } });
+  const before = resolveLayerFrames(project, "page-one"), history = new ProjectHistory(project);
+  history.apply(setFrameLayoutCommand(history.document, "page-one", "frame", "manual"), "Disable Auto Layout");
+  const after = resolveLayerFrames(history.document, "page-one");
+  for (const id of ["frame", "first", "second"]) for (const key of ["x", "y", "width", "height"])
+    assert.ok(Math.abs(after.get(id).frame[key] - before.get(id).frame[key]) < 1e-9, `${id} ${key} survives disabling Auto Layout`);
+  assert.equal(history.document.nodes.second.layoutSizing.width, "fixed");
+  assert.ok(Math.abs(history.document.nodes.second.layoutSize.width - 120) < 1e-9,
+    "Fill becomes Fixed using the current displayed width");
 });
 
 test("design image recipes keep visual edits non-destructive and reject export-only settings", () => {

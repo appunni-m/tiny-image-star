@@ -239,8 +239,22 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(autoLayout.nodes[frameId].style.layout.gap, 12, "pixel spacing is editable and stored on the frame");
+    await page.locator("#design-layout-wrap").check();
+    await page.locator("#design-layout-row-gap").fill("9");
+    await page.locator("#design-layout-row-gap").press("Tab");
+    await page.locator("#design-layout-column-gap").fill("11");
+    await page.locator("#design-layout-column-gap").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[frameId].style.layout.wrap, true, "wrapping is a persistent Auto Layout setting");
+    assert.equal(autoLayout.nodes[frameId].style.layout.rowGap, 9);
+    assert.equal(autoLayout.nodes[frameId].style.layout.columnGap, 11);
     await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
     assert.equal(await page.locator("#design-x").isDisabled(), true, "Auto Layout owns the child's position fields");
+    assert.equal(await page.locator("#design-resizing-options").isVisible(), true, "Auto Layout children expose per-axis resizing controls");
+    await page.locator("#design-layout-sizing-width").selectOption("fill");
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[shapeId].layoutSizing.width, "fill", "Fill container is stored on the child layer");
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     for (const id of imageIds) await page.locator(`#design-layer-list [data-layer-id="${id}"] button[aria-label^="Show"]`).click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
@@ -267,6 +281,15 @@ export async function assertDesignWorkspace(browser, address) {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => document.querySelector("#design-canvas")?.getBoundingClientRect().width > 0);
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
+    const mobileResizing = await page.evaluate(() => ({
+      visible: !document.querySelector("#design-resizing-options")?.hidden,
+      fields: [...document.querySelectorAll("#design-resizing-options select")].map((node) => node.getBoundingClientRect().toJSON()),
+      width: innerWidth,
+    }));
+    assert.equal(mobileResizing.visible, true, "mobile inspector exposes Auto Layout resizing controls");
+    assert.ok(mobileResizing.fields.length === 2 && mobileResizing.fields.every((box) => box.height >= 43 && box.left >= 0 && box.right <= mobileResizing.width),
+      `Auto Layout sizing controls remain touch-sized and on-screen: ${JSON.stringify(mobileResizing.fields)}`);
     const mobile = await page.evaluate(() => ({
       viewport: document.documentElement.clientWidth,
       layout: document.querySelector("#design-view").scrollWidth,
@@ -312,6 +335,10 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
     assert.equal(reopened.pages[0].nodeIds.length, 5, "saved image, text, shape and frame layers reopen together");
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
+    assert.equal(reopened.nodes[frameId].style.layout.wrap, true, "wrap and axis gaps survive local save and reload");
+    assert.equal(reopened.nodes[frameId].style.layout.rowGap, 9);
+    assert.equal(reopened.nodes[frameId].style.layout.columnGap, 11);
+    assert.equal(reopened.nodes[shapeId].layoutSizing.width, "fill", "child Fill sizing survives local save and reload");
     assert.equal(reopened.retainedSourceBytes, image.byteLength * 2, "reopen retains the original encoded image sources");
     await page.locator("#mobile-more-button").click();
     await page.locator("#design-button").click();
@@ -320,6 +347,6 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.pages[0].nodeIds.length === 0);
     const bulkDeleted = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.deepEqual(Object.keys(bulkDeleted.nodes), [], "keyboard bulk delete removes the whole canvas selection atomically");
-    console.log("  design workspace: retained sources, live resize/rotate previews, undo, pointer zoom, mouse/touch pan, image recipes, autosave/reopen and phone layout");
+    console.log("  design workspace: retained sources, live resize/rotate previews, Auto Layout wrap/Fill, undo, image recipes, autosave/reopen and phone layout");
   } finally { await context.close(); }
 }

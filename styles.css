@@ -988,6 +988,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-field input:not([type="range"]), .design-field select, .design-field textarea { min-height: 44px; font-size: 1rem; }
   .design-fieldset { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   #design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #design-resizing-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .design-layer-actions .button { min-height: 44px; font-size: .78rem; }
   .design-canvas-footer .button { min-height: 40px; }
   .design-zoom-controls .button { min-width: 42px; min-height: 44px; }
