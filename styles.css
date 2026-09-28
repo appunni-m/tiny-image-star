@@ -526,6 +526,14 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 #design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .design-fieldset legend { padding-inline: 5px; color: var(--muted); font-size: .67rem; font-weight: 800; }
 .design-fieldset[hidden] { display: none; }
+.design-grid-track-section { display: grid; grid-column: 1 / -1; min-width: 0; gap: 6px; }
+.design-grid-track-heading { color: var(--muted); font-size: .64rem; font-weight: 800; }
+.design-grid-track-list { display: grid; max-height: 280px; min-width: 0; gap: 5px; overflow: auto; overscroll-behavior: contain; }
+.design-grid-track-row { display: grid; grid-template-columns: minmax(0, .6fr) minmax(0, 1fr) minmax(0, .9fr) auto; align-items: end; gap: 5px; min-width: 0; }
+.design-grid-track-row > span { padding-bottom: 9px; color: var(--muted); font-size: .65rem; font-weight: 700; }
+.design-grid-track-row .design-field { font-size: .58rem; }
+.design-grid-track-row .design-field input:not([type="range"]), .design-grid-track-row .design-field select { min-height: 32px; padding: 4px; font-size: .68rem; }
+.design-grid-track-unit { min-width: 16px; padding-bottom: 9px; color: var(--muted); font-size: .62rem; }
 .design-field.design-checkbox-field { display: flex; align-items: center; justify-content: space-between; min-height: 38px; }
 .design-field.design-checkbox-field input { width: 20px; min-width: 20px; min-height: 20px; accent-color: var(--accent); }
 .design-adjustments { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
@@ -1004,6 +1012,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-range-field input { min-height: 44px; }
   .design-field input:not([type="range"]), .design-field select, .design-field textarea { min-height: 44px; font-size: 1rem; }
   .design-fieldset { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .design-grid-track-row .design-field input:not([type="range"]), .design-grid-track-row .design-field select { min-height: 44px; font-size: .85rem; }
   #design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #design-resizing-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .design-layer-actions .button { min-height: 44px; font-size: .78rem; }

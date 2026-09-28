@@ -310,6 +310,34 @@ test("grid Auto Layout resolves equal tracks, auto rows, spans, and rejects occu
   assert.throws(() => validateProject(invalidSpan), /Invalid grid placement/);
 });
 
+test("grid tracks support fixed pixels, weighted Fill fractions, and content Hug sizing", () => {
+  const ids = ["frame", "fixed", "fill-one", "fill-two", "hug"];
+  const nodes = { frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+    style: { layout: { direction: "grid", columns: 4, rows: 1, rowGap: 0, columnGap: 10,
+      padding: { top: 10, right: 10, bottom: 10, left: 10 }, justify: "start", align: "start",
+      columnTracks: [{ mode: "fixed", value: 100 }, { mode: "fill", value: 1 }, { mode: "fill", value: 2 }, { mode: "hug" }],
+      rowTracks: [{ mode: "hug" }] } } } };
+  for (const [index, id] of ids.slice(1).entries()) nodes[id] = { id, kind: "shape", space: "slide", parentId: "frame",
+    constraints: { horizontal: "left", vertical: "top" }, frame: { x: 0, y: 0, width: .1, height: .1 },
+    layoutSizing: { width: "fill", height: "fixed" }, layoutSize: { width: 30 + index * 10, height: 30 + index * 10 },
+    style: { shape: "rectangle" } };
+  const project = createSceneProject({ id: "grid-track-sizing", variants: [{ id: "page", width: 600, height: 300 }],
+    slides: [{ id: "grid-page", nodeIds: ids, overrides: {} }], nodes });
+  const resolved = resolveLayerFrames(project, "grid-page"), close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-8, `${value} ≈ ${expected}`);
+  close(resolved.get("fixed").frame.x, 10 / 600);
+  close(resolved.get("fixed").frame.width, 100 / 600);
+  close(resolved.get("fill-one").frame.x, 120 / 600);
+  close(resolved.get("fill-one").frame.width, 130 / 600);
+  close(resolved.get("fill-two").frame.x, 260 / 600);
+  close(resolved.get("fill-two").frame.width, 260 / 600);
+  close(resolved.get("hug").frame.x, 530 / 600);
+  close(resolved.get("hug").frame.width, 60 / 600);
+  close(resolved.get("hug").frame.height, 60 / 300, "Hug rows fit the largest cell layer while keeping padding");
+  const invalidTrack = structuredClone(project);
+  invalidTrack.nodes.frame.style.layout.columnTracks[1].value = 0;
+  assert.throws(() => validateProject(invalidTrack), /Invalid grid track fraction/);
+});
+
 test("Auto Layout Hug sizes a frame around fixed children and Fill makes the parent fixed on that axis", () => {
   const project = createSceneProject({ id: "layout-hug", variants: [{ id: "page", width: 400, height: 300 }],
     slides: [{ id: "page-one", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {

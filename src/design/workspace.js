@@ -2,7 +2,7 @@ import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
-import { canonicalJSON, clone, gridPlacementsForChildren, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
+import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
 import { listLocalPageProjects, readLocalPageProject, writeLocalPageProject } from "../project/storage.js";
@@ -182,6 +182,36 @@ export function attachDesignWorkspace() {
 
   function setField(name, value) { get(name).value = String(value); }
 
+  function renderGridTrackControls(axis, count, layout) {
+    const list = get(axis === "columns" ? "grid-column-tracks" : "grid-row-tracks");
+    list.replaceChildren();
+    const name = axis === "columns" ? "Column" : "Row", tracks = gridTrackDefinitions(layout, axis, count);
+    tracks.forEach((track, index) => {
+      const row = document.createElement("div"); row.className = "design-grid-track-row";
+      const label = document.createElement("span"); label.textContent = `${name} ${index + 1}`; row.append(label);
+      const modeField = document.createElement("label"); modeField.className = "design-field";
+      const modeCaption = document.createElement("span"); modeCaption.textContent = "Sizing"; modeField.append(modeCaption);
+      const mode = document.createElement("select"); mode.dataset.gridTrackAxis = axis; mode.dataset.gridTrackIndex = String(index);
+      mode.dataset.gridTrackControl = "mode"; mode.setAttribute("aria-label", `${name} ${index + 1} sizing`);
+      for (const [value, caption] of [["fill", "Fill"], ["fixed", "Fixed"], ["hug", "Hug"]]) {
+        const option = document.createElement("option"); option.value = value; option.textContent = caption; mode.append(option);
+      }
+      mode.value = track.mode; modeField.append(mode); row.append(modeField);
+      const valueField = document.createElement("label"); valueField.className = "design-field"; valueField.hidden = track.mode === "hug";
+      const valueCaption = document.createElement("span"); valueCaption.textContent = track.mode === "fixed" ? "Size (px)" : "Fraction (fr)";
+      valueField.append(valueCaption);
+      const value = document.createElement("input"); value.type = "number"; value.inputMode = "decimal";
+      value.min = track.mode === "fixed" ? "1" : "0.1"; value.max = track.mode === "fixed" ? "16384" : "1000";
+      value.step = track.mode === "fixed" ? "1" : "0.1"; value.value = String(track.value ?? (track.mode === "fixed" ? 100 : 1));
+      value.dataset.gridTrackAxis = axis; value.dataset.gridTrackIndex = String(index); value.dataset.gridTrackControl = "value";
+      value.setAttribute("aria-label", `${name} ${index + 1} ${track.mode === "fixed" ? "size in pixels" : "fill fraction"}`);
+      valueField.append(value); row.append(valueField);
+      const unit = document.createElement("span"); unit.className = "design-grid-track-unit";
+      unit.textContent = track.mode === "fixed" ? "px" : track.mode === "fill" ? "fr" : ""; row.append(unit);
+      list.append(row);
+    });
+  }
+
   function renderInspector() {
     const ids = currentSelection(), project = renderProject(), node = ids.length === 1 ? layer(ids[0]) : null;
     const multi = ids.length > 1;
@@ -284,6 +314,14 @@ export function attachDesignWorkspace() {
       get("layout-justify").value = layout?.justify ?? "start"; get("layout-align").value = layout?.align ?? "center";
       get("layout-justify").querySelector('option[value="space-between"]').disabled = layout?.direction === "grid";
       get("layout-justify").querySelector('option[value="stretch"]').disabled = layout?.direction !== "grid";
+      if (layout?.direction === "grid") {
+        const children = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === node.id && project.nodes[id]?.visible !== false);
+        const { rows } = gridPlacementsForChildren(children, project.nodes, layout);
+        renderGridTrackControls("columns", layout.columns, layout);
+        renderGridTrackControls("rows", rows, layout);
+      } else {
+        get("grid-column-tracks").replaceChildren(); get("grid-row-tracks").replaceChildren();
+      }
     }
     if (node.parentId) {
       get("constraint-horizontal").value = node.constraints?.horizontal ?? "left";
@@ -1556,7 +1594,11 @@ export function attachDesignWorkspace() {
     const layout = clone(node.style.layout);
     if (key.startsWith("padding.")) layout.padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding,
       [key.slice("padding.".length)]: value };
-    else layout[key] = value;
+    else {
+      layout[key] = value;
+      if (layout.direction === "grid" && key === "columns") layout.columnTracks = gridTrackDefinitions(layout, "columns", value);
+      if (layout.direction === "grid" && key === "rows" && value > 0) layout.rowTracks = gridTrackDefinitions(layout, "rows", value);
+    }
     previewNode(id, { style: { ...node.style, layout } });
   }
   for (const [field, key] of [["layout-gap", "gap"], ["layout-row-gap", "rowGap"], ["layout-column-gap", "columnGap"],
@@ -1579,6 +1621,32 @@ export function attachDesignWorkspace() {
   }
   get("layout-wrap").addEventListener("change", () => {
     updateFrameLayout("wrap", get("layout-wrap").checked); commitEdit("Change Auto Layout wrapping");
+  });
+  get("grid-tracks").addEventListener("change", (event) => {
+    const control = event.target.closest("[data-grid-track-control]"); if (!control) return;
+    const row = control.closest(".design-grid-track-row"), id = currentSelection()[0], node = id && layer(id);
+    if (!row || node?.kind !== "frame" || node.style?.layout?.direction !== "grid") return;
+    const axis = control.dataset.gridTrackAxis, index = Number(control.dataset.gridTrackIndex), layout = clone(node.style.layout);
+    const count = axis === "columns" ? layout.columns : gridPlacementsForChildren(
+      currentPage().nodeIds.filter((childId) => project.nodes[childId]?.parentId === id && project.nodes[childId]?.visible !== false),
+      project.nodes, layout).rows;
+    if (!Number.isInteger(index) || index < 0 || index >= count) return;
+    const tracks = gridTrackDefinitions(layout, axis, count), previous = tracks[index];
+    const mode = row.querySelector('[data-grid-track-control="mode"]').value;
+    let track = { mode };
+    if (mode !== "hug") {
+      const input = row.querySelector('[data-grid-track-control="value"]');
+      const defaultValue = mode === previous.mode ? previous.value : mode === "fixed" ? 100 : 1;
+      const value = control.dataset.gridTrackControl === "value" ? Number(input.value) : defaultValue;
+      if (!Number.isFinite(value)) return;
+      track.value = value;
+    }
+    tracks[index] = track;
+    layout[axis === "columns" ? "columnTracks" : "rowTracks"] = tracks;
+    try {
+      history.apply({ type: "node", id, value: { ...clone(node), style: { ...node.style, layout } } }, "Change grid track");
+      edited("Grid track updated.");
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   for (const field of ["grid-row", "grid-column", "grid-row-span", "grid-column-span"]) get(field).addEventListener("change", () => {
     const id = currentSelection()[0], node = id && layer(id); if (!node || !node.parentId) return;

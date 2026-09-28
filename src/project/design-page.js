@@ -262,7 +262,9 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
       justify: direction === "grid" ? (["start", "center", "end", "stretch"].includes(previous?.justify) ? previous.justify : "start")
         : (["start", "center", "end", "space-between"].includes(previous?.justify) ? previous.justify : "start"),
       align: direction === "grid" ? previous?.align ?? "start" : previous?.align ?? "center",
-      ...(direction === "grid" ? { columns: previous?.columns ?? 2, rows: previous?.rows ?? 0, wrap: false }
+      ...(direction === "grid" ? { columns: previous?.columns ?? 2, rows: previous?.rows ?? 0, wrap: false,
+        ...(previous?.columnTracks ? { columnTracks: clone(previous.columnTracks) } : {}),
+        ...(previous?.rowTracks ? { rowTracks: clone(previous.rowTracks) } : {}) }
         : { wrap: previous?.wrap ?? false }) };
     for (const key of Object.keys(parent.style.layout)) if (parent.style.layout[key] == null) delete parent.style.layout[key];
   }

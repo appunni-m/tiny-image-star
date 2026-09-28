@@ -129,6 +129,38 @@ export function gridPlacementsForChildren(childIds, nodes, layout) {
   return { placements, rows: fixedRows || rowCount };
 }
 
+/** Read the saved track list, filling omitted definitions with Figma-style `1fr` tracks. */
+export function gridTrackDefinitions(layout, axis, count) {
+  const tracks = axis === "columns" ? layout.columnTracks : axis === "rows" ? layout.rowTracks : null;
+  return Array.from({ length: count }, (_, index) => tracks?.[index] ?? { mode: "fill", value: 1 });
+}
+
+function gridTrackSizes(layout, axis, count, available, children, placements, gap, hugParent = false) {
+  const tracks = gridTrackDefinitions(layout, axis, count), minima = Array(count).fill(0), sizes = Array(count).fill(0);
+  for (const child of children) {
+    const placement = placements.get(child.id), start = axis === "columns" ? placement.column : placement.row;
+    const span = axis === "columns" ? placement.columnSpan : placement.rowSpan;
+    const dimension = axis === "columns" ? child.width : child.height;
+    const needed = Math.max(0, dimension - gap * (span - 1)) / span;
+    for (let index = start - 1; index < start - 1 + span; index++) {
+      if (tracks[index].mode === "hug" || hugParent && tracks[index].mode === "fill")
+        minima[index] = Math.max(minima[index], needed);
+    }
+  }
+  for (let index = 0; index < count; index++) {
+    const track = tracks[index];
+    if (track.mode === "fixed") sizes[index] = track.value;
+    else if (track.mode === "hug" || hugParent) sizes[index] = minima[index];
+  }
+  const fill = tracks.map((track, index) => track.mode === "fill" && !hugParent ? index : -1).filter((index) => index >= 0);
+  if (available != null && fill.length) {
+    const remaining = Math.max(0, available - sizes.reduce((sum, size) => sum + size, 0));
+    const weight = fill.reduce((sum, index) => sum + tracks[index].value, 0);
+    for (const index of fill) sizes[index] = Math.max(.01, remaining * tracks[index].value / weight);
+  }
+  return sizes;
+}
+
 function color(value) { return typeof value === "string" && /^#[a-f0-9]{6}([a-f0-9]{2})?$/i.test(value); }
 
 function validateNodeStyle(node) {
@@ -155,14 +187,31 @@ function validateNodeStyle(node) {
     check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
     if (style.layout != null) {
       const layout = style.layout; check(object(layout), "Invalid frame layout.");
-      keys(layout, ["direction", "gap", "rowGap", "columnGap", "padding", "justify", "align", "wrap", "columns", "rows"]);
+      keys(layout, ["direction", "gap", "rowGap", "columnGap", "padding", "justify", "align", "wrap", "columns", "rows", "columnTracks", "rowTracks"]);
       check(["horizontal", "vertical", "grid"].includes(layout.direction), "Invalid frame layout direction.");
       if (layout.direction === "grid") {
         check(Number.isInteger(layout.columns) && layout.columns >= 1 && layout.columns <= 24, "Invalid grid column count.");
         check(Number.isInteger(layout.rows) && layout.rows >= 0 && layout.rows <= 24, "Invalid grid row count.");
         check(layout.wrap !== true, "Grid layouts do not use wrap.");
         if (layout.justify != null) check(["start", "center", "end", "stretch"].includes(layout.justify), "Invalid grid horizontal alignment.");
-      } else check(layout.columns == null && layout.rows == null, "Grid tracks require a grid layout.");
+        for (const [key, maxCount] of [["columnTracks", layout.columns], ["rowTracks", layout.rows || 200]]) {
+          const tracks = layout[key];
+          if (tracks == null) continue;
+          check(Array.isArray(tracks) && tracks.length <= maxCount, "Invalid grid track list.");
+          for (const track of tracks) {
+            check(object(track), "Invalid grid track.");
+            if (track.mode === "hug") {
+              keys(track, ["mode"]);
+            } else {
+              keys(track, ["mode", "value"]);
+              if (track.mode === "fixed") check(number(track.value, .01, 16384), "Invalid fixed grid track size.");
+              else if (track.mode === "fill") check(number(track.value, .01, 1000), "Invalid grid track fraction.");
+              else check(false, "Invalid grid track sizing mode.");
+            }
+          }
+        }
+      } else check(layout.columns == null && layout.rows == null && layout.columnTracks == null && layout.rowTracks == null,
+        "Grid tracks require a grid layout.");
       if (layout.gap != null) check(number(layout.gap, 0, 16384), "Invalid frame layout gap.");
       for (const key of ["rowGap", "columnGap"]) if (layout[key] != null) check(number(layout[key], 0, 16384), "Invalid frame layout gap.");
       if (layout.wrap != null) check(typeof layout.wrap === "boolean", "Invalid frame wrapping setting.");
@@ -458,13 +507,8 @@ function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) 
   if (layout.direction === "grid") {
     const { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout), columns = layout.columns;
     const rowGap = layout.rowGap ?? layout.gap ?? 0, columnGap = layout.columnGap ?? layout.gap ?? 0;
-    const columnSizes = Array(columns).fill(0), rowSizes = Array(rows).fill(0);
-    for (const child of children) {
-      const placement = placements.get(child.id), columnNeed = Math.max(0, child.width - columnGap * (placement.columnSpan - 1)) / placement.columnSpan;
-      const rowNeed = Math.max(0, child.height - rowGap * (placement.rowSpan - 1)) / placement.rowSpan;
-      for (let column = placement.column - 1; column < placement.column - 1 + placement.columnSpan; column++) columnSizes[column] = Math.max(columnSizes[column], columnNeed);
-      for (let row = placement.row - 1; row < placement.row - 1 + placement.rowSpan; row++) rowSizes[row] = Math.max(rowSizes[row], rowNeed);
-    }
+    const columnSizes = gridTrackSizes(layout, "columns", columns, null, children, placements, columnGap, true);
+    const rowSizes = gridTrackSizes(layout, "rows", rows, null, children, placements, rowGap, true);
     const widthMode = node.layoutSizing?.width ?? "fixed", heightMode = node.layoutSizing?.height ?? "fixed";
     const hasFillWidth = childIds.some((id) => project.nodes[id].layoutSizing?.width === "fill");
     const hasFillHeight = childIds.some((id) => project.nodes[id].layoutSizing?.height === "fill");
@@ -512,23 +556,33 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     const rowGap = layout.rowGap ?? layout.gap ?? 0, columnGap = layout.columnGap ?? layout.gap ?? 0;
     const availableWidth = Math.max(0, parentWidth - padding.left - padding.right - columnGap * (columns - 1));
     const availableHeight = Math.max(0, parentHeight - padding.top - padding.bottom - rowGap * (rows - 1));
-    const trackWidth = Math.max(.01, availableWidth / columns), trackHeight = Math.max(.01, availableHeight / rows);
-    for (const id of childIds) {
+    const children = childIds.map((id) => {
       const node = project.nodes[id], patch = slide.overrides[id] ?? {};
       const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
       const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
-      const width = node.layoutSizing?.width === "hug" ? intrinsic.width : node.layoutSize?.width ?? frame.width * parentWidth;
-      const height = node.layoutSizing?.height === "hug" ? intrinsic.height : node.layoutSize?.height ?? frame.height * parentHeight;
-      const placement = placements.get(id), cellWidth = trackWidth * placement.columnSpan + columnGap * (placement.columnSpan - 1);
-      const cellHeight = trackHeight * placement.rowSpan + rowGap * (placement.rowSpan - 1);
+      return { id, width: node.layoutSizing?.width === "hug" ? intrinsic.width : node.layoutSize?.width ?? frame.width * parentWidth,
+        height: node.layoutSizing?.height === "hug" ? intrinsic.height : node.layoutSize?.height ?? frame.height * parentHeight };
+    });
+    const childrenById = new Map(children.map((child) => [child.id, child]));
+    const widths = gridTrackSizes(layout, "columns", columns, availableWidth, children, placements, columnGap);
+    const heights = gridTrackSizes(layout, "rows", rows, availableHeight, children, placements, rowGap);
+    for (const id of childIds) {
+      const node = project.nodes[id], child = childrenById.get(id), placement = placements.get(id);
+      const cellWidth = widths.slice(placement.column - 1, placement.column - 1 + placement.columnSpan).reduce((sum, size) => sum + size, 0)
+        + columnGap * (placement.columnSpan - 1);
+      const cellHeight = heights.slice(placement.row - 1, placement.row - 1 + placement.rowSpan).reduce((sum, size) => sum + size, 0)
+        + rowGap * (placement.rowSpan - 1);
       const stretchX = layout.justify === "stretch" || node.layoutSizing?.width === "fill";
       const stretchY = layout.align === "stretch" || node.layoutSizing?.height === "fill";
-      const childWidth = stretchX ? cellWidth : Math.min(width, cellWidth), childHeight = stretchY ? cellHeight : Math.min(height, cellHeight);
+      const childWidth = Math.max(.01, stretchX ? cellWidth : Math.min(child.width, cellWidth));
+      const childHeight = Math.max(.01, stretchY ? cellHeight : Math.min(child.height, cellHeight));
       const freeX = Math.max(0, cellWidth - childWidth), freeY = Math.max(0, cellHeight - childHeight);
       const offsetX = layout.justify === "center" ? freeX / 2 : layout.justify === "end" ? freeX : 0;
       const offsetY = layout.align === "center" ? freeY / 2 : layout.align === "end" ? freeY : 0;
-      const x = padding.left + (placement.column - 1) * (trackWidth + columnGap) + offsetX;
-      const y = padding.top + (placement.row - 1) * (trackHeight + rowGap) + offsetY;
+      const x = padding.left + widths.slice(0, placement.column - 1).reduce((sum, size) => sum + size, 0)
+        + columnGap * (placement.column - 1) + offsetX;
+      const y = padding.top + heights.slice(0, placement.row - 1).reduce((sum, size) => sum + size, 0)
+        + rowGap * (placement.row - 1) + offsetY;
       result.set(id, { x: x / parentWidth, y: y / parentHeight, width: childWidth / parentWidth, height: childHeight / parentHeight });
     }
     return result;
