@@ -189,7 +189,7 @@ export function attachDesignWorkspace() {
     get("multi-inspector").hidden = !multi;
     if (!project) return;
     if (multi) {
-      const nodes = ids.map((id) => layer(id)), values = nodes.map((entry) => Math.round((entry.opacity ?? 1) * 100));
+      const nodes = ids.map((id) => layer(id)), values = nodes.map((entry) => entry ? Math.round((entry.opacity ?? 1) * 100) : null);
       const mixed = values.some((value) => value !== values[0]);
       const control = get("multi-opacity");
       get("multi-summary").textContent = `${ids.length} layers selected`;
@@ -200,13 +200,28 @@ export function attachDesignWorkspace() {
         && !worldLayer(ids[index])?.locked);
       control.disabled = !editable;
       control.title = editable ? "" : "Unlock selected layers to change their opacity.";
+      const size = pageSize(), geometryIds = topLevelSelection(), geometryNodes = geometryIds.map(worldLayer);
+      const bounds = size && selectionBounds(geometryNodes, size);
+      const geometryEditable = Boolean(bounds) && geometryNodes.every((entry) => entry && !entry.locked);
+      const layoutManaged = geometryNodes.some((entry) => entry?.layoutManaged);
+      for (const [field, key] of [["x", "x"], ["y", "y"], ["width", "width"], ["height", "height"]]) {
+        const input = get(`multi-${field}`);
+        if (bounds) input.value = bounds[key].toFixed(1);
+        input.disabled = !geometryEditable || (layoutManaged && ["x", "y"].includes(key));
+        input.title = layoutManaged && ["x", "y"].includes(key)
+          ? "Auto Layout controls the selected layers' position." : geometryEditable ? "" : "Unlock selected layers to edit their geometry.";
+      }
       return;
     }
     if (!node) return;
     const asset = node.assetId ? project.assets[node.assetId] : null;
     setField("layer-name", node.name || asset?.name || node.kind);
     const world = worldLayer(node.id) ?? node;
-    for (const key of ["x", "y", "width", "height"]) setField(key, ((world.frame?.[key] ?? 0) * 100).toFixed(1));
+    const size = pageSize();
+    for (const key of ["x", "y", "width", "height"]) {
+      const dimension = ["x", "width"].includes(key) ? size?.width : size?.height;
+      setField(key, ((world.frame?.[key] ?? 0) * (dimension ?? 100)).toFixed(1));
+    }
     const textField = get("text-field"), colorField = get("color-field"), fitField = get("fit-field"), adjustments = get("image-adjustments");
     textField.hidden = node.kind !== "text"; colorField.hidden = !["shape", "text", "frame"].includes(node.kind);
     fitField.hidden = node.kind !== "image"; adjustments.hidden = node.kind !== "image";
@@ -1233,9 +1248,10 @@ export function attachDesignWorkspace() {
   get("layer-name").addEventListener("change", () => { const id = currentSelection()[0]; if (!id) return; try { history.apply(renameLayerCommand(history.document, id, get("layer-name").value), "Rename layer"); edited("Layer renamed."); } catch (error) { setStatus(error.message); } });
   for (const [field, key] of [["x", "x"], ["y", "y"], ["width", "width"], ["height", "height"]]) {
     get(field).addEventListener("input", () => {
-      const id = currentSelection()[0], node = id && layer(id), value = Number(get(field).value);
-      if (!node || !Number.isFinite(value)) return;
-      const world = worldLayer(id), transformed = { ...world, frame: { ...world.frame, [key]: value / 100 } };
+      const id = currentSelection()[0], node = id && layer(id), value = Number(get(field).value), size = pageSize();
+      if (!node || !size || !Number.isFinite(value)) return;
+      const dimension = ["x", "width"].includes(key) ? size.width : size.height;
+      const world = worldLayer(id), transformed = { ...world, frame: { ...world.frame, [key]: value / dimension } };
       const stored = storeWorldGeometry(id, transformed); if (!stored) return;
       const commands = [{ type: "node", id, value: stored }];
       if (node.kind === "frame" && ["width", "height"].includes(key)) commands.push(...resizeFrameChildren(renderProject(), currentPage().id, id, stored.frame));
@@ -1243,6 +1259,32 @@ export function attachDesignWorkspace() {
       catch (error) { setStatus(error.message); }
     });
     get(field).addEventListener("change", () => commitEdit("Change layer geometry"));
+  }
+  for (const [field, key] of [["x", "x"], ["y", "y"], ["width", "width"], ["height", "height"]]) {
+    get(`multi-${field}`).addEventListener("input", () => {
+      const ids = topLevelSelection(), size = pageSize(), value = Number(get(`multi-${field}`).value);
+      if (!history || !size || !Number.isFinite(value)) return;
+      const nodes = ids.map(worldLayer), bounds = selectionBounds(nodes, size);
+      if (!bounds || nodes.some((node) => !node || node.locked) || (nodes.some((node) => node.layoutManaged) && ["x", "y"].includes(key))) return;
+      const nextBounds = { ...bounds, [key]: value };
+      if (nextBounds.width <= 0 || nextBounds.height <= 0) return;
+      try {
+        const updates = resizeSelection(nodes, bounds, nextBounds, size), commands = [];
+        for (const updated of updates) {
+          const stored = storeWorldGeometry(updated.id, updated);
+          if (!stored) continue;
+          commands.push({ type: "node", id: stored.id, value: stored });
+          const original = layer(stored.id);
+          if (stored.kind === "frame" && (["width", "height"].includes(key)
+            && Math.abs(stored.frame[key] - original.frame[key]) > 1e-8)) {
+            commands.push(...resizeFrameChildren(renderProject(), currentPage().id, stored.id, stored.frame));
+          }
+        }
+        if (!commands.length) return;
+        history.preview({ type: "group", commands }); edited("Previewing selection geometry…", { previewOnly: true });
+      } catch (error) { setStatus(error.message); }
+    });
+    get(`multi-${field}`).addEventListener("change", () => commitEdit("Change selected layer geometry"));
   }
   get("text").addEventListener("input", () => { const id = currentSelection()[0]; if (id) previewNode(id, { text: get("text").value }); });
   get("text").addEventListener("change", () => commitEdit("Edit text"));
@@ -1363,6 +1405,7 @@ export function attachDesignWorkspace() {
       const project = renderProject();
       if (!project) return null;
       return { id: project.id, revision: project.revision, name: project.name, key: fileOwner?.key ?? null, savedRevision: fileOwner?.savedRevision ?? null, pageId: currentPage()?.id,
+        variant: clone(project.variants[0]),
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
         resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
         canvas: { zoom, panX, panY, geometry: clone(geometry) }, cropModeId,

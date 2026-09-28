@@ -1,17 +1,18 @@
 # Local Figma-style image editor: product reset
 
-Status: product reset and first implementation slice, 2026-09-28. This replaces
+Status: active product direction, updated 2026-09-29. This replaces
 the previous product direction; it is not a claim of Figma affiliation or
 complete feature parity.
 
 ## Product goal
 
-Build a local-first image and visual-design editor with Figma's recognizable
-workspace model: a page navigator and layer tree on the left, a zoomable canvas
-in the center, a contextual property inspector on the right, and direct
-selection/manipulation of image, text, shape, and frame objects. Image decode,
-editing, preview, composition, and export stay on-device and use the pinned
-Pillow-RS WebAssembly engine for raster operations.
+Build a local-first editor for the full Figma Design workspace and editing
+surface: a page navigator and layer tree on the left, a zoomable canvas in the
+center, a contextual property inspector on the right, and direct
+selection/manipulation of image, text, shape, vector, frame, component, and
+prototype objects. Image decode, editing, preview, composition, and export stay
+on-device and use the pinned Pillow-RS WebAssembly engine for raster
+operations.
 
 One image remains one image object throughout editing. Its original bytes and
 ordered edit state remain in memory for the active session. Every edit updates
@@ -35,39 +36,35 @@ Output format is part of the saved recipe and can be overridden in an active
 processing job without changing the saved recipe. Existing local privacy and
 bounded-memory rules remain product requirements.
 
-## Scope decision still needed
+## Locked scope
 
-“Figma copy / all features” can mean either the Design editor's interaction
-model, or literal feature parity across Figma Design and related Figma
-products. Figma's public guide describes a canvas, toolbar, page/layer
-navigation, and contextual design/prototype inspector; its layer model includes
-containers, frames, components, and nested children. See [Explore design
-files](https://help.figma.com/hc/en-us/articles/15297425105303-Explore-design-files),
-[Frames in Figma Design](https://help.figma.com/hc/en-us/articles/360041539473-Frames-in-Figma-Design),
-and [Layers 101](https://help.figma.com/hc/en-us/articles/26620239826199-Layers-101).
+The requested target is the Figma Design editor and its design features, not a
+smaller workspace resemblance or a selection of convenient features. Include
+the current toolbar and canvas tools, vector networks, the full layer/property
+model, components and variables, Auto Layout including grid flow, layout
+guides, prototypes, and export. The only capability outside Figma Design is
+the requested local bulk-recipe workflow. Do not silently drop Figma Design
+features because they are large or require additional local architecture; keep
+them visible in the parity inventory until implemented and verified.
 
-Figma also currently describes separate Design, FigJam, Dev Mode, Slides, and
-Make products, with collaboration and sharing features. Those cloud/team
-workflows cannot be reproduced as real-time multiplayer by a static, offline,
-local-only app without adding a synchronization/signaling service. The offline
-Figma guide itself distinguishes local design edits from cloud collaboration
-and file-history features. See [What is Figma?](https://help.figma.com/hc/en-us/articles/14563969806359-What-is-Figma),
-[Figma plans and features](https://help.figma.com/hc/en-us/articles/360040328273-Figma-plans-and-features),
-and [What can I do offline in Figma?](https://help.figma.com/hc/en-us/articles/360040328553-What-can-I-do-offline-in-Figma).
+The Pillow-RS boundary is explicit: all raster image decoding, editing,
+preview, composition, and export run locally through the pinned WebAssembly
+engine. Figma Design's online sharing, multiplayer, comments, and file-history
+behaviors remain part of the parity audit; if one needs remote coordination,
+document the architecture decision instead of treating the feature as already
+out of scope. FigJam, Slides, Dev Mode, and Make are separate Figma products
+and are not part of this Design-editor target.
 
-Default for implementation until clarified: reproduce the Figma Design
-workspace model for local visual editing, not the entire Figma product family
-or its cloud collaboration services. Figma's current guide names canvas,
-toolbar, navigation, layers/pages, and property inspection as the workspace
-foundation. Its feature inventory also includes frames and sections, nested
-layers, shapes and vector paths, components, auto layout, constraints, layout
-grids, typography, fills/strokes/effects, export, and interactive prototypes.
-See [Explore design files](https://help.figma.com/hc/en-us/articles/15297425105303-Explore-design-files),
-[Layers 101](https://help.figma.com/hc/en-us/articles/26620239826199-Layers-101),
-[Guide to auto layout](https://help.figma.com/hc/en-us/articles/360040451373-Guide-to-auto-layout),
-and [right sidebar properties](https://help.figma.com/hc/en-us/articles/360039832014-Design-prototype-and-explore-layer-properties-in-the-right-sidebar).
-Treat these as a parity checklist and track each as supported, partial, or
-pending before claiming feature completeness.
+The current official Figma guide describes the page/layer navigation, canvas,
+toolbar, and right-side design/prototype inspector as the workspace foundation.
+Its feature guides cover [shape tools](https://help.figma.com/hc/en-us/articles/360040450133-Basic-shape-tools-in-Figma-design),
+[vector networks and Bézier editing](https://help.figma.com/hc/en-us/articles/360040450213-Vector-networks),
+[grid Auto Layout](https://help.figma.com/hc/en-us/articles/31289469907863-Use-the-grid-auto-layout-flow),
+[layout guides](https://help.figma.com/hc/en-us/articles/360040450513-Create-layout-guides),
+[variables](https://help.figma.com/hc/en-us/articles/15339657135383-Guide-to-variables-in-Figma),
+and [export](https://help.figma.com/hc/en-us/articles/360040028114-Export-from-Figma).
+Use the parity inventory below as a living checklist; do not claim completion
+until the implemented behaviors and release gates have evidence.
 
 ## Current project: keep, unify, or replace
 
@@ -94,6 +91,8 @@ edit value, multi-image in-place updates, and phone-width job-bar controls.
 The visible design workspace now has a page navigator, layer tree, zoomable
 canvas, selection tools, and contextual inspector. It edits image, text, shape,
 and nested frame layers in a local project with undo/redo and browser recovery.
+Single- and multi-selection geometry is edited in page pixels; group changes
+preserve relative placement and are one previewable, undoable history entry.
 Image layers now support on-canvas source cropping: users can create, move, and
 resize a normalized crop window over the retained original, then undo, redo, or
 reset it while the same page layer is re-rendered through Pillow-RS WASM.
@@ -121,17 +120,17 @@ project as a production-ready Figma copy.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | A local design workspace exists, but legacy image, batch, and story workspaces are not one shared editor. |
+| Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | Pixel-based geometry and opacity can be edited across a selection; legacy image, batch, and story workspaces are not one shared editor. |
 | Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
-| Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gap, basic alignment, and per-axis Fixed/Fill/Hug work. Grid, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment are pending. |
+| Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gap, basic alignment, and per-axis Fixed/Fill/Hug work. Grid flow and tracks, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment are pending. |
 | Shapes and vectors | Partial | Primitive rectangle, rounded rectangle, and ellipse shapes exist; paths, pen editing, boolean operations, and SVG import/export are pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
 | Components and design systems | Pending | Components, instances, variants, properties, libraries, and variables/tokens are not implemented. |
 | Prototyping and interaction | Pending | Connections, triggers, transitions, overlays, and local prototype playback are not implemented. |
 | Collaboration and file history | Pending | Local undo, redo, and recovery exist; comments, multiplayer editing, shared libraries, and file/version history do not. |
-| Bulk recipes and processing bar | Supported, separate workflow | Recipes freeze their revision and target snapshot; processing updates selected images in place and exposes progress, pause/resume, cancel, and speed controls. |
+| Bulk recipes and processing bar | Partial integration | Versioned recipes can be saved from and applied to selected page images in place; legacy gallery jobs remain a separate state/workspace and need one shared document-backed job flow. |
 | Phone/tablet editing | Partial | The canvas and core controls reflow to phone width; physical-device, keyboard, screen-reader, and tablet qualification is still required. |
 
 This inventory targets the Figma Design editor rather than FigJam, Slides,
@@ -211,15 +210,12 @@ admit. Preserve output format with the frozen job snapshot.
 
 ## Existing behavior relevant to the first implementation slice
 
-The current app already has saved recipes, output-format state per recipe and
-processing job, selection of multiple batch images, scoped recipe application,
-in-place batch preview replacement, and global Auto/Max speed/Low resource
-controls. The first implementation slice now registers context actions on the
-editing canvas, image-tray rows, and result cards, plus a fixed global job bar
-with progress, throughput/ETA, live scheduler mode, pause/resume, and cancel.
-A focused browser workflow covers source-byte retention and same-canvas edit
-previews, saving a recipe from one image, applying the captured recipe to a
-multi-selection, switching views while a job runs, and phone-width controls.
-The next migration phase is to unify the editor, batch gallery, story tools, and
-project model in one page/layer workspace with a zoomable canvas and contextual
-inspector.
+The app has a local page-layer editor with undoable single/multi-selection
+geometry and opacity. Page image context menus save and apply frozen recipe
+revisions, and the page job panel exposes progress, scheduler mode,
+pause/resume, and cancel; the older batch gallery also has format-aware recipe
+jobs and a global processing bar. These paths still have separate document and
+job state, so unification remains required. The next major Figma gap is vector
+creation/editing: toolbar shape tools, Bézier vector networks, and direct point
+editing, followed by grid Auto Layout, layout guides, components/variables,
+and prototypes.

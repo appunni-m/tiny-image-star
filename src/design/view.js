@@ -53,15 +53,21 @@ export function createDesignView() {
         <p id="design-inspector-empty" class="design-inspector-empty">Select an image, text, or shape to edit its properties.</p>
         <div id="design-multi-inspector" class="design-multi-inspector" hidden>
           <p id="design-multi-summary" class="design-inspector-empty"></p>
+          <fieldset id="design-multi-transform" class="design-fieldset"><legend>Selection</legend>
+            <label class="design-field"><span>X (px)</span><input id="design-multi-x" type="number" step="0.1" inputmode="decimal" aria-label="Selection X position in pixels" /></label>
+            <label class="design-field"><span>Y (px)</span><input id="design-multi-y" type="number" step="0.1" inputmode="decimal" aria-label="Selection Y position in pixels" /></label>
+            <label class="design-field"><span>W (px)</span><input id="design-multi-width" type="number" min="0.01" step="0.1" inputmode="decimal" aria-label="Selection width in pixels" /></label>
+            <label class="design-field"><span>H (px)</span><input id="design-multi-height" type="number" min="0.01" step="0.1" inputmode="decimal" aria-label="Selection height in pixels" /></label>
+          </fieldset>
           <label class="design-range-field"><span>Opacity <output id="design-multi-opacity-value">100%</output></span><input id="design-multi-opacity" type="range" min="0" max="100" step="1" value="100" aria-label="Opacity for selected layers" /></label>
         </div>
         <div id="design-inspector-content" class="design-inspector-content" hidden>
           <label class="design-field"><span>Name</span><input id="design-layer-name" type="text" maxlength="120" autocomplete="off" /></label>
           <fieldset class="design-fieldset"><legend>Position</legend>
-            <label class="design-field"><span>X</span><input id="design-x" type="number" min="-4000" max="4000" step="0.1" inputmode="decimal" /></label>
-            <label class="design-field"><span>Y</span><input id="design-y" type="number" min="-400" max="400" step="0.1" inputmode="decimal" /></label>
-            <label class="design-field"><span>W</span><input id="design-width" type="number" min="0.01" max="4000" step="0.1" inputmode="decimal" /></label>
-            <label class="design-field"><span>H</span><input id="design-height" type="number" min="0.01" max="800" step="0.1" inputmode="decimal" /></label>
+            <label class="design-field"><span>X (px)</span><input id="design-x" type="number" step="0.1" inputmode="decimal" aria-label="X position in pixels" /></label>
+            <label class="design-field"><span>Y (px)</span><input id="design-y" type="number" step="0.1" inputmode="decimal" aria-label="Y position in pixels" /></label>
+            <label class="design-field"><span>W (px)</span><input id="design-width" type="number" min="0.01" step="0.1" inputmode="decimal" aria-label="Width in pixels" /></label>
+            <label class="design-field"><span>H (px)</span><input id="design-height" type="number" min="0.01" step="0.1" inputmode="decimal" aria-label="Height in pixels" /></label>
           </fieldset>
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>

@@ -284,6 +284,37 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator(`#design-layer-list [data-layer-id="${otherImageId}"] .design-layer-select`).click({ modifiers: ["Shift"] });
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 2);
     assert.equal(await page.locator("#design-multi-inspector").isVisible(), true, "multi-selection shows shared editable properties");
+    const beforeMultiGeometry = await page.evaluate((ids) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), { width, height } = state.variant;
+      const frames = ids.map((id) => state.resolvedFrames[id].frame);
+      return { size: { width, height }, frames: Object.fromEntries(ids.map((id) => [id, state.nodes[id].frame])),
+        bounds: { x: Math.min(...frames.map((frame) => frame.x * width)), y: Math.min(...frames.map((frame) => frame.y * height)),
+          width: Math.max(...frames.map((frame) => (frame.x + frame.width) * width)) - Math.min(...frames.map((frame) => frame.x * width)),
+          height: Math.max(...frames.map((frame) => (frame.y + frame.height) * height)) - Math.min(...frames.map((frame) => frame.y * height)) } };
+    }, [selectedId, otherImageId]);
+    const targetSelectionX = Math.round((beforeMultiGeometry.bounds.x + 20) * 10) / 10;
+    await page.locator("#design-multi-x").fill(String(targetSelectionX));
+    await page.locator("#design-multi-x").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let movedMulti = await page.evaluate((ids) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), width = state.variant.width;
+      return ids.map((id) => state.nodes[id].frame.x * width);
+    }, [selectedId, otherImageId]);
+    for (const [index, id] of [selectedId, otherImageId].entries()) {
+      assert.ok(Math.abs(movedMulti[index] - beforeMultiGeometry.frames[id].x * beforeMultiGeometry.size.width - 20) < .11,
+        "editing the selection X field moves each selected layer by the same pixel offset");
+    }
+    await page.locator("#design-undo").click();
+    assert.deepEqual(await page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, window.tinyImageStarDesign.getSnapshot().nodes[id].frame])),
+      [selectedId, otherImageId]), beforeMultiGeometry.frames, "one undo restores all selected frames");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    movedMulti = await page.evaluate((ids) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), width = state.variant.width;
+      return ids.map((id) => state.nodes[id].frame.x * width);
+    }, [selectedId, otherImageId]);
+    assert.ok(movedMulti.every((x, index) => Math.abs(x - (beforeMultiGeometry.frames[[selectedId, otherImageId][index]].x * beforeMultiGeometry.size.width + 20)) < .11),
+      "redo reapplies the shared geometry change to the selection");
     assert.equal(await page.locator("#design-multi-opacity-value").textContent(), "Mixed", "mixed values are visible before a shared edit");
     const beforeMultiOpacity = await page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, {
       opacity: window.tinyImageStarDesign.getSnapshot().nodes[id].opacity,
@@ -350,13 +381,13 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-constraint-vertical").selectOption("top-bottom");
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     const childBefore = structuredClone(framed.resolvedFrames[shapeId].frame);
-    await page.locator("#design-width").fill("25");
+    await page.locator("#design-width").fill("480");
     await page.locator("#design-width").press("Tab");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     framed = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     const parentFrame = framed.resolvedFrames[frameId].frame, childFrame = framed.resolvedFrames[shapeId].frame;
     assert.ok(childFrame.x + childFrame.width > parentFrame.x + parentFrame.width,
-      "left constraint keeps the child at its original page position when its frame shrinks");
+      `left constraint keeps the child at its original page position when its frame shrinks: ${JSON.stringify({ parentFrame, childFrame, childBefore })}`);
     assert.ok(Math.abs(childFrame.x - childBefore.x) < 1e-6 && Math.abs(childFrame.width - childBefore.width) < 1e-6);
     assert.ok(framed.resolvedFrames[shapeId].clipFrames.length === 1);
     const outsideClip = await page.evaluate(() => {
@@ -430,6 +461,16 @@ export async function assertDesignWorkspace(browser, address) {
     const mobileOpacity = await page.locator("#design-opacity").boundingBox();
     assert.ok(mobileOpacity?.height >= 43 && mobileOpacity.x >= 0 && mobileOpacity.x + mobileOpacity.width <= 390,
       `mobile layer opacity stays touch-sized and on-screen: ${JSON.stringify(mobileOpacity)}`);
+    await page.locator(`#design-layer-list [data-layer-id="${otherImageId}"] .design-layer-select`).click({ modifiers: ["Shift"] });
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 2);
+    const mobileMulti = await page.evaluate(() => ({ width: innerWidth,
+      fields: [...document.querySelectorAll("#design-multi-transform input, #design-multi-opacity")]
+        .map((input) => input.getBoundingClientRect().toJSON()) }));
+    assert.equal(mobileMulti.fields.length, 5);
+    assert.ok(mobileMulti.fields.every((box) => box.height >= 43 && box.left >= 0 && box.right <= mobileMulti.width),
+      `multi-selection geometry and opacity stay touch-sized and in viewport: ${JSON.stringify(mobileMulti.fields)}`);
+    await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 1);
     await page.locator("#design-crop-tool").scrollIntoViewIfNeeded();
     const mobileCropLayout = await page.evaluate(() => ({ width: innerWidth,
       buttons: [...document.querySelectorAll("#design-image-adjustments .design-image-crop-actions .button")]
