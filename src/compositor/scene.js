@@ -1,5 +1,5 @@
 import { fontDigest, loadFontFace, verifyFontRecord } from "./fonts.js";
-import { imagePlacement, planScene, sceneError } from "./scene-spec.js";
+import { imagePlacement, nodeBounds, planScene, sceneError } from "./scene-spec.js";
 import { frameMask, rasterSceneNode } from "./vector.js";
 import { deviceBudget, sceneWork } from "../processing/policy.js";
 import { isAnimatedImage } from "../input.js";
@@ -13,6 +13,17 @@ function multiplyAlpha(api, image, mask) {
   let alpha, product;
   try { alpha = image.getchannel(3); product = api.ImageChops.multiply(alpha, mask); image.putalphaImageInput(product); }
   finally { alpha?.free(); product?.free(); }
+}
+
+function clipLayerToFrames(api, image, node, plan) {
+  for (const clip of node.clipFrames ?? []) {
+    const viewport = clip.frame, clipNode = { viewport, canonicalViewport: viewport, rotation: clip.rotation ?? 0, opacity: 1,
+      style: { ...(clip.radius == null ? {} : { radius: clip.radius }) }, originX: 0 };
+    clipNode.bounds = nodeBounds(clipNode, plan.height);
+    let mask;
+    try { mask = frameMask(api, clipNode, plan.width, plan.height); multiplyAlpha(api, image, mask); }
+    finally { mask?.free(); }
+  }
 }
 
 function renderImage(api, node, plan, bytes, openImage) {
@@ -116,6 +127,10 @@ export async function renderScene(api, request, { openImage }) {
             layer = replace(layer, api.fromBytesFn("RGBA", plan.width, plan.height, pixels, "raw"));
           }
         } else layer = rasterSceneNode(api, node, plan.width, plan.height, fonts, warnings);
+        if (node.clipFrames?.length) {
+          clipLayerToFrames(api, layer, node, plan);
+          if (subject) clipLayerToFrames(api, subject, node, plan);
+        }
         image.alphaComposite(layer);
       } finally { layer?.free(); subject?.free(); words?.free(); }
     }

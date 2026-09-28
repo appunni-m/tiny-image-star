@@ -1,8 +1,8 @@
 import { createDesignView } from "./view.js";
-import { addDesignPageCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  updatePageSelection } from "../project/design-page.js";
-import { canonicalJSON, clone, newId } from "../project/model.js";
+  reorderLayerCommand, resizeFrameChildren, updatePageSelection } from "../project/design-page.js";
+import { canonicalJSON, clone, newId, resolveLayerFrames } from "../project/model.js";
 import { ProjectHistory } from "../project/history.js";
 import { listDesignProjects, readDesignProject, writeDesignProject } from "../project/storage.js";
 import { getProcessingScheduler } from "../processing/client.js";
@@ -21,10 +21,52 @@ export function attachDesignWorkspace() {
   let previewTask = null, previewTimer = null, previewEpoch = 0, previewBitmap = null, exportBusy = false, importing = false, recipeJob = null;
   let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null;
   const touchPoints = new Map();
+  let frameMapProject = null, frameMapPage = null, frameMap = null;
   const renderProject = () => history?.document ?? null;
   const currentPage = () => renderProject()?.slides.find((page) => page.id === pageId) ?? renderProject()?.slides[0] ?? null;
   const currentSelection = () => currentPage() ? snapshotPageSelection(selection, currentPage()) : [];
   const layer = (id) => renderProject()?.nodes[id] ?? null;
+  function resolvedLayerMap() {
+    const project = renderProject(), page = currentPage();
+    if (!project || !page) return new Map();
+    if (frameMapProject !== project || frameMapPage !== page.id) {
+      frameMapProject = project; frameMapPage = page.id;
+      frameMap = resolveLayerFrames(project, page.id, project.variants[0].id);
+    }
+    return frameMap;
+  }
+  function worldLayer(id) {
+    const node = layer(id), resolved = resolvedLayerMap().get(id);
+    return node && resolved ? { ...clone(node), frame: clone(resolved.frame), rotation: resolved.rotation,
+      visible: resolved.visible, locked: resolved.locked } : node ? clone(node) : null;
+  }
+  function storeWorldGeometry(id, world) {
+    const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
+    if (!node || !world?.frame) return null;
+    const next = { ...clone(node), frame: clone(world.frame) };
+    if (world.rotation != null) next.rotation = world.rotation;
+    if (!node.parentId) return next;
+    const parent = resolvedLayerMap().get(node.parentId), variant = project.variants[0];
+    if (!resolved || !parent || parent.frame.width <= 0 || parent.frame.height <= 0) return null;
+    const localWidth = world.frame.width / parent.frame.width, localHeight = world.frame.height / parent.frame.height;
+    const centerX = (world.frame.x + world.frame.width / 2 - parent.frame.x - parent.frame.width / 2) * variant.width;
+    const centerY = (world.frame.y + world.frame.height / 2 - parent.frame.y - parent.frame.height / 2) * variant.height;
+    const angle = -parent.rotation * Math.PI / 180, localX = centerX * Math.cos(angle) - centerY * Math.sin(angle);
+    const localY = centerX * Math.sin(angle) + centerY * Math.cos(angle);
+    next.frame = { x: .5 + localX / (parent.frame.width * variant.width) - localWidth / 2,
+      y: .5 + localY / (parent.frame.height * variant.height) - localHeight / 2, width: localWidth, height: localHeight };
+    next.rotation = (world.rotation ?? resolved.rotation) - parent.rotation;
+    if (!Number.isFinite(next.rotation)) next.rotation = 0;
+    return next;
+  }
+  function topLevelSelection() {
+    const ids = currentSelection(), selected = new Set(ids);
+    return ids.filter((id) => {
+      let parentId = layer(id)?.parentId;
+      while (parentId) { if (selected.has(parentId)) return false; parentId = layer(parentId)?.parentId; }
+      return true;
+    });
+  }
   const assets = () => Object.values(renderProject()?.assets ?? {});
   const retainedSourceBytes = () => [...sources.values()].reduce((sum, source) => sum + (source?.size ?? source?.byteLength ?? 0), 0);
   const setStatus = (message) => { get("canvas-status").textContent = message; };
@@ -45,6 +87,7 @@ export function attachDesignWorkspace() {
 
   function selectionChanged() {
     selection.ids = currentPage()?.nodeIds.filter((id) => selection.ids.includes(id)) ?? [];
+    get("frame-selection").disabled = selection.ids.length < 2;
     renderLayers(); renderInspector(); drawCanvas();
   }
 
@@ -75,6 +118,9 @@ export function attachDesignWorkspace() {
     for (const id of ids) {
       const node = layer(id); if (!node) continue;
       const row = document.createElement("div"); row.className = "design-layer-row";
+      let depth = 0, parentId = node.parentId;
+      while (parentId) { depth += 1; parentId = layer(parentId)?.parentId ?? null; }
+      row.style.paddingInlineStart = `${8 + Math.min(depth, 12) * 14}px`;
       row.classList.toggle("selected", selection.ids.includes(id)); row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(selection.ids.includes(id))); row.dataset.layerId = id;
       const select = document.createElement("button"); select.type = "button"; select.className = "design-layer-select";
@@ -86,9 +132,11 @@ export function attachDesignWorkspace() {
       const eye = toggleButton(node.visible === false ? "◌" : "◉", node.visible !== false, () => mutateMany("Visibility", (current) => ({
         ...current, visible: current.visible === false,
       }), [id]), "design-layer-icon"); eye.setAttribute("aria-label", `${node.visible === false ? "Show" : "Hide"} ${select.textContent}`); eye.title = eye.getAttribute("aria-label");
-      const lock = toggleButton(node.locked ? "▣" : "□", Boolean(node.locked), () => mutateMany("Lock", (current) => ({
+      const parentLocked = Boolean(node.parentId && worldLayer(node.parentId)?.locked), effectiveLocked = Boolean(node.locked || parentLocked);
+      const lock = toggleButton(effectiveLocked ? "▣" : "□", effectiveLocked, () => mutateMany("Lock", (current) => ({
         ...current, locked: !current.locked,
       }), [id]), "design-layer-icon"); lock.setAttribute("aria-label", `${node.locked ? "Unlock" : "Lock"} ${select.textContent}`); lock.title = lock.getAttribute("aria-label");
+      lock.disabled = parentLocked;
       row.append(select, eye, lock); row.addEventListener("contextmenu", (event) => { event.preventDefault(); contextMenuForLayer(event, id); });
       container.append(row);
     }
@@ -105,12 +153,25 @@ export function attachDesignWorkspace() {
     if (!node || !project) return;
     const asset = node.assetId ? project.assets[node.assetId] : null;
     setField("layer-name", node.name || asset?.name || node.kind);
-    for (const key of ["x", "y", "width", "height"]) setField(key, ((node.frame?.[key] ?? 0) * 100).toFixed(1));
+    const world = worldLayer(node.id) ?? node;
+    for (const key of ["x", "y", "width", "height"]) setField(key, ((world.frame?.[key] ?? 0) * 100).toFixed(1));
     const textField = get("text-field"), colorField = get("color-field"), fitField = get("fit-field"), adjustments = get("image-adjustments");
-    textField.hidden = node.kind !== "text"; colorField.hidden = !["shape", "text"].includes(node.kind);
+    textField.hidden = node.kind !== "text"; colorField.hidden = !["shape", "text", "frame"].includes(node.kind);
     fitField.hidden = node.kind !== "image"; adjustments.hidden = node.kind !== "image";
+    get("frame-clip-field").hidden = node.kind !== "frame";
+    get("frame-radius-field").hidden = node.kind !== "frame";
+    get("constraints-field").hidden = !node.parentId;
     if (node.kind === "text") get("text").value = node.text ?? "";
-    if (["shape", "text"].includes(node.kind)) get("color").value = node.color ?? "#5149d5";
+    if (["shape", "text", "frame"].includes(node.kind)) get("color").value = node.color ?? (node.kind === "frame" ? "#ffffff" : "#5149d5");
+    if (node.kind === "frame") {
+      get("frame-clip").checked = node.style?.clipContent !== false;
+      const radius = node.style?.radius ?? 0; get("frame-radius").value = String(radius);
+      get("frame-radius-value").value = `${Math.round(radius * 100)}%`;
+    }
+    if (node.parentId) {
+      get("constraint-horizontal").value = node.constraints?.horizontal ?? "left";
+      get("constraint-vertical").value = node.constraints?.vertical ?? "top";
+    }
     if (node.kind === "image") {
       get("image-fit").value = node.fit ?? "contain";
       for (const key of ["brightness", "contrast", "saturation"]) {
@@ -118,7 +179,7 @@ export function attachDesignWorkspace() {
         get(key).value = String(value); get(`${key}-value`).value = Number(value).toFixed(2);
       }
     }
-    const isLocked = Boolean(node.locked);
+    const isLocked = Boolean(world.locked);
     for (const control of root.querySelectorAll("#design-inspector-content input, #design-inspector-content textarea, #design-inspector-content select")) control.disabled = isLocked;
     get("toggle-visibility").textContent = node.visible === false ? "Show" : "Hide";
     get("toggle-lock").textContent = isLocked ? "Unlock" : "Lock";
@@ -140,6 +201,7 @@ export function attachDesignWorkspace() {
     if (document.activeElement !== get("document-name")) get("document-name").value = project.name;
     get("add-text").disabled = !currentPage() || currentPage().nodeIds.length >= 200;
     get("add-rectangle").disabled = get("add-text").disabled;
+    get("frame-selection").disabled = currentSelection().length < 2 || currentSelection().length > 200;
     get("export").disabled = !currentPage() || exportBusy || importing;
     get("undo").disabled = !history.past.length; get("redo").disabled = !history.future.length;
     get("fit").disabled = !currentPage(); get("zoom-in").disabled = !currentPage(); get("zoom-out").disabled = !currentPage();
@@ -180,7 +242,7 @@ export function attachDesignWorkspace() {
   }
 
   function formatGeometry(node) {
-    const variant = renderProject().variants[0], rect = node.frame;
+    const variant = renderProject().variants[0], rect = resolvedLayerMap().get(node.id)?.frame ?? node.frame;
     const scale = geometry?.scale ?? 1, canvas = get("canvas");
     const rectView = { x: geometry?.x + rect.x * variant.width * scale, y: geometry?.y + rect.y * variant.height * scale,
       width: rect.width * variant.width * scale, height: rect.height * variant.height * scale };
@@ -193,7 +255,7 @@ export function attachDesignWorkspace() {
   }
 
   function editableSelection() {
-    return currentSelection().map((id) => layer(id)).filter((node) => node && node.locked !== true && node.visible !== false && node.frame);
+    return topLevelSelection().map((id) => worldLayer(id)).filter((node) => node && node.locked !== true && node.visible !== false && node.frame);
   }
 
   function selectionViewBounds(nodes = editableSelection()) {
@@ -260,11 +322,11 @@ export function attachDesignWorkspace() {
     if (previewBitmap) ctx.drawImage(previewBitmap, x, y, pageWidth * scale, pageHeight * scale);
     ctx.strokeStyle = "rgba(45, 126, 247, .95)"; ctx.lineWidth = 1.5;
     for (const id of currentSelection()) {
-      const node = layer(id); if (!node?.frame || node.visible === false) continue;
-      const rect = formatGeometry(node);
-      if (node.rotation) {
+      const world = worldLayer(id); if (!world?.frame || world.visible === false) continue;
+      const rect = formatGeometry(layer(id));
+      if (world.rotation) {
         ctx.save(); ctx.translate(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        ctx.rotate(node.rotation * Math.PI / 180); ctx.strokeRect(-rect.width / 2, -rect.height / 2, rect.width, rect.height); ctx.restore();
+        ctx.rotate(world.rotation * Math.PI / 180); ctx.strokeRect(-rect.width / 2, -rect.height / 2, rect.width, rect.height); ctx.restore();
       } else ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
     }
     const selectedBounds = selectionViewBounds();
@@ -294,14 +356,19 @@ export function attachDesignWorkspace() {
   function hitTest(point) {
     const page = currentPage(); if (!page || !geometry) return null;
     const local = pagePoint(point); if (!local || local.x < 0 || local.y < 0 || local.x > geometry.width || local.y > geometry.height) return null;
+    const insideFrame = (x, y, frame, rotation = 0) => {
+      const centerX = frame.x + frame.width / 2, centerY = frame.y + frame.height / 2;
+      const angle = -rotation * Math.PI / 180, dx = x - centerX, dy = y - centerY;
+      const localX = centerX + dx * Math.cos(angle) - dy * Math.sin(angle), localY = centerY + dx * Math.sin(angle) + dy * Math.cos(angle);
+      return localX >= frame.x && localX <= frame.x + frame.width && localY >= frame.y && localY <= frame.y + frame.height;
+    };
     return [...page.nodeIds].reverse().find((id) => {
-      const node = layer(id), frame = node?.frame;
-      if (!frame || node.visible === false) return false;
-      const centerX = (frame.x + frame.width / 2) * geometry.width, centerY = (frame.y + frame.height / 2) * geometry.height;
-      const angle = -(node.rotation ?? 0) * Math.PI / 180, dx = local.x - centerX, dy = local.y - centerY;
-      const x = centerX + dx * Math.cos(angle) - dy * Math.sin(angle), y = centerY + dx * Math.sin(angle) + dy * Math.cos(angle);
-      return x >= frame.x * geometry.width && x <= (frame.x + frame.width) * geometry.width
-        && y >= frame.y * geometry.height && y <= (frame.y + frame.height) * geometry.height;
+      const resolved = resolvedLayerMap().get(id), frame = resolved?.frame;
+      if (!frame || resolved.visible === false) return false;
+      const x = local.x, y = local.y;
+      if (!insideFrame(x, y, { x: frame.x * geometry.width, y: frame.y * geometry.height,
+        width: frame.width * geometry.width, height: frame.height * geometry.height }, resolved?.rotation ?? 0)) return false;
+      return (resolved?.clipFrames ?? []).every((clip) => insideFrame(x, y, clip.frame, clip.rotation));
     }) ?? null;
   }
 
@@ -337,17 +404,27 @@ export function attachDesignWorkspace() {
   }
 
   function previewCanvasTransform(current, point, event) {
+    const page = currentPage();
     if (current.kind === "resize") {
       const world = pagePoint(point), nextBounds = resizeBoundsForPointer(current, world, event.shiftKey);
-      const updates = resizeSelection(current.nodes, current.bounds, nextBounds, current.size);
-      history.preview({ type: "group", commands: updates.map((node) => ({ type: "node", id: node.id, value: node })) });
+      const updates = resizeSelection(current.nodes, current.bounds, nextBounds, current.size), commands = [];
+      for (const updated of updates) {
+        const stored = storeWorldGeometry(updated.id, updated); if (!stored) continue;
+        commands.push({ type: "node", id: stored.id, value: stored });
+        const original = layer(stored.id);
+        if (stored.kind === "frame" && (Math.abs(stored.frame.width - original.frame.width) > 1e-8 || Math.abs(stored.frame.height - original.frame.height) > 1e-8))
+          commands.push(...resizeFrameChildren(renderProject(), page.id, stored.id, stored.frame));
+      }
+      history.preview({ type: "group", commands });
       edited("Resizing selection…", { previewOnly: true }); return;
     }
     const world = pagePoint(point), angle = Math.atan2(world.y - current.center.y, world.x - current.center.x);
     let delta = (angle - current.startAngle) * 180 / Math.PI;
     if (event.shiftKey) delta = Math.round(delta / 15) * 15;
-    const updates = rotateSelection(current.nodes, current.center, delta, current.size);
-    history.preview({ type: "group", commands: updates.map((node) => ({ type: "node", id: node.id, value: node })) });
+    const updates = rotateSelection(current.nodes, current.center, delta, current.size), commands = updates.map((node) => {
+      const stored = storeWorldGeometry(node.id, node); return stored ? { type: "node", id: stored.id, value: stored } : null;
+    }).filter(Boolean);
+    history.preview({ type: "group", commands });
     edited("Rotating selection…", { previewOnly: true });
   }
 
@@ -398,10 +475,10 @@ export function attachDesignWorkspace() {
         { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey });
       else if (!selection.ids.includes(id)) selection = updatePageSelection(null, currentPage().nodeIds, id);
       selectionChanged();
-      const selected = currentSelection().filter((selectedId) => !layer(selectedId)?.locked);
+      const selected = topLevelSelection().filter((selectedId) => !worldLayer(selectedId)?.locked);
       const world = pagePoint(point);
       drag = { kind: "layers", pointerId: event.pointerId, start: world, ids: selected,
-        frames: Object.fromEntries(selected.map((selectedId) => [selectedId, clone(layer(selectedId).frame)])), moved: false };
+        frames: Object.fromEntries(selected.map((selectedId) => [selectedId, clone(worldLayer(selectedId).frame)])), moved: false };
     } else {
       if (!event.shiftKey && !event.metaKey && !event.ctrlKey) selection = { ids: [], anchorId: null };
       drag = { kind: "marquee", pointerId: event.pointerId, start: point, extend: event.shiftKey || event.metaKey || event.ctrlKey, moved: false };
@@ -425,8 +502,10 @@ export function attachDesignWorkspace() {
       const world = pagePoint(point), dx = world.x - drag.start.x, dy = world.y - drag.start.y;
       if (Math.abs(dx) * geometry.scale + Math.abs(dy) * geometry.scale < 1) return;
       drag.moved = true;
-      history.preview({ type: "group", commands: drag.ids.map((id) => ({ type: "node", id, value: { ...clone(layer(id)),
-        frame: { ...drag.frames[id], x: drag.frames[id].x + dx / geometry.width, y: drag.frames[id].y + dy / geometry.height } } })) });
+      history.preview({ type: "group", commands: drag.ids.map((id) => {
+        const world = { ...worldLayer(id), frame: { ...drag.frames[id], x: drag.frames[id].x + dx / geometry.width, y: drag.frames[id].y + dy / geometry.height } };
+        const stored = storeWorldGeometry(id, world); return { type: "node", id, value: stored };
+      }) });
       edited("Moving selection…", { previewOnly: true });
     } else if (drag.kind === "resize" || drag.kind === "rotate") {
       const world = pagePoint(point);
@@ -455,8 +534,8 @@ export function attachDesignWorkspace() {
     if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
     if (drag.kind === "marquee" && drag.moved && geometry) {
       const bounds = marquee, hits = currentPage().nodeIds.filter((id) => {
-        const node = layer(id), frame = node?.frame; if (!frame || node.visible === false) return false;
-        const rect = formatGeometry(node);
+        const resolved = resolvedLayerMap().get(id), frame = resolved?.frame; if (!frame || resolved.visible === false) return false;
+        const rect = formatGeometry(layer(id));
         return rect.x < bounds.x + bounds.width && rect.right > bounds.x && rect.y < bounds.y + bounds.height && rect.bottom > bounds.y;
       });
       if (drag.extend) selection = { ids: [...new Set([...selection.ids, ...hits])].filter((id) => currentPage().nodeIds.includes(id)), anchorId: selection.anchorId };
@@ -497,8 +576,7 @@ export function attachDesignWorkspace() {
   function layerOrderCommand(nodeId, front) {
     const page = currentPage(), ids = [...page.nodeIds], index = ids.indexOf(nodeId);
     if (index < 0) return;
-    ids.splice(index, 1); ids.splice(front ? ids.length : 0, 0, nodeId);
-    history.apply({ type: "slides", value: renderProject().slides.map((entry) => entry.id === page.id ? { ...clone(entry), nodeIds: ids } : clone(entry)) },
+    history.apply(reorderLayerCommand(renderProject(), page.id, nodeId, front ? ids.length : 0),
       front ? "Bring to front" : "Send to back"); edited("Layer order updated.");
   }
 
@@ -626,6 +704,7 @@ export function attachDesignWorkspace() {
     const ids = currentSelection(), node = layer(id);
     const imageIds = ids.filter((selectedId) => layer(selectedId)?.kind === "image" && !layer(selectedId)?.locked);
     const recipes = window.tinyImageStarBatch?.listRecipes?.() ?? [];
+    const frameItems = ids.length > 1 ? [{ type: "separator" }, { label: "Frame selection", disabled: Boolean(recipeJob), action: frameSelection }] : [];
     const recipeItems = node?.kind === "image" ? [
       { type: "separator" },
       { type: "heading", label: `${imageIds.length} image layer${imageIds.length === 1 ? "" : "s"} selected` },
@@ -648,7 +727,7 @@ export function attachDesignWorkspace() {
         { label: "Bring to front", action: () => layerOrderCommand(id, true) },
         { label: "Send to back", action: () => layerOrderCommand(id, false) },
         { label: node?.locked ? "Unlock selection" : "Lock selection", action: () => mutateMany("Lock", (current) => ({ ...current, locked: !node?.locked }), ids) },
-        { label: `Delete ${ids.length === 1 ? "layer" : `${ids.length} layers`}`, action: () => deleteSelected() }, ...recipeItems],
+        { label: `Delete ${ids.length === 1 ? "layer" : `${ids.length} layers`}`, action: () => deleteSelected() }, ...frameItems, ...recipeItems],
     });
   }
 
@@ -665,6 +744,15 @@ export function attachDesignWorkspace() {
     try {
       const command = addShapeLayerCommand(history.document, currentPage().id, "rectangle");
       history.apply(command, "Add rectangle"); const id = command.commands[0].id; selection = { ids: [id], anchorId: id }; edited("Rectangle added.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function frameSelection() {
+    if (!history || !currentPage()) return;
+    try {
+      const wrapped = addFrameAroundSelectionCommand(history.document, currentPage().id, currentSelection());
+      history.apply(wrapped.command, "Frame selection"); selection = { ids: [wrapped.id], anchorId: wrapped.id };
+      edited("Frame created around selection.");
     } catch (error) { setStatus(error.message); }
   }
 
@@ -845,6 +933,7 @@ export function attachDesignWorkspace() {
   });
   get("file-input").addEventListener("change", () => { const files = [...(get("file-input").files ?? [])]; get("file-input").value = ""; void importImages(files); });
   get("add-text").addEventListener("click", addText); get("add-rectangle").addEventListener("click", addRectangle);
+  get("frame-selection").addEventListener("click", frameSelection);
   get("new-page").addEventListener("click", () => {
     try {
       if (!history) { newDesign(); return; }
@@ -867,8 +956,12 @@ export function attachDesignWorkspace() {
     get(field).addEventListener("input", () => {
       const id = currentSelection()[0], node = id && layer(id), value = Number(get(field).value);
       if (!node || !Number.isFinite(value)) return;
-      const frame = { ...node.frame, [key]: value / 100 };
-      previewNode(id, { frame });
+      const world = worldLayer(id), transformed = { ...world, frame: { ...world.frame, [key]: value / 100 } };
+      const stored = storeWorldGeometry(id, transformed); if (!stored) return;
+      const commands = [{ type: "node", id, value: stored }];
+      if (node.kind === "frame" && ["width", "height"].includes(key)) commands.push(...resizeFrameChildren(renderProject(), currentPage().id, id, stored.frame));
+      try { history.preview({ type: "group", commands }); edited("Previewing changes…", { previewOnly: true }); }
+      catch (error) { setStatus(error.message); }
     });
     get(field).addEventListener("change", () => commitEdit("Change layer geometry"));
   }
@@ -876,6 +969,23 @@ export function attachDesignWorkspace() {
   get("text").addEventListener("change", () => commitEdit("Edit text"));
   get("color").addEventListener("input", () => { const id = currentSelection()[0]; if (id) previewNode(id, { color: get("color").value }); });
   get("color").addEventListener("change", () => commitEdit("Change fill"));
+  get("frame-clip").addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
+    history.apply({ type: "node", id, value: { ...clone(node), style: { ...node.style, clipContent: get("frame-clip").checked } } }, "Change frame clipping"); edited("Frame clipping updated.");
+  });
+  get("frame-radius").addEventListener("input", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
+    const radius = Number(get("frame-radius").value); get("frame-radius-value").value = `${Math.round(radius * 100)}%`;
+    previewNode(id, { style: { ...node.style, radius } });
+  });
+  get("frame-radius").addEventListener("change", () => commitEdit("Change frame corner radius"));
+  for (const [field, axis] of [["constraint-horizontal", "horizontal"], ["constraint-vertical", "vertical"]]) {
+    get(field).addEventListener("change", () => {
+      const id = currentSelection()[0], node = id && layer(id); if (!node?.parentId) return;
+      history.apply({ type: "node", id, value: { ...clone(node), constraints: { ...node.constraints, [axis]: get(field).value } } }, "Change frame constraints");
+      edited("Frame constraints updated.");
+    });
+  }
   get("image-fit").addEventListener("change", () => { const id = currentSelection()[0]; if (id) { history.apply({ type: "node", id, value: { ...clone(layer(id)), fit: get("image-fit").value } }, "Change image fit"); edited(); } });
   for (const key of ["brightness", "contrast", "saturation"]) {
     get(key).addEventListener("input", () => {
@@ -913,6 +1023,7 @@ export function attachDesignWorkspace() {
       if (!project) return null;
       return { id: project.id, revision: project.revision, name: project.name, key: fileOwner?.key ?? null, savedRevision: fileOwner?.savedRevision ?? null, pageId: currentPage()?.id,
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
+        resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
         canvas: { zoom, panX, panY, geometry: clone(geometry) },
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },

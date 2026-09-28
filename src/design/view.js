@@ -13,6 +13,7 @@ export function createDesignView() {
         <button id="design-add-images" class="button secondary" type="button">Add images</button>
         <button id="design-add-text" class="button secondary" type="button" disabled>Text</button>
         <button id="design-add-rectangle" class="button secondary" type="button" disabled>Rectangle</button>
+        <button id="design-frame-selection" class="button secondary" type="button" disabled>Frame selection</button>
         <span class="design-toolbar-divider" aria-hidden="true"></span>
         <button id="design-undo" class="button secondary" type="button" disabled aria-label="Undo design edit">Undo</button>
         <button id="design-redo" class="button secondary" type="button" disabled aria-label="Redo design edit">Redo</button>
@@ -60,6 +61,12 @@ export function createDesignView() {
           </fieldset>
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
+          <label id="design-frame-clip-field" class="design-field design-checkbox-field" hidden><span>Clip content</span><input id="design-frame-clip" type="checkbox" checked /></label>
+          <label id="design-frame-radius-field" class="design-range-field" hidden><span>Corner radius <output id="design-frame-radius-value">0%</output></span><input id="design-frame-radius" type="range" min="0" max="0.5" step="0.01" value="0" /></label>
+          <fieldset id="design-constraints-field" class="design-fieldset" hidden><legend>Constraints</legend>
+            <label class="design-field"><span>Horizontal</span><select id="design-constraint-horizontal"><option value="left">Left</option><option value="right">Right</option><option value="left-right">Left and right</option><option value="center">Center</option><option value="scale">Scale</option></select></label>
+            <label class="design-field"><span>Vertical</span><select id="design-constraint-vertical"><option value="top">Top</option><option value="bottom">Bottom</option><option value="top-bottom">Top and bottom</option><option value="center">Center</option><option value="scale">Scale</option></select></label>
+          </fieldset>
           <label id="design-fit-field" class="design-field" hidden><span>Image fit</span><select id="design-image-fit"><option value="contain">Fit inside</option><option value="cover">Fill frame</option></select></label>
           <div id="design-image-adjustments" class="design-adjustments" hidden>
             <h3>Image adjustments</h3>

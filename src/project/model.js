@@ -100,7 +100,15 @@ function validateNodeStyle(node) {
   check(node.crop == null && node.maskId == null && node.appearance == null, "Only image layers support crop, masks and image adjustments.");
   const style = node.style ?? {};
   check(object(style), "Invalid layer style.");
-  if (node.kind === "shape") {
+  if (node.kind === "frame") {
+    check(node.text == null && node.fontId == null, "Frames cannot contain text or fonts.");
+    keys(style, ["clipContent", "radius", "strokeColor", "strokeWidth"]);
+    if (style.clipContent != null) check(typeof style.clipContent === "boolean", "Invalid frame clipping setting.");
+    if (style.radius != null) check(number(style.radius, 0, .5), "Invalid corner radius.");
+    if (style.strokeColor != null) check(color(style.strokeColor), "Invalid stroke color.");
+    if (style.strokeWidth != null) check(number(style.strokeWidth, 0, .2), "Invalid stroke width.");
+    check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
+  } else if (node.kind === "shape") {
     check(node.text == null, "Shapes cannot contain caption text.");
     keys(style, ["shape", "radius", "strokeColor", "strokeWidth"]);
     check(style.shape == null || ["rectangle", "rounded", "ellipse"].includes(style.shape), "Unsupported shape.");
@@ -210,8 +218,8 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
-    check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape"].includes(node.kind), "Unsupported layer kind.");
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
     if (node.locked != null) check(typeof node.locked === "boolean", "Invalid layer lock state.");
@@ -258,12 +266,34 @@ export function validateProject(project) {
       if (node.variantFrames != null) validateVariantFrames(node.variantFrames, project.variants);
       check(["slide", "story"].includes(node.space), "Unknown coordinate space.");
       if (node.space === "story") check(project.slides.some((slide) => slide.id === node.anchorSlideId), "A connected layer needs its anchor slide.");
+      if (node.parentId != null) {
+        check(identifier(node.parentId) && node.parentId !== id && node.kind !== "legacy-image", "Invalid frame parent.");
+        check(node.space === "slide" && project.nodes[node.parentId]?.kind === "frame" && project.nodes[node.parentId].space === "slide",
+          "A nested layer must belong to a frame on the same page.");
+        check(object(node.constraints), "A nested layer needs frame constraints.");
+        keys(node.constraints, ["horizontal", "vertical"]);
+        check(["left", "right", "left-right", "center", "scale"].includes(node.constraints.horizontal)
+          && ["top", "bottom", "top-bottom", "center", "scale"].includes(node.constraints.vertical), "Invalid frame constraints.");
+      } else check(node.constraints == null, "Frame constraints require a parent frame.");
       if (node.opacity != null) check(number(node.opacity, 0, 1), "Invalid opacity.");
       if (node.rotation != null) check(number(node.rotation, -360, 360), "Invalid rotation.");
       if (node.kind === "text") check(typeof node.text === "string" && node.text.length <= 5000, "Invalid caption.");
       if (node.crop) validateCrop(node.crop);
       validateNodeStyle(node);
     }
+  }
+  for (const [id, node] of Object.entries(project.nodes)) {
+    const seen = new Set([id]); let parentId = node.parentId, depth = 0;
+    while (parentId != null) {
+      check(!seen.has(parentId) && ++depth <= 12, "Frame nesting contains a cycle or is too deep.");
+      seen.add(parentId); parentId = project.nodes[parentId]?.parentId;
+    }
+  }
+  for (const slide of project.slides) for (const id of slide.nodeIds) {
+    const node = project.nodes[id];
+    if (node.parentId == null) continue;
+    const parentIndex = slide.nodeIds.indexOf(node.parentId);
+    check(parentIndex >= 0 && parentIndex < slide.nodeIds.indexOf(id), "A frame must appear before its child layers on the page.");
   }
   return project;
 }
@@ -290,11 +320,59 @@ export function createSceneProject({ id = newId("project"), name = "Untitled sto
     slides: clone(slides ?? [{ id: newId("slide"), nodeIds: Object.keys(nodes), overrides: {} }]), shared: { appearance: {} }, variants: clone(variants) });
 }
 
+function layerFrameMap(project, slideId, variantId) {
+  const slideIndex = project.slides.findIndex((slide) => slide.id === slideId), slide = project.slides[slideIndex];
+  const variant = project.variants.find((entry) => entry.id === variantId), cache = new Map();
+  check(slide && variant, "Missing slide or output variant.");
+  const resolve = (id) => {
+    if (cache.has(id)) return cache.get(id);
+    const source = project.nodes[id], patch = slide.overrides[id] ?? {};
+    if (!source || source.kind === "legacy-image") return null;
+    const frame = clone(patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame);
+    if (source.parentId) {
+      const parent = resolve(source.parentId), parentNode = project.nodes[source.parentId];
+      const width = frame.width * parent.frame.width, height = frame.height * parent.frame.height;
+      const parentCenterX = (parent.frame.x + parent.frame.width / 2) * variant.width;
+      const parentCenterY = (parent.frame.y + parent.frame.height / 2) * variant.height;
+      const offsetX = (frame.x + frame.width / 2 - .5) * parent.frame.width * variant.width;
+      const offsetY = (frame.y + frame.height / 2 - .5) * parent.frame.height * variant.height;
+      const angle = parent.rotation * Math.PI / 180, cosine = Math.cos(angle), sine = Math.sin(angle);
+      const centerX = parentCenterX + offsetX * cosine - offsetY * sine;
+      const centerY = parentCenterY + offsetX * sine + offsetY * cosine;
+      frame.x = centerX / variant.width - width / 2; frame.y = centerY / variant.height - height / 2;
+      frame.width = width; frame.height = height;
+      const clipFrames = [...parent.clipFrames];
+      if (parentNode.kind === "frame" && parentNode.style?.clipContent !== false) {
+        clipFrames.push({ frame: clone(parent.frame), rotation: parent.rotation, radius: parentNode.style?.radius ?? 0 });
+      }
+      const resolved = { frame, rotation: parent.rotation + (source.rotation ?? 0), clipFrames,
+        visible: parent.visible && source.visible !== false, locked: parent.locked || source.locked === true };
+      cache.set(id, resolved); return resolved;
+    }
+    const anchor = source.space === "story" ? project.slides.findIndex((item) => item.id === source.anchorSlideId) - slideIndex : 0;
+    frame.x += anchor;
+    const resolved = { frame, rotation: source.rotation ?? 0, clipFrames: [], visible: source.visible !== false, locked: source.locked === true };
+    cache.set(id, resolved); return resolved;
+  };
+  for (const id of slide.nodeIds) resolve(id);
+  return { variant, frames: cache };
+}
+
+/** Resolve nested frame-local geometry to slide fractions without decoding or copying source assets. */
+export function resolveLayerFrames(project, slideId, variantId = project.variants[0].id) {
+  validateProject(project);
+  const { variant, frames } = layerFrameMap(project, slideId, variantId);
+  return new Map([...frames].map(([id, value]) => [id, { ...clone(value),
+    clipFrames: value.clipFrames.map((clip) => ({ frame: { x: clip.frame.x * variant.width, y: clip.frame.y * variant.height,
+      width: clip.frame.width * variant.width, height: clip.frame.height * variant.height }, rotation: clip.rotation, radius: clip.radius })) }]));
+}
+
 export function resolveSlide(project, slideId, variantId = project.variants[0].id) {
   validateProject(project);
   const slideIndex = project.slides.findIndex((slide) => slide.id === slideId), slide = project.slides[slideIndex];
   const variant = project.variants.find((entry) => entry.id === variantId);
   check(slide && variant, "Missing slide or output variant.");
+  const resolvedFrames = layerFrameMap(project, slideId, variantId).frames;
   const nodes = slide.nodeIds.map((id) => {
     const source = project.nodes[id], patch = slide.overrides[id] ?? {};
     const node = { ...clone(source), ...clone(patch), appearance: { ...project.shared.appearance, ...source.appearanceBase, ...source.appearance, ...patch.appearance } };
@@ -307,9 +385,13 @@ export function resolveSlide(project, slideId, variantId = project.variants[0].i
       // Resolved render descriptions contain only this output's geometry.
       // Editing a different output shape must not invalidate this preview.
       delete node.variantFrames;
-      const anchor = node.space === "story" ? project.slides.findIndex((item) => item.id === node.anchorSlideId) - slideIndex : 0;
-      node.viewport = { x: (anchor + node.frame.x) * variant.width, y: node.frame.y * variant.height,
-        width: node.frame.width * variant.width, height: node.frame.height * variant.height };
+      const resolved = resolvedFrames.get(id);
+      node.visible = resolved.visible;
+      node.rotation = resolved.rotation;
+      node.viewport = { x: resolved.frame.x * variant.width, y: resolved.frame.y * variant.height,
+        width: resolved.frame.width * variant.width, height: resolved.frame.height * variant.height };
+      node.clipFrames = resolved.clipFrames.map((clip) => ({ frame: { x: clip.frame.x * variant.width, y: clip.frame.y * variant.height,
+        width: clip.frame.width * variant.width, height: clip.frame.height * variant.height }, rotation: clip.rotation, radius: clip.radius }));
     }
     return node;
   });

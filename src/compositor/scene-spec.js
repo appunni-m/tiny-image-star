@@ -38,8 +38,11 @@ export function planScene(project, slideId, variantId, { preview = false, previe
     // story offsets change canvas sampling/rounding when a connected pair is
     // reordered, even though its physical composition is unchanged.
     const originX = node.space === "story" ? (slideIndex - anchorIndex) * width : 0;
-    const canonicalViewport = { ...node.viewport, x: node.frame.x * width };
+    const canonicalViewport = { ...node.viewport,
+      ...(node.space === "story" ? { x: node.frame.x * width } : {}) };
     node.viewport = { ...canonicalViewport, x: canonicalViewport.x - originX };
+    node.clipFrames = (node.clipFrames ?? []).map((clip) => ({ ...clip,
+      frame: { ...clip.frame, x: clip.frame.x - originX } }));
     const bounds = nodeBounds(node, height);
     return { ...node, bounds, canonicalViewport, originX };
   };

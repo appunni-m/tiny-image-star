@@ -1,4 +1,4 @@
-import { clone, createSceneProject, newId } from "./model.js";
+import { clone, createSceneProject, newId, resolveLayerFrames } from "./model.js";
 
 export const DESIGN_PAGE_SIZE = Object.freeze({ width: 1920, height: 1080 });
 export const MAX_DESIGN_PAGE_LAYERS = 200;
@@ -112,13 +112,95 @@ export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
     entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
 }
 
+/** Wrap selected sibling layers in a frame while preserving their local placement and stack order. */
+export function addFrameAroundSelectionCommand(project, pageId, nodeIds) {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || !Array.isArray(nodeIds) || nodeIds.length < 2 || nodeIds.length > MAX_DESIGN_PAGE_LAYERS)
+    throw new Error("Select at least two layers to create a frame.");
+  const unique = [...new Set(nodeIds)];
+  if (unique.length !== nodeIds.length) throw new Error("A layer can only be selected once.");
+  for (const id of unique) getLayer(project, id);
+  if (page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS) throw new Error(`A page can contain up to ${MAX_DESIGN_PAGE_LAYERS} layers.`);
+  const parentId = project.nodes[unique[0]].parentId ?? null;
+  if (unique.some((id) => (project.nodes[id].parentId ?? null) !== parentId))
+    throw new Error("Select layers from the same frame to group them.");
+  if (unique.some((id) => project.nodes[id].kind === "legacy-image")) throw new Error("Legacy image layers cannot be nested.");
+  const indexes = unique.map((id) => page.nodeIds.indexOf(id)), firstIndex = Math.min(...indexes);
+  const frames = unique.map((id) => project.nodes[id].frame);
+  const left = Math.min(...frames.map((frame) => frame.x)), top = Math.min(...frames.map((frame) => frame.y));
+  const right = Math.max(...frames.map((frame) => frame.x + frame.width)), bottom = Math.max(...frames.map((frame) => frame.y + frame.height));
+  const frame = { x: left, y: top, width: right - left, height: bottom - top };
+  if (![frame.x, frame.y, frame.width, frame.height].every(Number.isFinite) || frame.width <= 0 || frame.height <= 0)
+    throw new Error("The selected layers need valid geometry to create a frame.");
+  const id = newId("frame"), node = { id, kind: "frame", name: "Frame", visible: true, locked: false, space: "slide", frame,
+    style: { clipContent: true }, ...(parentId ? { parentId, constraints: { horizontal: "left", vertical: "top" } } : {}) };
+  const commands = [{ type: "node", id, value: node }];
+  for (const childId of unique) {
+    const child = project.nodes[childId];
+    commands.push({ type: "node", id: childId, value: { ...clone(child),
+      frame: { x: (child.frame.x - left) / frame.width, y: (child.frame.y - top) / frame.height,
+        width: child.frame.width / frame.width, height: child.frame.height / frame.height },
+      parentId: id, constraints: { horizontal: "left", vertical: "top" } } });
+  }
+  const selectedSet = new Set(unique), selectedSubtree = page.nodeIds.filter((entry) => {
+    let parent = project.nodes[entry]?.parentId;
+    while (parent) { if (selectedSet.has(parent)) return true; parent = project.nodes[parent]?.parentId; }
+    return selectedSet.has(entry);
+  });
+  const subtreeSet = new Set(selectedSubtree), nodeIdsOnPage = page.nodeIds.filter((entry) => !subtreeSet.has(entry));
+  nodeIdsOnPage.splice(firstIndex, 0, id, ...selectedSubtree);
+  const slides = project.slides.map((entry) => entry.id === pageId ? { ...clone(entry), nodeIds: nodeIdsOnPage } : clone(entry));
+  commands.push({ type: "slides", value: slides });
+  return { id, command: { type: "group", commands } };
+}
+
+function constrainedAxis(position, size, oldParentSize, newParentSize, mode) {
+  const start = position * oldParentSize, extent = size * oldParentSize;
+  const endGap = oldParentSize - start - extent;
+  let nextStart = start, nextExtent = extent;
+  if (mode === "right" || mode === "bottom") nextStart = newParentSize - endGap - extent;
+  else if (mode === "left-right" || mode === "top-bottom") nextExtent = Math.max(.01, newParentSize - start - endGap);
+  else if (mode === "center") nextStart = (newParentSize - extent) / 2 + (start + extent / 2 - oldParentSize / 2);
+  else if (mode === "scale") { nextStart = position * newParentSize; nextExtent = size * newParentSize; }
+  return { position: nextStart / newParentSize, size: nextExtent / newParentSize };
+}
+
+/** Return frame and descendant geometry updates for a resized frame using each child's constraints. */
+export function resizeFrameChildren(project, pageId, frameId, nextFrame) {
+  const page = project.slides.find((entry) => entry.id === pageId), parent = project.nodes[frameId];
+  if (!page || !parent || parent.kind !== "frame" || !nextFrame) throw new Error("Choose a frame and a new frame size.");
+  const commands = [];
+  const resizeChildren = (container, oldFrame, newFrame) => {
+    for (const id of page.nodeIds) {
+      const child = project.nodes[id]; if (child.parentId !== container.id) continue;
+      const constraints = child.constraints ?? { horizontal: "left", vertical: "top" };
+      const horizontal = constrainedAxis(child.frame.x, child.frame.width, oldFrame.width, newFrame.width, constraints.horizontal);
+      const vertical = constrainedAxis(child.frame.y, child.frame.height, oldFrame.height, newFrame.height, constraints.vertical);
+      const resized = { ...clone(child), frame: { x: horizontal.position, y: vertical.position, width: horizontal.size, height: vertical.size } };
+      commands.push({ type: "node", id, value: resized });
+      if (child.kind === "frame") resizeChildren(child, child.frame, resized.frame);
+    }
+  };
+  resizeChildren(parent, parent.frame, nextFrame);
+  return commands;
+}
+
 export function deleteLayersCommand(project, nodeIds) {
   if (!Array.isArray(nodeIds) || !nodeIds.length || nodeIds.length > MAX_DESIGN_PAGE_LAYERS) throw new Error("Choose up to 200 layers to delete.");
   const unique = [...new Set(nodeIds)];
   if (unique.length !== nodeIds.length) throw new Error("A layer can only be selected once.");
   for (const id of unique) getLayer(project, id);
-  const removing = new Set(unique), commands = unique.map((id) => ({ type: "node", id, value: null }));
-  const removedAssets = new Set(unique.map((id) => project.nodes[id].assetId).filter(Boolean));
+  const removing = new Set(unique);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of Object.values(project.nodes)) if (node.parentId && removing.has(node.parentId) && !removing.has(node.id)) {
+      removing.add(node.id); changed = true;
+    }
+  }
+  if (removing.size > MAX_DESIGN_PAGE_LAYERS) throw new Error("A page can contain up to 200 layers.");
+  const commands = [...removing].map((id) => ({ type: "node", id, value: null }));
+  const removedAssets = new Set([...removing].map((id) => project.nodes[id]?.assetId).filter(Boolean));
   for (const assetId of removedAssets) {
     if (!Object.values(project.nodes).some((node) => !removing.has(node.id) && node.assetId === assetId))
       commands.push({ type: "asset", id: assetId, value: null });
@@ -161,8 +243,37 @@ export function setLayerLockedCommand(project, nodeId, locked) {
 export function reorderLayerCommand(project, pageId, nodeId, targetIndex) {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || !page.nodeIds.includes(nodeId) || !Number.isInteger(targetIndex)) throw new Error("Choose a layer position on this page.");
-  const nodeIds = [...page.nodeIds], [layerId] = nodeIds.splice(nodeIds.indexOf(nodeId), 1);
-  nodeIds.splice(Math.max(0, Math.min(targetIndex, nodeIds.length)), 0, layerId);
+  const descendants = new Set([nodeId]);
+  for (const id of page.nodeIds) {
+    let parentId = project.nodes[id]?.parentId;
+    while (parentId) { if (descendants.has(parentId)) { descendants.add(id); break; } parentId = project.nodes[parentId]?.parentId; }
+  }
+  const block = page.nodeIds.filter((id) => descendants.has(id)), peers = page.nodeIds.filter((id) =>
+    project.nodes[id]?.parentId === (project.nodes[nodeId].parentId ?? null) && !descendants.has(id));
+  const nodeIds = page.nodeIds.filter((id) => !descendants.has(id));
+  const parentId = project.nodes[nodeId].parentId;
+  let insertion;
+  if (parentId) {
+    const parentIndex = nodeIds.indexOf(parentId);
+    const peerSubtrees = new Set(peers);
+    for (const id of nodeIds) {
+      let ancestor = project.nodes[id]?.parentId;
+      while (ancestor) { if (peers.includes(ancestor)) { peerSubtrees.add(id); break; } ancestor = project.nodes[ancestor]?.parentId; }
+    }
+    const lastPeer = Math.max(-1, ...nodeIds.map((id, index) => peerSubtrees.has(id) ? index : -1));
+    insertion = targetIndex >= page.nodeIds.indexOf(nodeId) ? Math.max(parentIndex + 1, lastPeer + 1) : parentIndex + 1;
+  } else {
+    const rootIds = nodeIds.filter((id) => project.nodes[id]?.parentId == null);
+    const rootSubtrees = new Set(rootIds);
+    for (const id of nodeIds) {
+      let ancestor = project.nodes[id]?.parentId;
+      while (ancestor) { if (rootIds.includes(ancestor)) { rootSubtrees.add(id); break; } ancestor = project.nodes[ancestor]?.parentId; }
+    }
+    insertion = targetIndex >= page.nodeIds.indexOf(nodeId) ? nodeIds.length : 0;
+    if (!rootIds.length) insertion = 0;
+    else if (insertion >= nodeIds.length) insertion = Math.max(0, ...nodeIds.map((id, index) => rootSubtrees.has(id) ? index + 1 : 0));
+  }
+  nodeIds.splice(Math.max(0, Math.min(insertion, nodeIds.length)), 0, ...block);
   return { type: "slides", value: project.slides.map((entry) => entry.id === pageId ? { ...clone(entry), nodeIds } : clone(entry)) };
 }
 

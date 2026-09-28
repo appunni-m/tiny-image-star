@@ -49,7 +49,11 @@ function rasterTiles(node, width, height, paint) {
 export function frameMask(api, node, width, height) {
   const pixels = rasterTiles(node, width, height, (ctx) => {
     atFrame(ctx, node); ctx.fillStyle = "#ffffff";
-    ctx.fillRect(-node.viewport.width / 2, -node.viewport.height / 2, node.viewport.width, node.viewport.height);
+    const frame = node.viewport, radius = Math.min(frame.width, frame.height) * (node.style?.radius ?? 0);
+    ctx.beginPath();
+    if (radius > 0) ctx.roundRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height, radius);
+    else ctx.rect(-frame.width / 2, -frame.height / 2, frame.width, frame.height);
+    ctx.fill();
   });
   const alpha = new Uint8Array(width * height);
   for (let index = 0; index < alpha.length; index++) alpha[index] = pixels[index * 4 + 3];
@@ -109,10 +113,11 @@ export function rasterSceneNode(api, node, width, height, fonts, warnings) {
     atFrame(ctx, node);
     const frame = node.viewport, style = node.style ?? {};
     ctx.fillStyle = node.color ?? (node.kind === "text" ? "#202124" : "#ffffff");
-    if (node.kind === "shape") {
+    if (node.kind === "shape" || node.kind === "frame") {
       ctx.beginPath();
-      if (style.shape === "ellipse") ctx.ellipse(0, 0, frame.width / 2, frame.height / 2, 0, 0, Math.PI * 2);
-      else if (style.shape === "rounded") ctx.roundRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height, Math.min(frame.width, frame.height) * (style.radius ?? .08));
+      if (node.kind === "shape" && style.shape === "ellipse") ctx.ellipse(0, 0, frame.width / 2, frame.height / 2, 0, 0, Math.PI * 2);
+      else if ((node.kind === "shape" && style.shape === "rounded") || (node.kind === "frame" && style.radius)) ctx.roundRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height,
+        Math.min(frame.width, frame.height) * (style.radius ?? .08));
       else ctx.rect(-frame.width / 2, -frame.height / 2, frame.width, frame.height);
       ctx.fill();
       if (style.strokeColor && style.strokeWidth) {

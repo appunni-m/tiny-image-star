@@ -38,7 +38,12 @@ export async function assertDesignWorkspace(browser, address) {
       { name: "second.png", mimeType: "image/png", buffer: image },
     ]);
     await page.waitForFunction(() => document.querySelector("#design-layer-count")?.textContent === "2");
-    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    try { await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready")); }
+    catch (error) {
+      console.error("design preview startup", await page.evaluate(() => ({ status: document.querySelector("#design-canvas-status")?.textContent,
+        snapshot: window.tinyImageStarDesign.getSnapshot(), errors: window.__designErrors })), pageErrors);
+      throw error;
+    }
     const initial = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(initial.pages.length, 1);
     assert.equal(initial.selection.length, 2, "new images are selected together in the shared page");
@@ -167,6 +172,64 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(await page.locator("#design-canvas").isVisible(), true);
     assert.equal(await page.locator("#design-inspector").isVisible(), true);
 
+    const textId = withObjects.pages[0].nodeIds.find((id) => withObjects.nodes[id].kind === "text");
+    const shapeId = withObjects.pages[0].nodeIds.find((id) => withObjects.nodes[id].kind === "shape");
+    const imageIds = withObjects.pages[0].nodeIds.filter((id) => withObjects.nodes[id].kind === "image");
+    for (const id of imageIds) await page.locator(`#design-layer-list [data-layer-id="${id}"] button[aria-label^="Hide"]`).click();
+    await page.locator(`#design-layer-list [data-layer-id="${textId}"] .design-layer-select`).click();
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click({ modifiers: ["Shift"] });
+    assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().selection.length)), 2);
+    await page.locator("#design-frame-selection").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let framed = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const frameId = framed.selection[0];
+    assert.equal(framed.nodes[frameId].kind, "frame");
+    assert.equal(framed.nodes[shapeId].parentId, frameId, "framing nests selected layers while preserving their identity");
+    assert.equal(framed.resolvedFrames[shapeId].clipFrames.length, 1, "nested layers receive the frame's clipping geometry");
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
+    const beforeChildMove = framed.resolvedFrames[shapeId].frame;
+    const childMove = await page.evaluate((id) => {
+      const canvas = document.querySelector("#design-canvas"), bounds = canvas.getBoundingClientRect(), state = window.tinyImageStarDesign.getSnapshot();
+      const frame = state.resolvedFrames[id].frame, view = state.canvas.geometry;
+      const point = { x: bounds.left + view.x + (frame.x + frame.width / 2) * view.width * view.scale,
+        y: bounds.top + view.y + (frame.y + frame.height / 2) * view.height * view.scale };
+      const fire = (type, x, y, buttons) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+        pointerId: 86, pointerType: "mouse", isPrimary: true, button: 0, buttons, clientX: x, clientY: y }));
+      fire("pointerdown", point.x, point.y, 1); fire("pointermove", point.x + 18, point.y + 8, 1); fire("pointerup", point.x + 18, point.y + 8, 0);
+      return { before: frame, after: window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame, scale: view.scale };
+    }, shapeId);
+    assert.ok(childMove.after.x > beforeChildMove.x && Math.abs(childMove.after.x - beforeChildMove.x - 18 / (1920 * childMove.scale)) < 1e-5,
+      "moving a nested child on the canvas updates its parent-local geometry without changing its page-space motion");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    framed = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    await page.locator("#design-constraint-horizontal").selectOption("left");
+    await page.locator("#design-constraint-vertical").selectOption("top-bottom");
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
+    const childBefore = structuredClone(framed.resolvedFrames[shapeId].frame);
+    await page.locator("#design-width").fill("25");
+    await page.locator("#design-width").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    framed = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const parentFrame = framed.resolvedFrames[frameId].frame, childFrame = framed.resolvedFrames[shapeId].frame;
+    assert.ok(childFrame.x + childFrame.width > parentFrame.x + parentFrame.width,
+      "left constraint keeps the child at its original page position when its frame shrinks");
+    assert.ok(Math.abs(childFrame.x - childBefore.x) < 1e-6 && Math.abs(childFrame.width - childBefore.width) < 1e-6);
+    assert.ok(framed.resolvedFrames[shapeId].clipFrames.length === 1);
+    const outsideClip = await page.evaluate(() => {
+      const canvas = document.querySelector("#design-canvas"), context = canvas.getContext("2d"), state = window.tinyImageStarDesign.getSnapshot();
+      const dpr = Math.min(2, window.devicePixelRatio || 1), view = state.canvas.geometry;
+      const x = Math.round((view.x + .49 * 1920 * view.scale) * dpr), y = Math.round((view.y + .5 * 1080 * view.scale) * dpr);
+      return [...context.getImageData(x, y, 1, 1).data];
+    });
+    assert.ok(outsideClip[0] > 220 && outsideClip[1] > 220 && outsideClip[2] > 220,
+      `WASM page preview clips overflowing children to the frame: ${outsideClip}`);
+    await page.locator("#design-frame-clip").uncheck();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const noClip = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].clipFrames.length, shapeId);
+    assert.equal(noClip, 0, "the frame inspector can disable content clipping");
+    for (const id of imageIds) await page.locator(`#design-layer-list [data-layer-id="${id}"] button[aria-label^="Show"]`).click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+
     await page.locator(`#design-layer-list [data-layer-id="${selectedId}"]`).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Save this image as recipe…", exact: true }).click();
     assert.equal(await page.locator("#preset-dialog-heading").textContent(), "Save design image recipe");
@@ -232,7 +295,7 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.name === "Mobile Figma draft");
     const reopened = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
-    assert.equal(reopened.pages[0].nodeIds.length, 4, "saved image, text and shape layers reopen together");
+    assert.equal(reopened.pages[0].nodeIds.length, 5, "saved image, text, shape and frame layers reopen together");
     assert.equal(reopened.retainedSourceBytes, image.byteLength * 2, "reopen retains the original encoded image sources");
     await page.locator("#mobile-more-button").click();
     await page.locator("#design-button").click();

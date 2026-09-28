@@ -519,8 +519,12 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-field input[type="color"] { min-height: 42px; padding: 3px; }
 .design-fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
 .design-fieldset legend { padding-inline: 5px; color: var(--muted); font-size: .67rem; font-weight: 800; }
+.design-fieldset[hidden] { display: none; }
+.design-field.design-checkbox-field { display: flex; align-items: center; justify-content: space-between; min-height: 38px; }
+.design-field.design-checkbox-field input { width: 20px; min-width: 20px; min-height: 20px; accent-color: var(--accent); }
 .design-adjustments { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .design-adjustments[hidden], .design-field[hidden] { display: none; }
+.design-range-field[hidden] { display: none; }
 .design-adjustments h3 { font-size: .72rem; }
 .design-range-field { display: grid; gap: 4px; color: var(--muted); font-size: .67rem; }
 .design-range-field span { display: flex; justify-content: space-between; gap: 8px; }

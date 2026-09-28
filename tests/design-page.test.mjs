@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject, deleteLayerCommand, deleteLayersCommand, renameLayerCommand,
-  reorderLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+  deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
+  setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
-import { ENGINE_IDENTITY } from "../src/project/model.js";
+import { ENGINE_IDENTITY, resolveLayerFrames, resolveSlide } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
 import { designRecipePatch, designRecipeProblem } from "../src/design/recipes.js";
 
@@ -110,6 +111,61 @@ test("deleting a full multi-selection removes every layer in one reversible comm
   history.undo();
   assert.equal(history.document.slides[0].nodeIds.length, 200);
   assert.equal(Object.keys(history.document.assets).length, 200);
+});
+
+test("frames wrap sibling layers without changing their positions and preserve nested stack groups", () => {
+  const project = createDesignPageProject({ images: [], id: "frame-design", slideId: "page-one" }), history = new ProjectHistory(project);
+  const text = addTextLayerCommand(history.document, "page-one", "Inside"); history.apply(text, "Text");
+  const shape = addShapeLayerCommand(history.document, "page-one", "ellipse"); history.apply(shape, "Shape");
+  const sibling = shape.commands[0].id, original = resolveSlide(history.document, "page-one").nodes;
+  const framed = addFrameAroundSelectionCommand(history.document, "page-one", [text.commands[0].id, sibling]);
+  history.apply(framed.command, "Frame selection");
+  const firstFrame = resolveLayerFrames(history.document, "page-one").get(framed.id);
+  assert.deepEqual(history.document.slides[0].nodeIds, [framed.id, text.commands[0].id, sibling]);
+  for (const id of [text.commands[0].id, sibling]) {
+    const before = original.find((node) => node.id === id).viewport, after = resolveSlide(history.document, "page-one").nodes.find((node) => node.id === id).viewport;
+    for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(before[key] - after[key]) < 1e-8, `${id} ${key} stays in place`);
+  }
+  assert.equal(firstFrame.frame.width > 0, true);
+  const extra = addShapeLayerCommand(history.document, "page-one"); history.apply(extra, "Shape");
+  const outer = addFrameAroundSelectionCommand(history.document, "page-one", [framed.id, extra.commands[0].id]);
+  history.apply(outer.command, "Nested frame");
+  assert.equal(history.document.nodes[framed.id].parentId, outer.id);
+  const nested = resolveLayerFrames(history.document, "page-one").get(sibling);
+  assert.equal(nested.clipFrames.length, 2);
+  assert.equal(resolveSlide(history.document, "page-one").nodes.find((node) => node.id === sibling).clipFrames.length, 2);
+  const hidden = structuredClone(history.document); hidden.nodes[outer.id].visible = false; hidden.nodes[outer.id].locked = true;
+  assert.equal(resolveSlide(hidden, "page-one").nodes.find((node) => node.id === sibling).visible, false,
+    "hidden parent frames hide their descendants during render resolution");
+  assert.equal(resolveLayerFrames(hidden, "page-one").get(sibling).locked, true,
+    "locked parent frames lock their descendants in the editing geometry");
+  history.undo(); assert.equal(history.document.nodes[framed.id].parentId, undefined);
+  history.undo(); assert.equal(history.document.nodes[sibling].parentId, framed.id);
+  history.undo(); assert.equal(history.document.nodes[sibling].parentId, undefined);
+});
+
+test("frame constraints preserve anchored margins and resize stretch-constrained children", () => {
+  const project = createDesignPageProject({ images: [], id: "constraint-design", slideId: "page-one" }), history = new ProjectHistory(project);
+  const text = addTextLayerCommand(history.document, "page-one", "Inside"); history.apply(text, "Text");
+  const shape = addShapeLayerCommand(history.document, "page-one"); history.apply(shape, "Shape");
+  const frameCommand = addFrameAroundSelectionCommand(history.document, "page-one", [text.commands[0].id, shape.commands[0].id]);
+  history.apply(frameCommand.command, "Frame selection");
+  const childId = shape.commands[0].id;
+  const child = { ...history.document.nodes[childId], constraints: { horizontal: "right", vertical: "top-bottom" } };
+  history.apply({ type: "node", id: childId, value: child }, "Constraints");
+  const currentParent = history.document.nodes[frameCommand.id], currentChild = history.document.nodes[childId];
+  const nextFrame = { ...currentParent.frame, width: currentParent.frame.width * 1.5, height: currentParent.frame.height * 1.5 };
+  const rightGap = currentParent.frame.width - (currentChild.frame.x + currentChild.frame.width) * currentParent.frame.width;
+  const topGap = currentChild.frame.y * currentParent.frame.height;
+  const bottomGap = (1 - currentChild.frame.y - currentChild.frame.height) * currentParent.frame.height;
+  const commands = [{ type: "node", id: frameCommand.id, value: { ...currentParent, frame: nextFrame } },
+    ...resizeFrameChildren(history.document, "page-one", frameCommand.id, nextFrame)];
+  history.apply({ type: "group", commands }, "Resize frame");
+  const after = history.document.nodes[childId];
+  assert.ok(Math.abs((after.frame.x + after.frame.width) * nextFrame.width - (nextFrame.width - rightGap)) < 1e-8);
+  assert.ok(Math.abs(after.frame.y * nextFrame.height - topGap) < 1e-8);
+  assert.ok(Math.abs((1 - after.frame.y - after.frame.height) * nextFrame.height - bottomGap) < 1e-8,
+    "top-bottom constraints stretch to preserve both vertical margins");
 });
 
 test("design image recipes keep visual edits non-destructive and reject export-only settings", () => {
