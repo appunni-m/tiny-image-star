@@ -42,10 +42,10 @@ export function createDesignView() {
       <section class="design-canvas-panel" aria-label="Canvas">
         <header class="design-canvas-toolbar"><span id="design-page-title">Page 1</span><span id="design-canvas-status" role="status" aria-live="polite">Create a page to begin.</span></header>
         <div id="design-stage" class="design-stage">
-          <canvas id="design-canvas" tabindex="0" aria-label="Design page canvas. Click to select layers; Shift-click selects a range; drag to move. Press Delete to remove selected layers."></canvas>
+          <canvas id="design-canvas" tabindex="0" aria-label="Design page canvas. Click to select layers; drag to move, resize from the square handles, or rotate from the round handle. Hold Space and drag or use two fingers to pan and zoom. Press Delete to remove selected layers."></canvas>
           <div id="design-empty-state" class="design-empty-state"><strong>Make something on your canvas</strong><span>Add images, text, or shapes. Everything is composed on this page.</span><button id="design-empty-add" class="button primary" type="button">Add images</button></div>
         </div>
-        <footer class="design-canvas-footer"><span id="design-zoom-label">100%</span><button id="design-fit" class="button secondary" type="button" disabled>Fit</button><span id="design-selection-summary">Nothing selected</span></footer>
+        <footer class="design-canvas-footer"><div class="design-zoom-controls" role="group" aria-label="Canvas zoom"><button id="design-zoom-out" class="button secondary" type="button" aria-label="Zoom out" title="Zoom out (⌘−)" disabled>−</button><button id="design-zoom-label" class="button secondary design-zoom-label" type="button" aria-label="Fit canvas to screen" title="Fit canvas (⌘0)">100%</button><button id="design-zoom-in" class="button secondary" type="button" aria-label="Zoom in" title="Zoom in (⌘+)" disabled>+</button></div><button id="design-fit" class="button secondary" type="button" disabled>Fit page</button><span id="design-selection-summary">Nothing selected</span></footer>
       </section>
       <aside id="design-inspector" class="design-sidebar design-inspector" aria-label="Design inspector">
         <header class="design-panel-heading"><h2>Design</h2><span id="design-selection-count" class="design-count">0 selected</span></header>

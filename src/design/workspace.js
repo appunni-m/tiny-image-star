@@ -10,6 +10,7 @@ import { enqueueScene } from "../processing/scene-client.js";
 import { importStoryPhotos } from "../story/assets.js";
 import { openContextMenu } from "../context-menu.js";
 import { designRecipePatch, designRecipeProblem } from "./recipes.js";
+import { resizeSelection, rotateSelection, selectionBounds, zoomAtPoint } from "./geometry.js";
 
 const DESIGN_IMPORT_LIMIT = 128 * 1024 * 1024;
 
@@ -18,7 +19,8 @@ export function attachDesignWorkspace() {
   let history = null, pageId = null, selection = { ids: [], anchorId: null }, sources = new Map(), fileOwner = null;
   let saveTimer = null, openSequence = 0;
   let previewTask = null, previewTimer = null, previewEpoch = 0, previewBitmap = null, exportBusy = false, importing = false, recipeJob = null;
-  let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null;
+  let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null;
+  const touchPoints = new Map();
   const renderProject = () => history?.document ?? null;
   const currentPage = () => renderProject()?.slides.find((page) => page.id === pageId) ?? renderProject()?.slides[0] ?? null;
   const currentSelection = () => currentPage() ? snapshotPageSelection(selection, currentPage()) : [];
@@ -129,7 +131,8 @@ export function attachDesignWorkspace() {
       if (document.activeElement !== get("document-name")) get("document-name").value = "Untitled design";
       get("add-text").disabled = true;
       get("add-rectangle").disabled = true; get("export").disabled = true; get("undo").disabled = true; get("redo").disabled = true;
-      get("fit").disabled = true; get("empty-state").hidden = false; get("page-title").textContent = "Page 1";
+      get("fit").disabled = true; get("zoom-in").disabled = true; get("zoom-out").disabled = true; get("zoom-label").textContent = "100%";
+      get("empty-state").hidden = false; get("page-title").textContent = "Page 1";
       get("layer-list").replaceChildren(); get("layer-count").textContent = "0"; renderInspector(); drawCanvas();
       return;
     }
@@ -139,7 +142,8 @@ export function attachDesignWorkspace() {
     get("add-rectangle").disabled = get("add-text").disabled;
     get("export").disabled = !currentPage() || exportBusy || importing;
     get("undo").disabled = !history.past.length; get("redo").disabled = !history.future.length;
-    get("fit").disabled = !currentPage(); get("empty-state").hidden = Boolean(currentPage()?.nodeIds.length);
+    get("fit").disabled = !currentPage(); get("zoom-in").disabled = !currentPage(); get("zoom-out").disabled = !currentPage();
+    get("empty-state").hidden = Boolean(currentPage()?.nodeIds.length);
     get("page-current").disabled = false;
     renderPages(); renderLayers(); renderInspector(); drawCanvas();
   }
@@ -183,13 +187,60 @@ export function attachDesignWorkspace() {
     return { ...rectView, right: rectView.x + rectView.width, bottom: rectView.y + rectView.height, canvas };
   }
 
+  function pageSize() {
+    const variant = renderProject()?.variants[0];
+    return variant ? { width: variant.width, height: variant.height } : null;
+  }
+
+  function editableSelection() {
+    return currentSelection().map((id) => layer(id)).filter((node) => node && node.locked !== true && node.visible !== false && node.frame);
+  }
+
+  function selectionViewBounds(nodes = editableSelection()) {
+    const size = pageSize(), bounds = size && selectionBounds(nodes, size);
+    if (!bounds || !geometry) return null;
+    const x = geometry.x + bounds.x * geometry.scale, y = geometry.y + bounds.y * geometry.scale;
+    const width = bounds.width * geometry.scale, height = bounds.height * geometry.scale;
+    return { x, y, width, height, right: x + width, bottom: y + height, centerX: x + width / 2, centerY: y + height / 2, bounds, size };
+  }
+
+  function transformHandleAt(point) {
+    const bounds = selectionViewBounds();
+    if (!bounds || bounds.width < 10 || bounds.height < 10) return null;
+    const centerX = bounds.centerX, centerY = bounds.centerY;
+    const candidates = [
+      ["nw", bounds.x, bounds.y], ["n", centerX, bounds.y], ["ne", bounds.right, bounds.y],
+      ["e", bounds.right, centerY], ["se", bounds.right, bounds.bottom], ["s", centerX, bounds.bottom],
+      ["sw", bounds.x, bounds.bottom], ["w", bounds.x, centerY],
+    ];
+    const hitRadius = Math.max(8, Math.min(14, 10 / Math.max(.5, window.devicePixelRatio || 1)));
+    const hit = candidates.find(([, x, y]) => Math.hypot(point.x - x, point.y - y) <= hitRadius);
+    if (hit) return hit[0];
+    if (Math.hypot(point.x - centerX, point.y - (bounds.y - 24)) <= hitRadius + 2) return "rotate";
+    return null;
+  }
+
+  function setCanvasZoom(nextZoom, point = { x: get("canvas").clientWidth / 2, y: get("canvas").clientHeight / 2 }) {
+    if (!geometry || !Number.isFinite(nextZoom)) return;
+    const boundedZoom = Math.max(.1, Math.min(8, nextZoom));
+    const next = zoomAtPoint({ zoom, nextZoom: boundedZoom, panX, panY, point, geometry });
+    zoom = next.zoom; panX = next.panX; panY = next.panY; drawCanvas();
+  }
+
+  function fitCanvas() { zoom = 1; panX = 0; panY = 0; drawCanvas(); }
+
+  function captureCanvasPointer(event) {
+    try { get("canvas").setPointerCapture(event.pointerId); }
+    catch (error) { if (event.isTrusted) throw error; }
+  }
+
   function fitGeometry() {
     const canvas = get("canvas"), page = currentPage(), project = renderProject();
     if (!page || !project || !canvas.clientWidth || !canvas.clientHeight) { geometry = null; return; }
     const variant = project.variants[0], margin = 40;
     const scale = Math.min((canvas.clientWidth - margin * 2) / variant.width, (canvas.clientHeight - margin * 2) / variant.height) * zoom;
     const x = (canvas.clientWidth - variant.width * scale) / 2 + panX, y = (canvas.clientHeight - variant.height * scale) / 2 + panY;
-    geometry = { x, y, scale, width: variant.width, height: variant.height };
+    geometry = { x, y, scale, width: variant.width, height: variant.height, viewportWidth: canvas.clientWidth, viewportHeight: canvas.clientHeight };
     get("zoom-label").textContent = `${Math.round(scale / Math.min((canvas.clientWidth - margin * 2) / variant.width,
       (canvas.clientHeight - margin * 2) / variant.height) * 100)}%`;
   }
@@ -210,11 +261,24 @@ export function attachDesignWorkspace() {
     ctx.strokeStyle = "rgba(45, 126, 247, .95)"; ctx.lineWidth = 1.5;
     for (const id of currentSelection()) {
       const node = layer(id); if (!node?.frame || node.visible === false) continue;
-      const rect = formatGeometry(node); ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-      if (currentSelection().length === 1 && rect.width > 14 && rect.height > 14) {
-        ctx.fillStyle = "#2d7ef7"; const handles = [[rect.x, rect.y], [rect.right, rect.y], [rect.x, rect.bottom], [rect.right, rect.bottom]];
-        for (const [hx, hy] of handles) { ctx.fillRect(hx - 3, hy - 3, 6, 6); }
-      }
+      const rect = formatGeometry(node);
+      if (node.rotation) {
+        ctx.save(); ctx.translate(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        ctx.rotate(node.rotation * Math.PI / 180); ctx.strokeRect(-rect.width / 2, -rect.height / 2, rect.width, rect.height); ctx.restore();
+      } else ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+    }
+    const selectedBounds = selectionViewBounds();
+    if (selectedBounds && selectedBounds.width > 14 && selectedBounds.height > 14) {
+      const { x, y, width: boxWidth, height: boxHeight, right, bottom, centerX } = selectedBounds;
+      ctx.save(); ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, boxWidth, boxHeight);
+      ctx.beginPath(); ctx.moveTo(centerX, y - 5); ctx.lineTo(centerX, y - 19); ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(centerX, y - 24, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 1.5;
+      const handles = [[x, y], [centerX, y], [right, y], [right, y + boxHeight / 2], [right, bottom], [centerX, bottom],
+        [x, bottom], [x, y + boxHeight / 2]];
+      for (const [hx, hy] of handles) { ctx.fillRect(hx - 4, hy - 4, 8, 8); ctx.strokeRect(hx - 4, hy - 4, 8, 8); }
+      ctx.restore();
     }
     if (marquee) { ctx.setLineDash([5, 4]); ctx.strokeStyle = "#2d7ef7"; ctx.fillStyle = "rgba(45,126,247,.12)";
       ctx.fillRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.strokeRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.setLineDash([]); }
@@ -232,14 +296,103 @@ export function attachDesignWorkspace() {
     const local = pagePoint(point); if (!local || local.x < 0 || local.y < 0 || local.x > geometry.width || local.y > geometry.height) return null;
     return [...page.nodeIds].reverse().find((id) => {
       const node = layer(id), frame = node?.frame;
-      return frame && node.visible !== false && local.x >= frame.x * geometry.width && local.x <= (frame.x + frame.width) * geometry.width
-        && local.y >= frame.y * geometry.height && local.y <= (frame.y + frame.height) * geometry.height;
+      if (!frame || node.visible === false) return false;
+      const centerX = (frame.x + frame.width / 2) * geometry.width, centerY = (frame.y + frame.height / 2) * geometry.height;
+      const angle = -(node.rotation ?? 0) * Math.PI / 180, dx = local.x - centerX, dy = local.y - centerY;
+      const x = centerX + dx * Math.cos(angle) - dy * Math.sin(angle), y = centerY + dx * Math.sin(angle) + dy * Math.cos(angle);
+      return x >= frame.x * geometry.width && x <= (frame.x + frame.width) * geometry.width
+        && y >= frame.y * geometry.height && y <= (frame.y + frame.height) * geometry.height;
     }) ?? null;
   }
 
+  function beginResizeOrRotate(kind, handle, point, pointerId) {
+    const nodes = editableSelection().map((node) => clone(node)), size = pageSize(), bounds = selectionBounds(nodes, size);
+    if (!nodes.length || !bounds || bounds.width < 1 || bounds.height < 1) return false;
+    const start = pagePoint(point), center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    drag = { kind, handle, pointerId, nodes, ids: nodes.map((node) => node.id), size, bounds, start, center,
+      startAngle: Math.atan2(start.y - center.y, start.x - center.x), moved: false };
+    return true;
+  }
+
+  function resizeBoundsForPointer(current, point, preserveRatio) {
+    const { bounds, handle, start } = current;
+    const hx = handle.includes("w") ? -1 : handle.includes("e") ? 1 : 0;
+    const hy = handle.includes("n") ? -1 : handle.includes("s") ? 1 : 0;
+    const minWidth = Math.min(bounds.width, 4), minHeight = Math.min(bounds.height, 4);
+    let left = bounds.x, top = bounds.y, right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
+    if (hx < 0) left = Math.min(right - minWidth, Math.max(bounds.x - bounds.width * 99, bounds.x + point.x - start.x));
+    if (hx > 0) right = Math.max(left + minWidth, Math.min(bounds.x + bounds.width * 100, bounds.x + bounds.width + point.x - start.x));
+    if (hy < 0) top = Math.min(bottom - minHeight, Math.max(bounds.y - bounds.height * 99, bounds.y + point.y - start.y));
+    if (hy > 0) bottom = Math.max(top + minHeight, Math.min(bounds.y + bounds.height * 100, bounds.y + bounds.height + point.y - start.y));
+    if (preserveRatio) {
+      const widthRatio = (right - left) / bounds.width, heightRatio = (bottom - top) / bounds.height;
+      const ratio = hx && hy ? (Math.abs(widthRatio - 1) >= Math.abs(heightRatio - 1) ? widthRatio : heightRatio)
+        : hx ? widthRatio : heightRatio;
+      const width = Math.max(minWidth, bounds.width * ratio), height = Math.max(minHeight, bounds.height * ratio);
+      left = hx > 0 ? bounds.x : hx < 0 ? bounds.x + bounds.width - width : bounds.x + (bounds.width - width) / 2;
+      right = left + width; top = hy > 0 ? bounds.y : hy < 0 ? bounds.y + bounds.height - height : bounds.y + (bounds.height - height) / 2;
+      bottom = top + height;
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function previewCanvasTransform(current, point, event) {
+    if (current.kind === "resize") {
+      const world = pagePoint(point), nextBounds = resizeBoundsForPointer(current, world, event.shiftKey);
+      const updates = resizeSelection(current.nodes, current.bounds, nextBounds, current.size);
+      history.preview({ type: "group", commands: updates.map((node) => ({ type: "node", id: node.id, value: node })) });
+      edited("Resizing selection…", { previewOnly: true }); return;
+    }
+    const world = pagePoint(point), angle = Math.atan2(world.y - current.center.y, world.x - current.center.x);
+    let delta = (angle - current.startAngle) * 180 / Math.PI;
+    if (event.shiftKey) delta = Math.round(delta / 15) * 15;
+    const updates = rotateSelection(current.nodes, current.center, delta, current.size);
+    history.preview({ type: "group", commands: updates.map((node) => ({ type: "node", id: node.id, value: node })) });
+    edited("Rotating selection…", { previewOnly: true });
+  }
+
+  function startPinch() {
+    const points = [...touchPoints.values()];
+    if (points.length < 2) return;
+    if (drag?.moved && ["layers", "resize", "rotate"].includes(drag.kind)) {
+      commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : "Rotate selection");
+    }
+    drag = null; marquee = null;
+    const first = points[0], second = points[1], center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    const world = pagePoint(center);
+    pinch = { distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)), zoom, center, world,
+      baseScale: geometry?.scale / zoom, pageWidth: geometry?.width, pageHeight: geometry?.height,
+      viewportWidth: geometry?.viewportWidth, viewportHeight: geometry?.viewportHeight };
+  }
+
+  function updatePinch() {
+    const points = [...touchPoints.values()];
+    if (!pinch || points.length < 2 || !pinch.world || !pinch.baseScale) return;
+    const [first, second] = points, center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    const distance = Math.max(1, Math.hypot(first.x - second.x, first.y - second.y));
+    const nextZoom = Math.max(.1, Math.min(8, pinch.zoom * distance / pinch.distance));
+    const scale = pinch.baseScale * nextZoom;
+    const baseX = (pinch.viewportWidth - pinch.pageWidth * scale) / 2, baseY = (pinch.viewportHeight - pinch.pageHeight * scale) / 2;
+    zoom = nextZoom; panX = center.x - baseX - pinch.world.x * scale; panY = center.y - baseY - pinch.world.y * scale;
+    drawCanvas();
+  }
+
   function canvasPointerDown(event) {
-    if (event.button !== 0 || !currentPage()) return;
+    if (!currentPage()) return;
     const point = pointerPoint(event), id = hitTest(point);
+    if (event.pointerType === "touch") {
+      touchPoints.set(event.pointerId, point); captureCanvasPointer(event);
+      if (touchPoints.size >= 2) { startPinch(); event.preventDefault(); return; }
+    }
+    if (event.button === 1 || (event.button === 0 && spaceDown && event.pointerType !== "touch")) {
+      drag = { kind: "pan", pointerId: event.pointerId, start: point, panX, panY, moved: false };
+      captureCanvasPointer(event); event.preventDefault(); return;
+    }
+    if (event.button !== 0) return;
+    const handle = transformHandleAt(point);
+    if (handle && beginResizeOrRotate(handle === "rotate" ? "rotate" : "resize", handle, point, event.pointerId)) {
+      captureCanvasPointer(event); event.preventDefault(); return;
+    }
     if (id) {
       if (event.shiftKey || event.metaKey || event.ctrlKey) selection = updatePageSelection(selection, currentPage().nodeIds, id,
         { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey });
@@ -254,12 +407,20 @@ export function attachDesignWorkspace() {
       drag = { kind: "marquee", pointerId: event.pointerId, start: point, extend: event.shiftKey || event.metaKey || event.ctrlKey, moved: false };
       selectionChanged();
     }
-    get("canvas").setPointerCapture(event.pointerId); event.preventDefault();
+    captureCanvasPointer(event); event.preventDefault();
   }
 
   function canvasPointerMove(event) {
-    if (!drag || drag.pointerId !== event.pointerId) return;
     const point = pointerPoint(event);
+    if (touchPoints.has(event.pointerId)) { touchPoints.set(event.pointerId, point); if (pinch) { updatePinch(); return; } }
+    if (!drag || drag.pointerId !== event.pointerId) {
+      if (event.pointerType !== "touch" && event.buttons === 0) {
+        const handle = transformHandleAt(point), canvas = get("canvas");
+        canvas.style.cursor = handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+          ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : hitTest(point) ? "move" : "default";
+      }
+      return;
+    }
     if (drag.kind === "layers") {
       const world = pagePoint(point), dx = world.x - drag.start.x, dy = world.y - drag.start.y;
       if (Math.abs(dx) * geometry.scale + Math.abs(dy) * geometry.scale < 1) return;
@@ -267,6 +428,14 @@ export function attachDesignWorkspace() {
       history.preview({ type: "group", commands: drag.ids.map((id) => ({ type: "node", id, value: { ...clone(layer(id)),
         frame: { ...drag.frames[id], x: drag.frames[id].x + dx / geometry.width, y: drag.frames[id].y + dy / geometry.height } } })) });
       edited("Moving selection…", { previewOnly: true });
+    } else if (drag.kind === "resize" || drag.kind === "rotate") {
+      const world = pagePoint(point);
+      if (Math.hypot(world.x - drag.start.x, world.y - drag.start.y) * geometry.scale < 1) return;
+      drag.moved = true; previewCanvasTransform(drag, point, event);
+    } else if (drag.kind === "pan") {
+      const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
+      if (Math.hypot(dx, dy) < 1) return;
+      drag.moved = true; panX = drag.panX + dx; panY = drag.panY + dy; drawCanvas();
     } else {
       drag.moved = true;
       marquee = { x: Math.min(drag.start.x, point.x), y: Math.min(drag.start.y, point.y), width: Math.abs(point.x - drag.start.x), height: Math.abs(point.y - drag.start.y) };
@@ -275,8 +444,15 @@ export function attachDesignWorkspace() {
   }
 
   function canvasPointerUp(event) {
+    const wasPinching = Boolean(pinch);
+    if (touchPoints.has(event.pointerId)) {
+      touchPoints.delete(event.pointerId);
+      if (wasPinching) { if (touchPoints.size < 2) { pinch = null; drag = null; } return; }
+    }
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (drag.kind === "layers" && drag.moved) commitEdit("Move layers");
+    if (drag.kind === "resize" && drag.moved) commitEdit("Resize selection");
+    if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
     if (drag.kind === "marquee" && drag.moved && geometry) {
       const bounds = marquee, hits = currentPage().nodeIds.filter((id) => {
         const node = layer(id), frame = node?.frame; if (!frame || node.visible === false) return false;
@@ -287,6 +463,13 @@ export function attachDesignWorkspace() {
       else selection = { ids: hits, anchorId: hits[0] ?? null };
     }
     marquee = null; drag = null; selectionChanged();
+  }
+
+  function canvasPointerCancel(event) {
+    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate"].includes(drag.kind) && drag.moved) {
+      history.cancel(); drag = null; marquee = null; selectionChanged(); edited("Edit cancelled."); return;
+    }
+    canvasPointerUp(event);
   }
 
   function schedulePreview(delay = 90) {
@@ -619,7 +802,7 @@ export function attachDesignWorkspace() {
   get("canvas").addEventListener("pointerdown", canvasPointerDown);
   get("canvas").addEventListener("pointermove", canvasPointerMove);
   get("canvas").addEventListener("pointerup", canvasPointerUp);
-  get("canvas").addEventListener("pointercancel", canvasPointerUp);
+  get("canvas").addEventListener("pointercancel", canvasPointerCancel);
   get("canvas").addEventListener("contextmenu", (event) => {
     event.preventDefault(); const id = hitTest(pointerPoint(event));
     if (id) contextMenuForLayer(event, id);
@@ -628,12 +811,20 @@ export function attachDesignWorkspace() {
     ] });
   });
   get("canvas").addEventListener("wheel", (event) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault(); zoom = Math.max(.25, Math.min(4, zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1))); drawCanvas();
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      const point = pointerPoint(event), factor = Math.exp(-event.deltaY * .002);
+      setCanvasZoom(zoom * factor, point);
+    } else {
+      panX -= event.deltaX; panY -= event.deltaY; drawCanvas();
+    }
   }, { passive: false });
   get("canvas").addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); runHistory(event.shiftKey ? "redo" : "undo"); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") { event.preventDefault(); runHistory("redo"); }
+    else if ((event.metaKey || event.ctrlKey) && (event.key === "+" || event.key === "=")) { event.preventDefault(); setCanvasZoom(zoom * 1.25); }
+    else if ((event.metaKey || event.ctrlKey) && event.key === "-") { event.preventDefault(); setCanvasZoom(zoom / 1.25); }
+    else if (event.key === "0") { event.preventDefault(); fitCanvas(); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") { event.preventDefault(); selection = { ids: currentPage()?.nodeIds.filter((id) => layer(id)?.visible !== false) ?? [], anchorId: currentPage()?.nodeIds[0] ?? null }; selectionChanged(); }
     else if (["Delete", "Backspace"].includes(event.key)) { event.preventDefault(); deleteSelected(); }
     else if (event.key === "Escape") { selection = { ids: [], anchorId: null }; selectionChanged(); }
@@ -662,7 +853,15 @@ export function attachDesignWorkspace() {
     } catch (error) { setStatus(error.message); }
   });
   get("undo").addEventListener("click", () => runHistory("undo")); get("redo").addEventListener("click", () => runHistory("redo"));
-  get("export").addEventListener("click", () => void exportPage()); get("fit").addEventListener("click", () => { zoom = 1; panX = 0; panY = 0; drawCanvas(); });
+  get("export").addEventListener("click", () => void exportPage()); get("fit").addEventListener("click", fitCanvas);
+  get("zoom-in").addEventListener("click", () => setCanvasZoom(zoom * 1.25));
+  get("zoom-out").addEventListener("click", () => setCanvasZoom(zoom / 1.25));
+  get("zoom-label").addEventListener("click", fitCanvas);
+  window.addEventListener("keydown", (event) => {
+    if (event.code === "Space" && document.activeElement === get("canvas")) { spaceDown = true; event.preventDefault(); }
+  });
+  window.addEventListener("keyup", (event) => { if (event.code === "Space") spaceDown = false; });
+  window.addEventListener("blur", () => { spaceDown = false; touchPoints.clear(); pinch = null; });
   get("layer-name").addEventListener("change", () => { const id = currentSelection()[0]; if (!id) return; try { history.apply(renameLayerCommand(history.document, id, get("layer-name").value), "Rename layer"); edited("Layer renamed."); } catch (error) { setStatus(error.message); } });
   for (const [field, key] of [["x", "x"], ["y", "y"], ["width", "width"], ["height", "height"]]) {
     get(field).addEventListener("input", () => {
@@ -714,6 +913,7 @@ export function attachDesignWorkspace() {
       if (!project) return null;
       return { id: project.id, revision: project.revision, name: project.name, key: fileOwner?.key ?? null, savedRevision: fileOwner?.savedRevision ?? null, pageId: currentPage()?.id,
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
+        canvas: { zoom, panX, panY, geometry: clone(geometry) },
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },
   };

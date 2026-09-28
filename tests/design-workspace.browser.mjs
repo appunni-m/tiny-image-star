@@ -59,6 +59,107 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(edited.assetId, sourceId, "preview edits retain the same original source asset");
     assert.equal(edited.appearance.brightness, 1.5);
 
+    const frameBeforeResize = structuredClone(edited.frame);
+    const canvasBox = await page.locator("#design-canvas").boundingBox();
+    const resizeHandle = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), node = state.nodes[id], pageSize = { width: 1920, height: 1080 }, view = state.canvas.geometry;
+      const canvasBounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: canvasBounds.left + view.x + (node.frame.x + node.frame.width) * pageSize.width * view.scale,
+        y: canvasBounds.top + view.y + (node.frame.y + node.frame.height) * pageSize.height * view.scale };
+    }, selectedId);
+    await page.mouse.move(resizeHandle.x, resizeHandle.y);
+    await page.mouse.down();
+    await page.mouse.move(resizeHandle.x + 28, resizeHandle.y + 18, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const resized = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    assert.ok(resized.frame.width > frameBeforeResize.width && resized.frame.height > frameBeforeResize.height,
+      "canvas corner handles resize the selected layer in both dimensions");
+    assert.equal(resized.assetId, sourceId, "resizing retains the exact original image asset");
+    assert.deepEqual(await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].frame, selectedId), resized.frame,
+      "the same layer frame is the source of the visible canvas preview");
+    await page.locator("#design-undo").click();
+    assert.deepEqual(await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].frame, selectedId), frameBeforeResize,
+      "one undo restores the exact pre-resize frame");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(({ id, expectedWidth }) => window.tinyImageStarDesign.getSnapshot().nodes[id].frame.width >= expectedWidth,
+      { id: selectedId, expectedWidth: resized.frame.width });
+
+    const rotationHandle = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), node = state.nodes[id], view = state.canvas.geometry;
+      const x = view.x + (node.frame.x + node.frame.width / 2) * 1920 * view.scale;
+      const y = view.y + node.frame.y * 1080 * view.scale;
+      const radius = node.frame.height * 1080 * view.scale / 2 + 24;
+      const bounds = document.querySelector("#design-canvas").getBoundingClientRect(), centerY = y + node.frame.height * 1080 * view.scale / 2;
+      return { start: { x: bounds.left + x, y: bounds.top + y - 24 },
+        target: { x: bounds.left + x + radius / Math.SQRT2, y: bounds.top + centerY - radius / Math.SQRT2 } };
+    }, selectedId);
+    await page.mouse.move(rotationHandle.start.x, rotationHandle.start.y);
+    await page.mouse.down();
+    await page.mouse.move(rotationHandle.target.x, rotationHandle.target.y, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const rotated = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    assert.ok(Math.abs(rotated.rotation - 45) < 1, `rotation handle applies an in-place 45° rotation: ${rotated.rotation}`);
+    assert.equal(rotated.assetId, sourceId, "rotating preserves the source image bytes");
+
+    await page.locator("#design-zoom-in").click();
+    assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas.zoom)), 1.25,
+      "zoom controls change canvas view scale without editing the document");
+    const anchoredZoom = await page.evaluate(() => {
+      const canvas = document.querySelector("#design-canvas"), rect = canvas.getBoundingClientRect(), point = { x: 170, y: 145 };
+      const before = window.tinyImageStarDesign.getSnapshot().canvas;
+      const worldBefore = { x: (point.x - before.geometry.x) / before.geometry.scale, y: (point.y - before.geometry.y) / before.geometry.scale };
+      canvas.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -50,
+        clientX: rect.left + point.x, clientY: rect.top + point.y }));
+      const after = window.tinyImageStarDesign.getSnapshot().canvas;
+      return { before, after, worldBefore, worldAfter: { x: (point.x - after.geometry.x) / after.geometry.scale,
+        y: (point.y - after.geometry.y) / after.geometry.scale } };
+    });
+    assert.ok(anchoredZoom.after.zoom > anchoredZoom.before.zoom, "trackpad modifier-wheel zooms in");
+    assert.ok(Math.abs(anchoredZoom.worldAfter.x - anchoredZoom.worldBefore.x) < .001
+      && Math.abs(anchoredZoom.worldAfter.y - anchoredZoom.worldBefore.y) < .001, "wheel zoom keeps the pointer anchored to the same page point");
+    const beforePan = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas);
+    const bounds = canvasBox;
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down({ button: "middle" });
+    await page.mouse.move(bounds.x + bounds.width / 2 + 30, bounds.y + bounds.height / 2 + 20);
+    await page.mouse.up({ button: "middle" });
+    const afterPan = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas);
+    assert.equal(afterPan.panX, beforePan.panX + 30, "middle-button drag pans the canvas horizontally");
+    assert.equal(afterPan.panY, beforePan.panY + 20, "middle-button drag pans the canvas vertically");
+    await page.locator("#design-canvas").focus();
+    await page.keyboard.down("Space");
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + bounds.width / 2 + 18, bounds.y + bounds.height / 2 - 12);
+    await page.mouse.up();
+    await page.keyboard.up("Space");
+    const afterSpacePan = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas);
+    assert.equal(afterSpacePan.panX, afterPan.panX + 18, "Space-drag pans the canvas horizontally");
+    assert.equal(afterSpacePan.panY, afterPan.panY - 12, "Space-drag pans the canvas vertically");
+    await page.locator("#design-zoom-label").click();
+    assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas.zoom)), 1,
+      "fit control restores the page view without changing layers");
+    const sourceAfterGestures = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(sourceAfterGestures.nodes[selectedId].assetId, sourceId);
+    assert.equal(sourceAfterGestures.retainedSourceBytes, image.byteLength * 2, "canvas transforms retain every original image byte");
+    const pinch = await page.evaluate(() => {
+      const canvas = document.querySelector("#design-canvas"), rect = canvas.getBoundingClientRect();
+      const before = window.tinyImageStarDesign.getSnapshot();
+      const fire = (type, pointerId, x, y) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+        pointerId, pointerType: "touch", isPrimary: pointerId === 51, button: 0, buttons: 1,
+        clientX: rect.left + x, clientY: rect.top + y }));
+      fire("pointerdown", 51, 110, 110); fire("pointerdown", 52, 210, 110);
+      fire("pointermove", 52, 260, 130);
+      const during = window.tinyImageStarDesign.getSnapshot();
+      fire("pointerup", 52, 260, 130); fire("pointerup", 51, 110, 110);
+      return { before, during };
+    });
+    assert.ok(pinch.during.canvas.zoom > pinch.before.canvas.zoom * 1.4, "two-finger pinch zooms the page on the canvas");
+    assert.equal(pinch.during.revision, pinch.before.revision, "canvas gestures never rewrite image layers or original bytes");
+    await page.locator("#design-zoom-label").click();
+
     await page.locator("#design-add-text").click();
     await page.locator("#design-add-rectangle").click();
     const withObjects = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
@@ -92,7 +193,7 @@ export async function assertDesignWorkspace(browser, address) {
       viewport: document.documentElement.clientWidth,
       layout: document.querySelector("#design-view").scrollWidth,
       canvas: document.querySelector("#design-canvas").getBoundingClientRect().toJSON(),
-      buttons: [...document.querySelectorAll(".design-toolbar-actions .button, #design-layer-list button, #design-inspector .button")]
+      buttons: [...document.querySelectorAll(".design-toolbar-actions .button, .design-zoom-controls .button, #design-layer-list button, #design-inspector .button")]
         .filter((button) => !button.hidden && button.getClientRects().length).map((button) => button.getBoundingClientRect().height),
     }));
     assert.ok(mobile.layout <= mobile.viewport + 1, "mobile design workspace has no horizontal page overflow");
@@ -140,6 +241,6 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.pages[0].nodeIds.length === 0);
     const bulkDeleted = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.deepEqual(Object.keys(bulkDeleted.nodes), [], "keyboard bulk delete removes the whole canvas selection atomically");
-    console.log("  design workspace: retained sources, in-place photo recipes, live WASM job speed/pause bar, autosave/reopen, multi-delete and phone layout");
+    console.log("  design workspace: retained sources, live resize/rotate previews, undo, pointer zoom, mouse/touch pan, image recipes, autosave/reopen and phone layout");
   } finally { await context.close(); }
 }

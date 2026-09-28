@@ -506,6 +506,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-canvas-footer { justify-content: flex-start; border-top: 1px solid var(--line); }
 .design-canvas-footer #design-selection-summary { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .design-canvas-footer .button { min-height: 28px; padding: 3px 9px; font-size: .68rem; }
+.design-zoom-controls { display: flex; align-items: center; gap: 3px; }
+.design-zoom-controls .button { min-width: 30px; padding-inline: 6px; }
+.design-zoom-controls .design-zoom-label { min-width: 54px; font-variant-numeric: tabular-nums; }
 .design-inspector { padding: 10px; overflow: auto; }
 .design-inspector-empty { padding: 8px 2px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
 .design-inspector-content { display: grid; gap: 12px; }
@@ -981,6 +984,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-fieldset { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .design-layer-actions .button { min-height: 44px; font-size: .78rem; }
   .design-canvas-footer .button { min-height: 40px; }
+  .design-zoom-controls .button { min-width: 42px; min-height: 44px; }
 }
 
 @media (max-width: 620px) {
@@ -1006,6 +1010,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-inspector-content { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .design-fieldset { gap: 5px; padding: 7px; }
   .design-canvas-toolbar, .design-canvas-footer { padding-inline: 7px; }
+  .design-zoom-controls { gap: 2px; }
   #design-selection-summary { max-width: 48%; }
   .design-empty-state { padding: 13px; }
 }
