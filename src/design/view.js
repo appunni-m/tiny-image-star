@@ -61,6 +61,7 @@ export function createDesignView() {
           </fieldset>
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
+          <label id="design-opacity-field" class="design-range-field"><span>Opacity <output id="design-opacity-value">100%</output></span><input id="design-opacity" type="range" min="0" max="100" step="1" value="100" /></label>
           <label id="design-frame-clip-field" class="design-field design-checkbox-field" hidden><span>Clip content</span><input id="design-frame-clip" type="checkbox" checked /></label>
           <label id="design-frame-radius-field" class="design-range-field" hidden><span>Corner radius <output id="design-frame-radius-value">0%</output></span><input id="design-frame-radius" type="range" min="0" max="0.5" step="0.01" value="0" /></label>
           <label id="design-frame-layout-field" class="design-field" hidden><span>Auto Layout</span><select id="design-frame-layout"><option value="manual">Manual positioning</option><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>

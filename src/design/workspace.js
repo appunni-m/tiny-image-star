@@ -207,6 +207,8 @@ export function attachDesignWorkspace() {
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
     get("x").title = world.layoutManaged ? "Auto Layout controls this child's X position." : "";
     get("y").title = world.layoutManaged ? "Auto Layout controls this child's Y position." : "";
+    const opacity = Math.round((node.opacity ?? 1) * 100);
+    get("opacity").value = String(opacity); get("opacity-value").value = `${opacity}%`;
     if (node.kind === "text") get("text").value = node.text ?? "";
     if (["shape", "text", "frame"].includes(node.kind)) get("color").value = node.color ?? (node.kind === "frame" ? "#ffffff" : "#5149d5");
     if (node.kind === "frame") {
@@ -1229,6 +1231,12 @@ export function attachDesignWorkspace() {
   get("text").addEventListener("change", () => commitEdit("Edit text"));
   get("color").addEventListener("input", () => { const id = currentSelection()[0]; if (id) previewNode(id, { color: get("color").value }); });
   get("color").addEventListener("change", () => commitEdit("Change fill"));
+  get("opacity").addEventListener("input", () => {
+    const id = currentSelection()[0], value = Number(get("opacity").value) / 100;
+    get("opacity-value").value = `${Math.round(value * 100)}%`;
+    if (id) previewNode(id, { opacity: value });
+  });
+  get("opacity").addEventListener("change", () => commitEdit("Change layer opacity"));
   get("frame-clip").addEventListener("change", () => {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
     history.apply({ type: "node", id, value: { ...clone(node), style: { ...node.style, clipContent: get("frame-clip").checked } } }, "Change frame clipping"); edited("Frame clipping updated.");

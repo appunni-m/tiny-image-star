@@ -97,6 +97,8 @@ and nested frame layers in a local project with undo/redo and browser recovery.
 Image layers now support on-canvas source cropping: users can create, move, and
 resize a normalized crop window over the retained original, then undo, redo, or
 reset it while the same page layer is re-rendered through Pillow-RS WASM.
+The shared inspector also exposes undoable 0–100% layer opacity for images,
+text, shapes, and frames, with an immediate local WASM page preview.
 Frames support inherited transforms, clipping, corner radius, constraints, and
 horizontal/vertical Auto Layout. Auto Layout now includes wrap, independent row
 and column spacing, padding, alignment/justification, and per-axis Fixed, Fill,
@@ -118,7 +120,7 @@ project as a production-ready Figma copy.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | A local design workspace exists, but legacy image, batch, and story workspaces are not one shared editor. |
-| Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, and direct source-crop creation/move/resize/reset with undo/redo. More adjustment controls and remaining legacy operations are pending. |
+| Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
 | Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gap, basic alignment, and per-axis Fixed/Fill/Hug work. Grid, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment are pending. |
 | Shapes and vectors | Partial | Primitive rectangle, rounded rectangle, and ellipse shapes exist; paths, pen editing, boolean operations, and SVG import/export are pending. |

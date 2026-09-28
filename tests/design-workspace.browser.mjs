@@ -64,6 +64,22 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(edited.assetId, sourceId, "preview edits retain the same original source asset");
     assert.equal(edited.appearance.brightness, 1.5);
 
+    const beforeOpacity = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    await page.locator("#design-opacity").evaluate((input) => {
+      input.value = "50"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const translucent = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    const afterOpacity = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    assert.equal(translucent.opacity, .5, "the shared inspector stores layer opacity in the design model");
+    assert.equal(translucent.assetId, sourceId, "opacity edits retain the original image layer asset");
+    assert.notEqual(afterOpacity, beforeOpacity, "Pillow-RS redraws the same page with the updated layer opacity");
+    await page.locator("#design-undo").click();
+    assert.equal((await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId)).opacity, undefined,
+      "one undo restores full layer opacity");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+
     const beforeFlip = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
     await page.locator("#design-flip-x").click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
@@ -381,6 +397,10 @@ export async function assertDesignWorkspace(browser, address) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => document.querySelector("#design-canvas")?.getBoundingClientRect().width > 0);
     await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.locator("#design-opacity").scrollIntoViewIfNeeded();
+    const mobileOpacity = await page.locator("#design-opacity").boundingBox();
+    assert.ok(mobileOpacity?.height >= 43 && mobileOpacity.x >= 0 && mobileOpacity.x + mobileOpacity.width <= 390,
+      `mobile layer opacity stays touch-sized and on-screen: ${JSON.stringify(mobileOpacity)}`);
     await page.locator("#design-crop-tool").scrollIntoViewIfNeeded();
     const mobileCropLayout = await page.evaluate(() => ({ width: innerWidth,
       buttons: [...document.querySelectorAll("#design-image-adjustments .design-image-crop-actions .button")]
