@@ -6,10 +6,10 @@ export function createDesignView() {
   root.setAttribute("aria-label", "Design workspace");
   root.innerHTML = `
     <header class="design-toolbar">
-      <div class="design-file-heading"><label class="eyebrow" for="design-document-name">Design file</label><input id="design-document-name" class="design-document-name" type="text" value="Untitled design" maxlength="120" aria-label="Design file name" /><span id="design-save-status" class="design-save-status" role="status" aria-live="polite">Not saved</span></div>
+      <div class="design-file-heading"><label class="eyebrow" for="design-document-name">Local document</label><input id="design-document-name" class="design-document-name" type="text" value="Untitled design" maxlength="120" aria-label="Local document name" /><span id="design-save-status" class="design-save-status" role="status" aria-live="polite">Not saved</span></div>
       <div class="design-toolbar-actions" aria-label="Design tools">
         <button id="design-new-file" class="button secondary" type="button">New design</button>
-        <select id="design-open-file" class="button secondary" aria-label="Open saved design"><option value="">Open saved…</option></select>
+        <select id="design-open-file" class="button secondary" aria-label="Open saved local document"><option value="">Open local document…</option></select>
         <button id="design-add-images" class="button secondary" type="button">Add images</button>
         <button id="design-add-text" class="button secondary" type="button" disabled>Text</button>
         <button id="design-add-rectangle" class="button secondary" type="button" disabled>Rectangle</button>

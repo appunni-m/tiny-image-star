@@ -344,6 +344,36 @@ export async function listDesignProjects() {
   });
 }
 
+/** List story and design documents together without changing their storage kind. */
+export async function listLocalPageProjects() {
+  const [stories, designs] = await Promise.all([listStoryProjects(), listDesignProjects()]);
+  return [
+    ...stories.map((project) => ({ ...project, kind: "story" })),
+    ...designs.map((project) => ({ ...project, kind: "design" })),
+  ].sort((a, b) => b.savedAt - a.savedAt || a.key.localeCompare(b.key));
+}
+
+/** Open either supported local document while retaining its original owner kind. */
+export async function readLocalPageProject(key) {
+  if (typeof key !== "string") throw new Error("Choose a saved local document.");
+  if (key.startsWith("story:")) {
+    const project = await readStoryProject(key);
+    return project ? { ...project, kind: "story" } : null;
+  }
+  if (key.startsWith("design:")) {
+    const project = await readDesignProject(key);
+    return project ? { ...project, kind: "design" } : null;
+  }
+  throw new Error("This is not a saved local document.");
+}
+
+/** Save through the original story or design validator and keep its storage identity. */
+export function writeLocalPageProject(project, { kind, ...options } = {}) {
+  if (kind === "story") return writeStoryProject(project, options);
+  if (kind === "design") return writeDesignProject(project, options);
+  throw new Error("Choose whether this local document is a story or a design.");
+}
+
 // An estimate for the import sheet. The write transaction remains authoritative
 // because deduplication and writes from other tabs can change available space.
 export function projectStorageBudget() {

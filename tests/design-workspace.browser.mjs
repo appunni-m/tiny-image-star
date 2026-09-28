@@ -363,6 +363,50 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.pages[0].nodeIds.length === 0);
     const bulkDeleted = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.deepEqual(Object.keys(bulkDeleted.nodes), [], "keyboard bulk delete removes the whole canvas selection atomically");
-    console.log("  design workspace: retained sources, live resize/rotate previews, Auto Layout wrap/Fill, undo, image recipes, autosave/reopen and phone layout");
+
+    await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");
+    const story = await page.evaluate(async (base64) => {
+      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+      const source = new File([bytes], "shared-story-photo.png", { type: "image/png" });
+      const [{ importStoryPhotos }, { createSceneProject }, { writeStoryProject }] = await Promise.all([
+        import("/src/story/assets.js"), import("/src/project/model.js"), import("/src/project/storage.js"),
+      ]);
+      const [photo] = await importStoryPhotos([source]);
+      const layerId = "shared-story-photo-layer", slideId = "shared-story-slide";
+      const project = createSceneProject({ id: "shared-story-document", name: "Shared story document", assets: { [photo.asset.id]: photo.asset },
+        nodes: { [layerId]: { id: layerId, kind: "image", name: "Story photo", visible: true, locked: false, assetId: photo.asset.id,
+          space: "slide", frame: { x: .1, y: .1, width: .8, height: .8 }, fit: "contain", focal: { x: .5, y: .5 } } },
+        slides: [{ id: slideId, name: "Story page", nodeIds: [layerId], overrides: {} }],
+        variants: [{ id: "story-page", width: 1920, height: 1080 }] });
+      const saved = await writeStoryProject(project, { readAsset: (id) => id === photo.asset.id ? photo.source : null });
+      return { key: saved.key, assetId: photo.asset.id, layerId, sha256: photo.asset.sha256 };
+    }, image.toString("base64"));
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction((key) => window.tinyImageStarDesign.getSnapshot()?.key === key, story.key);
+    await page.locator("#mobile-more-button").click();
+    await page.locator("#design-button").click();
+    await page.waitForFunction(() => !document.querySelector("#design-view")?.hidden);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const shared = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(shared.name, "Shared story document", "the page workspace opens a saved story document");
+    assert.equal(shared.retainedSourceBytes, image.byteLength, "the opened story's original image is retained for live editing");
+    assert.equal(shared.assets[story.assetId].sha256, story.sha256, "opening keeps the story's original asset identity");
+    assert.ok(await page.locator("#design-open-file option").filter({ hasText: "Story · Shared story document" }).count(),
+      "the local document picker identifies saved story projects");
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).click();
+    await page.locator("#design-brightness").evaluate((input) => {
+      input.value = "1.25"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");
+    const reopenedStory = await page.evaluate(async ({ key, assetId }) => {
+      const { readStoryProject } = await import("/src/project/storage.js");
+      const saved = await readStoryProject(key);
+      return { revision: saved.revision, node: saved.project.nodes["shared-story-photo-layer"], asset: saved.project.assets[assetId] };
+    }, { key: story.key, assetId: story.assetId });
+    assert.equal(reopenedStory.node.appearance.brightness, 1.25, "edits through the shared page canvas save back as a story project");
+    assert.ok(reopenedStory.revision > 0, "editing the shared story advances its saved revision");
+    assert.equal(reopenedStory.asset.sha256, story.sha256, "saving through the page canvas preserves the story's verified original asset");
+    console.log("  design workspace: retained sources, live resize/rotate previews, Auto Layout, image recipes, shared story/design autosave and phone layout");
   } finally { await context.close(); }
 }

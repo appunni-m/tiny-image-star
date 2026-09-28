@@ -4,7 +4,7 @@ import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerComm
   reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, newId, resolveLayerFrames } from "../project/model.js";
 import { ProjectHistory } from "../project/history.js";
-import { listDesignProjects, readDesignProject, writeDesignProject } from "../project/storage.js";
+import { listLocalPageProjects, readLocalPageProject, writeLocalPageProject } from "../project/storage.js";
 import { getProcessingScheduler } from "../processing/client.js";
 import { enqueueScene } from "../processing/scene-client.js";
 import { importStoryPhotos } from "../story/assets.js";
@@ -95,10 +95,21 @@ export function attachDesignWorkspace() {
     pool.setRetainedBytes("design-recipe-job", jobBytes);
   }
 
-  function imageSource(id) {
-    const source = sources.get(id);
+  function retainedSource(read, size) {
+    let value = null, pending = null;
+    return { size, load() {
+      if (value) return Promise.resolve(value);
+      if (!pending) pending = Promise.resolve().then(read).then((loaded) => {
+        value = loaded; pending = null; return loaded;
+      }, (error) => { pending = null; throw error; });
+      return pending;
+    } };
+  }
+
+  async function imageSource(id, sourceMap = sources) {
+    const source = sourceMap.get(id);
     if (!source) throw new Error("An image layer has no retained local source. Reopen or re-add that image.");
-    return source;
+    return typeof source.load === "function" ? source.load() : source;
   }
 
   function selectionChanged() {
@@ -592,12 +603,12 @@ export function attachDesignWorkspace() {
   function schedulePreview(delay = 90) {
     clearTimeout(previewTimer); previewTask?.cancel(); previewTask = null;
     if (root.hidden || !history || !currentPage()) return;
-    const epoch = ++previewEpoch, project = clone(history.document), selectedPage = currentPage().id;
+    const epoch = ++previewEpoch, project = clone(history.document), selectedPage = currentPage().id, sourceSnapshot = sources;
     previewTimer = setTimeout(async () => {
       let nextTask;
       try {
         nextTask = enqueueScene({ project, slideId: selectedPage, variantId: project.variants[0].id, preview: true, previewEdge: 1280,
-          readAsset: async (id) => imageSource(id), priority: 0, pool }); previewTask = nextTask;
+          readAsset: async (id) => imageSource(id, sourceSnapshot), priority: 0, pool }); previewTask = nextTask;
         setStatus("Updating page preview…");
         const output = await nextTask.promise;
         if (epoch !== previewEpoch || root.hidden) return;
@@ -643,9 +654,8 @@ export function attachDesignWorkspace() {
     for (const other of Object.values(project.nodes)) if (other.id !== nodeId) other.visible = false;
     const task = enqueueScene({ project, slideId: job.pageId, variantId: project.variants[0].id, preview: true, previewEdge: 256,
       readAsset: async (id) => {
-        const source = job.sources.get(id);
-        if (!source) throw new Error("An original image is no longer available for this recipe job.");
-        return source;
+        if (!job.sources.has(id)) throw new Error("An original image is no longer available for this recipe job.");
+        return imageSource(id, job.sources);
       }, priority: 0, pool });
     job.requests.set(nodeId, task);
     return task;
@@ -844,43 +854,47 @@ export function attachDesignWorkspace() {
     finally { exportBusy = false; renderWorkspace(); }
   }
 
-  function activateProject(project, { key = null, revision = null, sources: nextSources = new Map() } = {}) {
+  function activateProject(project, { key = null, kind = "design", revision = null, sources: nextSources = new Map() } = {}) {
     cancelDesignRecipeJob("The document changed.");
     clearTimeout(saveTimer); previewTask?.cancel(); previewTask = null; previewEpoch += 1;
     previewBitmap?.close(); previewBitmap = null;
     history = new ProjectHistory(project); pageId = project.slides[0]?.id ?? null;
     selection = { ids: [], anchorId: null }; sources = nextSources;
-    fileOwner = { key: key ?? `design:${project.id}`, savedRevision: revision, autoSave: true, saving: Promise.resolve(), saveError: null };
+    fileOwner = { key: key ?? `${kind}:${project.id}`, kind, savedRevision: revision, autoSave: true, saving: Promise.resolve(), saveError: null };
     ledger(); renderWorkspace(); schedulePreview(0);
     setSaveStatus(revision == null ? "New design" : "Saved on this device");
   }
 
   async function refreshDesignFiles(selectedKey = fileOwner?.key ?? "") {
-    const files = await listDesignProjects(), picker = get("open-file"), placeholder = picker.options[0];
+    const files = await listLocalPageProjects(), picker = get("open-file"), placeholder = picker.options[0];
     picker.replaceChildren(placeholder);
     for (const file of files) {
       const option = document.createElement("option"); option.value = file.key;
-      option.textContent = `${file.name} · ${new Date(file.savedAt).toLocaleString()}`; option.title = `${file.name} · ${file.byteLength} bytes`;
+      const kind = file.kind === "story" ? "Story" : "Design";
+      option.textContent = `${kind} · ${file.name} · ${new Date(file.savedAt).toLocaleString()}`;
+      option.title = `${kind} · ${file.name} · ${file.byteLength} bytes`;
       picker.append(option);
     }
     picker.value = files.some((file) => file.key === selectedKey) ? selectedKey : "";
     return files;
   }
 
-  async function openDesign(key) {
+  async function openLocalPageProject(key) {
     if (!key) return;
-    const ticket = ++openSequence; setStatus("Opening saved design…");
+    const ticket = ++openSequence; setStatus("Opening local document…");
     try {
-      const opened = await readDesignProject(key);
-      if (!opened) throw new Error("That saved design is no longer available.");
+      const opened = await readLocalPageProject(key);
+      if (!opened) throw new Error("That saved document is no longer available.");
       const retained = new Map();
-      for (const asset of Object.values(opened.project.assets)) retained.set(asset.id, await opened.readAsset(asset.id));
+      for (const asset of Object.values(opened.project.assets)) {
+        retained.set(asset.id, retainedSource(() => opened.readAsset(asset.id), asset.byteLength));
+      }
       if (ticket !== openSequence) return;
-      activateProject(opened.project, { key: opened.key, revision: opened.revision, sources: retained });
-      setStatus("Design reopened · original images are available for editing.");
+      activateProject(opened.project, { key: opened.key, kind: opened.kind, revision: opened.revision, sources: retained });
+      setStatus(`${opened.kind === "story" ? "Story" : "Design"} reopened · local sources are available for editing.`);
       await refreshDesignFiles(opened.key);
     } catch (error) {
-      if (ticket === openSequence) { setStatus(error?.userMessage ?? error.message ?? "The saved design could not be opened."); await refreshDesignFiles(); }
+      if (ticket === openSequence) { setStatus(error?.userMessage ?? error.message ?? "The saved document could not be opened."); await refreshDesignFiles(); }
     }
   }
 
@@ -900,8 +914,8 @@ export function attachDesignWorkspace() {
       if (!owner.autoSave || owner.savedRevision === snapshot.revision) return;
       setSaveStatus("Saving…");
       try {
-        const saved = await writeDesignProject(snapshot, { key: owner.key, expectedRevision: owner.savedRevision,
-          readAsset: async (id) => sourceSnapshot.get(id) });
+        const saved = await writeLocalPageProject(snapshot, { kind: owner.kind, key: owner.key, expectedRevision: owner.savedRevision,
+          readAsset: async (id) => imageSource(id, sourceSnapshot) });
         owner.key = saved.key; owner.savedRevision = saved.revision; owner.saveError = null;
         if (fileOwner === owner) {
           setSaveStatus(history?.document.revision === snapshot.revision ? "Saved on this device" : "Saving newer changes…");
@@ -959,7 +973,7 @@ export function attachDesignWorkspace() {
   get("add-images").addEventListener("click", requestFiles);
   get("empty-add").addEventListener("click", requestFiles);
   get("new-file").addEventListener("click", newDesign);
-  get("open-file").addEventListener("change", () => { if (get("open-file").value) void openDesign(get("open-file").value); });
+  get("open-file").addEventListener("change", () => { if (get("open-file").value) void openLocalPageProject(get("open-file").value); });
   get("recipe-job-pause").addEventListener("click", toggleDesignRecipePause);
   get("recipe-job-cancel").addEventListener("click", () => cancelDesignRecipeJob("Cancelled by user."));
   get("recipe-job-speed").addEventListener("change", setDesignRecipeSpeed);
@@ -1111,5 +1125,5 @@ export function attachDesignWorkspace() {
     },
   };
   renderWorkspace();
-  void refreshDesignFiles().then((files) => { if (!history && files[0]) void openDesign(files[0].key); }).catch(() => setSaveStatus("Local design storage is unavailable"));
+  void refreshDesignFiles().then((files) => { if (!history && files[0]) void openLocalPageProject(files[0].key); }).catch(() => setSaveStatus("Local project storage is unavailable"));
 }
