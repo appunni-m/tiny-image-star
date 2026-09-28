@@ -107,13 +107,35 @@ export function layoutSceneText(ctx, node, height, fonts, width = height) {
   return layout;
 }
 
+function pathCommands(ctx, path, frame) {
+  const point = (entry) => ({ x: (entry.x - .5) * frame.width, y: (entry.y - .5) * frame.height });
+  const points = path.points;
+  const first = point(points[0]); ctx.moveTo(first.x, first.y);
+  const segment = (from, to) => {
+    const start = point(from), end = point(to);
+    if (from.handleOut || to.handleIn) {
+      const control1 = from.handleOut ? point(from.handleOut) : start;
+      const control2 = to.handleIn ? point(to.handleIn) : end;
+      ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+    } else ctx.lineTo(end.x, end.y);
+  };
+  for (let index = 1; index < points.length; index++) segment(points[index - 1], points[index]);
+  if (path.closed) { segment(points.at(-1), points[0]); ctx.closePath(); }
+}
+
 export function rasterSceneNode(api, node, width, height, fonts, warnings) {
   let layout;
   const pixels = rasterTiles(node, width, height, (ctx) => {
     atFrame(ctx, node);
     const frame = node.viewport, style = node.style ?? {};
     ctx.fillStyle = node.color ?? (node.kind === "text" ? "#202124" : "#ffffff");
-    if (node.kind === "shape" || node.kind === "frame") {
+    if (node.kind === "shape" && style.shape === "path") {
+      ctx.beginPath(); pathCommands(ctx, style.path, frame);
+      if (style.path.closed) { ctx.fillStyle = node.color ?? "#5149d5"; ctx.fill(); }
+      if (style.strokeColor && style.strokeWidth) {
+        ctx.strokeStyle = style.strokeColor; ctx.lineWidth = Math.min(frame.width, frame.height) * style.strokeWidth; ctx.stroke();
+      }
+    } else if (node.kind === "shape" || node.kind === "frame") {
       ctx.beginPath();
       if (node.kind === "shape" && style.shape === "ellipse") ctx.ellipse(0, 0, frame.width / 2, frame.height / 2, 0, 0, Math.PI * 2);
       else if ((node.kind === "shape" && style.shape === "rounded") || (node.kind === "frame" && style.radius)) ctx.roundRect(-frame.width / 2, -frame.height / 2, frame.width, frame.height,

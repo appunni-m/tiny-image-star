@@ -1,5 +1,5 @@
 import { createDesignView } from "./view.js";
-import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
@@ -21,6 +21,7 @@ export function attachDesignWorkspace() {
   let saveTimer = null, openSequence = 0;
   let previewTask = null, previewTimer = null, previewEpoch = 0, previewBitmap = null, exportBusy = false, importing = false, recipeJob = null;
   let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null, cropModeId = null;
+  let penActive = false, pathDraft = null, vectorEditId = null;
   const touchPoints = new Map();
   let frameMapProject = null, frameMapPage = null, frameMap = null;
   const renderProject = () => history?.document ?? null;
@@ -121,6 +122,7 @@ export function attachDesignWorkspace() {
     selection.ids = currentPage()?.nodeIds.filter((id) => selection.ids.includes(id)) ?? [];
     const exitedCropMode = Boolean(cropModeId && !selection.ids.includes(cropModeId));
     if (exitedCropMode) cropModeId = null;
+    if (vectorEditId && !selection.ids.includes(vectorEditId)) vectorEditId = null;
     get("frame-selection").disabled = selection.ids.length < 2;
     renderLayers(); renderInspector(); drawCanvas();
     if (exitedCropMode) schedulePreview(0);
@@ -133,7 +135,7 @@ export function attachDesignWorkspace() {
     project.slides.forEach((page, index) => {
       const button = document.createElement("button"); button.type = "button"; button.className = "design-page-current";
       button.textContent = page.name || `Page ${index + 1}`; button.setAttribute("aria-current", String(page.id === currentPage()?.id));
-      button.addEventListener("click", () => { cropModeId = null; pageId = page.id; selection = { ids: [], anchorId: null }; renderWorkspace(); schedulePreview(0); });
+      button.addEventListener("click", () => { cropModeId = null; pathDraft = null; drag = null; vectorEditId = null; pageId = page.id; selection = { ids: [], anchorId: null }; renderWorkspace(); schedulePreview(0); });
       list.append(button);
     });
     get("page-title").textContent = currentPage()?.name ?? "Page";
@@ -224,6 +226,10 @@ export function attachDesignWorkspace() {
     }
     const textField = get("text-field"), colorField = get("color-field"), fitField = get("fit-field"), adjustments = get("image-adjustments");
     textField.hidden = node.kind !== "text"; colorField.hidden = !["shape", "text", "frame"].includes(node.kind);
+    get("vector-actions").hidden = node.kind !== "shape" || node.style?.shape !== "path";
+    get("edit-vector").textContent = vectorEditId === node.id ? "Done editing path" : "Edit path points";
+    get("edit-vector").setAttribute("aria-pressed", String(vectorEditId === node.id));
+    get("edit-vector").disabled = Boolean(world.locked);
     fitField.hidden = node.kind !== "image"; adjustments.hidden = node.kind !== "image";
     get("frame-clip-field").hidden = node.kind !== "frame";
     get("frame-radius-field").hidden = node.kind !== "frame";
@@ -284,10 +290,12 @@ export function attachDesignWorkspace() {
 
   function renderWorkspace() {
     const project = renderProject();
+    get("add-pen").disabled = !currentPage() || (currentPage()?.nodeIds.length ?? 0) >= 200;
+    get("add-pen").setAttribute("aria-pressed", String(penActive));
     if (!project) {
       if (document.activeElement !== get("document-name")) get("document-name").value = "Untitled design";
       get("add-text").disabled = true;
-      get("add-rectangle").disabled = true; get("export").disabled = true; get("undo").disabled = true; get("redo").disabled = true;
+      get("add-rectangle").disabled = true; get("add-pen").disabled = true; get("export").disabled = true; get("undo").disabled = true; get("redo").disabled = true;
       get("fit").disabled = true; get("zoom-in").disabled = true; get("zoom-out").disabled = true; get("zoom-label").textContent = "100%";
       get("empty-state").hidden = false; get("page-title").textContent = "Page 1";
       get("layer-list").replaceChildren(); get("layer-count").textContent = "0"; renderInspector(); drawCanvas();
@@ -297,6 +305,7 @@ export function attachDesignWorkspace() {
     if (document.activeElement !== get("document-name")) get("document-name").value = project.name;
     get("add-text").disabled = !currentPage() || currentPage().nodeIds.length >= 200;
     get("add-rectangle").disabled = get("add-text").disabled;
+    get("add-pen").disabled = get("add-text").disabled;
     get("frame-selection").disabled = currentSelection().length < 2 || currentSelection().length > 200;
     get("export").disabled = !currentPage() || exportBusy || importing;
     get("undo").disabled = !history.past.length; get("redo").disabled = !history.future.length;
@@ -403,6 +412,59 @@ export function attachDesignWorkspace() {
       (canvas.clientHeight - margin * 2) / variant.height) * 100)}%`;
   }
 
+  function screenForPage(point) {
+    return geometry ? { x: geometry.x + point.x * geometry.scale, y: geometry.y + point.y * geometry.scale } : null;
+  }
+
+  function vectorPointOnCanvas(node, point) {
+    const frame = worldLayer(node.id)?.frame, size = pageSize();
+    if (!frame || !size || !geometry) return null;
+    const center = { x: (frame.x + frame.width / 2) * size.width, y: (frame.y + frame.height / 2) * size.height };
+    const local = { x: (point.x - .5) * frame.width * size.width, y: (point.y - .5) * frame.height * size.height };
+    const angle = (worldLayer(node.id)?.rotation ?? node.rotation ?? 0) * Math.PI / 180, cosine = Math.cos(angle), sine = Math.sin(angle);
+    return screenForPage({ x: center.x + local.x * cosine - local.y * sine, y: center.y + local.x * sine + local.y * cosine });
+  }
+
+  function drawVectorEditOverlay(ctx) {
+    const node = vectorEditId && layer(vectorEditId), path = node?.style?.path;
+    if (!node || !path || node.visible === false) return;
+    ctx.save(); ctx.lineWidth = 1.25;
+    for (const point of path.points) {
+      const anchor = vectorPointOnCanvas(node, point);
+      if (!anchor) continue;
+      for (const key of ["handleIn", "handleOut"]) if (point[key]) {
+        const handle = vectorPointOnCanvas(node, point[key]);
+        ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(handle.x, handle.y); ctx.strokeStyle = "#3182ce"; ctx.stroke();
+        ctx.beginPath(); ctx.arc(handle.x, handle.y, 3.5, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 5, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.strokeStyle = "#e04f5f"; ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPathDraftOverlay(ctx) {
+    if (!pathDraft?.points.length) return;
+    const points = pathDraft.points.map(screenForPage).filter(Boolean);
+    const screenHandle = (point) => point && screenForPage(point);
+    const segment = (from, to, start, end) => {
+      const control1 = screenHandle(from.handleOut), control2 = screenHandle(to?.handleIn);
+      if (control1 || control2) ctx.bezierCurveTo(control1?.x ?? start.x, control1?.y ?? start.y, control2?.x ?? end.x, control2?.y ?? end.y, end.x, end.y);
+      else ctx.lineTo(end.x, end.y);
+    };
+    ctx.save(); ctx.beginPath(); ctx.setLineDash([5, 4]); ctx.strokeStyle = "#5149d5"; ctx.lineWidth = 2;
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index++) segment(pathDraft.points[index - 1], pathDraft.points[index], points[index - 1], points[index]);
+    const cursor = pathDraft.cursor && screenForPage(pathDraft.cursor);
+    if (cursor) segment(pathDraft.points.at(-1), null, points.at(-1), cursor);
+    if (cursor && points.length >= 3 && Math.hypot(points[0].x - cursor.x, points[0].y - cursor.y) < 12) {
+      ctx.lineTo(points[0].x, points[0].y);
+    }
+    ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = "#fff"; ctx.strokeStyle = "#5149d5"; ctx.lineWidth = 2;
+    for (const point of points) { ctx.beginPath(); ctx.arc(point.x, point.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+    ctx.restore();
+  }
+
   function drawCanvas() {
     const canvas = get("canvas"), ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -440,6 +502,7 @@ export function attachDesignWorkspace() {
       ctx.restore();
     }
     if (cropModeId) drawCropOverlay(ctx, cropGeometryFor(cropModeId));
+    drawVectorEditOverlay(ctx); drawPathDraftOverlay(ctx);
     if (marquee) { ctx.setLineDash([5, 4]); ctx.strokeStyle = "#2d7ef7"; ctx.fillStyle = "rgba(45,126,247,.12)";
       ctx.fillRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.strokeRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.setLineDash([]); }
   }
@@ -450,6 +513,93 @@ export function attachDesignWorkspace() {
   function pagePoint(point) {
     if (!geometry) return null;
     return { x: (point.x - geometry.x) / geometry.scale, y: (point.y - geometry.y) / geometry.scale };
+  }
+
+  function finishPathDraft(closed = false) {
+    const draft = pathDraft, size = pageSize();
+    if (!draft || !size) return false;
+    const points = draft.points;
+    if (points.length < (closed ? 3 : 2)) { pathDraft = null; drag = null; drawCanvas(); setStatus("Add at least two points before finishing a path."); return false; }
+    const extents = points.flatMap((point) => [point, point.handleIn, point.handleOut].filter(Boolean));
+    const margin = 8, left = Math.min(...extents.map((point) => point.x)) - margin, top = Math.min(...extents.map((point) => point.y)) - margin;
+    const width = Math.max(1, Math.max(...extents.map((point) => point.x)) - left + margin);
+    const height = Math.max(1, Math.max(...extents.map((point) => point.y)) - top + margin);
+    const frame = { x: left / size.width, y: top / size.height, width: width / size.width, height: height / size.height };
+    const local = (point) => ({ x: (point.x - left) / width, y: (point.y - top) / height });
+    const path = { closed, points: points.map((point) => ({ ...local(point),
+      ...(point.handleIn ? { handleIn: local(point.handleIn) } : {}), ...(point.handleOut ? { handleOut: local(point.handleOut) } : {}) })) };
+    pathDraft = null; drag = null;
+    try {
+      const command = addVectorLayerCommand(history.document, currentPage().id, { frame, path, name: closed ? "Vector" : "Path" });
+      history.apply(command, closed ? "Draw vector" : "Draw path");
+      const id = command.commands[0].id; selection = { ids: [id], anchorId: id };
+      edited(closed ? "Vector added. Select it and edit its points." : "Path added. Select it and edit its points.");
+      return true;
+    } catch (error) { drawCanvas(); setStatus(error.message); return false; }
+  }
+
+  function togglePen() {
+    if (!currentPage()) return;
+    if (penActive) {
+      if (pathDraft) finishPathDraft(false);
+      penActive = false; renderWorkspace(); setStatus("Pen tool off."); return;
+    }
+    const leftCropMode = Boolean(cropModeId);
+    cropModeId = null; vectorEditId = null; penActive = true;
+    renderWorkspace(); if (leftCropMode) schedulePreview(0); get("canvas").focus();
+    setStatus("Pen active · tap or click to add points, drag an anchor for a curve, then close the path or press Enter.");
+    drawCanvas();
+  }
+
+  function addPenAnchor(point, event) {
+    const position = pagePoint(point), size = pageSize();
+    if (!position || !size || position.x < 0 || position.y < 0 || position.x > size.width || position.y > size.height) return;
+    if (!pathDraft) pathDraft = { points: [], cursor: position };
+    const first = pathDraft.points[0], firstScreen = first && screenForPage(first);
+    if (pathDraft.points.length >= 3 && firstScreen && Math.hypot(firstScreen.x - point.x, firstScreen.y - point.y) <= 12) {
+      finishPathDraft(true); event.preventDefault(); return;
+    }
+    if (pathDraft.points.length >= 512) { setStatus("A vector path can contain up to 512 points."); return; }
+    const index = pathDraft.points.push({ x: position.x, y: position.y }) - 1;
+    pathDraft.cursor = position;
+    drag = { kind: "path-anchor", pointerId: event.pointerId, start: position, index, moved: false };
+    captureCanvasPointer(event); drawCanvas(); event.preventDefault();
+  }
+
+  function localVectorPoint(node, point) {
+    const frame = worldLayer(node.id)?.frame, size = pageSize(), world = pagePoint(point);
+    if (!frame || !size || !world) return null;
+    const center = { x: (frame.x + frame.width / 2) * size.width, y: (frame.y + frame.height / 2) * size.height };
+    const dx = world.x - center.x, dy = world.y - center.y, angle = (worldLayer(node.id)?.rotation ?? node.rotation ?? 0) * Math.PI / 180;
+    const localX = center.x + dx * Math.cos(angle) + dy * Math.sin(angle);
+    const localY = center.y - dx * Math.sin(angle) + dy * Math.cos(angle);
+    return { x: (localX / size.width - frame.x) / frame.width, y: (localY / size.height - frame.y) / frame.height };
+  }
+
+  function vectorEditTarget(point) {
+    const node = vectorEditId && layer(vectorEditId), path = node?.style?.path;
+    if (!node || !path) return null;
+    for (const [index, entry] of path.points.entries()) {
+      for (const key of ["handleIn", "handleOut"]) if (entry[key]) {
+        const handle = vectorPointOnCanvas(node, entry[key]);
+        if (handle && Math.hypot(handle.x - point.x, handle.y - point.y) <= 9) return { index, key };
+      }
+      const anchor = vectorPointOnCanvas(node, entry);
+      if (anchor && Math.hypot(anchor.x - point.x, anchor.y - point.y) <= 9) return { index, key: "anchor" };
+    }
+    return null;
+  }
+
+  function updateVectorPoint(point) {
+    const node = layer(drag?.id), local = node && localVectorPoint(node, point);
+    if (!node || !local || !drag?.path) return;
+    if (Math.hypot(point.x - drag.startScreen.x, point.y - drag.startScreen.y) < 1) return;
+    const path = clone(drag.path), target = path.points[drag.index];
+    if (drag.key === "anchor") { target.x = Math.max(0, Math.min(1, local.x)); target.y = Math.max(0, Math.min(1, local.y)); }
+    else target[drag.key] = { x: Math.max(-4, Math.min(5, local.x)), y: Math.max(-4, Math.min(5, local.y)) };
+    drag.moved = true;
+    try { history.preview({ type: "node", id: node.id, value: { ...clone(node), style: { ...clone(node.style), path } } }); edited("Editing vector points…", { previewOnly: true }); }
+    catch (error) { setStatus(error.message); }
   }
 
   function cropIsFull(crop) {
@@ -599,6 +749,7 @@ export function attachDesignWorkspace() {
     }
     if (node?.kind !== "image" || worldLayer(id)?.locked) return;
     if (history?.base) commitEdit("Edit image");
+    penActive = false; pathDraft = null; vectorEditId = null;
     cropModeId = id; selection = { ids: [id], anchorId: id };
     renderWorkspace(); schedulePreview(0);
     setStatus(!cropIsFull(effectiveCrop(id)) ? "Crop mode · drag a handle to resize, or drag inside the crop to move it."
@@ -725,6 +876,18 @@ export function attachDesignWorkspace() {
       captureCanvasPointer(event); event.preventDefault(); return;
     }
     if (event.button !== 0) return;
+    if (vectorEditId) {
+      const target = vectorEditTarget(point), node = layer(vectorEditId);
+      if (target && node && !worldLayer(node.id)?.locked) {
+        drag = { kind: "vector-point", pointerId: event.pointerId, id: node.id, index: target.index, key: target.key,
+          path: clone(node.style.path), startScreen: point, moved: false };
+        captureCanvasPointer(event); event.preventDefault(); return;
+      }
+    }
+    if (penActive) {
+      if (event.detail > 1 && pathDraft?.points.length >= 2) { finishPathDraft(false); event.preventDefault(); return; }
+      addPenAnchor(point, event); return;
+    }
     if (cropModeId) {
       if (startCropInteraction(point, event.pointerId)) {
         captureCanvasPointer(event); event.preventDefault();
@@ -756,15 +919,25 @@ export function attachDesignWorkspace() {
     const point = pointerPoint(event);
     if (touchPoints.has(event.pointerId)) { touchPoints.set(event.pointerId, point); if (pinch) { updatePinch(); return; } }
     if (!drag || drag.pointerId !== event.pointerId) {
+      if (penActive && pathDraft) { pathDraft.cursor = pagePoint(point); drawCanvas(); }
       if (event.pointerType !== "touch" && event.buttons === 0) {
         const handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
-        canvas.style.cursor = cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+        canvas.style.cursor = penActive ? "crosshair" : cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : "crosshair" : handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : hitTest(point) ? "move" : "default";
       }
       return;
     }
-    if (drag.kind === "crop") {
+    if (drag.kind === "path-anchor") {
+      const world = pagePoint(point), anchor = pathDraft?.points[drag.index];
+      if (!world || !anchor) return;
+      const dx = world.x - drag.start.x, dy = world.y - drag.start.y;
+      if (Math.hypot(dx, dy) * geometry.scale < 2) return;
+      anchor.handleOut = { x: anchor.x + dx, y: anchor.y + dy };
+      anchor.handleIn = { x: anchor.x - dx, y: anchor.y - dy };
+      pathDraft.cursor = world; drag.moved = true; drawCanvas();
+    } else if (drag.kind === "vector-point") updateVectorPoint(point);
+    else if (drag.kind === "crop") {
       const sourceStart = drag.mapping.sourceToCanvas({ x: drag.start.x * drag.mapping.asset.width, y: drag.start.y * drag.mapping.asset.height });
       if (Math.hypot(point.x - sourceStart.x, point.y - sourceStart.y) < 1) return;
       drag.moved = true;
@@ -801,10 +974,12 @@ export function attachDesignWorkspace() {
       if (wasPinching) { if (touchPoints.size < 2) { pinch = null; drag = null; } return; }
     }
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.kind === "path-anchor") { drag = null; drawCanvas(); return; }
     if (drag.kind === "crop" && drag.moved) commitEdit("Crop image");
     if (drag.kind === "layers" && drag.moved) commitEdit("Move layers");
     if (drag.kind === "resize" && drag.moved) commitEdit("Resize selection");
     if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
+    if (drag.kind === "vector-point" && drag.moved) commitEdit("Edit vector point");
     if (drag.kind === "marquee" && drag.moved && geometry) {
       const bounds = marquee, hits = currentPage().nodeIds.filter((id) => {
         const resolved = resolvedLayerMap().get(id), frame = resolved?.frame; if (!frame || resolved.visible === false) return false;
@@ -818,7 +993,10 @@ export function attachDesignWorkspace() {
   }
 
   function canvasPointerCancel(event) {
-    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop"].includes(drag.kind) && drag.moved) {
+    if (drag?.pointerId === event.pointerId && drag.kind === "path-anchor") {
+      pathDraft?.points.splice(drag.index, 1); drag = null; drawCanvas(); setStatus("Pen point cancelled."); return;
+    }
+    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop", "vector-point"].includes(drag.kind) && drag.moved) {
       history.cancel(); drag = null; marquee = null; selectionChanged(); edited("Edit cancelled."); return;
     }
     canvasPointerUp(event);
@@ -1090,7 +1268,7 @@ export function attachDesignWorkspace() {
 
   function activateProject(project, { key = null, kind = "design", revision = null, sources: nextSources = new Map() } = {}) {
     cancelDesignRecipeJob("The document changed.");
-    cropModeId = null;
+    cropModeId = null; penActive = false; pathDraft = null; vectorEditId = null;
     clearTimeout(saveTimer); previewTask?.cancel(); previewTask = null; previewEpoch += 1;
     previewBitmap?.close(); previewBitmap = null;
     history = new ProjectHistory(project); pageId = project.slides[0]?.id ?? null;
@@ -1178,11 +1356,16 @@ export function attachDesignWorkspace() {
   get("canvas").addEventListener("pointermove", canvasPointerMove);
   get("canvas").addEventListener("pointerup", canvasPointerUp);
   get("canvas").addEventListener("pointercancel", canvasPointerCancel);
+  get("canvas").addEventListener("dblclick", (event) => {
+    if (penActive && pathDraft?.points.length >= 2) { event.preventDefault(); finishPathDraft(false); }
+  });
   get("canvas").addEventListener("contextmenu", (event) => {
+    if (penActive && pathDraft) { event.preventDefault(); return; }
     event.preventDefault(); const id = hitTest(pointerPoint(event));
     if (id) contextMenuForLayer(event, id);
     else openContextMenu({ x: event.clientX, y: event.clientY, anchor: get("canvas"), focus: get("canvas"), items: [
       { label: "Add images", action: requestFiles }, { label: "Add text", action: addText }, { label: "Add rectangle", action: addRectangle },
+      { label: "Draw vector path", action: togglePen },
     ] });
   });
   get("canvas").addEventListener("wheel", (event) => {
@@ -1195,7 +1378,10 @@ export function attachDesignWorkspace() {
     }
   }, { passive: false });
   get("canvas").addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); runHistory(event.shiftKey ? "redo" : "undo"); }
+    if (penActive && event.key === "Escape") { event.preventDefault(); pathDraft = null; drag = null; drawCanvas(); setStatus("Path discarded."); }
+    else if (penActive && event.key === "Enter") { event.preventDefault(); finishPathDraft(false); }
+    else if (event.key === "Escape" && vectorEditId) { vectorEditId = null; renderWorkspace(); setStatus("Path point editing closed."); }
+    else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); runHistory(event.shiftKey ? "redo" : "undo"); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") { event.preventDefault(); runHistory("redo"); }
     else if ((event.metaKey || event.ctrlKey) && (event.key === "+" || event.key === "=")) { event.preventDefault(); setCanvasZoom(zoom * 1.25); }
     else if ((event.metaKey || event.ctrlKey) && event.key === "-") { event.preventDefault(); setCanvasZoom(zoom / 1.25); }
@@ -1226,11 +1412,18 @@ export function attachDesignWorkspace() {
   });
   get("file-input").addEventListener("change", () => { const files = [...(get("file-input").files ?? [])]; get("file-input").value = ""; void importImages(files); });
   get("add-text").addEventListener("click", addText); get("add-rectangle").addEventListener("click", addRectangle);
+  get("add-pen").addEventListener("click", togglePen);
+  get("edit-vector").addEventListener("click", () => {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (node?.kind !== "shape" || node.style?.shape !== "path") return;
+    vectorEditId = vectorEditId === id ? null : id;
+    renderWorkspace(); setStatus(vectorEditId ? "Edit path points · drag anchors or Bézier handles." : "Path point editing closed.");
+  });
   get("frame-selection").addEventListener("click", frameSelection);
   get("new-page").addEventListener("click", () => {
     try {
       if (!history) { newDesign(); return; }
-      cropModeId = null;
+      cropModeId = null; pathDraft = null; drag = null; vectorEditId = null;
       const added = addDesignPageCommand(history.document); history.apply(added.command, "Add page"); pageId = added.id;
       selection = { ids: [], anchorId: null }; edited("Page added.");
     } catch (error) { setStatus(error.message); }
@@ -1241,6 +1434,12 @@ export function attachDesignWorkspace() {
   get("zoom-out").addEventListener("click", () => setCanvasZoom(zoom / 1.25));
   get("zoom-label").addEventListener("click", fitCanvas);
   window.addEventListener("keydown", (event) => {
+    if (penActive && event.code === "Escape") {
+      event.preventDefault(); pathDraft = null; drag = null; drawCanvas(); setStatus("Path discarded."); return;
+    }
+    if (penActive && event.code === "Enter") {
+      event.preventDefault(); finishPathDraft(false); return;
+    }
     if (event.code === "Space" && document.activeElement === get("canvas")) { spaceDown = true; event.preventDefault(); }
   });
   window.addEventListener("keyup", (event) => { if (event.code === "Space") spaceDown = false; });

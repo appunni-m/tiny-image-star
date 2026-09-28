@@ -16,7 +16,10 @@ export function nodeBounds(node, height) {
   const tall = Math.abs(Math.sin(radians)) * frame.width + Math.abs(Math.cos(radians)) * frame.height;
   const shadow = node.style?.shadow;
   const padding = shadow ? Math.ceil((shadow.blur * 3 + Math.max(Math.abs(shadow.x), Math.abs(shadow.y))) * height) + 2 : 2;
-  const extent = padding + cutoutEffectMetrics(node, height).padding + Math.min(frame.width, frame.height) * (node.style?.strokeWidth ?? 0) * .75;
+  const pathControls = node.style?.shape === "path" ? (node.style.path?.points ?? []).flatMap((point) => [point.handleIn, point.handleOut].filter(Boolean)) : [];
+  const pathOverflow = pathControls.reduce((largest, point) => Math.max(largest, 0, -point.x, point.x - 1, -point.y, point.y - 1), 0)
+    * Math.max(frame.width, frame.height);
+  const extent = padding + pathOverflow + cutoutEffectMetrics(node, height).padding + Math.min(frame.width, frame.height) * (node.style?.strokeWidth ?? 0) * .75;
   return { x: frame.x + (frame.width - width) / 2 - extent, y: frame.y + (frame.height - tall) / 2 - extent,
     width: width + extent * 2, height: tall + extent * 2, padding };
 }

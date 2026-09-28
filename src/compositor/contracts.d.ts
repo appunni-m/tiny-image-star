@@ -39,7 +39,8 @@ export interface ShapeLayer extends Layer {
   kind: "shape"; color?: string;
   /** The frame is photo-relative and follows that photo's resolved geometry. */
   attachment?: { schema: 1; imageId: string };
-  style?: { shape?: "rectangle" | "rounded" | "ellipse"; radius?: number; strokeColor?: string; strokeWidth?: number };
+  style?: { shape?: "rectangle" | "rounded" | "ellipse" | "path"; radius?: number; strokeColor?: string; strokeWidth?: number;
+    path?: { closed: boolean; points: Array<{ x: number; y: number; handleIn?: { x: number; y: number }; handleOut?: { x: number; y: number } }> } };
 }
 export type SceneLayer = ImageLayer | TextLayer | ShapeLayer;
 export interface Slide {

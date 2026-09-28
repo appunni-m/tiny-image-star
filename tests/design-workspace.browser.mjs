@@ -342,8 +342,50 @@ export async function assertDesignWorkspace(browser, address) {
 
     await page.locator("#design-add-text").click();
     await page.locator("#design-add-rectangle").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const beforePen = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    await page.locator("#design-add-pen").click();
+    assert.equal(await page.locator("#design-add-pen").getAttribute("aria-pressed"), "true", "Pen announces its active drawing mode");
+    const penPoint = async (x, y) => page.evaluate(({ x, y }) => {
+      const canvas = document.querySelector("#design-canvas"), state = window.tinyImageStarDesign.getSnapshot(), view = state.canvas.geometry;
+      const bounds = canvas.getBoundingClientRect();
+      return { x: bounds.left + view.x + x * view.scale, y: bounds.top + view.y + y * view.scale };
+    }, { x, y });
+    const firstPenPoint = await penPoint(150, 720), curvePenPoint = await penPoint(390, 720), lastPenPoint = await penPoint(300, 940);
+    await page.mouse.click(firstPenPoint.x, firstPenPoint.y);
+    await page.mouse.move(curvePenPoint.x, curvePenPoint.y); await page.mouse.down();
+    await page.mouse.move(curvePenPoint.x + 24, curvePenPoint.y + 10, { steps: 4 }); await page.mouse.up();
+    await page.mouse.click(lastPenPoint.x, lastPenPoint.y); await page.mouse.click(firstPenPoint.x, firstPenPoint.y);
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().pages[0].nodeIds.length === 5);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let penState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const afterPen = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    const vectorId = penState.pages[0].nodeIds.at(-1), vectorNode = penState.nodes[vectorId];
+    assert.notEqual(afterPen, beforePen, "a closed Pen path renders into the existing Pillow-RS page preview");
+    assert.equal(vectorNode.style.shape, "path"); assert.equal(vectorNode.style.path.closed, true);
+    assert.equal(vectorNode.style.path.points.length, 3);
+    assert.ok(vectorNode.style.path.points.some((point) => point.handleIn && point.handleOut), "dragging an anchor creates editable Bezier handles");
+    await page.locator("#design-edit-vector").click();
+    const vectorAnchor = await page.evaluate((id) => {
+      const canvas = document.querySelector("#design-canvas"), bounds = canvas.getBoundingClientRect(), state = window.tinyImageStarDesign.getSnapshot();
+      const frame = state.resolvedFrames[id].frame, point = state.nodes[id].style.path.points[0], view = state.canvas.geometry;
+      return { x: bounds.left + view.x + (frame.x + point.x * frame.width) * view.width * view.scale,
+        y: bounds.top + view.y + (frame.y + point.y * frame.height) * view.height * view.scale };
+    }, vectorId);
+    await page.mouse.move(vectorAnchor.x, vectorAnchor.y); await page.mouse.down();
+    await page.mouse.move(vectorAnchor.x + 12, vectorAnchor.y + 8, { steps: 3 }); await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const movedVector = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path, vectorId);
+    assert.notDeepEqual(movedVector, vectorNode.style.path, "dragging a selected path anchor previews a point edit");
+    await page.locator("#design-undo").click();
+    assert.deepEqual(await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path, vectorId), vectorNode.style.path,
+      "undo restores the vector path points");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-add-pen").click();
+    assert.equal(await page.locator("#design-add-pen").getAttribute("aria-pressed"), "false", "Pen mode can be exited before selecting layers");
     const withObjects = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
-    assert.deepEqual(withObjects.pages[0].nodeIds.map((id) => withObjects.nodes[id].kind), ["image", "image", "text", "shape"]);
+    assert.deepEqual(withObjects.pages[0].nodeIds.map((id) => withObjects.nodes[id].kind), ["image", "image", "text", "shape", "shape"]);
     assert.equal(await page.locator("#design-canvas").isVisible(), true);
     assert.equal(await page.locator("#design-inspector").isVisible(), true);
 
@@ -534,7 +576,7 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.name === "Mobile Figma draft");
     const reopened = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
-    assert.equal(reopened.pages[0].nodeIds.length, 5, "saved image, text, shape and frame layers reopen together");
+    assert.equal(reopened.pages[0].nodeIds.length, 6, "saved image, text, shapes, vector path and frame layers reopen together");
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.wrap, true, "wrap and axis gaps survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.rowGap, 9);
@@ -592,6 +634,6 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopenedStory.node.appearance.brightness, 1.25, "edits through the shared page canvas save back as a story project");
     assert.ok(reopenedStory.revision > 0, "editing the shared story advances its saved revision");
     assert.equal(reopenedStory.asset.sha256, story.sha256, "saving through the page canvas preserves the story's verified original asset");
-    console.log("  design workspace: retained sources, live resize/rotate previews, Auto Layout, image recipes, shared story/design autosave and phone layout");
+    console.log("  design workspace: retained sources, live image/vector previews, Pen Béziers and point editing, Auto Layout, recipes, autosave and phone layout");
   } finally { await context.close(); }
 }

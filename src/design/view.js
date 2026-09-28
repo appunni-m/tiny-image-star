@@ -13,6 +13,7 @@ export function createDesignView() {
         <button id="design-add-images" class="button secondary" type="button">Add images</button>
         <button id="design-add-text" class="button secondary" type="button" disabled>Text</button>
         <button id="design-add-rectangle" class="button secondary" type="button" disabled>Rectangle</button>
+        <button id="design-add-pen" class="button secondary" type="button" disabled aria-pressed="false" title="Pen tool · click to add points, drag to create curves">Pen</button>
         <button id="design-frame-selection" class="button secondary" type="button" disabled>Frame selection</button>
         <span class="design-toolbar-divider" aria-hidden="true"></span>
         <button id="design-undo" class="button secondary" type="button" disabled aria-label="Undo design edit">Undo</button>
@@ -43,7 +44,7 @@ export function createDesignView() {
       <section class="design-canvas-panel" aria-label="Canvas">
         <header class="design-canvas-toolbar"><span id="design-page-title">Page 1</span><span id="design-canvas-status" role="status" aria-live="polite">Create a page to begin.</span></header>
         <div id="design-stage" class="design-stage">
-          <canvas id="design-canvas" tabindex="0" aria-label="Design page canvas. Click to select layers; drag to move, resize from the square handles, or rotate from the round handle. Hold Space and drag or use two fingers to pan and zoom. Press Delete to remove selected layers."></canvas>
+          <canvas id="design-canvas" tabindex="0" aria-label="Design page canvas. Click to select layers; drag to move, resize from the square handles, or rotate from the round handle. Use Pen to draw editable vector paths. Hold Space and drag or use two fingers to pan and zoom. Press Delete to remove selected layers."></canvas>
           <div id="design-empty-state" class="design-empty-state"><strong>Make something on your canvas</strong><span>Add images, text, or shapes. Everything is composed on this page.</span><button id="design-empty-add" class="button primary" type="button">Add images</button></div>
         </div>
         <footer class="design-canvas-footer"><div class="design-zoom-controls" role="group" aria-label="Canvas zoom"><button id="design-zoom-out" class="button secondary" type="button" aria-label="Zoom out" title="Zoom out (⌘−)" disabled>−</button><button id="design-zoom-label" class="button secondary design-zoom-label" type="button" aria-label="Fit canvas to screen" title="Fit canvas (⌘0)">100%</button><button id="design-zoom-in" class="button secondary" type="button" aria-label="Zoom in" title="Zoom in (⌘+)" disabled>+</button></div><button id="design-fit" class="button secondary" type="button" disabled>Fit page</button><span id="design-selection-summary">Nothing selected</span></footer>
@@ -71,6 +72,7 @@ export function createDesignView() {
           </fieldset>
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
+          <div id="design-vector-actions" class="design-layer-actions" hidden><button id="design-edit-vector" class="button secondary" type="button" aria-pressed="false">Edit path points</button></div>
           <label id="design-opacity-field" class="design-range-field"><span>Opacity <output id="design-opacity-value">100%</output></span><input id="design-opacity" type="range" min="0" max="100" step="1" value="100" /></label>
           <label id="design-frame-clip-field" class="design-field design-checkbox-field" hidden><span>Clip content</span><input id="design-frame-clip" type="checkbox" checked /></label>
           <label id="design-frame-radius-field" class="design-range-field" hidden><span>Corner radius <output id="design-frame-radius-value">0%</output></span><input id="design-frame-radius" type="range" min="0" max="0.5" step="0.01" value="0" /></label>

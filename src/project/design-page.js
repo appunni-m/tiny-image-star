@@ -112,6 +112,18 @@ export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
     entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
 }
 
+/** Add a locally editable vector path to a design page. Points and handles are frame-relative. */
+export function addVectorLayerCommand(project, pageId, { frame, path, name = "Vector" } = {}) {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || !frame || !path
+    || typeof name !== "string" || !name.trim() || name.length > 120) throw new Error("This page cannot add that vector.");
+  const id = newId("layer"), node = { id, kind: "shape", name: name.trim(), visible: true, locked: false,
+    space: "slide", frame: clone(frame), color: "#5149d5",
+    style: { shape: "path", path: clone(path), ...(!path.closed ? { strokeColor: "#5149d5", strokeWidth: .012 } : {}) } };
+  return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
+    entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
+}
+
 /** Wrap selected sibling layers in a frame while preserving their local placement and stack order. */
 export function addFrameAroundSelectionCommand(project, pageId, nodeIds) {
   const page = project.slides.find((entry) => entry.id === pageId);

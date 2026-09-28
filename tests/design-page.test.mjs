@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   setFrameLayoutCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
@@ -99,6 +99,25 @@ test("page layer add and delete commands are atomic, and image sources stay shar
   assert.equal(Object.hasOwn(history.document.assets, "extra-1"), false, "unreferenced source asset is released with its last layer");
   history.undo();
   assert.equal(Object.hasOwn(history.document.assets, "extra-1"), true);
+});
+
+test("pen vector layers persist closed paths and Bezier handles as one undoable page command", () => {
+  const project = createDesignPageProject({ images: [], id: "vector-design", slideId: "vector-page" }), history = new ProjectHistory(project);
+  const command = addVectorLayerCommand(history.document, "vector-page", {
+    frame: { x: .1, y: .2, width: .4, height: .5 },
+    path: { closed: true, points: [{ x: .1, y: .2 }, { x: .8, y: .25, handleIn: { x: .75, y: .2 }, handleOut: { x: 1.3, y: .3 } }, { x: .5, y: .9 }] },
+  });
+  history.apply(command, "Draw vector");
+  const id = command.commands[0].id, node = history.document.nodes[id];
+  assert.equal(node.kind, "shape"); assert.equal(node.style.shape, "path");
+  assert.equal(node.style.path.closed, true); assert.deepEqual(node.style.path.points[1].handleOut, { x: 1.3, y: .3 });
+  const [planned] = planScene(history.document, "vector-page", "page").nodes;
+  assert.equal(planned.id, id); assert.ok(planned.bounds.x < planned.viewport.x - 100, "raster bounds include Bézier handles extending outside the frame");
+  assert.doesNotThrow(() => validateProject(history.document));
+  history.undo(); assert.equal(history.document.slides[0].nodeIds.length, 0);
+  history.redo(); assert.deepEqual(history.document.nodes[id].style.path, node.style.path);
+  const invalid = structuredClone(history.document); invalid.nodes[id].style.path.points[0].x = 2;
+  assert.throws(() => validateProject(invalid), /vector point position/);
 });
 
 test("deleting a full multi-selection removes every layer in one reversible command", () => {

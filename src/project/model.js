@@ -124,12 +124,28 @@ function validateNodeStyle(node) {
     }
   } else if (node.kind === "shape") {
     check(node.text == null, "Shapes cannot contain caption text.");
-    keys(style, ["shape", "radius", "strokeColor", "strokeWidth"]);
-    check(style.shape == null || ["rectangle", "rounded", "ellipse"].includes(style.shape), "Unsupported shape.");
+    keys(style, ["shape", "radius", "strokeColor", "strokeWidth", "path"]);
+    check(style.shape == null || ["rectangle", "rounded", "ellipse", "path"].includes(style.shape), "Unsupported shape.");
     if (style.radius != null) check(number(style.radius, 0, .5), "Invalid corner radius.");
     if (style.strokeColor != null) check(color(style.strokeColor), "Invalid stroke color.");
     if (style.strokeWidth != null) check(number(style.strokeWidth, 0, .2), "Invalid stroke width.");
     check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
+    if (style.shape === "path") {
+      const path = style.path;
+      check(object(path), "A vector layer needs path data."); keys(path, ["closed", "points"]);
+      check(typeof path.closed === "boolean" && Array.isArray(path.points) && path.points.length >= (path.closed ? 3 : 2)
+        && path.points.length <= 512, "Invalid vector path.");
+      if (!path.closed) check(style.strokeColor != null && style.strokeWidth > 0, "An open vector path needs a visible stroke.");
+      for (const point of path.points) {
+        check(object(point), "Invalid vector point."); keys(point, ["x", "y", "handleIn", "handleOut"]);
+        check(number(point.x, 0, 1) && number(point.y, 0, 1), "Invalid vector point position.");
+        for (const key of ["handleIn", "handleOut"]) if (point[key] != null) {
+          const handle = point[key]; check(object(handle), "Invalid vector handle."); keys(handle, ["x", "y"]);
+          check(number(handle.x, -4, 5) && number(handle.y, -4, 5), "Invalid vector handle position.");
+        }
+      }
+      if (style.radius != null) check(false, "Vector paths do not use a corner radius.");
+    } else check(style.path == null, "Only vector paths can carry path data.");
     check(node.fontId == null, "Shapes cannot reference a font.");
   } else if (node.kind === "text") {
     keys(style, ["builtinFont", "fontSize", "minFontSize", "fontBasis", "weight", "italic", "align", "verticalAlign", "lineHeight", "fit", "shadow"]);
