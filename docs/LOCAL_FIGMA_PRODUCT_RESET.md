@@ -99,6 +99,8 @@ resize a normalized crop window over the retained original, then undo, redo, or
 reset it while the same page layer is re-rendered through Pillow-RS WASM.
 The shared inspector also exposes undoable 0–100% layer opacity for images,
 text, shapes, and frames, with an immediate local WASM page preview.
+When multiple layers are selected, it shows mixed opacity and applies one
+shared, undoable opacity edit to the entire selection.
 Frames support inherited transforms, clipping, corner radius, constraints, and
 horizontal/vertical Auto Layout. Auto Layout now includes wrap, independent row
 and column spacing, padding, alignment/justification, and per-axis Fixed, Fill,

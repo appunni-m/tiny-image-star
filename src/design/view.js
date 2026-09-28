@@ -51,6 +51,10 @@ export function createDesignView() {
       <aside id="design-inspector" class="design-sidebar design-inspector" aria-label="Design inspector">
         <header class="design-panel-heading"><h2>Design</h2><span id="design-selection-count" class="design-count">0 selected</span></header>
         <p id="design-inspector-empty" class="design-inspector-empty">Select an image, text, or shape to edit its properties.</p>
+        <div id="design-multi-inspector" class="design-multi-inspector" hidden>
+          <p id="design-multi-summary" class="design-inspector-empty"></p>
+          <label class="design-range-field"><span>Opacity <output id="design-multi-opacity-value">100%</output></span><input id="design-multi-opacity" type="range" min="0" max="100" step="1" value="100" aria-label="Opacity for selected layers" /></label>
+        </div>
         <div id="design-inspector-content" class="design-inspector-content" hidden>
           <label class="design-field"><span>Name</span><input id="design-layer-name" type="text" maxlength="120" autocomplete="off" /></label>
           <fieldset class="design-fieldset"><legend>Position</legend>

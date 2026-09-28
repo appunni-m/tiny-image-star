@@ -280,6 +280,35 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(pinch.during.revision, pinch.before.revision, "canvas gestures never rewrite image layers or original bytes");
     await page.locator("#design-zoom-label").click();
 
+    await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.locator(`#design-layer-list [data-layer-id="${otherImageId}"] .design-layer-select`).click({ modifiers: ["Shift"] });
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 2);
+    assert.equal(await page.locator("#design-multi-inspector").isVisible(), true, "multi-selection shows shared editable properties");
+    assert.equal(await page.locator("#design-multi-opacity-value").textContent(), "Mixed", "mixed values are visible before a shared edit");
+    const beforeMultiOpacity = await page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, {
+      opacity: window.tinyImageStarDesign.getSnapshot().nodes[id].opacity,
+      assetId: window.tinyImageStarDesign.getSnapshot().nodes[id].assetId,
+    }])), [selectedId, otherImageId]);
+    await page.locator("#design-multi-opacity").evaluate((input) => {
+      input.value = "65"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let multiOpacity = await page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, window.tinyImageStarDesign.getSnapshot().nodes[id]])),
+      [selectedId, otherImageId]);
+    assert.deepEqual(Object.values(multiOpacity).map((node) => node.opacity), [.65, .65], "one mixed-value edit updates every selected image");
+    assert.deepEqual(Object.values(multiOpacity).map((node) => node.assetId), [sourceId, beforeMultiOpacity[otherImageId].assetId],
+      "shared opacity preserves the distinct source asset for each layer");
+    await page.locator("#design-undo").click();
+    multiOpacity = await page.evaluate((ids) => Object.fromEntries(ids.map((id) => [id, window.tinyImageStarDesign.getSnapshot().nodes[id]])),
+      [selectedId, otherImageId]);
+    assert.deepEqual(Object.fromEntries(Object.entries(multiOpacity).map(([id, node]) => [id, node.opacity])),
+      Object.fromEntries(Object.entries(beforeMultiOpacity).map(([id, value]) => [id, value.opacity])),
+      "one undo restores every selected layer's original opacity");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 1);
+
     await page.locator("#design-add-text").click();
     await page.locator("#design-add-rectangle").click();
     const withObjects = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());

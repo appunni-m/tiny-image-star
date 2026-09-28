@@ -181,11 +181,28 @@ export function attachDesignWorkspace() {
 
   function renderInspector() {
     const ids = currentSelection(), project = renderProject(), node = ids.length === 1 ? layer(ids[0]) : null;
+    const multi = ids.length > 1;
     get("selection-count").textContent = `${ids.length} selected`;
     get("selection-summary").textContent = ids.length ? ids.length === 1 ? layer(ids[0])?.name ?? "1 layer selected" : `${ids.length} layers selected` : "Nothing selected";
     get("inspector-empty").hidden = Boolean(ids.length);
     get("inspector-content").hidden = !node;
-    if (!node || !project) return;
+    get("multi-inspector").hidden = !multi;
+    if (!project) return;
+    if (multi) {
+      const nodes = ids.map((id) => layer(id)), values = nodes.map((entry) => Math.round((entry.opacity ?? 1) * 100));
+      const mixed = values.some((value) => value !== values[0]);
+      const control = get("multi-opacity");
+      get("multi-summary").textContent = `${ids.length} layers selected`;
+      control.value = String(values[0] ?? 100);
+      get("multi-opacity-value").value = mixed ? "Mixed" : `${values[0]}%`;
+      control.setAttribute("aria-valuetext", mixed ? "Mixed opacity" : `${values[0]}%`);
+      const editable = nodes.every((entry, index) => entry && ["image", "text", "shape", "frame"].includes(entry.kind)
+        && !worldLayer(ids[index])?.locked);
+      control.disabled = !editable;
+      control.title = editable ? "" : "Unlock selected layers to change their opacity.";
+      return;
+    }
+    if (!node) return;
     const asset = node.assetId ? project.assets[node.assetId] : null;
     setField("layer-name", node.name || asset?.name || node.kind);
     const world = worldLayer(node.id) ?? node;
@@ -1237,6 +1254,18 @@ export function attachDesignWorkspace() {
     if (id) previewNode(id, { opacity: value });
   });
   get("opacity").addEventListener("change", () => commitEdit("Change layer opacity"));
+  get("multi-opacity").addEventListener("input", () => {
+    const ids = currentSelection(), value = Number(get("multi-opacity").value) / 100;
+    get("multi-opacity-value").value = `${Math.round(value * 100)}%`;
+    const nodes = ids.map((id) => layer(id));
+    if (nodes.length < 2 || nodes.some((node, index) => !node || !["image", "text", "shape", "frame"].includes(node.kind)
+      || worldLayer(ids[index])?.locked)) return;
+    try {
+      history.preview({ type: "group", commands: ids.map((id) => ({ type: "node", id, value: { ...clone(layer(id)), opacity: value } })) });
+      edited("Previewing layer opacity…", { previewOnly: true });
+    } catch (error) { setStatus(error.message); }
+  });
+  get("multi-opacity").addEventListener("change", () => commitEdit("Change selected layer opacity"));
   get("frame-clip").addEventListener("change", () => {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
     history.apply({ type: "node", id, value: { ...clone(node), style: { ...node.style, clipContent: get("frame-clip").checked } } }, "Change frame clipping"); edited("Frame clipping updated.");

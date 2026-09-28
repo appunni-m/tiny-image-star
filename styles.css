@@ -511,6 +511,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-zoom-controls .design-zoom-label { min-width: 54px; font-variant-numeric: tabular-nums; }
 .design-inspector { padding: 10px; overflow: auto; }
 .design-inspector-empty { padding: 8px 2px; color: var(--muted); font-size: .75rem; line-height: 1.5; }
+.design-multi-inspector { display: grid; min-width: 0; gap: 12px; }
+.design-multi-inspector[hidden] { display: none; }
+.design-multi-inspector .design-inspector-empty { margin: 0; }
 .design-inspector-content { display: grid; gap: 12px; }
 .design-inspector-content[hidden], .design-inspector-empty[hidden] { display: none; }
 .design-field { display: grid; min-width: 0; gap: 5px; color: var(--muted); font-size: .68rem; font-weight: 700; }
