@@ -12,7 +12,11 @@ export function createDesignView() {
         <select id="design-open-file" class="button secondary" aria-label="Open saved local document"><option value="">Open local document…</option></select>
         <button id="design-add-images" class="button secondary" type="button">Add images</button>
         <button id="design-add-text" class="button secondary" type="button" disabled>Text</button>
-        <button id="design-add-rectangle" class="button secondary" type="button" disabled>Rectangle</button>
+        <label class="design-shape-control"><span class="visually-hidden">Shape type</span><select id="design-shape-type" class="button secondary" aria-label="Shape type" disabled>
+          <option value="rectangle">Rectangle</option><option value="rounded">Rounded rectangle</option><option value="ellipse">Ellipse</option>
+          <option value="line">Line</option><option value="arrow">Arrow</option><option value="polygon">Polygon</option><option value="star">Star</option>
+        </select></label>
+        <button id="design-add-shape" class="button secondary" type="button" disabled>Add shape</button>
         <button id="design-add-pen" class="button secondary" type="button" disabled aria-pressed="false" title="Pen tool · click to add points, drag to create curves">Pen</button>
         <button id="design-frame-selection" class="button secondary" type="button" disabled>Frame selection</button>
         <span class="design-toolbar-divider" aria-hidden="true"></span>

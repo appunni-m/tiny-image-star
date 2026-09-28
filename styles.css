@@ -460,6 +460,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-save-status { color: var(--muted); font-size: .66rem; }
 .design-toolbar-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .design-toolbar-actions .button { min-height: 40px; padding: 7px 10px; font-size: .78rem; }
+.design-shape-control { display: flex; min-width: 0; }
+.design-shape-control select { max-width: 148px; min-height: 40px; padding: 7px 26px 7px 9px; font-size: .78rem; }
 .design-toolbar-divider { width: 1px; height: 25px; margin-inline: 3px; background: var(--line); }
 #design-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .design-recipe-job { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(100px, 1.4fr) auto minmax(125px, .7fr) auto auto; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 5px 18px var(--shadow); }
@@ -980,6 +982,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-toolbar { min-height: 50px; padding: 3px; }
   .design-toolbar-actions { flex: 1; justify-content: flex-end; overflow-x: auto; scrollbar-width: thin; }
   .design-toolbar-actions .button { min-height: 44px; padding-inline: 8px; white-space: nowrap; }
+  .design-shape-control select { min-height: 44px; max-width: 150px; }
   .design-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(220px, 1fr) 132px minmax(180px, 225px); gap: 5px; }
   .design-canvas-panel { grid-row: 1; grid-template-rows: 34px minmax(0, 1fr) 34px; }
   .design-left-sidebar { grid-row: 2; display: grid; grid-template-columns: minmax(92px, 22%) minmax(0, 1fr); }
@@ -1022,6 +1025,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-recipe-job-speed select { min-height: 44px; font-size: .9rem; }
   .design-recipe-job > .button { min-height: 44px; padding-inline: 8px; }
   .design-toolbar-actions { justify-content: flex-start; }
+  .design-shape-control { order: -3; }
+  #design-add-shape { order: -2; }
+  #design-add-pen { order: -1; }
   .design-toolbar-actions .button { flex: 0 0 auto; }
   .design-toolbar-divider { flex: 0 0 1px; }
   .design-layout { grid-template-rows: minmax(210px, 1fr) 118px minmax(190px, 235px); }

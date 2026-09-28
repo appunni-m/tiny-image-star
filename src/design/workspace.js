@@ -12,6 +12,7 @@ import { importStoryPhotos } from "../story/assets.js";
 import { openContextMenu } from "../context-menu.js";
 import { designRecipePatch, designRecipeProblem } from "./recipes.js";
 import { resizeSelection, rotateSelection, selectionBounds, zoomAtPoint } from "./geometry.js";
+import { createVectorShape } from "./vector-shapes.js";
 
 const DESIGN_IMPORT_LIMIT = 128 * 1024 * 1024;
 
@@ -295,7 +296,7 @@ export function attachDesignWorkspace() {
     if (!project) {
       if (document.activeElement !== get("document-name")) get("document-name").value = "Untitled design";
       get("add-text").disabled = true;
-      get("add-rectangle").disabled = true; get("add-pen").disabled = true; get("export").disabled = true; get("undo").disabled = true; get("redo").disabled = true;
+      get("shape-type").disabled = true; get("add-shape").disabled = true; get("add-pen").disabled = true; get("export").disabled = true; get("undo").disabled = true; get("redo").disabled = true;
       get("fit").disabled = true; get("zoom-in").disabled = true; get("zoom-out").disabled = true; get("zoom-label").textContent = "100%";
       get("empty-state").hidden = false; get("page-title").textContent = "Page 1";
       get("layer-list").replaceChildren(); get("layer-count").textContent = "0"; renderInspector(); drawCanvas();
@@ -304,7 +305,8 @@ export function attachDesignWorkspace() {
     if (!project.slides.some((page) => page.id === pageId)) pageId = project.slides[0]?.id ?? null;
     if (document.activeElement !== get("document-name")) get("document-name").value = project.name;
     get("add-text").disabled = !currentPage() || currentPage().nodeIds.length >= 200;
-    get("add-rectangle").disabled = get("add-text").disabled;
+    get("shape-type").disabled = get("add-text").disabled;
+    get("add-shape").disabled = get("add-text").disabled;
     get("add-pen").disabled = get("add-text").disabled;
     get("frame-selection").disabled = currentSelection().length < 2 || currentSelection().length > 200;
     get("export").disabled = !currentPage() || exportBusy || importing;
@@ -1199,11 +1201,16 @@ export function attachDesignWorkspace() {
     } catch (error) { setStatus(error.message); }
   }
 
-  function addRectangle() {
+  function addShape() {
     if (!history || !currentPage()) return;
     try {
-      const command = addShapeLayerCommand(history.document, currentPage().id, "rectangle");
-      history.apply(command, "Add rectangle"); const id = command.commands[0].id; selection = { ids: [id], anchorId: id }; edited("Rectangle added.");
+      const shape = get("shape-type").value;
+      const command = ["rectangle", "rounded", "ellipse"].includes(shape)
+        ? addShapeLayerCommand(history.document, currentPage().id, shape)
+        : addVectorLayerCommand(history.document, currentPage().id, createVectorShape(shape));
+      const name = shape === "rounded" ? "Rounded rectangle" : shape[0].toUpperCase() + shape.slice(1);
+      history.apply(command, `Add ${name.toLowerCase()}`);
+      const id = command.commands[0].id; selection = { ids: [id], anchorId: id }; edited(`${name} added.`);
     } catch (error) { setStatus(error.message); }
   }
 
@@ -1364,7 +1371,7 @@ export function attachDesignWorkspace() {
     event.preventDefault(); const id = hitTest(pointerPoint(event));
     if (id) contextMenuForLayer(event, id);
     else openContextMenu({ x: event.clientX, y: event.clientY, anchor: get("canvas"), focus: get("canvas"), items: [
-      { label: "Add images", action: requestFiles }, { label: "Add text", action: addText }, { label: "Add rectangle", action: addRectangle },
+      { label: "Add images", action: requestFiles }, { label: "Add text", action: addText }, { label: "Add shape", action: addShape },
       { label: "Draw vector path", action: togglePen },
     ] });
   });
@@ -1411,7 +1418,7 @@ export function attachDesignWorkspace() {
     if (name !== history.document.name) { history.apply({ type: "name", value: name }, "Rename design"); edited("Design renamed."); }
   });
   get("file-input").addEventListener("change", () => { const files = [...(get("file-input").files ?? [])]; get("file-input").value = ""; void importImages(files); });
-  get("add-text").addEventListener("click", addText); get("add-rectangle").addEventListener("click", addRectangle);
+  get("add-text").addEventListener("click", addText); get("add-shape").addEventListener("click", addShape);
   get("add-pen").addEventListener("click", togglePen);
   get("edit-vector").addEventListener("click", () => {
     const id = currentSelection()[0], node = id && layer(id);
@@ -1586,6 +1593,9 @@ export function attachDesignWorkspace() {
   get("delete").addEventListener("click", deleteSelected);
   document.querySelectorAll("#design-button").forEach((button) => button.addEventListener("click", showDesign));
   const resizeObserver = new ResizeObserver(() => drawCanvas()); resizeObserver.observe(get("stage"));
+  window.addEventListener("resize", () => {
+    if (window.matchMedia("(max-width: 620px)").matches) root.querySelector(".design-toolbar-actions").scrollLeft = 0;
+  });
   window.addEventListener("tinystar:design-visibility", (event) => {
     if (event.detail?.visible) { renderWorkspace(); schedulePreview(0); }
     else { clearTimeout(previewTimer); previewEpoch += 1; previewTask?.cancel(); previewTask = null; }

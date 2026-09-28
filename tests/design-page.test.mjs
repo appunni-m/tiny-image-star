@@ -7,6 +7,7 @@ import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
 import { designRecipePatch, designRecipeProblem } from "../src/design/recipes.js";
+import { createVectorShape } from "../src/design/vector-shapes.js";
 
 const images = (count = 3) => Array.from({ length: count }, (_, index) => ({ id: `asset-${index}`, kind: "image", name: `Photo ${index}.png`,
   type: "image/png", byteLength: 120, sha256: index.toString(16).padStart(64, "0"), width: index % 2 ? 400 : 600, height: index % 2 ? 600 : 400,
@@ -118,6 +119,29 @@ test("pen vector layers persist closed paths and Bezier handles as one undoable 
   history.redo(); assert.deepEqual(history.document.nodes[id].style.path, node.style.path);
   const invalid = structuredClone(history.document); invalid.nodes[id].style.path.points[0].x = 2;
   assert.throws(() => validateProject(invalid), /vector point position/);
+});
+
+test("line, arrow, polygon and star tools generate bounded editable vector paths", () => {
+  const project = createDesignPageProject({ images: [], id: "shape-design", slideId: "shape-page" });
+  const history = new ProjectHistory(project);
+  for (const kind of ["line", "arrow", "polygon", "star"]) {
+    const geometry = createVectorShape(kind);
+    const command = addVectorLayerCommand(history.document, "shape-page", geometry);
+    history.apply(command, `Add ${kind}`);
+    const node = history.document.nodes[command.commands[0].id];
+    assert.equal(node.name, geometry.name);
+    assert.equal(node.style.shape, "path");
+    assert.equal(node.style.path.closed, kind !== "line");
+    assert.ok(node.style.path.points.length >= (node.style.path.closed ? 3 : 2));
+    assert.ok(node.style.path.points.every(({ x, y }) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
+    if (kind === "line") assert.ok(node.style.strokeWidth > 0 && node.style.strokeColor);
+    assert.doesNotThrow(() => validateProject(history.document));
+  }
+  assert.equal(createVectorShape("polygon", { sides: 9 }).path.points.length, 9);
+  assert.equal(createVectorShape("star", { sides: 7 }).path.points.length, 14);
+  assert.throws(() => createVectorShape("polygon", { sides: 2 }), /3 and 24/);
+  assert.throws(() => createVectorShape("star", { innerRadius: .05 }), /inner radius/);
+  assert.throws(() => createVectorShape("heart"), /supported vector shape/);
 });
 
 test("deleting a full multi-selection removes every layer in one reversible command", () => {

@@ -105,6 +105,11 @@ the page. Dragging while placing an anchor creates paired Bézier handles, and
 path points/handles can be moved in place with one undoable edit; paths remain
 ordinary saved shape layers and render through the same local Pillow-RS scene
 preview.
+The responsive shape picker now adds rectangles, rounded rectangles, ellipses,
+lines, arrows, regular polygons, and stars. Line, arrow, polygon, and star
+geometry is stored as editable path data on the same page model; mobile checks
+verify the picker and Add shape action stay touch-sized, and all seven tool
+outputs survive local save and reload.
 Frames support inherited transforms, clipping, corner radius, constraints, and
 horizontal/vertical Auto Layout. Auto Layout now includes wrap, independent row
 and column spacing, padding, alignment/justification, and per-axis Fixed, Fill,
@@ -114,7 +119,7 @@ design image bytes remain local and retained by the active project.
 This is a material workspace milestone, not complete Figma parity. The app
 still keeps its older single-image, batch, and story workspaces as separate
 interaction models, and the design workspace lacks a general vector-path
-network editor, polygon/star/line/arrow shape tools, boolean path operations,
+network editor, parametric polygon/star controls, boolean path operations,
 SVG import/export, components/variants, variables, layout grids, effects and
 advanced fill systems, prototype interactions, and many established
 keyboard/accessibility behaviors. Auto Layout still lacks grid flow, min/max
@@ -130,7 +135,7 @@ open; do not describe the project as a production-ready Figma copy.
 | Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
 | Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gap, basic alignment, and per-axis Fixed/Fill/Hug work. Grid flow and tracks, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment are pending. |
-| Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, editable Pen paths, and cubic Bézier handles work. Polygon/star/line/arrow tools, vector-network joins, boolean operations, and SVG import/export remain pending. |
+| Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, regular polygon, star, editable Pen paths, and cubic Bézier handles work. Parametric polygon/star controls, vector-network joins, boolean operations, and SVG import/export remain pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
 | Components and design systems | Pending | Components, instances, variants, properties, libraries, and variables/tokens are not implemented. |
@@ -222,7 +227,7 @@ revisions, and the page job panel exposes progress, scheduler mode,
 pause/resume, and cancel; the older batch gallery also has format-aware recipe
 jobs and a global processing bar. These paths still have separate document and
 job state, so unification remains required. The next major Figma gap is vector
-creation/editing: the first Pen path and direct point/handle editing slice is
-now in the page model; the remaining vector-network and shape tools, followed
-by grid Auto Layout, layout guides, components/variables, and prototypes,
-remain pending.
+editing: the Pen tool and basic shape tools are now in the page model;
+parametric shape controls, vector-network joins, and boolean operations remain
+pending, followed by grid Auto Layout, layout guides, components/variables, and
+prototypes.

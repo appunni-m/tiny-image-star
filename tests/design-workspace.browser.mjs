@@ -341,7 +341,7 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 1);
 
     await page.locator("#design-add-text").click();
-    await page.locator("#design-add-rectangle").click();
+    await page.locator("#design-add-shape").click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     const beforePen = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
     await page.locator("#design-add-pen").click();
@@ -564,6 +564,28 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => !document.querySelector("#mobile-more-sheet")?.open && !document.querySelector("#design-view")?.hidden);
     await page.locator("#design-new-page").click();
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().pages.length === 2);
+    const shapeToolbar = await page.evaluate(() => ({
+      selector: document.querySelector("#design-shape-type").getBoundingClientRect().toJSON(),
+      add: document.querySelector("#design-add-shape").getBoundingClientRect().toJSON(),
+    }));
+    assert.ok(shapeToolbar.selector.height >= 43 && shapeToolbar.add.height >= 43
+      && shapeToolbar.selector.left >= 0 && shapeToolbar.add.right <= 390,
+    `mobile shape controls are large enough to tap and stay in view: ${JSON.stringify(shapeToolbar)}`);
+    for (const [index, shape] of ["rectangle", "rounded", "ellipse", "line", "arrow", "polygon", "star"].entries()) {
+      await page.locator("#design-shape-type").selectOption(shape);
+      await page.locator("#design-add-shape").click();
+      await page.waitForFunction((count) => window.tinyImageStarDesign.getSnapshot().pages[1].nodeIds.length === count, index + 1);
+      await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    }
+    const shapePage = await page.evaluate(() => {
+      const snapshot = window.tinyImageStarDesign.getSnapshot();
+      return snapshot.pages[1].nodeIds.map((id) => snapshot.nodes[id]);
+    });
+    assert.deepEqual(shapePage.map((node) => node.name), ["Rectangle", "Rounded rectangle", "Ellipse", "Line", "Arrow", "Polygon", "Star"]);
+    assert.equal(shapePage[3].style.path.closed, false, "Line is an open stroked path");
+    assert.ok(shapePage[3].style.strokeWidth > 0);
+    assert.ok(shapePage.slice(4).every((node) => node.style.shape === "path" && node.style.path.closed),
+      "Arrow, polygon and star are normal editable closed vector paths");
     const pages = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().pages.map((entry) => entry.name));
     assert.deepEqual(pages, ["Page 1", "Page 2"]);
     await page.locator("#design-document-name").fill("Mobile Figma draft");
@@ -577,6 +599,7 @@ export async function assertDesignWorkspace(browser, address) {
     const reopened = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
     assert.equal(reopened.pages[0].nodeIds.length, 6, "saved image, text, shapes, vector path and frame layers reopen together");
+    assert.equal(reopened.pages[1].nodeIds.length, 7, "all mobile-added shape types survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.wrap, true, "wrap and axis gaps survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.rowGap, 9);
@@ -589,7 +612,9 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-canvas").press("Backspace");
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.pages[0].nodeIds.length === 0);
     const bulkDeleted = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
-    assert.deepEqual(Object.keys(bulkDeleted.nodes), [], "keyboard bulk delete removes the whole canvas selection atomically");
+    assert.equal(bulkDeleted.pages[1].nodeIds.length, 7, "keyboard bulk delete leaves layers on the other page untouched");
+    assert.deepEqual(Object.keys(bulkDeleted.nodes), bulkDeleted.pages[1].nodeIds,
+      "keyboard bulk delete removes every selected canvas layer and preserves other-page shapes");
 
     await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");
     const story = await page.evaluate(async (base64) => {
@@ -634,6 +659,6 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopenedStory.node.appearance.brightness, 1.25, "edits through the shared page canvas save back as a story project");
     assert.ok(reopenedStory.revision > 0, "editing the shared story advances its saved revision");
     assert.equal(reopenedStory.asset.sha256, story.sha256, "saving through the page canvas preserves the story's verified original asset");
-    console.log("  design workspace: retained sources, live image/vector previews, Pen Béziers and point editing, Auto Layout, recipes, autosave and phone layout");
+    console.log("  design workspace: retained sources, live image/vector previews, Pen Béziers, shape tools, Auto Layout, recipes, autosave and phone layout");
   } finally { await context.close(); }
 }

@@ -105,7 +105,8 @@ export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || !["rectangle", "rounded", "ellipse"].includes(shape))
     throw new Error("This page cannot add that shape.");
-  const id = newId("layer"), node = { id, kind: "shape", name: shape === "ellipse" ? "Ellipse" : "Rectangle", visible: true, locked: false,
+  const id = newId("layer"), name = ({ rectangle: "Rectangle", rounded: "Rounded rectangle", ellipse: "Ellipse" })[shape];
+  const node = { id, kind: "shape", name, visible: true, locked: false,
     space: "slide", frame: { x: .35, y: .35, width: .3, height: .3 }, color: "#5149d5",
     style: { shape, ...(shape === "rounded" ? { radius: .08 } : {}) } };
   return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
@@ -113,13 +114,13 @@ export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
 }
 
 /** Add a locally editable vector path to a design page. Points and handles are frame-relative. */
-export function addVectorLayerCommand(project, pageId, { frame, path, name = "Vector" } = {}) {
+export function addVectorLayerCommand(project, pageId, { frame, path, name = "Vector", strokeColor = "#5149d5", strokeWidth = .012 } = {}) {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || !frame || !path
     || typeof name !== "string" || !name.trim() || name.length > 120) throw new Error("This page cannot add that vector.");
   const id = newId("layer"), node = { id, kind: "shape", name: name.trim(), visible: true, locked: false,
     space: "slide", frame: clone(frame), color: "#5149d5",
-    style: { shape: "path", path: clone(path), ...(!path.closed ? { strokeColor: "#5149d5", strokeWidth: .012 } : {}) } };
+    style: { shape: "path", path: clone(path), ...(!path.closed ? { strokeColor, strokeWidth } : {}) } };
   return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
     entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
 }
