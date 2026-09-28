@@ -30,6 +30,7 @@
     "verify:watch": "node scripts/watch-verify.mjs",
     "verify:browser": "node scripts/browser-smoke.mjs",
     "verify:bulk-context": "node scripts/browser-smoke.mjs --bulk-recipe-context-only",
+    "verify:design-workspace": "node scripts/browser-smoke.mjs --design-workspace-only",
     "verify:security": "node scripts/verify-security.mjs",
     "verify:staged-browser": "node scripts/verify-staged-browser.mjs",
     "verify:folder-recovery": "node scripts/verify-folder-recovery.mjs",

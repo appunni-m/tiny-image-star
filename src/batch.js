@@ -19,7 +19,7 @@ import {
   inputProblem,
 } from "./input.js";
 import { DESTINATION_PRESETS, PRESETS } from "./presets.js";
-import { canonicalJSON } from "./project/model.js";
+import { canonicalJSON, ENGINE_IDENTITY } from "./project/model.js";
 import { legacyRecipeOperations, legacyRecipeProblem, legacyStyleFromRecipe, originalRecipe, withLegacyStyle } from "./styles/legacy.js";
 import { mutateRecipeCatalog, readRecipeCatalog } from "./styles/catalog.js";
 import { catalogError, LEGACY_RECIPES_KEY, recipeCommand } from "./styles/catalog-model.js";
@@ -950,6 +950,11 @@ function showView(view) {
     if (active) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
+  const designButton = document.querySelector("#design-button");
+  if (designButton) {
+    if (view === "design") designButton.setAttribute("aria-current", "page");
+    else designButton.removeAttribute("aria-current");
+  }
   const openButton = document.querySelector("#open-button");
   if (openButton) openButton.hidden = !editorChromeVisible || !snapshot?.file;
   const savePresetButton = document.querySelector("#save-preset-button");
@@ -969,8 +974,12 @@ function showView(view) {
     ? state.folderJobs?.job?.()?.sourceName ?? "Large folder"
     : view === "editor" || reviewMode
     ? snapshot?.file?.name ?? "Open an image to begin"
+    : view === "design" ? document.querySelector("#design-document-name")?.textContent ?? "Untitled design"
     : view === "presets" ? "Presets" : "Images";
   elements.editorView.hidden = !editorSurfaceVisible;
+  const designView = document.querySelector("#design-view");
+  if (designView) designView.hidden = view !== "design";
+  window.dispatchEvent(new CustomEvent("tinystar:design-visibility", { detail: { visible: view === "design" } }));
   elements.batchView.hidden = view !== "batch";
   elements.batchView.dataset.review = String(reviewMode);
   elements.batchView.dataset.largeJob = String(largeMode);
@@ -1321,7 +1330,7 @@ function openPresetDialog(operations, width, height, suggestedName = "My image r
   elements.presetForm.querySelector("[data-preset-save-error]")?.remove();
   elements.presetDialogHeading.textContent = context?.kind === "batch-override"
     ? "Save override as preset"
-    : context?.kind === "batch-image" ? "Save image recipe" : "Save as preset";
+    : context?.kind === "batch-image" ? "Save image recipe" : context?.kind === "design-image" ? "Save design image recipe" : "Save as preset";
   elements.presetName.value = suggestedName;
   elements.presetDestination.replaceChildren();
   for (const destination of [...DESTINATION_PRESETS, { id: "custom", name: "Custom recipe" }]) {
@@ -1362,6 +1371,21 @@ function openPresetDialog(operations, width, height, suggestedName = "My image r
     : "No crop frame is saved; the whole image remains visible.";
   if (typeof elements.presetDialog.showModal === "function") elements.presetDialog.showModal();
   else elements.presetDialog.setAttribute("open", "");
+}
+
+function openDesignImageRecipe({ name = "Image", appearance = {}, crop = null, width, height } = {}) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > MAX_BATCH_PIXELS) {
+    elements.batchStatus.textContent = "This image is too large to save as a reusable recipe."; return;
+  }
+  const lookName = String(name || "Image").trim().slice(0, 72) || "Image";
+  const photoLook = { version: 1, definition: { id: `design-look-${crypto.randomUUID()}`, revision: 1, name: lookName,
+    engine: { name: ENGINE_IDENTITY.name, versions: [ENGINE_IDENTITY.version], compositors: [ENGINE_IDENTITY.compositor] },
+    appearance: { ...appearance } }, strength: 1 };
+  const pixelCrop = crop ? { x: crop.x * width, y: crop.y * height, width: crop.width * width, height: crop.height * height } : null;
+  const operations = { crop: pixelCrop, rotation: 0, flipX: false, flipY: false, resizeWidth: width, resizeHeight: height,
+    resizeMode: "fit", aspectLocked: true, brightness: 1, contrast: 1, grayscale: false, photoLook,
+    textLayers: [], lossy: false, quality: DEFAULT_QUALITY, format: "png" };
+  openPresetDialog(operations, width, height, `${lookName} look`, { kind: "design-image" });
 }
 
 function applyPresetDestinationToDialog() {
@@ -2957,6 +2981,7 @@ elements.presetForm.addEventListener("submit", (event) => {
 });
 window.addEventListener("tinystar:show-presets", () => showView("presets"));
 window.addEventListener("tinystar:show-batch", () => showView("batch"));
+window.addEventListener("tinystar:show-design", () => showView("design"));
 window.addEventListener("tinystar:show-results", () => {
   captureCurrentBatchEditorOverride();
   state.folderJobs?.deactivate?.();
@@ -3068,6 +3093,11 @@ window.addEventListener("keydown", (event) => {
   }
   saveSelected();
 });
+
+window.tinyImageStarBatch = {
+  listRecipes: () => allPresets().filter((recipe) => !recipe.recovery).map((recipe) => clone(recipe)),
+  openDesignImageRecipe,
+};
 
 void refreshRecipeCatalog();
 state.folderJobs = attachLargeFolderJobs({

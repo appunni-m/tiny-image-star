@@ -11,6 +11,7 @@ import { attachMobileShell } from "./editor/mobile-shell.js?v=20260927-responsiv
 import { attachProcessingControls } from "./processing/controls.js?v=20260928-figma-slice-2";
 import { attachLocalDataControls } from "./local-data.js";
 import { attachStoryWorkspace } from "./story/workspace.js";
+import { attachDesignWorkspace } from "./design/workspace.js?v=20260928-page-canvas-2";
 
 // Composition only: feature code lives under src/editor/ and the companion
 // batch surface remains in src/batch.js.
@@ -23,6 +24,7 @@ attachEditorText(editor);
 attachEditorProcessing(editor);
 bindEditorEvents(editor);
 attachMobileShell(editor);
+attachDesignWorkspace();
 attachProcessingControls();
 attachLocalDataControls();
 attachStoryWorkspace();
@@ -76,6 +78,6 @@ window.tinyImageStarEditor = {
   },
 };
 
-import("./batch.js?v=20260928-figma-slice-2").catch(() => {
+import("./batch.js?v=20260928-figma-slice-3").catch(() => {
   window.dispatchEvent(new CustomEvent("tinystar:batch-error"));
 });

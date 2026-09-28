@@ -51,7 +51,8 @@ export async function hashAsset(bytes) {
 function entriesFor(snapshot) { return snapshot.kind === "editor" ? [snapshot.editor] : snapshot.batch.files; }
 
 function validateRecoveryEnvelope(record) {
-  if (record.kind != null && record.kind !== "story") throw new Error("Unsupported recovery kind. Its original data has been preserved.");
+  if (record.kind != null && !["story", "design"].includes(record.kind)) throw new Error("Unsupported recovery kind. Its original data has been preserved.");
+  if (record.kind === "design") { designDocument(record.document); return; }
   if (record.kind == null && record.session?.version !== 1) throw new Error("Unsupported saved session format. Its original data has been preserved.");
   if (record.version === 1 && !record.session?.recipeReferences) return;
   if (record.version !== 2 || record.kind != null || !record.session?.batch) throw new Error("Unsupported recovery record. Its original data has been preserved.");
@@ -59,8 +60,13 @@ function validateRecoveryEnvelope(record) {
   if (canonicalJSON(record.document.recipe?.references) !== canonicalJSON(record.session.recipeReferences)
     || canonicalJSON(record.document.recipe?.definitions) !== canonicalJSON(record.session.frozenRecipes)) throw new Error("Saved recipe selections disagree with the recovery project. Its data has been preserved.");
 }
-function knownRecoveryRecord(record) {
-  try { validateRecoveryEnvelope(record); return record.document?.version === 1; } catch { return false; }
+function knownStoredRecord(record) {
+  try {
+    if (record.kind === "story") { if (record.version !== 1) return false; storyDocument(record.document); return true; }
+    if (record.kind === "design") { if (record.version !== 1) return false; designDocument(record.document); return true; }
+    validateRecoveryEnvelope(record);
+    return record.document?.version === 1;
+  } catch { return false; }
 }
 
 export function projectForSnapshot(snapshot) {
@@ -111,13 +117,18 @@ async function commitRecord(record, key, assets, expected) {
   await transact("readwrite", async (records, assetStore) => {
     const existing = await result(records.get(key));
     // An old app must never downgrade an unknown newer document in place.
-    if (existing) { validateProject(existing.document); assertEngineCompatibility(existing.document, { allowLegacy: true }); }
-    if (existing) validateRecoveryEnvelope(existing);
+    if (existing) {
+      validateProject(existing.document); assertEngineCompatibility(existing.document, { allowLegacy: true });
+      if (existing.kind === "story" && existing.version === 1) storyDocument(existing.document);
+      else if (existing.kind === "design" && existing.version === 1) designDocument(existing.document);
+      else if (existing.kind == null) validateRecoveryEnvelope(existing);
+      else throw new Error("An unsupported project kind is saved. Its recovery copy has been preserved.");
+    }
     if (existing?.version === 2 && record.version === 1 && existing.document.id === document.id) throw new Error("This saved image set requires its exact recipe revisions. Its recovery copy has been preserved.");
-    if (existing?.kind != null && existing.kind !== "story") throw new Error("An unsupported project kind is saved. Its recovery copy has been preserved.");
-    if (existing && (existing.kind === "story") !== (record.kind === "story")) throw new Error("This recovery location belongs to a different kind of project.");
+    if (existing && (existing.kind ?? "recovery") !== (record.kind ?? "recovery")) throw new Error("This recovery location belongs to a different kind of project.");
     if (expected && (expected.revision === null ? Boolean(existing) : !existing || existing.document.id !== document.id || existing.document.revision !== expected.revision)) {
-      const error = new Error("This story changed in another tab. Reopen the saved version before saving again.");
+      const label = record.kind === "design" ? "design" : record.kind === "story" ? "story" : "image set";
+      const error = new Error(`This ${label} changed in another tab. Reopen the saved version before saving again.`);
       error.code = "PROJECT_CONFLICT"; throw error;
     }
     if (existing?.document.id === document.id && existing.document.revision > document.revision) throw new Error("A newer project revision is already saved.");
@@ -142,7 +153,12 @@ async function commitRecord(record, key, assets, expected) {
     const keep = new Set(Object.values(document.assets).map((asset) => asset.sha256).filter(Boolean));
     for (const [index, item] of all.entries()) {
       if (keys[index] === key) continue;
-      validateProject(item.document);
+      if (!knownStoredRecord(item)) {
+        // Unknown record formats may refer to any stored asset. Keep all
+        // current blobs rather than collecting data that a newer app needs.
+        for (const stored of oldAssets) keep.add(stored.sha256);
+        continue;
+      }
       for (const asset of Object.values(item.document.assets)) if (asset.sha256) keep.add(asset.sha256);
     }
     const sizes = new Map(oldAssets.map((asset) => [asset.sha256, asset.blob.size]));
@@ -160,32 +176,41 @@ async function commitRecord(record, key, assets, expected) {
   return true;
 }
 
-function storyDocument(project) {
+function persistedProjectDocument(project, kind) {
   validateProject(project); assertEngineCompatibility(project);
-  if (Object.values(project.nodes).some((node) => node.kind === "legacy-image")) throw new Error("Use image recovery for a legacy image project.");
+  if (Object.values(project.nodes).some((node) => node.kind === "legacy-image")) throw new Error(`Use image recovery for this legacy ${kind} project.`);
   const sizes = new Map();
   for (const asset of Object.values(project.assets)) {
-    if (!asset.sha256 || !Number.isSafeInteger(asset.byteLength) || asset.byteLength < 1) throw new Error("Story assets need their original length and SHA-256 before saving.");
-    if (asset.kind !== "font" && (!Number.isInteger(asset.width) || !Number.isInteger(asset.height))) throw new Error("Story image assets need their upright pixel dimensions.");
-    if (sizes.has(asset.sha256) && sizes.get(asset.sha256) !== asset.byteLength) throw new Error("Identical story assets cannot declare different lengths.");
+    if (kind === "design" && asset.kind !== "image") throw new Error("Design files can only contain local image assets.");
+    if (!asset.sha256 || !Number.isSafeInteger(asset.byteLength) || asset.byteLength < 1) throw new Error(`${kind} assets need their original length and SHA-256 before saving.`);
+    if (asset.kind !== "font" && (!Number.isInteger(asset.width) || !Number.isInteger(asset.height))) throw new Error(`${kind} image assets need their upright pixel dimensions.`);
+    if (sizes.has(asset.sha256) && sizes.get(asset.sha256) !== asset.byteLength) throw new Error(`Identical ${kind} assets cannot declare different lengths.`);
     sizes.set(asset.sha256, asset.byteLength);
   }
-  if ([...sizes.values()].reduce((sum, size) => sum + size, 0) > MAX_ASSET_BYTES) throw new Error("This story exceeds the 128 MiB recovery asset budget.");
+  if ([...sizes.values()].reduce((sum, size) => sum + size, 0) > MAX_ASSET_BYTES) throw new Error(`This ${kind} exceeds the 128 MiB recovery asset budget.`);
   return project;
 }
+
+function storyDocument(project) { return persistedProjectDocument(project, "story"); }
+function designDocument(project) { return persistedProjectDocument(project, "design"); }
 
 function storyKey(key) {
   if (typeof key !== "string" || !key.startsWith("story:") || key.length < 7 || key.length > 1024 || key.includes(":renderer-backup:")) throw new Error("Invalid story recovery location.");
   return key;
 }
 
+function designKey(key) {
+  if (typeof key !== "string" || !key.startsWith("design:") || key.length < 8 || key.length > 1024 || key.includes(":renderer-backup:")) throw new Error("Invalid design recovery location.");
+  return key;
+}
+
 async function verifiedBlob(asset, source) {
   const size = source instanceof Blob ? source.size : source?.byteLength;
-  if (size !== asset.byteLength) throw new Error("A story asset is missing or changed. The previous recovery copy is preserved.");
+  if (size !== asset.byteLength) throw new Error("A saved project asset is missing or changed. The previous recovery copy is preserved.");
   // Blob snapshots mutable views, including their exact byteOffset/byteLength.
   // Only one source is expanded for hashing at a time; stored assets stay Blobs.
   const blob = source instanceof Blob ? source : source instanceof ArrayBuffer || ArrayBuffer.isView(source) ? new Blob([source], { type: asset.type }) : null;
-  if (!blob || await hashAsset(await blob.arrayBuffer()) !== asset.sha256) throw new Error("A story asset failed its integrity check. The previous recovery copy is preserved.");
+  if (!blob || await hashAsset(await blob.arrayBuffer()) !== asset.sha256) throw new Error("A saved project asset failed its integrity check. The previous recovery copy is preserved.");
   return blob;
 }
 
@@ -221,6 +246,27 @@ export function writeStoryProject(project, { key = `story:${project.id}`, readAs
   return next;
 }
 
+/** Save a local multi-page design and its immutable original images atomically. */
+export function writeDesignProject(project, { key = `design:${project.id}`, readAsset, expectedRevision = null } = {}) {
+  const document = designDocument(clone(project));
+  designKey(key);
+  if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || expectedRevision > document.revision)) throw new Error("Invalid expected design revision.");
+  const next = writes.catch(() => {}).then(async () => {
+    const assets = new Map();
+    for (const asset of Object.values(document.assets)) {
+      if (assets.has(asset.sha256)) continue;
+      let source = readAsset ? await readAsset(asset.id) : undefined;
+      if (source == null) source = (await transact("readonly", (_records, store) => result(store.get(asset.sha256))))?.blob;
+      const blob = await verifiedBlob(asset, source);
+      assets.set(asset.sha256, { sha256: asset.sha256, blob });
+    }
+    await commitRecord({ version: 1, kind: "design", savedAt: Date.now(), document }, key, assets, { revision: expectedRevision });
+    return { key, revision: document.revision };
+  });
+  writes = next;
+  return next;
+}
+
 /** Reopen metadata and immutable Blob handles; verify bytes lazily on access. */
 export async function readStoryProject(key) {
   storyKey(key);
@@ -250,11 +296,48 @@ export async function readStoryProject(key) {
   } };
 }
 
+/** Reopen a saved design with pinned Blob handles and integrity-checked reads. */
+export async function readDesignProject(key) {
+  designKey(key);
+  const value = await transact("readonly", async (records, assets) => {
+    const record = await result(records.get(key));
+    if (!record) return null;
+    if (record.version !== 1 || record.kind !== "design") throw new Error("Unsupported design recovery format. Its data has been preserved.");
+    const project = designDocument(record.document), stored = new Map();
+    for (const asset of Object.values(project.assets)) {
+      if (!stored.has(asset.sha256)) {
+        const saved = await result(assets.get(asset.sha256));
+        if (!(saved?.blob instanceof Blob) || saved.blob.size !== asset.byteLength) throw new Error("A design image is missing. The saved document is preserved for backup.");
+        stored.set(asset.sha256, saved.blob);
+      }
+    }
+    return { project, stored };
+  });
+  if (!value) return null;
+  const manifest = value.project.assets;
+  return { key, revision: value.project.revision, project: clone(value.project), readAsset: async (id) => {
+    const asset = manifest[id];
+    if (!asset) throw new Error("This image does not belong to the reopened design revision.");
+    return verifiedBlob(asset, value.stored.get(asset.sha256));
+  } };
+}
+
 export async function listStoryProjects() {
   return transact("readonly", async (records) => {
     const values = await result(records.getAll()), keys = await result(records.getAllKeys());
     return values.flatMap((record, index) => record.kind === "story" && !record.archiveOf ? [{ key: keys[index],
       name: typeof record.document?.name === "string" ? record.document.name : "Saved story", revision: record.document?.revision,
+      savedAt: record.savedAt ?? record.document?.createdAt ?? 0,
+      byteLength: Object.values(record.document?.assets ?? {}).reduce((sum, asset) => sum + (Number(asset.byteLength) || 0), 0) }] : [])
+      .sort((a, b) => b.savedAt - a.savedAt);
+  });
+}
+
+export async function listDesignProjects() {
+  return transact("readonly", async (records) => {
+    const values = await result(records.getAll()), keys = await result(records.getAllKeys());
+    return values.flatMap((record, index) => record.kind === "design" && !record.archiveOf ? [{ key: keys[index],
+      name: typeof record.document?.name === "string" ? record.document.name : "Untitled design", revision: record.document?.revision,
       savedAt: record.savedAt ?? record.document?.createdAt ?? 0,
       byteLength: Object.values(record.document?.assets ?? {}).reduce((sum, asset) => sum + (Number(asset.byteLength) || 0), 0) }] : [])
       .sort((a, b) => b.savedAt - a.savedAt);
@@ -271,17 +354,20 @@ export function projectStorageBudget() {
   });
 }
 
-export function clearStoryProjects() {
+function clearProjectKind(kind) {
   const next = writes.catch(() => {}).then(() => transact("readwrite", async (records, assets) => {
     const values = await result(records.getAll()), keys = await result(records.getAllKeys());
-    for (let index = 0; index < values.length; index++) if (values[index].kind === "story") records.delete(keys[index]);
-    const remaining = values.filter((record) => record.kind !== "story");
-    if (remaining.some((record) => !knownRecoveryRecord(record))) return;
+    for (let index = 0; index < values.length; index++) if (values[index].kind === kind) records.delete(keys[index]);
+    const remaining = values.filter((record) => record.kind !== kind);
+    if (remaining.some((record) => !knownStoredRecord(record))) return;
     const keep = new Set(remaining.flatMap((record) => Object.values(record.document.assets).map((asset) => asset.sha256)));
     for (const hash of await result(assets.getAllKeys())) if (!keep.has(hash)) assets.delete(hash);
   }));
   writes = next; return next;
 }
+
+export function clearStoryProjects() { return clearProjectKind("story"); }
+export function clearDesignProjects() { return clearProjectKind("design"); }
 
 export function writeRecoveryProject(snapshot, key) {
   const next = writes.catch(() => {}).then(() => save(snapshot, key));
@@ -294,6 +380,7 @@ export async function readRecoveryProject(key) {
     const record = await result(records.get(key));
     if (!record) return null;
     if (record.kind === "story") throw new Error("Open this project in the story workspace.");
+    if (record.kind === "design") throw new Error("Open this file in the design workspace.");
     if (record.kind != null) throw new Error("Unsupported recovery kind. Its original data has been preserved.");
     validateProject(record.document);
     assertEngineCompatibility(record.document, { allowLegacy: true });
@@ -328,7 +415,7 @@ export function clearRecoveryProject(key) {
     const remaining = await result(records.getAll());
     // Unknown records may use asset references this version cannot interpret.
     // Preserve their assets until the owner explicitly clears every record.
-    if (remaining.some((record) => !knownRecoveryRecord(record))) return;
+    if (remaining.some((record) => !knownStoredRecord(record))) return;
     const keep = new Set(remaining.flatMap((record) => Object.values(record.document.assets).map((asset) => asset.sha256)));
     for (const hash of await result(assets.getAllKeys())) if (!keep.has(hash)) assets.delete(hash);
   }));

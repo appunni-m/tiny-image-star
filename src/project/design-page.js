@@ -63,6 +63,77 @@ export function createDesignPageProject({ images = [], name = "Untitled design",
     variants: [{ id: "page", ...size }] });
 }
 
+export function addDesignPageCommand(project) {
+  if (project.slides.length >= 40) throw new Error("A design file can contain up to 40 pages.");
+  const id = newId("page"), page = { id, name: `Page ${project.slides.length + 1}`, nodeIds: [], overrides: {} };
+  return { id, command: { type: "slides", value: [...clone(project.slides), page] } };
+}
+
+export function appendDesignImagesCommand(project, pageId, images) {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || !Array.isArray(images) || !images.length || images.length + page.nodeIds.length > MAX_DESIGN_PAGE_LAYERS)
+    throw new Error(`Choose images that fit the page limit of ${MAX_DESIGN_PAGE_LAYERS} layers.`);
+  const existing = new Set(Object.keys(project.assets));
+  const additions = [], ids = new Set(), nodeIds = [...page.nodeIds];
+  images.forEach((asset, index) => {
+    checkedImage(asset);
+    if (existing.has(asset.id) || ids.has(asset.id)) throw new Error("Each page image needs a unique source asset.");
+    ids.add(asset.id);
+    const id = newId("layer"), offset = index % 4;
+    const frame = { x: .29 + offset * .035, y: .27 + offset * .035, width: .42, height: .42 };
+    additions.push({ type: "asset", id: asset.id, value: clone(asset) },
+      { type: "node", id, value: { id, kind: "image", name: asset.name.slice(0, 120), visible: true, locked: false,
+        assetId: asset.id, space: "slide", frame, fit: "contain", focal: { x: .5, y: .5 } } });
+    nodeIds.push(id);
+  });
+  const slides = project.slides.map((entry) => entry.id === pageId ? { ...clone(entry), nodeIds } : clone(entry));
+  return { type: "group", commands: [...additions, { type: "slides", value: slides }] };
+}
+
+export function addTextLayerCommand(project, pageId, text = "Add text") {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || typeof text !== "string" || text.length > 5000)
+    throw new Error("This page cannot add another text layer.");
+  const id = newId("layer"), node = { id, kind: "text", name: "Text", visible: true, locked: false, space: "slide",
+    frame: { x: .2, y: .2, width: .6, height: .2 }, text, color: "#f8f8fb",
+    style: { builtinFont: "system-sans", fontSize: .08, minFontSize: .03, weight: 700, fit: "shrink" } };
+  return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
+    entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
+}
+
+export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || !["rectangle", "rounded", "ellipse"].includes(shape))
+    throw new Error("This page cannot add that shape.");
+  const id = newId("layer"), node = { id, kind: "shape", name: shape === "ellipse" ? "Ellipse" : "Rectangle", visible: true, locked: false,
+    space: "slide", frame: { x: .35, y: .35, width: .3, height: .3 }, color: "#5149d5",
+    style: { shape, ...(shape === "rounded" ? { radius: .08 } : {}) } };
+  return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
+    entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
+}
+
+export function deleteLayersCommand(project, nodeIds) {
+  if (!Array.isArray(nodeIds) || !nodeIds.length || nodeIds.length > MAX_DESIGN_PAGE_LAYERS) throw new Error("Choose up to 200 layers to delete.");
+  const unique = [...new Set(nodeIds)];
+  if (unique.length !== nodeIds.length) throw new Error("A layer can only be selected once.");
+  for (const id of unique) getLayer(project, id);
+  const removing = new Set(unique), commands = unique.map((id) => ({ type: "node", id, value: null }));
+  const removedAssets = new Set(unique.map((id) => project.nodes[id].assetId).filter(Boolean));
+  for (const assetId of removedAssets) {
+    if (!Object.values(project.nodes).some((node) => !removing.has(node.id) && node.assetId === assetId))
+      commands.push({ type: "asset", id: assetId, value: null });
+  }
+  commands.push({ type: "slides", value: project.slides.map((page) => {
+    const nodeIds = page.nodeIds.filter((id) => !removing.has(id));
+    return nodeIds.length === page.nodeIds.length ? clone(page) : { ...clone(page), nodeIds };
+  }) });
+  return { type: "group", commands };
+}
+
+export function deleteLayerCommand(project, nodeId) {
+  return deleteLayersCommand(project, [nodeId]);
+}
+
 function getLayer(project, nodeId) {
   const layer = project.nodes[nodeId];
   if (!layer || !project.slides.some((page) => page.nodeIds.includes(nodeId))) throw new Error("Choose a layer on this page.");

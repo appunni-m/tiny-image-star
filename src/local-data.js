@@ -6,7 +6,7 @@ import {
   readLegacySessionBackups,
 } from "./session.js";
 import { clearStoredFonts, countStoredFonts, readFontRecords } from "./editor/fonts.js";
-import { exportRecoveryBackup, listStoryProjects, clearStoryProjects } from "./project/storage.js";
+import { exportRecoveryBackup, listStoryProjects, clearStoryProjects, listDesignProjects, clearDesignProjects } from "./project/storage.js";
 import { assertStyleStorageWritable, clearStyleLibrary, readStyleCatalogBackup } from "./styles/store.js";
 import { LEGACY_RECIPES_KEY } from "./styles/catalog-model.js";
 
@@ -30,13 +30,14 @@ function recoveryBytes(record) {
 }
 
 export async function readLocalDataSummary() {
-  const [active, editor, fontCount, stories, { styleLibrary: styles, recipeCatalog: catalog }] = await Promise.all([readSession(), readEditorSession(), countStoredFonts(), listStoryProjects(), readStyleCatalogBackup()]);
+  const [active, editor, fontCount, stories, designs, { styleLibrary: styles, recipeCatalog: catalog }] = await Promise.all([readSession(), readEditorSession(), countStoredFonts(), listStoryProjects(), listDesignProjects(), readStyleCatalogBackup()]);
   const records = [active, editor].filter(Boolean);
   return {
     presetCount: safePresetCount(styles, catalog) + styles.length,
     fontCount,
-    recoveryCount: records.length + stories.length,
-    recoveryBytes: records.reduce((total, record) => total + recoveryBytes(record), 0) + stories.reduce((sum, story) => sum + story.byteLength, 0),
+    recoveryCount: records.length + stories.length + designs.length,
+    recoveryBytes: records.reduce((total, record) => total + recoveryBytes(record), 0)
+      + stories.reduce((sum, story) => sum + story.byteLength, 0) + designs.reduce((sum, design) => sum + design.byteLength, 0),
   };
 }
 
@@ -49,7 +50,7 @@ export async function clearStoredLocalData() {
     // Private browsing can deny localStorage writes. The IndexedDB cleanup
     // still runs and the summary reports what remains available.
   }
-  await Promise.all([clearSession(), clearEditorSession(), clearStoredFonts(), clearStoryProjects(), clearStyleLibrary()]);
+  await Promise.all([clearSession(), clearEditorSession(), clearStoredFonts(), clearStoryProjects(), clearDesignProjects(), clearStyleLibrary()]);
   const summary = await readLocalDataSummary();
   globalThis.dispatchEvent?.(new CustomEvent("tinystar:local-data-cleared"));
   return summary;
@@ -81,7 +82,7 @@ export function attachLocalDataControls() {
     if (fontCount) fontCount.textContent = `${summary.fontCount} saved font${summary.fontCount === 1 ? "" : "s"}`;
     if (recoveryCount) recoveryCount.textContent = `${summary.recoveryCount} recovery cop${summary.recoveryCount === 1 ? "y" : "ies"}`;
     if (recoverySize) recoverySize.textContent = formatLocalBytes(summary.recoveryBytes);
-    if (status) status.textContent = message || "Saved stories, styles, recipes, custom fonts, and recovery copies stay in this browser. Open images and stories remain in memory. Folder jobs and story batches keep separate asset copies. Use Forget job or Forget batch to remove those copies. Forget batch also removes files staged in this browser; downloads and external saved files remain.";
+    if (status) status.textContent = message || "Saved designs, stories, styles, recipes, custom fonts, and recovery copies stay in this browser. Open images, designs, and stories remain in memory. Folder jobs and story batches keep separate asset copies. Use Forget job or Forget batch to remove those copies. Forget batch also removes files staged in this browser; downloads and external saved files remain.";
     return summary;
   }
 
@@ -109,7 +110,7 @@ export function attachLocalDataControls() {
     finally { backupButton.disabled = false; }
   });
   clearButton.addEventListener("click", async () => {
-    if (!window.confirm("Clear saved stories, styles, recipes, custom fonts, and recovery copies from this browser? Open images and stories will stay available until you close them.")) return;
+    if (!window.confirm("Clear saved designs, stories, styles, recipes, custom fonts, and recovery copies from this browser? Open images, designs, and stories will stay available until you close them.")) return;
     clearButton.disabled = true;
     try {
       const summary = await clearStoredLocalData();

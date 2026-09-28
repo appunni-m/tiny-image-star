@@ -2,6 +2,7 @@ import { canonicalJSON, clone, validateProject } from "./model.js";
 
 export const MAX_HISTORY_COMMANDS = 100;
 export const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
+export const MAX_PROJECT_GROUP_COMMANDS = 512;
 
 // Commands replace bounded parameter records by stable ID; source bytes never
 // appear in the document or undo history. A group is one reversible user action.
@@ -9,7 +10,7 @@ export function applyProjectCommand(project, command) {
   const next = clone(project);
   const inverses = [];
   const commands = command.type === "group" ? command.commands : [command];
-  if (!Array.isArray(commands) || commands.length > 200) throw new Error("Too many project commands.");
+  if (!Array.isArray(commands) || commands.length > MAX_PROJECT_GROUP_COMMANDS) throw new Error("Too many project commands.");
   for (const item of commands) {
     if (["node", "asset"].includes(item.type)) {
       const map = item.type === "node" ? next.nodes : next.assets;
@@ -17,9 +18,10 @@ export function applyProjectCommand(project, command) {
       inverses.unshift({ type: item.type, id: item.id, value: clone(map[item.id] ?? null) });
       if (item.value === null) delete map[item.id];
       else map[item.id] = clone(item.value);
-    } else if (["slides", "shared", "variants", "recipe"].includes(item.type)) {
-      inverses.unshift({ type: item.type, value: clone(next[item.type]) });
-      next[item.type] = clone(item.value);
+    } else if (["slides", "shared", "variants", "recipe", "name"].includes(item.type)) {
+      const field = item.type === "name" ? "name" : item.type;
+      inverses.unshift({ type: item.type, value: clone(next[field]) });
+      next[field] = clone(item.value);
     } else throw new Error("Unsupported project command.");
   }
   next.revision = project.revision + 1;
@@ -34,8 +36,9 @@ function difference(before, after) {
       if (canonicalJSON(before[field][id]) !== canonicalJSON(after[field][id])) commands.push({ type, id, value: clone(after[field][id] ?? null) });
     }
   }
-  for (const type of ["slides", "shared", "variants", "recipe"]) {
-    if (canonicalJSON(before[type]) !== canonicalJSON(after[type])) commands.push({ type, value: clone(after[type]) });
+  for (const type of ["slides", "shared", "variants", "recipe", "name"]) {
+    const field = type === "name" ? "name" : type;
+    if (canonicalJSON(before[field]) !== canonicalJSON(after[field])) commands.push({ type, value: clone(after[field]) });
   }
   return { type: "group", commands };
 }

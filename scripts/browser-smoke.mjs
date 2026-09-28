@@ -33,6 +33,7 @@ import { assertStoryDesigns } from "../tests/story-designs.browser.mjs";
 import { assertStoryFonts } from "../tests/story-fonts.browser.mjs";
 import { assertWorkingCopies } from "../tests/working-copies.browser.mjs";
 import { assertSourceResolution } from "../tests/source-resolution.browser.mjs";
+import { assertDesignWorkspace } from "../tests/design-workspace.browser.mjs";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const serverRoot = resolve(process.env.TINY_IMAGE_STAR_BROWSER_ROOT ?? projectRoot);
@@ -707,9 +708,10 @@ async function assertMobileSheets(page) {
   await page.locator("#appearance-select").focus();
   await page.keyboard.press("Tab");
   // Chromium may visit browser chrome at the end of a native dialog before
-  // returning to its first control; background page controls must stay inert.
+  // returning to its first control. Workspace navigation can add controls to
+  // this sheet, so assert focus containment instead of one exact tab target.
   if (await page.evaluate(() => document.activeElement === document.body)) await page.keyboard.press("Tab");
-  assert.equal(await page.locator("#mobile-more-sheet [data-close-sheet]").evaluate((node) => node === document.activeElement), true, "Tab wraps within More");
+  assert.equal(await page.locator("#mobile-more-sheet").evaluate((node) => node.contains(document.activeElement)), true, "Tab remains contained within More");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => document.activeElement?.id === "mobile-more-button");
   await page.locator("#adjust-tool").click();
@@ -961,6 +963,20 @@ async function main() {
       await rm(fixtureDirectory, { recursive: true, force: true });
     }
   }
+  if (process.argv.includes("--design-workspace-only")) {
+    try {
+      await assertDesignWorkspace(browser, address);
+      console.log("verify:design-workspace PASS");
+      return 0;
+    } catch (error) {
+      console.error("verify:design-workspace FAIL", error);
+      return 1;
+    } finally {
+      await browser.close();
+      await new Promise((resolve) => server.close(resolve));
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  }
   // Keep the complete browser suite reproducible on small CI runners and
   // model the same CPU limits on every isolated page, not just one test.
   const hardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);
@@ -1018,6 +1034,7 @@ async function main() {
   try {
     await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => document.querySelector("#engine-status")?.textContent === "Ready");
+    await assertDesignWorkspace(browser, address);
     await assertPublishedExports(page);
     await assertAppearance(page);
     await assertSharedScheduler(page, fixtureSource);
