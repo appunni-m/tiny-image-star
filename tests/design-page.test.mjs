@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
-  setFrameLayoutCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+  setFrameLayoutCommand, setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
@@ -271,6 +271,43 @@ test("Auto Layout wraps in flow order and distributes Fill sizing on both axes",
   const filled = resolveLayerFrames(project, "page-one");
   close(filled.get("second").frame.width, .3); // 120px fills the 180px inner width after 50px + 10px gap.
   close(filled.get("second").frame.height, 1 / 3); // Fill uses the 100px inner cross-axis of a 300px page.
+});
+
+test("grid Auto Layout resolves equal tracks, auto rows, spans, and rejects occupied or missing cells", () => {
+  const ids = ["frame", "first", "second", "third", "fourth"];
+  const nodes = { frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+    style: { layout: { direction: "grid", columns: 3, rows: 0, rowGap: 20, columnGap: 10,
+      padding: { top: 10, right: 10, bottom: 10, left: 10 }, justify: "stretch", align: "stretch", wrap: false } } } };
+  for (const id of ids.slice(1)) nodes[id] = { id, kind: "shape", space: "slide", parentId: "frame",
+    constraints: { horizontal: "left", vertical: "top" }, frame: { x: 0, y: 0, width: .2, height: .2 },
+    layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 50, height: 30 }, style: { shape: "rectangle" } };
+  const project = createSceneProject({ id: "grid-layout", variants: [{ id: "page", width: 300, height: 200 }],
+    slides: [{ id: "grid-page", nodeIds: ids, overrides: {} }], nodes });
+  const resolved = resolveLayerFrames(project, "grid-page"), close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-8, `${value} ≈ ${expected}`);
+  close(resolved.get("first").frame.x, 10 / 300);
+  close(resolved.get("first").frame.y, 10 / 200);
+  close(resolved.get("first").frame.width, (280 - 20) / 3 / 300);
+  close(resolved.get("second").frame.x, (10 + (280 - 20) / 3 + 10) / 300);
+  close(resolved.get("third").frame.x, (10 + 2 * ((280 - 20) / 3 + 10)) / 300);
+  close(resolved.get("fourth").frame.y, 110 / 200, "the fourth child auto-flows to row two");
+
+  const history = new ProjectHistory(project);
+  history.apply(setGridPlacementCommand(history.document, "grid-page", "first", { row: 1, column: 1, rowSpan: 2, columnSpan: 2 }), "Span grid item");
+  history.apply(setGridPlacementCommand(history.document, "grid-page", "second", { row: 1, column: 3, rowSpan: 1, columnSpan: 1 }), "Place grid item");
+  const spanned = resolveLayerFrames(history.document, "grid-page");
+  assert.ok(spanned.get("first").frame.width > spanned.get("third").frame.width, "a cell layer spans both selected columns");
+  assert.ok(spanned.get("third").frame.x > spanned.get("first").frame.x + spanned.get("first").frame.width,
+    "auto-flow skips every cell reserved by a multi-track span");
+
+  const overlap = structuredClone(history.document);
+  overlap.nodes.second.gridPlacement.column = 2;
+  assert.throws(() => validateProject(overlap), /Grid cells cannot overlap/);
+  const full = structuredClone(project);
+  full.nodes.frame.style.layout = { ...full.nodes.frame.style.layout, columns: 2, rows: 1 };
+  assert.throws(() => validateProject(full), /Grid has no empty cells/);
+  const invalidSpan = structuredClone(project);
+  invalidSpan.nodes.first.gridPlacement = { row: 1, column: 3, rowSpan: 1, columnSpan: 2 };
+  assert.throws(() => validateProject(invalidSpan), /Invalid grid placement/);
 });
 
 test("Auto Layout Hug sizes a frame around fixed children and Fill makes the parent fixed on that axis", () => {

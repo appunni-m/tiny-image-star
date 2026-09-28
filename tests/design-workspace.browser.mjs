@@ -473,6 +473,52 @@ export async function assertDesignWorkspace(browser, address) {
     autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(autoLayout.nodes[shapeId].layoutSizing.width, "fill", "Fill container is stored on the child layer");
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
+    await page.locator("#design-frame-layout").selectOption("grid");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(gridState.nodes[frameId].style.layout.direction, "grid");
+    assert.equal(gridState.nodes[frameId].style.layout.columns, 2);
+    assert.equal(gridState.nodes[frameId].style.layout.rows, 0, "grid starts with content-sized auto rows");
+    await page.locator("#design-layout-columns").fill("3");
+    await page.locator("#design-layout-columns").press("Tab");
+    await page.locator("#design-layout-justify").selectOption("stretch");
+    await page.locator("#design-layout-align").selectOption("stretch");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
+    assert.equal(await page.locator("#design-grid-placement").isVisible(), true, "grid children expose editable cell and span controls");
+    await page.locator("#design-grid-column").fill("1");
+    await page.locator("#design-grid-column").press("Tab");
+    await page.locator("#design-grid-column-span").fill("2");
+    await page.locator("#design-grid-column-span").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const gridOtherId = gridState.pages[0].nodeIds.find((id) => gridState.nodes[id].parentId === frameId && id !== shapeId);
+    assert.deepEqual(gridState.nodes[shapeId].gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 2 });
+    assert.ok(gridState.resolvedFrames[shapeId].frame.width > gridState.resolvedFrames[gridOtherId].frame.width,
+      "the live WASM page preview lays a spanning child across two grid columns");
+    assert.ok(gridState.resolvedFrames[gridOtherId].frame.x > gridState.resolvedFrames[shapeId].frame.x,
+      "grid auto-placement skips cells occupied by a spanning child");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
+    await page.locator("#design-layout-columns").scrollIntoViewIfNeeded();
+    const mobileGridTracks = await page.evaluate(() => [...document.querySelectorAll("#design-grid-tracks input")]
+      .map((input) => input.getBoundingClientRect().toJSON()));
+    assert.ok(mobileGridTracks.length === 2 && mobileGridTracks.every((box) => box.height >= 43 && box.left >= 0 && box.right <= 390),
+      `grid track controls remain touch-sized on a phone: ${JSON.stringify(mobileGridTracks)}`);
+    await page.locator(`#design-layer-list [data-layer-id="${gridOtherId}"] .design-layer-select`).click();
+    const mobileGridPlacement = await page.evaluate(() => [...document.querySelectorAll("#design-grid-placement input")]
+      .map((input) => input.getBoundingClientRect().toJSON()));
+    assert.ok(mobileGridPlacement.length === 4 && mobileGridPlacement.every((box) => box.height >= 43 && box.left >= 0 && box.right <= 390),
+      `grid cell/span controls remain touch-sized on a phone: ${JSON.stringify(mobileGridPlacement)}`);
+    await page.setViewportSize({ width: 1280, height: 850 });
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
+    await page.locator("#design-frame-layout").selectOption("horizontal");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const restoredFlow = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(restoredFlow.nodes[frameId].style.layout.columns, undefined, "switching out of grid removes grid-only track settings");
+    assert.equal(restoredFlow.nodes[shapeId].gridPlacement, undefined, "switching flow removes stale per-cell placement data");
+    await page.locator("#design-layout-wrap").check();
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     for (const id of imageIds) await page.locator(`#design-layer-list [data-layer-id="${id}"] button[aria-label^="Show"]`).click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
 
@@ -586,6 +632,20 @@ export async function assertDesignWorkspace(browser, address) {
     assert.ok(shapePage[3].style.strokeWidth > 0);
     assert.ok(shapePage.slice(4).every((node) => node.style.shape === "path" && node.style.path.closed),
       "Arrow, polygon and star are normal editable closed vector paths");
+    await page.locator(`#design-layer-list [data-layer-id="${shapePage[0].id}"] .design-layer-select`).click();
+    await page.locator(`#design-layer-list [data-layer-id="${shapePage[1].id}"] .design-layer-select`).click({ modifiers: ["Shift"] });
+    await page.locator("#design-frame-selection").click();
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().pages[1].nodeIds.length === 8);
+    const gridFrameId = await page.evaluate(() => {
+      const snapshot = window.tinyImageStarDesign.getSnapshot();
+      return snapshot.pages[1].nodeIds.find((id) => snapshot.nodes[id].kind === "frame");
+    });
+    await page.locator(`#design-layer-list [data-layer-id="${gridFrameId}"] .design-layer-select`).click();
+    await page.locator("#design-frame-layout").selectOption("grid");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const gridSaved = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(gridSaved.nodes[gridFrameId].style.layout.direction, "grid");
+    assert.equal(gridSaved.nodes[gridFrameId].style.layout.rows, 0, "saved grid layouts retain auto-row behavior");
     const pages = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().pages.map((entry) => entry.name));
     assert.deepEqual(pages, ["Page 1", "Page 2"]);
     await page.locator("#design-document-name").fill("Mobile Figma draft");
@@ -599,7 +659,9 @@ export async function assertDesignWorkspace(browser, address) {
     const reopened = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
     assert.equal(reopened.pages[0].nodeIds.length, 6, "saved image, text, shapes, vector path and frame layers reopen together");
-    assert.equal(reopened.pages[1].nodeIds.length, 7, "all mobile-added shape types survive local save and reload");
+    assert.equal(reopened.pages[1].nodeIds.length, 8, "all mobile-added shapes and their grid frame survive local save and reload");
+    assert.equal(reopened.nodes[gridFrameId].style.layout.direction, "grid", "grid flow survives local project reload");
+    assert.equal(reopened.nodes[gridFrameId].style.layout.columns, 2);
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.wrap, true, "wrap and axis gaps survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.rowGap, 9);
@@ -612,8 +674,8 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-canvas").press("Backspace");
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot()?.pages[0].nodeIds.length === 0);
     const bulkDeleted = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
-    assert.equal(bulkDeleted.pages[1].nodeIds.length, 7, "keyboard bulk delete leaves layers on the other page untouched");
-    assert.deepEqual(Object.keys(bulkDeleted.nodes), bulkDeleted.pages[1].nodeIds,
+    assert.equal(bulkDeleted.pages[1].nodeIds.length, 8, "keyboard bulk delete leaves layers on the other page untouched");
+    assert.deepEqual(Object.keys(bulkDeleted.nodes).sort(), [...bulkDeleted.pages[1].nodeIds].sort(),
       "keyboard bulk delete removes every selected canvas layer and preserves other-page shapes");
 
     await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");

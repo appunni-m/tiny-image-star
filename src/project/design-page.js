@@ -202,7 +202,7 @@ export function resizeFrameChildren(project, pageId, frameId, nextFrame) {
 /** Change a frame's Auto Layout flow while preserving each layer's current pixel size. */
 export function setFrameLayoutCommand(project, pageId, frameId, direction) {
   const page = project.slides.find((entry) => entry.id === pageId), frame = project.nodes[frameId];
-  if (!page || frame?.kind !== "frame" || !["manual", "horizontal", "vertical"].includes(direction))
+  if (!page || frame?.kind !== "frame" || !["manual", "horizontal", "vertical", "grid"].includes(direction))
     throw new Error("Choose a frame and a supported layout flow.");
   const variant = project.variants[0], resolvedByVariant = new Map(project.variants.map((shape) => [shape.id, resolveLayerFrames(project, pageId, shape.id)]));
   const resolved = resolvedByVariant.get(variant.id), world = resolved.get(frameId);
@@ -258,8 +258,12 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
   } else {
     const previous = parent.style.layout;
     parent.style.layout = { direction, gap: previous?.gap ?? 0, rowGap: previous?.rowGap, columnGap: previous?.columnGap,
-      padding: previous?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 }, justify: previous?.justify ?? "start",
-      align: previous?.align ?? "center", wrap: previous?.wrap ?? false };
+      padding: previous?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 },
+      justify: direction === "grid" ? (["start", "center", "end", "stretch"].includes(previous?.justify) ? previous.justify : "start")
+        : (["start", "center", "end", "space-between"].includes(previous?.justify) ? previous.justify : "start"),
+      align: direction === "grid" ? previous?.align ?? "start" : previous?.align ?? "center",
+      ...(direction === "grid" ? { columns: previous?.columns ?? 2, rows: previous?.rows ?? 0, wrap: false }
+        : { wrap: previous?.wrap ?? false }) };
     for (const key of Object.keys(parent.style.layout)) if (parent.style.layout[key] == null) delete parent.style.layout[key];
   }
   commands.push({ type: "node", id: frameId, value: parent });
@@ -273,9 +277,19 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
       for (const axis of ["width", "height"]) if (child.layoutSizing[axis] === "fill") child.layoutSizing[axis] = "fixed";
       storeManualFrame(id, child);
     }
+    if (direction !== "grid") delete child.gridPlacement;
     commands.push({ type: "node", id, value: child });
   }
   return { type: "group", commands };
+}
+
+/** Place a child layer in a grid frame cell, with project validation fencing overlaps and bounds. */
+export function setGridPlacementCommand(project, pageId, nodeId, gridPlacement) {
+  const page = project.slides.find((entry) => entry.id === pageId), node = project.nodes[nodeId];
+  const parent = node?.parentId && project.nodes[node.parentId];
+  if (!page?.nodeIds.includes(nodeId) || !parent || parent.kind !== "frame" || parent.style?.layout?.direction !== "grid")
+    throw new Error("Choose a layer inside a grid frame.");
+  return { type: "node", id: nodeId, value: { ...clone(node), gridPlacement: clone(gridPlacement) } };
 }
 
 export function deleteLayersCommand(project, nodeIds) {

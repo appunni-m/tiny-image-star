@@ -1,8 +1,8 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, updatePageSelection } from "../project/design-page.js";
-import { canonicalJSON, clone, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
+  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
+import { canonicalJSON, clone, gridPlacementsForChildren, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
 import { listLocalPageProjects, readLocalPageProject, writeLocalPageProject } from "../project/storage.js";
@@ -235,7 +235,10 @@ export function attachDesignWorkspace() {
     get("frame-clip-field").hidden = node.kind !== "frame";
     get("frame-radius-field").hidden = node.kind !== "frame";
     get("frame-layout-field").hidden = node.kind !== "frame";
-    const parentHasLayout = Boolean(node.parentId && project.nodes[node.parentId]?.style?.layout), canHug = node.kind === "frame" && Boolean(node.style?.layout);
+    get("frame-layout-options").hidden = node.kind !== "frame" || !node.style?.layout;
+    const parentLayout = node.parentId ? project.nodes[node.parentId]?.style?.layout : null;
+    const parentHasLayout = Boolean(parentLayout), parentHasGrid = parentLayout?.direction === "grid";
+    const canHug = node.kind === "frame" && Boolean(node.style?.layout);
     get("resizing-options").hidden = !parentHasLayout && !canHug;
     for (const axis of ["width", "height"]) {
       const control = get(`layout-sizing-${axis}`);
@@ -244,6 +247,18 @@ export function attachDesignWorkspace() {
       control.querySelector('option[value="fill"]').disabled = !parentHasLayout;
     }
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
+    get("grid-placement").hidden = !parentHasGrid;
+    if (parentHasGrid) {
+      const parent = project.nodes[node.parentId], parentChildren = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === parent.id
+        && project.nodes[id]?.visible !== false);
+      const placement = gridPlacementsForChildren(parentChildren, project.nodes, parent.style.layout).placements.get(node.id);
+      for (const [field, key] of [["grid-row", "row"], ["grid-column", "column"], ["grid-row-span", "rowSpan"], ["grid-column-span", "columnSpan"]])
+        get(field).value = String(placement[key]);
+      get("grid-column").max = String(parent.style.layout.columns);
+      get("grid-column-span").max = String(parent.style.layout.columns);
+      get("grid-row").max = String(parent.style.layout.rows || 200);
+      get("grid-row-span").max = String(parent.style.layout.rows || 200);
+    }
     get("x").title = world.layoutManaged ? "Auto Layout controls this child's X position." : "";
     get("y").title = world.layoutManaged ? "Auto Layout controls this child's Y position." : "";
     const opacity = Math.round((node.opacity ?? 1) * 100);
@@ -256,12 +271,19 @@ export function attachDesignWorkspace() {
       get("frame-radius-value").value = `${Math.round(radius * 100)}%`;
       const layout = node.style?.layout; get("frame-layout").value = layout?.direction ?? "manual";
       get("frame-layout-options").hidden = !layout;
+      get("grid-tracks").hidden = layout?.direction !== "grid";
+      get("layout-gap-field").hidden = layout?.direction === "grid";
+      get("layout-wrap-field").hidden = layout?.direction === "grid";
       get("layout-gap").value = String(layout?.gap ?? 0);
       get("layout-row-gap").value = String(layout?.rowGap ?? layout?.gap ?? 0);
       get("layout-column-gap").value = String(layout?.columnGap ?? layout?.gap ?? 0);
       get("layout-wrap").checked = Boolean(layout?.wrap);
+      get("layout-columns").value = String(layout?.columns ?? 2);
+      get("layout-rows").value = String(layout?.rows ?? 0);
       for (const edge of ["left", "right", "top", "bottom"]) get(`layout-padding-${edge}`).value = String(layout?.padding?.[edge] ?? 0);
       get("layout-justify").value = layout?.justify ?? "start"; get("layout-align").value = layout?.align ?? "center";
+      get("layout-justify").querySelector('option[value="space-between"]').disabled = layout?.direction === "grid";
+      get("layout-justify").querySelector('option[value="stretch"]').disabled = layout?.direction !== "grid";
     }
     if (node.parentId) {
       get("constraint-horizontal").value = node.constraints?.horizontal ?? "left";
@@ -1543,6 +1565,13 @@ export function attachDesignWorkspace() {
     get(field).addEventListener("input", () => { const value = Number(get(field).value); if (Number.isFinite(value) && value >= 0) updateFrameLayout(key, value); });
     get(field).addEventListener("change", () => commitEdit("Change Auto Layout spacing"));
   }
+  for (const [field, key] of [["layout-columns", "columns"], ["layout-rows", "rows"]]) {
+    get(field).addEventListener("input", () => {
+      const value = Number(get(field).value);
+      if (Number.isInteger(value) && value >= (key === "columns" ? 1 : 0) && value <= 24) updateFrameLayout(key, value);
+    });
+    get(field).addEventListener("change", () => commitEdit("Change grid tracks"));
+  }
   for (const [field, key] of [["layout-justify", "justify"], ["layout-align", "align"]]) {
     get(field).addEventListener("change", () => {
       updateFrameLayout(key, get(field).value); commitEdit("Change Auto Layout alignment");
@@ -1550,6 +1579,15 @@ export function attachDesignWorkspace() {
   }
   get("layout-wrap").addEventListener("change", () => {
     updateFrameLayout("wrap", get("layout-wrap").checked); commitEdit("Change Auto Layout wrapping");
+  });
+  for (const field of ["grid-row", "grid-column", "grid-row-span", "grid-column-span"]) get(field).addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || !node.parentId) return;
+    const placement = { row: Number(get("grid-row").value), column: Number(get("grid-column").value),
+      rowSpan: Number(get("grid-row-span").value), columnSpan: Number(get("grid-column-span").value) };
+    try {
+      history.apply(setGridPlacementCommand(history.document, currentPage().id, id, placement), "Change grid cell");
+      edited("Grid cell updated.");
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   for (const axis of ["width", "height"]) get(`layout-sizing-${axis}`).addEventListener("change", () => {
     const id = currentSelection()[0], node = id && layer(id), mode = get(`layout-sizing-${axis}`).value;

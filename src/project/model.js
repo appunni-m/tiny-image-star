@@ -84,6 +84,51 @@ function validateCrop(crop) {
   keys(crop, ["x", "y", "width", "height"]);
 }
 
+/** Resolve saved grid placements, reserving explicit cells before auto-flow. */
+export function gridPlacementsForChildren(childIds, nodes, layout) {
+  const columns = layout.columns ?? 2, fixedRows = layout.rows ?? 0;
+  check(Number.isInteger(columns) && columns >= 1 && columns <= 24, "Grid columns must be between 1 and 24.");
+  check(Number.isInteger(fixedRows) && fixedRows >= 0 && fixedRows <= 24, "Grid rows must be between 0 and 24.");
+  const placements = new Map(), occupied = new Set();
+  let rowCount = Math.max(1, fixedRows);
+  const cellsFor = (placement) => {
+    const cells = [];
+    for (let row = placement.row; row < placement.row + placement.rowSpan; row++)
+      for (let column = placement.column; column < placement.column + placement.columnSpan; column++) cells.push(`${row}:${column}`);
+    return cells;
+  };
+  const reserve = (id, placement) => {
+    const cells = cellsFor(placement);
+    check(cells.every((cell) => !occupied.has(cell)), "Grid cells cannot overlap.");
+    for (const cell of cells) occupied.add(cell);
+    placements.set(id, placement); rowCount = Math.max(rowCount, placement.row + placement.rowSpan - 1);
+  };
+  for (const id of childIds) {
+    const placement = nodes[id]?.gridPlacement;
+    if (!placement) continue;
+    check(Number.isInteger(placement.row) && placement.row >= 1 && placement.row <= 200
+      && Number.isInteger(placement.column) && placement.column >= 1 && placement.column <= columns
+      && Number.isInteger(placement.rowSpan) && placement.rowSpan >= 1 && placement.rowSpan <= 200
+      && Number.isInteger(placement.columnSpan) && placement.columnSpan >= 1 && placement.columnSpan <= columns
+      && placement.column + placement.columnSpan - 1 <= columns
+      && placement.row + placement.rowSpan - 1 <= 200
+      && (!fixedRows || placement.row + placement.rowSpan - 1 <= fixedRows), "Grid placement is outside the available tracks.");
+    reserve(id, placement);
+  }
+  for (const id of childIds) {
+    if (placements.has(id)) continue;
+    let placement = null;
+    const lastRow = fixedRows || 200;
+    for (let row = 1; row <= lastRow && !placement; row++) for (let column = 1; column <= columns; column++) {
+      const candidate = { row, column, rowSpan: 1, columnSpan: 1 };
+      if (cellsFor(candidate).every((cell) => !occupied.has(cell))) { placement = candidate; break; }
+    }
+    check(placement, "Grid has no empty cells. Increase its row count or use auto rows.");
+    reserve(id, placement);
+  }
+  return { placements, rows: fixedRows || rowCount };
+}
+
 function color(value) { return typeof value === "string" && /^#[a-f0-9]{6}([a-f0-9]{2})?$/i.test(value); }
 
 function validateNodeStyle(node) {
@@ -102,7 +147,7 @@ function validateNodeStyle(node) {
   check(object(style), "Invalid layer style.");
   if (node.kind === "frame") {
     check(node.text == null && node.fontId == null, "Frames cannot contain text or fonts.");
-    keys(style, ["clipContent", "radius", "strokeColor", "strokeWidth", "layout"]);
+      keys(style, ["clipContent", "radius", "strokeColor", "strokeWidth", "layout"]);
     if (style.clipContent != null) check(typeof style.clipContent === "boolean", "Invalid frame clipping setting.");
     if (style.radius != null) check(number(style.radius, 0, .5), "Invalid corner radius.");
     if (style.strokeColor != null) check(color(style.strokeColor), "Invalid stroke color.");
@@ -110,8 +155,14 @@ function validateNodeStyle(node) {
     check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
     if (style.layout != null) {
       const layout = style.layout; check(object(layout), "Invalid frame layout.");
-      keys(layout, ["direction", "gap", "rowGap", "columnGap", "padding", "justify", "align", "wrap"]);
-      check(["horizontal", "vertical"].includes(layout.direction), "Invalid frame layout direction.");
+      keys(layout, ["direction", "gap", "rowGap", "columnGap", "padding", "justify", "align", "wrap", "columns", "rows"]);
+      check(["horizontal", "vertical", "grid"].includes(layout.direction), "Invalid frame layout direction.");
+      if (layout.direction === "grid") {
+        check(Number.isInteger(layout.columns) && layout.columns >= 1 && layout.columns <= 24, "Invalid grid column count.");
+        check(Number.isInteger(layout.rows) && layout.rows >= 0 && layout.rows <= 24, "Invalid grid row count.");
+        check(layout.wrap !== true, "Grid layouts do not use wrap.");
+        if (layout.justify != null) check(["start", "center", "end", "stretch"].includes(layout.justify), "Invalid grid horizontal alignment.");
+      } else check(layout.columns == null && layout.rows == null, "Grid tracks require a grid layout.");
       if (layout.gap != null) check(number(layout.gap, 0, 16384), "Invalid frame layout gap.");
       for (const key of ["rowGap", "columnGap"]) if (layout[key] != null) check(number(layout[key], 0, 16384), "Invalid frame layout gap.");
       if (layout.wrap != null) check(typeof layout.wrap === "boolean", "Invalid frame wrapping setting.");
@@ -119,7 +170,7 @@ function validateNodeStyle(node) {
         check(object(layout.padding), "Invalid frame layout padding."); keys(layout.padding, ["top", "right", "bottom", "left"]);
         for (const value of Object.values(layout.padding)) check(number(value, 0, 16384), "Invalid frame layout padding.");
       }
-      if (layout.justify != null) check(["start", "center", "end", "space-between"].includes(layout.justify), "Invalid frame layout alignment.");
+      if (layout.direction !== "grid" && layout.justify != null) check(["start", "center", "end", "space-between"].includes(layout.justify), "Invalid frame layout alignment.");
       if (layout.align != null) check(["start", "center", "end", "stretch"].includes(layout.align), "Invalid frame cross-axis alignment.");
     }
   } else if (node.kind === "shape") {
@@ -248,7 +299,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "gridPlacement", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -305,6 +356,19 @@ export function validateProject(project) {
         check(["left", "right", "left-right", "center", "scale"].includes(node.constraints.horizontal)
           && ["top", "bottom", "top-bottom", "center", "scale"].includes(node.constraints.vertical), "Invalid frame constraints.");
       } else check(node.constraints == null, "Frame constraints require a parent frame.");
+      if (node.gridPlacement != null) {
+        const parentLayout = project.nodes[node.parentId]?.style?.layout;
+        check(node.parentId != null && parentLayout?.direction === "grid" && object(node.gridPlacement), "Grid placement requires a child of a grid frame.");
+        keys(node.gridPlacement, ["row", "column", "rowSpan", "columnSpan"]);
+        check(Number.isInteger(node.gridPlacement.row) && node.gridPlacement.row >= 1 && node.gridPlacement.row <= 200
+          && Number.isInteger(node.gridPlacement.column) && node.gridPlacement.column >= 1 && node.gridPlacement.column <= (parentLayout?.columns ?? 0)
+          && Number.isInteger(node.gridPlacement.rowSpan) && node.gridPlacement.rowSpan >= 1 && node.gridPlacement.rowSpan <= 200
+          && Number.isInteger(node.gridPlacement.columnSpan) && node.gridPlacement.columnSpan >= 1
+          && node.gridPlacement.column + node.gridPlacement.columnSpan - 1 <= parentLayout.columns
+          && node.gridPlacement.columnSpan <= parentLayout.columns
+          && node.gridPlacement.row + node.gridPlacement.rowSpan - 1 <= 200
+          && (!parentLayout.rows || node.gridPlacement.row + node.gridPlacement.rowSpan - 1 <= parentLayout.rows), "Invalid grid placement.");
+      }
       if (node.layoutSizing != null) {
         check(object(node.layoutSizing), "Invalid layer resizing settings."); keys(node.layoutSizing, ["width", "height"]);
         for (const mode of Object.values(node.layoutSizing)) {
@@ -326,6 +390,12 @@ export function validateProject(project) {
       if (node.crop) validateCrop(node.crop);
       validateNodeStyle(node);
     }
+  }
+  for (const slide of project.slides) for (const id of slide.nodeIds) {
+    const parent = project.nodes[id], layout = parent?.kind === "frame" ? parent.style?.layout : null;
+    if (layout?.direction !== "grid") continue;
+    const children = slide.nodeIds.filter((childId) => project.nodes[childId]?.parentId === id && project.nodes[childId]?.visible !== false);
+    gridPlacementsForChildren(children, project.nodes, layout);
   }
   for (const [id, node] of Object.entries(project.nodes)) {
     const seen = new Set([id]); let parentId = node.parentId, depth = 0;
@@ -379,12 +449,30 @@ function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) 
       ? intrinsicFrameSize(project, slide, id, variant, nextStack)
       : { width: child.layoutSize?.width ?? frame.width * fallback.width,
         height: child.layoutSize?.height ?? frame.height * fallback.height };
-    return {
+    return { id,
       width: child.layoutSizing?.width === "hug" ? own.width : child.layoutSize?.width ?? frame.width * fallback.width,
       height: child.layoutSizing?.height === "hug" ? own.height : child.layoutSize?.height ?? frame.height * fallback.height,
     };
   });
   const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+  if (layout.direction === "grid") {
+    const { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout), columns = layout.columns;
+    const rowGap = layout.rowGap ?? layout.gap ?? 0, columnGap = layout.columnGap ?? layout.gap ?? 0;
+    const columnSizes = Array(columns).fill(0), rowSizes = Array(rows).fill(0);
+    for (const child of children) {
+      const placement = placements.get(child.id), columnNeed = Math.max(0, child.width - columnGap * (placement.columnSpan - 1)) / placement.columnSpan;
+      const rowNeed = Math.max(0, child.height - rowGap * (placement.rowSpan - 1)) / placement.rowSpan;
+      for (let column = placement.column - 1; column < placement.column - 1 + placement.columnSpan; column++) columnSizes[column] = Math.max(columnSizes[column], columnNeed);
+      for (let row = placement.row - 1; row < placement.row - 1 + placement.rowSpan; row++) rowSizes[row] = Math.max(rowSizes[row], rowNeed);
+    }
+    const widthMode = node.layoutSizing?.width ?? "fixed", heightMode = node.layoutSizing?.height ?? "fixed";
+    const hasFillWidth = childIds.some((id) => project.nodes[id].layoutSizing?.width === "fill");
+    const hasFillHeight = childIds.some((id) => project.nodes[id].layoutSizing?.height === "fill");
+    const width = columnSizes.reduce((sum, value) => sum + value, 0) + columnGap * Math.max(0, columns - 1) + padding.left + padding.right;
+    const height = rowSizes.reduce((sum, value) => sum + value, 0) + rowGap * Math.max(0, rows - 1) + padding.top + padding.bottom;
+    return { width: widthMode === "hug" && !hasFillWidth ? width : fallback.width,
+      height: heightMode === "hug" && !hasFillHeight ? height : fallback.height };
+  }
   const horizontal = layout.direction === "horizontal", mainGap = horizontal ? (layout.columnGap ?? layout.gap ?? 0) : (layout.rowGap ?? layout.gap ?? 0);
   const crossGap = horizontal ? (layout.rowGap ?? layout.gap ?? 0) : (layout.columnGap ?? layout.gap ?? 0);
   const mainValues = children.map((child) => horizontal ? child.width : child.height);
@@ -418,6 +506,33 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
   const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === parentId && project.nodes[id]?.visible !== false), result = new Map();
   const parentWidth = parentFrame.width * variant.width, parentHeight = parentFrame.height * variant.height;
   if (!childIds.length || parentWidth <= 0 || parentHeight <= 0) return result;
+  if (layout.direction === "grid") {
+    const columns = layout.columns, { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout);
+    const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+    const rowGap = layout.rowGap ?? layout.gap ?? 0, columnGap = layout.columnGap ?? layout.gap ?? 0;
+    const availableWidth = Math.max(0, parentWidth - padding.left - padding.right - columnGap * (columns - 1));
+    const availableHeight = Math.max(0, parentHeight - padding.top - padding.bottom - rowGap * (rows - 1));
+    const trackWidth = Math.max(.01, availableWidth / columns), trackHeight = Math.max(.01, availableHeight / rows);
+    for (const id of childIds) {
+      const node = project.nodes[id], patch = slide.overrides[id] ?? {};
+      const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
+      const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
+      const width = node.layoutSizing?.width === "hug" ? intrinsic.width : node.layoutSize?.width ?? frame.width * parentWidth;
+      const height = node.layoutSizing?.height === "hug" ? intrinsic.height : node.layoutSize?.height ?? frame.height * parentHeight;
+      const placement = placements.get(id), cellWidth = trackWidth * placement.columnSpan + columnGap * (placement.columnSpan - 1);
+      const cellHeight = trackHeight * placement.rowSpan + rowGap * (placement.rowSpan - 1);
+      const stretchX = layout.justify === "stretch" || node.layoutSizing?.width === "fill";
+      const stretchY = layout.align === "stretch" || node.layoutSizing?.height === "fill";
+      const childWidth = stretchX ? cellWidth : Math.min(width, cellWidth), childHeight = stretchY ? cellHeight : Math.min(height, cellHeight);
+      const freeX = Math.max(0, cellWidth - childWidth), freeY = Math.max(0, cellHeight - childHeight);
+      const offsetX = layout.justify === "center" ? freeX / 2 : layout.justify === "end" ? freeX : 0;
+      const offsetY = layout.align === "center" ? freeY / 2 : layout.align === "end" ? freeY : 0;
+      const x = padding.left + (placement.column - 1) * (trackWidth + columnGap) + offsetX;
+      const y = padding.top + (placement.row - 1) * (trackHeight + rowGap) + offsetY;
+      result.set(id, { x: x / parentWidth, y: y / parentHeight, width: childWidth / parentWidth, height: childHeight / parentHeight });
+    }
+    return result;
+  }
   const horizontal = layout.direction === "horizontal", mainExtent = horizontal ? parentWidth : parentHeight;
   const crossExtent = horizontal ? parentHeight : parentWidth;
   const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
