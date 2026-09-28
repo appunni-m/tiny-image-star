@@ -2,7 +2,7 @@ import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, moveGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
-import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
+import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
 import { listLocalPageProjects, readLocalPageProject, writeLocalPageProject } from "../project/storage.js";
@@ -25,6 +25,7 @@ export function attachDesignWorkspace() {
   let penActive = false, pathDraft = null, vectorEditId = null;
   const touchPoints = new Map();
   let frameMapProject = null, frameMapPage = null, frameMap = null;
+  let gridGeometryProject = null, gridGeometryPage = null, gridGeometryCache = new Map();
   const renderProject = () => history?.document ?? null;
   const currentPage = () => renderProject()?.slides.find((page) => page.id === pageId) ?? renderProject()?.slides[0] ?? null;
   const currentSelection = () => currentPage() ? snapshotPageSelection(selection, currentPage()) : [];
@@ -495,6 +496,113 @@ export function attachDesignWorkspace() {
     return geometry ? { x: geometry.x + point.x * geometry.scale, y: geometry.y + point.y * geometry.scale } : null;
   }
 
+  function selectedGridFrameId() {
+    if (cropModeId || penActive || vectorEditId) return null;
+    const ids = currentSelection();
+    if (ids.length !== 1) return null;
+    const node = layer(ids[0]);
+    return node?.kind === "frame" && node.style?.layout?.direction === "grid" ? node.id : null;
+  }
+
+  function gridGeometryFor(frameId = selectedGridFrameId()) {
+    const project = renderProject(), page = currentPage();
+    if (!project || !page || !frameId) return null;
+    if (gridGeometryProject !== project || gridGeometryPage !== page.id) {
+      gridGeometryProject = project; gridGeometryPage = page.id; gridGeometryCache = new Map();
+    }
+    if (!gridGeometryCache.has(frameId)) gridGeometryCache.set(frameId,
+      resolveGridTrackGeometry(project, page.id, frameId, project.variants[0].id));
+    return gridGeometryCache.get(frameId);
+  }
+
+  function framePointOnCanvas(frameId, x, y) {
+    const node = worldLayer(frameId), frame = node?.frame, size = pageSize();
+    if (!frame || !size || !geometry) return null;
+    const centerX = (frame.x + frame.width / 2) * size.width, centerY = (frame.y + frame.height / 2) * size.height;
+    const localX = x - frame.width * size.width / 2, localY = y - frame.height * size.height / 2;
+    const angle = (node.rotation ?? 0) * Math.PI / 180, cosine = Math.cos(angle), sine = Math.sin(angle);
+    return screenForPage({ x: centerX + localX * cosine - localY * sine, y: centerY + localX * sine + localY * cosine });
+  }
+
+  function gridLocalPoint(frameId, point) {
+    const node = worldLayer(frameId), frame = node?.frame, size = pageSize(), world = pagePoint(point);
+    if (!frame || !size || !world) return null;
+    const centerX = (frame.x + frame.width / 2) * size.width, centerY = (frame.y + frame.height / 2) * size.height;
+    const dx = world.x - centerX, dy = world.y - centerY, angle = -(node.rotation ?? 0) * Math.PI / 180;
+    return { x: centerX + dx * Math.cos(angle) - dy * Math.sin(angle) - frame.x * size.width,
+      y: centerY + dx * Math.sin(angle) + dy * Math.cos(angle) - frame.y * size.height };
+  }
+
+  function gridTrackHit(point) {
+    const frameId = selectedGridFrameId(), canvasGeometry = gridGeometryFor(frameId), node = frameId && worldLayer(frameId);
+    if (!canvasGeometry || node?.locked || !geometry) return null;
+    const local = gridLocalPoint(frameId, point), threshold = 15 / geometry.scale;
+    if (!local) return null;
+    let nearest = null;
+    for (const [axis, tracks] of [["columns", canvasGeometry.columns], ["rows", canvasGeometry.rows]]) {
+      for (const track of tracks.slice(0, -1)) {
+        const boundary = track.end;
+        const along = axis === "columns" ? local.y : local.x;
+        const crossStart = axis === "columns" ? canvasGeometry.padding.top : canvasGeometry.padding.left;
+        const crossEnd = axis === "columns" ? canvasGeometry.height - canvasGeometry.padding.bottom : canvasGeometry.width - canvasGeometry.padding.right;
+        const distance = Math.abs((axis === "columns" ? local.x : local.y) - boundary) * geometry.scale;
+        if (along < crossStart - threshold || along > crossEnd + threshold || distance > 15) continue;
+        if (!nearest || distance < nearest.distance) nearest = { frameId, axis, index: track.index, distance };
+      }
+    }
+    return nearest;
+  }
+
+  function drawGridTrackOverlay(ctx) {
+    const frameId = selectedGridFrameId(), metrics = gridGeometryFor(frameId);
+    if (!frameId || !metrics) return;
+    const node = worldLayer(frameId), angle = (node?.rotation ?? 0) * Math.PI / 180;
+    ctx.save(); ctx.lineWidth = 1;
+    for (const [axis, tracks] of [["columns", metrics.columns], ["rows", metrics.rows]]) {
+      for (const track of tracks.slice(0, -1)) {
+        const start = axis === "columns" ? framePointOnCanvas(frameId, track.end, metrics.padding.top)
+          : framePointOnCanvas(frameId, metrics.padding.left, track.end);
+        const end = axis === "columns" ? framePointOnCanvas(frameId, track.end, metrics.height - metrics.padding.bottom)
+          : framePointOnCanvas(frameId, metrics.width - metrics.padding.right, track.end);
+        if (!start || !end) continue;
+        ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y);
+        ctx.strokeStyle = "rgba(45, 126, 247, .65)"; ctx.stroke();
+        const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+        ctx.save(); ctx.translate(center.x, center.y); ctx.rotate(angle);
+        ctx.fillStyle = "#fff"; ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 1.5;
+        const width = axis === "columns" ? 8 : 28, height = axis === "columns" ? 28 : 8;
+        ctx.beginPath(); ctx.roundRect(-width / 2, -height / 2, width, height, 4); ctx.fill(); ctx.stroke(); ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  function beginGridTrackResize(hit, point, pointerId) {
+    const node = hit && layer(hit.frameId), metrics = hit && gridGeometryFor(hit.frameId), track = metrics?.[hit.axis]?.[hit.index];
+    if (!node || !track || worldLayer(hit.frameId)?.locked) return false;
+    drag = { kind: "grid-track", pointerId, frameId: hit.frameId, axis: hit.axis, index: hit.index,
+      node: clone(node), metrics, track: clone(track), start: gridLocalPoint(hit.frameId, point), moved: false };
+    return true;
+  }
+
+  function previewGridTrackResize(current, point) {
+    const local = gridLocalPoint(current.frameId, point);
+    if (!local || !current.start) return;
+    const coordinate = current.axis === "columns" ? local.x : local.y;
+    const startCoordinate = current.axis === "columns" ? current.start.x : current.start.y;
+    if (Math.abs(coordinate - startCoordinate) * geometry.scale < 1) return;
+    const rawSize = coordinate - current.track.start;
+    const value = Math.max(.01, Math.min(16384, Math.round(rawSize * 100) / 100));
+    const layout = clone(current.node.style.layout), key = current.axis === "columns" ? "columnTracks" : "rowTracks";
+    const count = current.axis === "columns" ? layout.columns : current.metrics.rows.length;
+    const tracks = gridTrackDefinitions(layout, current.axis, count).map(clone);
+    tracks[current.index] = { mode: "fixed", value };
+    layout[key] = tracks;
+    history.preview({ type: "node", id: current.frameId, value: { ...clone(current.node), style: { ...current.node.style, layout } } });
+    current.moved = true;
+    edited(`Resizing ${current.axis === "columns" ? "column" : "row"} track…`, { previewOnly: true });
+  }
+
   function vectorPointOnCanvas(node, point) {
     const frame = worldLayer(node.id)?.frame, size = pageSize();
     if (!frame || !size || !geometry) return null;
@@ -580,6 +688,7 @@ export function attachDesignWorkspace() {
       for (const [hx, hy] of handles) { ctx.fillRect(hx - 4, hy - 4, 8, 8); ctx.strokeRect(hx - 4, hy - 4, 8, 8); }
       ctx.restore();
     }
+    drawGridTrackOverlay(ctx);
     if (cropModeId) drawCropOverlay(ctx, cropGeometryFor(cropModeId));
     drawVectorEditOverlay(ctx); drawPathDraftOverlay(ctx);
     if (marquee) { ctx.setLineDash([5, 4]); ctx.strokeStyle = "#2d7ef7"; ctx.fillStyle = "rgba(45,126,247,.12)";
@@ -920,8 +1029,9 @@ export function attachDesignWorkspace() {
   function startPinch() {
     const points = [...touchPoints.values()];
     if (points.length < 2) return;
-    if (drag?.moved && ["layers", "resize", "rotate", "crop"].includes(drag.kind)) {
-      commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : drag.kind === "rotate" ? "Rotate selection" : "Crop image");
+    if (drag?.moved && ["layers", "resize", "rotate", "crop", "grid-track"].includes(drag.kind)) {
+      commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : drag.kind === "rotate" ? "Rotate selection"
+        : drag.kind === "grid-track" ? "Resize grid track" : "Crop image");
     }
     drag = null; marquee = null;
     const first = points[0], second = points[1], center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
@@ -973,6 +1083,10 @@ export function attachDesignWorkspace() {
       }
       return;
     }
+    const gridTrack = gridTrackHit(point);
+    if (gridTrack && beginGridTrackResize(gridTrack, point, event.pointerId)) {
+      captureCanvasPointer(event); event.preventDefault(); return;
+    }
     const handle = transformHandleAt(point);
     if (handle && beginResizeOrRotate(handle === "rotate" ? "rotate" : "resize", handle, point, event.pointerId)) {
       captureCanvasPointer(event); event.preventDefault(); return;
@@ -1000,8 +1114,8 @@ export function attachDesignWorkspace() {
     if (!drag || drag.pointerId !== event.pointerId) {
       if (penActive && pathDraft) { pathDraft.cursor = pagePoint(point); drawCanvas(); }
       if (event.pointerType !== "touch" && event.buttons === 0) {
-        const handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
-        canvas.style.cursor = penActive ? "crosshair" : cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+        const gridHandle = !cropModeId && gridTrackHit(point), handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
+        canvas.style.cursor = gridHandle ? gridHandle.axis === "columns" ? "col-resize" : "row-resize" : penActive ? "crosshair" : cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : "crosshair" : handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : hitTest(point) ? "move" : "default";
       }
@@ -1035,6 +1149,8 @@ export function attachDesignWorkspace() {
       const world = pagePoint(point);
       if (Math.hypot(world.x - drag.start.x, world.y - drag.start.y) * geometry.scale < 1) return;
       drag.moved = true; previewCanvasTransform(drag, point, event);
+    } else if (drag.kind === "grid-track") {
+      previewGridTrackResize(drag, point);
     } else if (drag.kind === "pan") {
       const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
       if (Math.hypot(dx, dy) < 1) return;
@@ -1055,6 +1171,7 @@ export function attachDesignWorkspace() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (drag.kind === "path-anchor") { drag = null; drawCanvas(); return; }
     if (drag.kind === "crop" && drag.moved) commitEdit("Crop image");
+    if (drag.kind === "grid-track" && drag.moved) commitEdit("Resize grid track");
     if (drag.kind === "layers" && drag.moved) commitEdit("Move layers");
     if (drag.kind === "resize" && drag.moved) commitEdit("Resize selection");
     if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
@@ -1073,9 +1190,12 @@ export function attachDesignWorkspace() {
 
   function canvasPointerCancel(event) {
     if (drag?.pointerId === event.pointerId && drag.kind === "path-anchor") {
+      touchPoints.delete(event.pointerId);
       pathDraft?.points.splice(drag.index, 1); drag = null; drawCanvas(); setStatus("Pen point cancelled."); return;
     }
-    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop", "vector-point"].includes(drag.kind) && drag.moved) {
+    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop", "grid-track", "vector-point"].includes(drag.kind) && drag.moved) {
+      touchPoints.delete(event.pointerId);
+      if (touchPoints.size < 2) pinch = null;
       history.cancel(); drag = null; marquee = null; selectionChanged(); edited("Edit cancelled."); return;
     }
     canvasPointerUp(event);
@@ -1774,6 +1894,7 @@ export function attachDesignWorkspace() {
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
         resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
         canvas: { zoom, panX, panY, geometry: clone(geometry) }, cropModeId,
+        gridTracks: selectedGridFrameId() ? clone(gridGeometryFor()) : null,
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },
   };

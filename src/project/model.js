@@ -161,6 +161,49 @@ function gridTrackSizes(layout, axis, count, available, children, placements, ga
   return sizes;
 }
 
+/** Resolve the page-pixel positions and sizes of a grid frame's tracks for canvas editing. */
+export function resolveGridTrackGeometry(project, slideId, frameId, variantId = project.variants[0].id) {
+  validateProject(project);
+  const slide = project.slides.find((entry) => entry.id === slideId), node = project.nodes[frameId];
+  const layout = node?.style?.layout;
+  if (!slide?.nodeIds.includes(frameId) || node?.kind !== "frame" || layout?.direction !== "grid")
+    throw new Error("Choose a grid frame to inspect its tracks.");
+  const { variant, frames } = layerFrameMap(project, slideId, variantId), resolved = frames.get(frameId);
+  if (!resolved) throw new Error("The grid frame is unavailable on this page.");
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === frameId && project.nodes[id]?.visible !== false);
+  const { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout);
+  const parentWidth = resolved.frame.width * variant.width, parentHeight = resolved.frame.height * variant.height;
+  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+  const columnGap = layout.columnGap ?? layout.gap ?? 0, rowGap = layout.rowGap ?? layout.gap ?? 0;
+  const availableWidth = Math.max(0, parentWidth - padding.left - padding.right - columnGap * (layout.columns - 1));
+  const availableHeight = Math.max(0, parentHeight - padding.top - padding.bottom - rowGap * (rows - 1));
+  const children = childIds.map((id) => {
+    const child = project.nodes[id], patch = slide.overrides[id] ?? {};
+    const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? child.variantFrames?.[variant.id] ?? child.frame;
+    const intrinsic = child.kind === "frame" && child.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
+    return { id, width: child.layoutSizing?.width === "hug" ? intrinsic.width : child.layoutSize?.width ?? frame.width * parentWidth,
+      height: child.layoutSizing?.height === "hug" ? intrinsic.height : child.layoutSize?.height ?? frame.height * parentHeight };
+  });
+  const definitions = {
+    columns: gridTrackDefinitions(layout, "columns", layout.columns),
+    rows: gridTrackDefinitions(layout, "rows", rows),
+  };
+  const makeTracks = (axis, count, gap, sizes, start) => {
+    let cursor = start;
+    return sizes.map((size, index) => {
+      const track = { index, start: cursor, size, end: cursor + size, gapAfter: index + 1 < count ? gap : 0,
+        ...clone(definitions[axis][index]) };
+      cursor += size + track.gapAfter;
+      return track;
+    });
+  };
+  const columnSizes = gridTrackSizes(layout, "columns", layout.columns, availableWidth, children, placements, columnGap);
+  const rowSizes = gridTrackSizes(layout, "rows", rows, availableHeight, children, placements, rowGap);
+  return { frame: clone(resolved.frame), rotation: resolved.rotation, width: parentWidth, height: parentHeight, padding,
+    columns: makeTracks("columns", layout.columns, columnGap, columnSizes, padding.left),
+    rows: makeTracks("rows", rows, rowGap, rowSizes, padding.top) };
+}
+
 function color(value) { return typeof value === "string" && /^#[a-f0-9]{6}([a-f0-9]{2})?$/i.test(value); }
 
 function validateNodeStyle(node) {

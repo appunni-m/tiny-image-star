@@ -5,7 +5,7 @@ import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerComma
   addGridTrackCommand, deleteGridTrackCommand, moveGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
   setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
-import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
+import { createSceneProject, ENGINE_IDENTITY, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
 import { designRecipePatch, designRecipeProblem } from "../src/design/recipes.js";
 import { createVectorShape } from "../src/design/vector-shapes.js";
@@ -334,6 +334,12 @@ test("grid tracks support fixed pixels, weighted Fill fractions, and content Hug
   close(resolved.get("hug").frame.x, 530 / 600);
   close(resolved.get("hug").frame.width, 60 / 600);
   close(resolved.get("hug").frame.height, 60 / 300, "Hug rows fit the largest cell layer while keeping padding");
+  const trackGeometry = resolveGridTrackGeometry(project, "grid-page", "frame", "page");
+  assert.deepEqual(trackGeometry.columns.map(({ start, size, end }) => ({ start, size, end })), [
+    { start: 10, size: 100, end: 110 }, { start: 120, size: 130, end: 250 },
+    { start: 260, size: 260, end: 520 }, { start: 530, size: 60, end: 590 },
+  ], "canvas guides share resolved padding, track sizes, and gaps with the renderer");
+  assert.deepEqual(trackGeometry.rows.map(({ start, size, end }) => ({ start, size, end })), [{ start: 10, size: 60, end: 70 }]);
   const invalidTrack = structuredClone(project);
   invalidTrack.nodes.frame.style.layout.columnTracks[1].value = 0;
   assert.throws(() => validateProject(invalidTrack), /Invalid grid track fraction/);

@@ -699,6 +699,47 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     trackState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(trackState.nodes[gridFrameId].style.layout.columns, 2, "deleting an empty track preserves the other tracks");
+    const gridTrackDrag = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), metrics = state.gridTracks;
+      const canvas = document.querySelector("#design-canvas"), rect = canvas.getBoundingClientRect(), view = state.canvas.geometry;
+      const frame = state.resolvedFrames[id].frame, center = { x: (frame.x + frame.width / 2) * state.variant.width,
+        y: (frame.y + frame.height / 2) * state.variant.height };
+      const angle = metrics.rotation * Math.PI / 180;
+      const screenForLocal = (local) => {
+        const dx = local.x - metrics.width / 2, dy = local.y - metrics.height / 2;
+        const pagePoint = { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+        return { x: rect.left + view.x + pagePoint.x * view.scale, y: rect.top + view.y + pagePoint.y * view.scale };
+      };
+      const screen = screenForLocal({ x: metrics.columns[0].end, y: metrics.height / 2 });
+      const target = screenForLocal({ x: metrics.columns[0].end + 18 / view.scale, y: metrics.height / 2 });
+      const fire = (type, pointerId, x, y, pointerType = "touch", buttons = 1) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true,
+        cancelable: true, pointerId, pointerType, isPrimary: true, button: 0, buttons, clientX: x, clientY: y }));
+      const before = state.nodes[id].style.layout.columnTracks?.[0] ?? { mode: "fill", value: 1 };
+      fire("pointerdown", 84, screen.x, screen.y);
+      fire("pointermove", 84, target.x, target.y);
+      const preview = window.tinyImageStarDesign.getSnapshot().nodes[id].style.layout.columnTracks[0];
+      fire("pointercancel", 84, target.x, target.y, "touch", 0);
+      const cancelled = window.tinyImageStarDesign.getSnapshot().nodes[id].style.layout.columnTracks?.[0] ?? { mode: "fill", value: 1 };
+      fire("pointerdown", 85, screen.x, screen.y);
+      fire("pointermove", 85, target.x, target.y);
+      const during = window.tinyImageStarDesign.getSnapshot().nodes[id].style.layout.columnTracks[0];
+      fire("pointerup", 85, target.x, target.y, "touch", 0);
+      return { before, preview, cancelled, during, after: window.tinyImageStarDesign.getSnapshot().nodes[id].style.layout.columnTracks[0],
+        expected: Math.round((metrics.columns[0].size + 18 / view.scale) * 100) / 100 };
+    }, gridFrameId);
+    assert.equal(gridTrackDrag.preview.mode, "fixed", "dragging a grid divider previews a fixed pixel track on the canvas");
+    assert.deepEqual(gridTrackDrag.cancelled, gridTrackDrag.before, "pointer cancellation restores the original track definition");
+    assert.deepEqual(gridTrackDrag.after, { mode: "fixed", value: gridTrackDrag.expected }, "touch dragging resizes a track using page-pixel units");
+    assert.equal(gridTrackDrag.during.mode, "fixed", "the mobile divider handle previews before the gesture commits");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const afterGridTrackDrag = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.layout.columnTracks[0], gridFrameId);
+    assert.deepEqual(afterGridTrackDrag, gridTrackDrag.after, "the committed canvas track size remains applied after the live preview");
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((expected) => window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks[0].mode === expected.mode,
+      { id: gridFrameId, mode: gridTrackDrag.before.mode });
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((expected) => window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks[0].value === expected.value,
+      { id: gridFrameId, value: gridTrackDrag.after.value });
     const gridChildId = await page.evaluate((id) => {
       const snapshot = window.tinyImageStarDesign.getSnapshot();
       return snapshot.pages[1].nodeIds.find((childId) => snapshot.nodes[childId].parentId === id);
