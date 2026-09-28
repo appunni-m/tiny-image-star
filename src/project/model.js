@@ -348,7 +348,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "gridPlacement", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -417,6 +417,13 @@ export function validateProject(project) {
           && node.gridPlacement.columnSpan <= parentLayout.columns
           && node.gridPlacement.row + node.gridPlacement.rowSpan - 1 <= 200
           && (!parentLayout.rows || node.gridPlacement.row + node.gridPlacement.rowSpan - 1 <= parentLayout.rows), "Invalid grid placement.");
+      }
+      if (node.gridAlignment != null) {
+        const parentLayout = project.nodes[node.parentId]?.style?.layout;
+        check(node.parentId != null && parentLayout?.direction === "grid" && object(node.gridAlignment), "Grid alignment requires a child of a grid frame.");
+        keys(node.gridAlignment, ["horizontal", "vertical"]);
+        check(Object.keys(node.gridAlignment).length > 0
+          && Object.values(node.gridAlignment).every((alignment) => ["start", "center", "end"].includes(alignment)), "Invalid grid alignment.");
       }
       if (node.layoutSizing != null) {
         check(object(node.layoutSizing), "Invalid layer resizing settings."); keys(node.layoutSizing, ["width", "height"]);
@@ -572,13 +579,15 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
         + columnGap * (placement.columnSpan - 1);
       const cellHeight = heights.slice(placement.row - 1, placement.row - 1 + placement.rowSpan).reduce((sum, size) => sum + size, 0)
         + rowGap * (placement.rowSpan - 1);
-      const stretchX = layout.justify === "stretch" || node.layoutSizing?.width === "fill";
-      const stretchY = layout.align === "stretch" || node.layoutSizing?.height === "fill";
+      const alignX = node.gridAlignment?.horizontal ?? layout.justify;
+      const alignY = node.gridAlignment?.vertical ?? layout.align;
+      const stretchX = alignX === "stretch" || node.layoutSizing?.width === "fill";
+      const stretchY = alignY === "stretch" || node.layoutSizing?.height === "fill";
       const childWidth = Math.max(.01, stretchX ? cellWidth : Math.min(child.width, cellWidth));
       const childHeight = Math.max(.01, stretchY ? cellHeight : Math.min(child.height, cellHeight));
       const freeX = Math.max(0, cellWidth - childWidth), freeY = Math.max(0, cellHeight - childHeight);
-      const offsetX = layout.justify === "center" ? freeX / 2 : layout.justify === "end" ? freeX : 0;
-      const offsetY = layout.align === "center" ? freeY / 2 : layout.align === "end" ? freeY : 0;
+      const offsetX = alignX === "center" ? freeX / 2 : alignX === "end" ? freeX : 0;
+      const offsetY = alignY === "center" ? freeY / 2 : alignY === "end" ? freeY : 0;
       const x = padding.left + widths.slice(0, placement.column - 1).reduce((sum, size) => sum + size, 0)
         + columnGap * (placement.column - 1) + offsetX;
       const y = padding.top + heights.slice(0, placement.row - 1).reduce((sum, size) => sum + size, 0)

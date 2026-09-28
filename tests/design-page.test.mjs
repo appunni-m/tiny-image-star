@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
-  setFrameLayoutCommand, setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+  setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
@@ -336,6 +336,33 @@ test("grid tracks support fixed pixels, weighted Fill fractions, and content Hug
   const invalidTrack = structuredClone(project);
   invalidTrack.nodes.frame.style.layout.columnTracks[1].value = 0;
   assert.throws(() => validateProject(invalidTrack), /Invalid grid track fraction/);
+});
+
+test("grid children override horizontal and vertical alignment and can return to the parent setting", () => {
+  const project = createSceneProject({ id: "grid-child-alignment", variants: [{ id: "page", width: 300, height: 200 }],
+    slides: [{ id: "grid-page", nodeIds: ["frame", "child"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+        style: { layout: { direction: "grid", columns: 1, rows: 1, justify: "stretch", align: "stretch" } } },
+      child: { id: "child", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .2, height: .2 }, layoutSizing: { width: "fixed", height: "fixed" },
+        layoutSize: { width: 60, height: 40 }, style: { shape: "rectangle" } },
+    } });
+  const history = new ProjectHistory(project);
+  history.apply(setGridAlignmentCommand(history.document, "grid-page", "child", "horizontal", "center"), "Center grid child");
+  history.apply(setGridAlignmentCommand(history.document, "grid-page", "child", "vertical", "end"), "Align grid child bottom");
+  const resolved = resolveLayerFrames(history.document, "grid-page").get("child").frame;
+  assert.ok(Math.abs(resolved.x - .4) < 1e-8 && Math.abs(resolved.y - .8) < 1e-8);
+  assert.ok(Math.abs(resolved.width - .2) < 1e-8 && Math.abs(resolved.height - .2) < 1e-8,
+    "an aligned fixed-size layer stays fixed inside its grid cell even when the parent uses Stretch");
+  history.apply(setGridAlignmentCommand(history.document, "grid-page", "child", "horizontal", null), "Inherit grid horizontal alignment");
+  assert.deepEqual(history.document.nodes.child.gridAlignment, { vertical: "end" });
+  history.apply(setGridAlignmentCommand(history.document, "grid-page", "child", "vertical", null), "Inherit grid vertical alignment");
+  assert.equal(history.document.nodes.child.gridAlignment, undefined, "clearing both overrides removes the optional alignment record");
+  const inherited = resolveLayerFrames(history.document, "grid-page").get("child").frame;
+  assert.deepEqual(inherited, { x: 0, y: 0, width: 1, height: 1 }, "Auto restores both parent Stretch settings");
+  const invalid = structuredClone(project);
+  invalid.nodes.child.gridAlignment = { horizontal: "middle" };
+  assert.throws(() => validateProject(invalid), /Invalid grid alignment/);
 });
 
 test("Auto Layout Hug sizes a frame around fixed children and Fill makes the parent fixed on that axis", () => {

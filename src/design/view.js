@@ -109,6 +109,10 @@ export function createDesignView() {
             <label class="design-field"><span>Row span</span><input id="design-grid-row-span" type="number" min="1" max="200" step="1" inputmode="numeric" /></label>
             <label class="design-field"><span>Column span</span><input id="design-grid-column-span" type="number" min="1" max="24" step="1" inputmode="numeric" /></label>
           </fieldset>
+          <fieldset id="design-grid-alignment" class="design-fieldset" hidden><legend>Cell alignment</legend>
+            <label class="design-field"><span>Horizontal</span><select id="design-grid-align-horizontal"><option value="auto">Auto</option><option value="start">Left</option><option value="center">Center</option><option value="end">Right</option></select></label>
+            <label class="design-field"><span>Vertical</span><select id="design-grid-align-vertical"><option value="auto">Auto</option><option value="start">Top</option><option value="center">Center</option><option value="end">Bottom</option></select></label>
+          </fieldset>
           <fieldset id="design-constraints-field" class="design-fieldset" hidden><legend>Constraints</legend>
             <label class="design-field"><span>Horizontal</span><select id="design-constraint-horizontal"><option value="left">Left</option><option value="right">Right</option><option value="left-right">Left and right</option><option value="center">Center</option><option value="scale">Scale</option></select></label>
             <label class="design-field"><span>Vertical</span><select id="design-constraint-vertical"><option value="top">Top</option><option value="bottom">Bottom</option><option value="top-bottom">Top and bottom</option><option value="center">Center</option><option value="scale">Scale</option></select></label>

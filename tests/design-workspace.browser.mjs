@@ -521,6 +521,21 @@ export async function assertDesignWorkspace(browser, address) {
       .map((input) => input.getBoundingClientRect().toJSON()));
     assert.ok(mobileGridPlacement.length === 4 && mobileGridPlacement.every((box) => box.height >= 43 && box.left >= 0 && box.right <= 390),
       `grid cell/span controls remain touch-sized on a phone: ${JSON.stringify(mobileGridPlacement)}`);
+    assert.equal(await page.locator("#design-grid-alignment").isVisible(), true, "grid children expose per-cell alignment overrides");
+    const mobileGridAlignment = await page.evaluate(() => [...document.querySelectorAll("#design-grid-alignment select")]
+      .map((input) => input.getBoundingClientRect().toJSON()));
+    assert.ok(mobileGridAlignment.length === 2 && mobileGridAlignment.every((box) => box.height >= 43 && box.left >= 0 && box.right <= 390),
+      `per-cell alignment controls remain touch-sized on a phone: ${JSON.stringify(mobileGridAlignment)}`);
+    await page.locator("#design-grid-align-horizontal").selectOption("end");
+    await page.locator("#design-grid-align-vertical").selectOption("center");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.deepEqual(gridState.nodes[gridOtherId].gridAlignment, { horizontal: "end", vertical: "center" },
+      "per-cell alignment is stored on the selected child independently of its parent settings");
+    await page.locator("#design-grid-align-horizontal").selectOption("auto");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.deepEqual(gridState.nodes[gridOtherId].gridAlignment, { vertical: "center" }, "Auto removes one axis override while preserving the other");
     await page.setViewportSize({ width: 1280, height: 850 });
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     await page.locator("#design-frame-layout").selectOption("horizontal");
@@ -658,11 +673,21 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator('#design-grid-column-tracks [data-grid-track-index="0"][data-grid-track-control="value"]').fill("72");
     await page.locator('#design-grid-column-tracks [data-grid-track-index="0"][data-grid-track-control="value"]').press("Tab");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const gridChildId = await page.evaluate((id) => {
+      const snapshot = window.tinyImageStarDesign.getSnapshot();
+      return snapshot.pages[1].nodeIds.find((childId) => snapshot.nodes[childId].parentId === id);
+    }, gridFrameId);
+    await page.locator(`#design-layer-list [data-layer-id="${gridChildId}"] .design-layer-select`).click();
+    await page.locator("#design-grid-align-horizontal").selectOption("center");
+    await page.locator("#design-grid-align-vertical").selectOption("end");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     const gridSaved = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(gridSaved.nodes[gridFrameId].style.layout.direction, "grid");
     assert.equal(gridSaved.nodes[gridFrameId].style.layout.rows, 0, "saved grid layouts retain auto-row behavior");
     assert.deepEqual(gridSaved.nodes[gridFrameId].style.layout.columnTracks[0], { mode: "fixed", value: 72 },
       "custom fixed track sizing is stored with the local page");
+    assert.deepEqual(gridSaved.nodes[gridChildId].gridAlignment, { horizontal: "center", vertical: "end" },
+      "per-cell alignment is saved with the page child");
     const pages = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().pages.map((entry) => entry.name));
     assert.deepEqual(pages, ["Page 1", "Page 2"]);
     await page.locator("#design-document-name").fill("Mobile Figma draft");
@@ -681,6 +706,8 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopened.nodes[gridFrameId].style.layout.columns, 2);
     assert.deepEqual(reopened.nodes[gridFrameId].style.layout.columnTracks[0], { mode: "fixed", value: 72 },
       "per-track size modes survive local project reload");
+    assert.deepEqual(reopened.nodes[gridChildId].gridAlignment, { horizontal: "center", vertical: "end" },
+      "per-cell alignment survives local project reload");
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.wrap, true, "wrap and axis gaps survive local save and reload");
     assert.equal(reopened.nodes[frameId].style.layout.rowGap, 9);

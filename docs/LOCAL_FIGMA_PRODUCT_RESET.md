@@ -115,6 +115,7 @@ horizontal/vertical Auto Layout. Auto Layout now includes wrap, independent row
 and column spacing, padding, alignment/justification, and per-axis Fixed, Fill,
 and Hug sizing. Grid flow adds fixed-pixel, fractional Fill, and content Hug
 tracks, content-sized auto rows, explicit cell placement, row/column spans,
+per-child horizontal and vertical alignment overrides with parent inheritance,
 overlap fencing, and touch-sized inspector controls; the browser smoke checks
 the reflowing WASM preview and local save path. The Pillow-RS WASM scene
 renderer updates the same page preview; design image bytes remain local and
@@ -127,7 +128,7 @@ network editor, parametric polygon/star controls, boolean path operations,
 SVG import/export, components/variants, variables, layout guides, effects and
 advanced fill systems, prototype interactions, and many established
 keyboard/accessibility behaviors. Auto Layout grid still lacks canvas track
-dragging, reordering/deletion, and per-cell alignment; min/max sizing,
+dragging and track reordering/deletion; min/max sizing,
 aspect-ratio controls, and several
 advanced wrap/alignment behaviors also remain open.
 The supported-feature inventory and cross-device release gates below remain
@@ -140,7 +141,7 @@ open; do not describe the project as a production-ready Figma copy.
 | Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | Pixel-based geometry and opacity can be edited across a selection; legacy image, batch, and story workspaces are not one shared editor. |
 | Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
-| Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gaps, per-axis Fixed/Fill/Hug, Grid auto rows, fixed-pixel/Fractional Fill/content Hug tracks, cell placement, and row/column spans work. Canvas track dragging, reordering/deletion, per-cell alignment, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment remain pending. |
+| Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gaps, per-axis Fixed/Fill/Hug, Grid auto rows, fixed-pixel/Fractional Fill/content Hug tracks, cell placement, row/column spans, and per-child horizontal/vertical alignment overrides work. Canvas track dragging, reordering/deletion, absolute positioning, min/max, aspect-ratio, and advanced wrap alignment remain pending. |
 | Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, regular polygon, star, editable Pen paths, and cubic Bézier handles work. Parametric polygon/star controls, vector-network joins, boolean operations, and SVG import/export remain pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |

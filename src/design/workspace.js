@@ -1,7 +1,7 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
+  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
@@ -278,6 +278,7 @@ export function attachDesignWorkspace() {
     }
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
     get("grid-placement").hidden = !parentHasGrid;
+    get("grid-alignment").hidden = !parentHasGrid;
     if (parentHasGrid) {
       const parent = project.nodes[node.parentId], parentChildren = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === parent.id
         && project.nodes[id]?.visible !== false);
@@ -288,6 +289,8 @@ export function attachDesignWorkspace() {
       get("grid-column-span").max = String(parent.style.layout.columns);
       get("grid-row").max = String(parent.style.layout.rows || 200);
       get("grid-row-span").max = String(parent.style.layout.rows || 200);
+      get("grid-align-horizontal").value = node.gridAlignment?.horizontal ?? "auto";
+      get("grid-align-vertical").value = node.gridAlignment?.vertical ?? "auto";
     }
     get("x").title = world.layoutManaged ? "Auto Layout controls this child's X position." : "";
     get("y").title = world.layoutManaged ? "Auto Layout controls this child's Y position." : "";
@@ -1655,6 +1658,14 @@ export function attachDesignWorkspace() {
     try {
       history.apply(setGridPlacementCommand(history.document, currentPage().id, id, placement), "Change grid cell");
       edited("Grid cell updated.");
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
+  });
+  for (const axis of ["horizontal", "vertical"]) get(`grid-align-${axis}`).addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node?.parentId) return;
+    const selected = get(`grid-align-${axis}`).value;
+    try {
+      history.apply(setGridAlignmentCommand(history.document, currentPage().id, id, axis, selected === "auto" ? null : selected), "Change grid cell alignment");
+      edited("Grid cell alignment updated.");
     } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   for (const axis of ["width", "height"]) get(`layout-sizing-${axis}`).addEventListener("change", () => {

@@ -279,7 +279,7 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
       for (const axis of ["width", "height"]) if (child.layoutSizing[axis] === "fill") child.layoutSizing[axis] = "fixed";
       storeManualFrame(id, child);
     }
-    if (direction !== "grid") delete child.gridPlacement;
+    if (direction !== "grid") { delete child.gridPlacement; delete child.gridAlignment; }
     commands.push({ type: "node", id, value: child });
   }
   return { type: "group", commands };
@@ -292,6 +292,22 @@ export function setGridPlacementCommand(project, pageId, nodeId, gridPlacement) 
   if (!page?.nodeIds.includes(nodeId) || !parent || parent.kind !== "frame" || parent.style?.layout?.direction !== "grid")
     throw new Error("Choose a layer inside a grid frame.");
   return { type: "node", id: nodeId, value: { ...clone(node), gridPlacement: clone(gridPlacement) } };
+}
+
+/** Override a grid child's alignment on one axis, or clear it to inherit the grid frame setting. */
+export function setGridAlignmentCommand(project, pageId, nodeId, axis, alignment) {
+  const page = project.slides.find((entry) => entry.id === pageId), node = project.nodes[nodeId];
+  const parent = node?.parentId && project.nodes[node.parentId];
+  if (!page?.nodeIds.includes(nodeId) || !parent || parent.kind !== "frame" || parent.style?.layout?.direction !== "grid")
+    throw new Error("Choose a layer inside a grid frame.");
+  if (!["horizontal", "vertical"].includes(axis) || (alignment != null && !["start", "center", "end"].includes(alignment)))
+    throw new Error("Invalid grid alignment.");
+  const value = clone(node), gridAlignment = { ...value.gridAlignment };
+  if (alignment == null) delete gridAlignment[axis];
+  else gridAlignment[axis] = alignment;
+  if (Object.keys(gridAlignment).length) value.gridAlignment = gridAlignment;
+  else delete value.gridAlignment;
+  return { type: "node", id: nodeId, value };
 }
 
 export function deleteLayersCommand(project, nodeIds) {
