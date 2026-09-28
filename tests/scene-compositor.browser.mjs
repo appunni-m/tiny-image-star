@@ -76,11 +76,24 @@ export async function assertSceneCompositor(browser, origin) {
         positions[label] = { center: pixel(result, 64, 64), top: pixel(result, 64, 8) };
       }
       const rotated = await pixels(await render(doc([node("p", "image", full, { assetId: "quadrants", rotation: 90 })])));
+      const flippedX = await pixels(await render(doc([node("p", "image", full, { assetId: "quadrants", flipX: true })])));
+      const flippedY = await pixels(await render(doc([node("p", "image", full, { assetId: "quadrants", flipY: true })])));
+      const rotatedFlippedX = await pixels(await render(doc([node("p", "image", full, { assetId: "quadrants", rotation: 90, flipY: true })])));
       const gray = await pixels(await render(doc([node("p", "image", full, { assetId: "alpha", appearance: { grayscaleMix: 1 } })])));
       const groupOpacity = await pixels(await render(doc([node("shape", "shape", { x: .2, y: .2, width: .6, height: .6 }, {
         opacity: .5, color: "#ff0000", style: { shape: "rounded", strokeColor: "#000000", strokeWidth: .1 } })])));
       const maximumGroupAlpha = Math.max(...Array.from(groupOpacity.data).filter((_, index) => index % 4 === 3));
       samples.rotatedTopLeft = pixel(rotated, 24, 24); samples.rotatedTopRight = pixel(rotated, 104, 24); samples.grayAlpha = pixel(gray, 64, 64);
+      samples.flippedX = [pixel(flippedX, 24, 24), pixel(flippedX, 104, 24), pixel(flippedX, 24, 104), pixel(flippedX, 104, 104)];
+      samples.flippedY = [pixel(flippedY, 24, 24), pixel(flippedY, 104, 24), pixel(flippedY, 24, 104), pixel(flippedY, 104, 104)];
+      samples.rotatedFlippedX = [pixel(rotatedFlippedX, 24, 24), pixel(rotatedFlippedX, 104, 24),
+        pixel(rotatedFlippedX, 24, 104), pixel(rotatedFlippedX, 104, 104)];
+      const expectedFlippedX = [[0, 255, 0, 255], [255, 0, 0, 255], [255, 255, 255, 255], [0, 0, 255, 255]];
+      const expectedFlippedY = [[0, 0, 255, 255], [255, 255, 255, 255], [255, 0, 0, 255], [0, 255, 0, 255]];
+      const expectedRotatedFlippedX = [[255, 0, 0, 255], [0, 0, 255, 255], [0, 255, 0, 255], [255, 255, 255, 255]];
+      if (JSON.stringify(samples.flippedX) !== JSON.stringify(expectedFlippedX) || JSON.stringify(samples.flippedY) !== JSON.stringify(expectedFlippedY)
+        || JSON.stringify(samples.rotatedFlippedX) !== JSON.stringify(expectedRotatedFlippedX))
+        throw new Error(`Pillow-RS image layer flips should reflect the exact source quadrants: ${JSON.stringify({ x: samples.flippedX, y: samples.flippedY, rotated: samples.rotatedFlippedX })}`);
       const upright = await pixels(await engine.preview({ bytes: orientationBytes }));
       const oriented = await pixels(await render(doc([node("p", "image", full, { assetId: "oriented" })], upright.width, upright.height)));
       const orientationMatches = oriented.data.every((value, index) => value === upright.data[index]);
@@ -280,6 +293,6 @@ export async function assertSceneCompositor(browser, origin) {
       const output = new URL("../docs/research/2026-09-17/", import.meta.url);
       await mkdir(output, { recursive: true }); await writeFile(new URL("scene-seam.png", output), Buffer.from(report.art, "base64"));
     }
-    console.log(`  scene compositor: layers/masks/focal crops/rotation/alpha, ${report.seamDifference}-level seam and ${report.offsetDifference}-level odd-viewport difference, exact 1280px preview, 1/4/8 workers, immutable revisions and pre-read cancellation/budget checks`);
+    console.log(`  scene compositor: layers/masks/focal crops/rotation/flips/alpha, ${report.seamDifference}-level seam and ${report.offsetDifference}-level odd-viewport difference, exact 1280px preview, 1/4/8 workers, immutable revisions and pre-read cancellation/budget checks`);
   } finally { await context.close(); }
 }

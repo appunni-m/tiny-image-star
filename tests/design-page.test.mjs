@@ -299,10 +299,12 @@ test("design image recipes keep visual edits non-destructive and reject export-o
     version: 1, definition: { id: "look:warm", revision: 1, name: "Warm", engine: { name: ENGINE_IDENTITY.name,
       versions: [ENGINE_IDENTITY.version], compositors: [ENGINE_IDENTITY.compositor] },
       appearance: { brightness: 1.05, contrast: .95, saturation: .8, grayscaleMix: 0 } }, strength: 1,
-  }, cropRelative: { x: .1, y: .2, width: .7, height: .6 }, rotation: 90 } };
+  }, cropRelative: { x: .1, y: .2, width: .7, height: .6 }, rotation: 90, flipX: true, flipY: false } };
   assert.equal(designRecipeProblem(recipe), "");
   assert.deepEqual(designRecipePatch(node, asset, recipe), { appearance: { brightness: 1.1 * 1.05, contrast: .95, saturation: .8, grayscaleMix: 0 },
-    crop: recipe.operations.cropRelative, rotation: 90 });
+    flipX: false, flipY: true, crop: recipe.operations.cropRelative, rotation: 90 });
+  assert.equal(designRecipeProblem({ id: "flip", name: "Flip", operations: { flipX: true } }), "",
+    "a transform-only flip is a valid image recipe");
   assert.match(designRecipeProblem({ id: "resize", name: "Resize", operations: { format: "png", resizeWidth: 1024 } }), /only changes exported/);
   assert.match(designRecipeProblem({ id: "caption", name: "Caption", operations: { textLayers: [{ text: "Hi" }] } }), /editable page layer/);
 });

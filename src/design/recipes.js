@@ -15,11 +15,10 @@ export function designRecipeProblem(recipe) {
   try {
     if (!recipe || recipe.recovery) return "Recovered edits belong to their original image and cannot be reused here.";
     const operations = legacyRecipeOperations(recipe);
-    if (operations.flipX || operations.flipY) return "This recipe flips image pixels, which this layer renderer cannot apply yet.";
     if (operations.textLayers?.length) return "This recipe adds text to exported files. Add text as an editable page layer instead.";
     if (operations.crop && operations.cropRelative) return "This recipe contains conflicting crop settings.";
     if (operations.photoLook) visualSettings(operations);
-    const hasVisualEdit = Boolean(operations.photoLook || operations.grayscale || operations.crop || operations.cropRelative
+    const hasVisualEdit = Boolean(operations.photoLook || operations.grayscale || operations.crop || operations.cropRelative || operations.flipX || operations.flipY
       || operations.rotation || operations.brightness != null && operations.brightness !== 1
       || operations.contrast != null && operations.contrast !== 1);
     if (!hasVisualEdit) return "This recipe only changes exported file settings.";
@@ -32,7 +31,14 @@ export function designRecipePatch(node, asset, recipe) {
   const issue = designRecipeProblem(recipe);
   if (issue) throw new Error(issue);
   if (node?.kind !== "image" || !asset || asset.kind !== "image" || node.assetId !== asset.id) throw new Error("Choose an image layer with its original source.");
-  const operations = legacyRecipeOperations(recipe), appearance = visualSettings(operations), patch = { appearance };
+  const operations = legacyRecipeOperations(recipe), appearance = visualSettings(operations);
+  // Legacy recipes rotate first, then flip in output coordinates. The scene
+  // layer stores flips in source-local axes, which swap on quarter turns.
+  const swapFlipAxes = (operations.rotation ?? 0) % 180 !== 0;
+  const patch = { appearance,
+    flipX: Boolean(swapFlipAxes ? operations.flipY : operations.flipX),
+    flipY: Boolean(swapFlipAxes ? operations.flipX : operations.flipY),
+  };
   const crop = operations.cropRelative ?? (operations.crop ? {
     x: operations.crop.x / asset.width, y: operations.crop.y / asset.height,
     width: operations.crop.width / asset.width, height: operations.crop.height / asset.height,

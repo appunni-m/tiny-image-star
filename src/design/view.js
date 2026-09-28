@@ -87,6 +87,10 @@ export function createDesignView() {
           <label id="design-fit-field" class="design-field" hidden><span>Image fit</span><select id="design-image-fit"><option value="contain">Fit inside</option><option value="cover">Fill frame</option></select></label>
           <div id="design-image-adjustments" class="design-adjustments" hidden>
             <h3>Image adjustments</h3>
+            <div class="design-image-flips" role="group" aria-label="Image orientation">
+              <button id="design-flip-x" class="button secondary" type="button" aria-pressed="false">Flip horizontal</button>
+              <button id="design-flip-y" class="button secondary" type="button" aria-pressed="false">Flip vertical</button>
+            </div>
             <label class="design-range-field"><span>Brightness <output id="design-brightness-value">1.00</output></span><input id="design-brightness" type="range" min="0" max="2" step="0.01" value="1" /></label>
             <label class="design-range-field"><span>Contrast <output id="design-contrast-value">1.00</output></span><input id="design-contrast" type="range" min="0" max="2" step="0.01" value="1" /></label>
             <label class="design-range-field"><span>Saturation <output id="design-saturation-value">1.00</output></span><input id="design-saturation" type="range" min="0" max="2" step="0.01" value="1" /></label>

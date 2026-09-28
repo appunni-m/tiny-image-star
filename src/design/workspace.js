@@ -209,6 +209,8 @@ export function attachDesignWorkspace() {
     }
     if (node.kind === "image") {
       get("image-fit").value = node.fit ?? "contain";
+      get("flip-x").setAttribute("aria-pressed", String(Boolean(node.flipX)));
+      get("flip-y").setAttribute("aria-pressed", String(Boolean(node.flipY)));
       for (const key of ["brightness", "contrast", "saturation"]) {
         const value = node.appearance?.[key] ?? 1;
         get(key).value = String(value); get(`${key}-value`).value = Number(value).toFixed(2);
@@ -748,7 +750,7 @@ export function attachDesignWorkspace() {
         const asset = renderProject().assets[node.assetId], bridge = window.tinyImageStarBatch;
         if (!bridge?.openDesignImageRecipe) { setStatus("The recipe library is still opening. Try again shortly."); return; }
         bridge.openDesignImageRecipe({ name: node.name || asset.name, appearance: clone(node.appearance ?? {}), crop: clone(node.crop ?? null),
-          rotation: node.rotation ?? 0, width: asset.width, height: asset.height });
+          flipX: Boolean(node.flipX), flipY: Boolean(node.flipY), width: asset.width, height: asset.height });
       } },
       { type: "heading", label: "Apply recipe to selected images" },
       ...recipes.map((recipe) => {
@@ -1062,6 +1064,11 @@ export function attachDesignWorkspace() {
     });
   }
   get("image-fit").addEventListener("change", () => { const id = currentSelection()[0]; if (id) { history.apply({ type: "node", id, value: { ...clone(layer(id)), fit: get("image-fit").value } }, "Change image fit"); edited(); } });
+  for (const [field, key, label] of [["flip-x", "flipX", "horizontal"], ["flip-y", "flipY", "vertical"]]) get(field).addEventListener("click", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "image" || node.locked) return;
+    history.apply({ type: "node", id, value: { ...clone(node), [key]: !node[key] } }, `Flip image ${label}`);
+    edited(`Image flipped ${label}.`);
+  });
   for (const key of ["brightness", "contrast", "saturation"]) {
     get(key).addEventListener("input", () => {
       const id = currentSelection()[0], node = id && layer(id); if (!node) return;

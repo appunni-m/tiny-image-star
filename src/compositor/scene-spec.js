@@ -94,6 +94,11 @@ export function imagePlacement(node, width, height) {
   const top = frame.y + (frame.height - sourceHeight * scale) * focal.y;
   const cx = frame.x + frame.width / 2, cy = frame.y + frame.height / 2;
   const angle = (node.rotation ?? 0) * Math.PI / 180, cos = Math.cos(angle), sin = Math.sin(angle);
-  return { box, matrix: [cos / scale, sin / scale, (cx - cos * cx - sin * cy - left) / scale,
-    -sin / scale, cos / scale, (cy + sin * cx - cos * cy - top) / scale] };
+  const matrix = [cos / scale, sin / scale, (cx - cos * cx - sin * cy - left) / scale,
+    -sin / scale, cos / scale, (cy + sin * cx - cos * cy - top) / scale];
+  // The compositor crops the source before applying this inverse transform,
+  // so reflections are around the cropped image's local pixel edges.
+  if (node.flipX) { matrix[0] = -matrix[0]; matrix[1] = -matrix[1]; matrix[2] = sourceWidth - matrix[2]; }
+  if (node.flipY) { matrix[3] = -matrix[3]; matrix[4] = -matrix[4]; matrix[5] = sourceHeight - matrix[5]; }
+  return { box, matrix };
 }

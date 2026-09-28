@@ -1373,7 +1373,7 @@ function openPresetDialog(operations, width, height, suggestedName = "My image r
   else elements.presetDialog.setAttribute("open", "");
 }
 
-function openDesignImageRecipe({ name = "Image", appearance = {}, crop = null, width, height } = {}) {
+function openDesignImageRecipe({ name = "Image", appearance = {}, crop = null, flipX = false, flipY = false, width, height } = {}) {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > MAX_BATCH_PIXELS) {
     elements.batchStatus.textContent = "This image is too large to save as a reusable recipe."; return;
   }
@@ -1382,7 +1382,7 @@ function openDesignImageRecipe({ name = "Image", appearance = {}, crop = null, w
     engine: { name: ENGINE_IDENTITY.name, versions: [ENGINE_IDENTITY.version], compositors: [ENGINE_IDENTITY.compositor] },
     appearance: { ...appearance } }, strength: 1 };
   const pixelCrop = crop ? { x: crop.x * width, y: crop.y * height, width: crop.width * width, height: crop.height * height } : null;
-  const operations = { crop: pixelCrop, rotation: 0, flipX: false, flipY: false, resizeWidth: width, resizeHeight: height,
+  const operations = { crop: pixelCrop, rotation: 0, flipX: Boolean(flipX), flipY: Boolean(flipY), resizeWidth: width, resizeHeight: height,
     resizeMode: "fit", aspectLocked: true, brightness: 1, contrast: 1, grayscale: false, photoLook,
     textLayers: [], lossy: false, quality: DEFAULT_QUALITY, format: "png" };
   openPresetDialog(operations, width, height, `${lookName} look`, { kind: "design-image" });

@@ -977,6 +977,20 @@ async function main() {
       await rm(fixtureDirectory, { recursive: true, force: true });
     }
   }
+  if (process.argv.includes("--scene-compositor-only")) {
+    try {
+      await assertSceneCompositor(browser, `http://127.0.0.1:${address.port}`);
+      console.log("verify:scene-compositor PASS");
+      return 0;
+    } catch (error) {
+      console.error("verify:scene-compositor FAIL", error);
+      return 1;
+    } finally {
+      await browser.close();
+      await new Promise((resolve) => server.close(resolve));
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  }
   // Keep the complete browser suite reproducible on small CI runners and
   // model the same CPU limits on every isolated page, not just one test.
   const hardwareConcurrencyOverride = Number(process.env.TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY);

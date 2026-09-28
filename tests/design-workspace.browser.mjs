@@ -64,6 +64,22 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(edited.assetId, sourceId, "preview edits retain the same original source asset");
     assert.equal(edited.appearance.brightness, 1.5);
 
+    const beforeFlip = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    await page.locator("#design-flip-x").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const flipped = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    const afterFlip = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    assert.equal(flipped.flipX, true, "the image inspector stores a horizontal flip on the selected layer");
+    assert.equal(flipped.assetId, sourceId, "flipping keeps the exact original image asset attached");
+    assert.notEqual(afterFlip, beforeFlip, "the WASM preview redraws the same image layer after flipping");
+    assert.equal(await page.locator("#design-flip-x").getAttribute("aria-pressed"), "true",
+      "the image transform button exposes its current pressed state");
+    await page.locator("#design-undo").click();
+    assert.equal((await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId)).flipX, undefined,
+      "undo restores the source orientation without rewriting its bytes");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+
     const frameBeforeResize = structuredClone(edited.frame);
     const canvasBox = await page.locator("#design-canvas").boundingBox();
     const resizeHandle = await page.evaluate((id) => {

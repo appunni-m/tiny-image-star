@@ -232,7 +232,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "opacity", "rotation", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -305,6 +305,7 @@ export function validateProject(project) {
       }
       if (node.opacity != null) check(number(node.opacity, 0, 1), "Invalid opacity.");
       if (node.rotation != null) check(number(node.rotation, -360, 360), "Invalid rotation.");
+      for (const key of ["flipX", "flipY"]) if (node[key] != null) check(node.kind === "image" && typeof node[key] === "boolean", `Invalid image ${key} transform.`);
       if (node.kind === "text") check(typeof node.text === "string" && node.text.length <= 5000, "Invalid caption.");
       if (node.crop) validateCrop(node.crop);
       validateNodeStyle(node);
