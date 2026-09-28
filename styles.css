@@ -518,6 +518,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-field textarea { resize: vertical; min-height: 64px; }
 .design-field input[type="color"] { min-height: 42px; padding: 3px; }
 .design-fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+#design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .design-fieldset legend { padding-inline: 5px; color: var(--muted); font-size: .67rem; font-weight: 800; }
 .design-fieldset[hidden] { display: none; }
 .design-field.design-checkbox-field { display: flex; align-items: center; justify-content: space-between; min-height: 38px; }
@@ -986,6 +987,7 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
   .design-inspector-content > .design-adjustments, .design-inspector-content > .design-layer-actions { grid-column: 1 / -1; }
   .design-field input:not([type="range"]), .design-field select, .design-field textarea { min-height: 44px; font-size: 1rem; }
   .design-fieldset { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .design-layer-actions .button { min-height: 44px; font-size: .78rem; }
   .design-canvas-footer .button { min-height: 40px; }
   .design-zoom-controls .button { min-width: 42px; min-height: 44px; }

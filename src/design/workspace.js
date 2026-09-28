@@ -36,9 +36,10 @@ export function attachDesignWorkspace() {
     return frameMap;
   }
   function worldLayer(id) {
-    const node = layer(id), resolved = resolvedLayerMap().get(id);
+    const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
     return node && resolved ? { ...clone(node), frame: clone(resolved.frame), rotation: resolved.rotation,
-      visible: resolved.visible, locked: resolved.locked } : node ? clone(node) : null;
+      visible: resolved.visible, locked: resolved.locked,
+      layoutManaged: Boolean(node.parentId && project.nodes[node.parentId]?.style?.layout) } : node ? clone(node) : null;
   }
   function storeWorldGeometry(id, world) {
     const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
@@ -49,6 +50,11 @@ export function attachDesignWorkspace() {
     const parent = resolvedLayerMap().get(node.parentId), variant = project.variants[0];
     if (!resolved || !parent || parent.frame.width <= 0 || parent.frame.height <= 0) return null;
     const localWidth = world.frame.width / parent.frame.width, localHeight = world.frame.height / parent.frame.height;
+    if (project.nodes[node.parentId]?.style?.layout) {
+      next.frame = { ...clone(node.frame), width: localWidth, height: localHeight };
+      next.rotation = (world.rotation ?? resolved.rotation) - parent.rotation;
+      return next;
+    }
     const centerX = (world.frame.x + world.frame.width / 2 - parent.frame.x - parent.frame.width / 2) * variant.width;
     const centerY = (world.frame.y + world.frame.height / 2 - parent.frame.y - parent.frame.height / 2) * variant.height;
     const angle = -parent.rotation * Math.PI / 180, localX = centerX * Math.cos(angle) - centerY * Math.sin(angle);
@@ -160,13 +166,21 @@ export function attachDesignWorkspace() {
     fitField.hidden = node.kind !== "image"; adjustments.hidden = node.kind !== "image";
     get("frame-clip-field").hidden = node.kind !== "frame";
     get("frame-radius-field").hidden = node.kind !== "frame";
-    get("constraints-field").hidden = !node.parentId;
+    get("frame-layout-field").hidden = node.kind !== "frame";
+    get("constraints-field").hidden = !node.parentId || world.layoutManaged;
+    get("x").title = world.layoutManaged ? "Auto Layout controls this child's X position." : "";
+    get("y").title = world.layoutManaged ? "Auto Layout controls this child's Y position." : "";
     if (node.kind === "text") get("text").value = node.text ?? "";
     if (["shape", "text", "frame"].includes(node.kind)) get("color").value = node.color ?? (node.kind === "frame" ? "#ffffff" : "#5149d5");
     if (node.kind === "frame") {
       get("frame-clip").checked = node.style?.clipContent !== false;
       const radius = node.style?.radius ?? 0; get("frame-radius").value = String(radius);
       get("frame-radius-value").value = `${Math.round(radius * 100)}%`;
+      const layout = node.style?.layout; get("frame-layout").value = layout?.direction ?? "manual";
+      get("frame-layout-options").hidden = !layout;
+      get("layout-gap").value = String(layout?.gap ?? 0);
+      for (const edge of ["left", "right", "top", "bottom"]) get(`layout-padding-${edge}`).value = String(layout?.padding?.[edge] ?? 0);
+      get("layout-justify").value = layout?.justify ?? "start"; get("layout-align").value = layout?.align ?? "center";
     }
     if (node.parentId) {
       get("constraint-horizontal").value = node.constraints?.horizontal ?? "left";
@@ -181,6 +195,7 @@ export function attachDesignWorkspace() {
     }
     const isLocked = Boolean(world.locked);
     for (const control of root.querySelectorAll("#design-inspector-content input, #design-inspector-content textarea, #design-inspector-content select")) control.disabled = isLocked;
+    if (world.layoutManaged) { get("x").disabled = true; get("y").disabled = true; }
     get("toggle-visibility").textContent = node.visible === false ? "Show" : "Hide";
     get("toggle-lock").textContent = isLocked ? "Unlock" : "Lock";
     get("delete").disabled = false;
@@ -255,7 +270,7 @@ export function attachDesignWorkspace() {
   }
 
   function editableSelection() {
-    return topLevelSelection().map((id) => worldLayer(id)).filter((node) => node && node.locked !== true && node.visible !== false && node.frame);
+    return topLevelSelection().map((id) => worldLayer(id)).filter((node) => node && node.locked !== true && node.visible !== false && !node.layoutManaged && node.frame);
   }
 
   function selectionViewBounds(nodes = editableSelection()) {
@@ -475,7 +490,7 @@ export function attachDesignWorkspace() {
         { extend: event.shiftKey, toggle: event.metaKey || event.ctrlKey });
       else if (!selection.ids.includes(id)) selection = updatePageSelection(null, currentPage().nodeIds, id);
       selectionChanged();
-      const selected = topLevelSelection().filter((selectedId) => !worldLayer(selectedId)?.locked);
+      const selected = topLevelSelection().filter((selectedId) => !worldLayer(selectedId)?.locked && !worldLayer(selectedId)?.layoutManaged);
       const world = pagePoint(point);
       drag = { kind: "layers", pointerId: event.pointerId, start: world, ids: selected,
         frames: Object.fromEntries(selected.map((selectedId) => [selectedId, clone(worldLayer(selectedId).frame)])), moved: false };
@@ -979,6 +994,32 @@ export function attachDesignWorkspace() {
     previewNode(id, { style: { ...node.style, radius } });
   });
   get("frame-radius").addEventListener("change", () => commitEdit("Change frame corner radius"));
+  get("frame-layout").addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame") return;
+    const style = { ...node.style };
+    if (get("frame-layout").value === "manual") delete style.layout;
+    else style.layout = { direction: get("frame-layout").value, gap: style.layout?.gap ?? 0,
+      padding: style.layout?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 }, justify: style.layout?.justify ?? "start", align: style.layout?.align ?? "center" };
+    history.apply({ type: "node", id, value: { ...clone(node), style } }, "Change frame layout"); edited("Auto Layout updated.");
+  });
+  function updateFrameLayout(key, value) {
+    const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame" || !node.style?.layout) return;
+    const layout = clone(node.style.layout);
+    if (key.startsWith("padding.")) layout.padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding,
+      [key.slice("padding.".length)]: value };
+    else layout[key] = value;
+    previewNode(id, { style: { ...node.style, layout } });
+  }
+  for (const [field, key] of [["layout-gap", "gap"], ["layout-padding-left", "padding.left"], ["layout-padding-right", "padding.right"],
+    ["layout-padding-top", "padding.top"], ["layout-padding-bottom", "padding.bottom"]]) {
+    get(field).addEventListener("input", () => { const value = Number(get(field).value); if (Number.isFinite(value) && value >= 0) updateFrameLayout(key, value); });
+    get(field).addEventListener("change", () => commitEdit("Change Auto Layout spacing"));
+  }
+  for (const [field, key] of [["layout-justify", "justify"], ["layout-align", "align"]]) {
+    get(field).addEventListener("change", () => {
+      updateFrameLayout(key, get(field).value); commitEdit("Change Auto Layout alignment");
+    });
+  }
   for (const [field, axis] of [["constraint-horizontal", "horizontal"], ["constraint-vertical", "vertical"]]) {
     get(field).addEventListener("change", () => {
       const id = currentSelection()[0], node = id && layer(id); if (!node?.parentId) return;

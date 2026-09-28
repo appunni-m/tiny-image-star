@@ -102,12 +102,24 @@ function validateNodeStyle(node) {
   check(object(style), "Invalid layer style.");
   if (node.kind === "frame") {
     check(node.text == null && node.fontId == null, "Frames cannot contain text or fonts.");
-    keys(style, ["clipContent", "radius", "strokeColor", "strokeWidth"]);
+    keys(style, ["clipContent", "radius", "strokeColor", "strokeWidth", "layout"]);
     if (style.clipContent != null) check(typeof style.clipContent === "boolean", "Invalid frame clipping setting.");
     if (style.radius != null) check(number(style.radius, 0, .5), "Invalid corner radius.");
     if (style.strokeColor != null) check(color(style.strokeColor), "Invalid stroke color.");
     if (style.strokeWidth != null) check(number(style.strokeWidth, 0, .2), "Invalid stroke width.");
     check((style.strokeColor != null) === (style.strokeWidth != null), "A stroke needs both color and width.");
+    if (style.layout != null) {
+      const layout = style.layout; check(object(layout), "Invalid frame layout.");
+      keys(layout, ["direction", "gap", "padding", "justify", "align"]);
+      check(["horizontal", "vertical"].includes(layout.direction), "Invalid frame layout direction.");
+      if (layout.gap != null) check(number(layout.gap, 0, 16384), "Invalid frame layout gap.");
+      if (layout.padding != null) {
+        check(object(layout.padding), "Invalid frame layout padding."); keys(layout.padding, ["top", "right", "bottom", "left"]);
+        for (const value of Object.values(layout.padding)) check(number(value, 0, 16384), "Invalid frame layout padding.");
+      }
+      if (layout.justify != null) check(["start", "center", "end", "space-between"].includes(layout.justify), "Invalid frame layout alignment.");
+      if (layout.align != null) check(["start", "center", "end", "stretch"].includes(layout.align), "Invalid frame cross-axis alignment.");
+    }
   } else if (node.kind === "shape") {
     check(node.text == null, "Shapes cannot contain caption text.");
     keys(style, ["shape", "radius", "strokeColor", "strokeWidth"]);
@@ -320,6 +332,37 @@ export function createSceneProject({ id = newId("project"), name = "Untitled sto
     slides: clone(slides ?? [{ id: newId("slide"), nodeIds: Object.keys(nodes), overrides: {} }]), shared: { appearance: {} }, variants: clone(variants) });
 }
 
+function arrangedFrame(project, slide, parentId, childId, childFrame, parentFrame, variant, layout) {
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === parentId), index = childIds.indexOf(childId);
+  if (index < 0) return childFrame;
+  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding }, gap = layout.gap ?? 0;
+  const frames = childIds.map((id) => {
+    const source = project.nodes[id], patch = slide.overrides[id] ?? {};
+    return id === childId ? childFrame : patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame;
+  });
+  const parentWidth = parentFrame.width * variant.width, parentHeight = parentFrame.height * variant.height;
+  if (parentWidth <= 0 || parentHeight <= 0) return childFrame;
+  const horizontal = layout.direction === "horizontal";
+  const mainExtent = horizontal ? parentWidth : parentHeight, crossExtent = horizontal ? parentHeight : parentWidth;
+  const mainStart = horizontal ? padding.left : padding.top, mainEnd = horizontal ? padding.right : padding.bottom;
+  const crossStart = horizontal ? padding.top : padding.left, crossEnd = horizontal ? padding.bottom : padding.right;
+  const mainSizes = frames.map((frame) => horizontal ? frame.width * parentWidth : frame.height * parentHeight);
+  const crossSizes = frames.map((frame) => horizontal ? frame.height * parentHeight : frame.width * parentWidth);
+  const mainAvailable = Math.max(0, mainExtent - mainStart - mainEnd);
+  const crossAvailable = Math.max(0, crossExtent - crossStart - crossEnd);
+  const naturalGap = gap, occupied = mainSizes.reduce((sum, value) => sum + value, 0) + naturalGap * Math.max(0, frames.length - 1);
+  const free = Math.max(0, mainAvailable - occupied), justify = layout.justify ?? "start";
+  const offset = justify === "center" ? free / 2 : justify === "end" ? free : 0;
+  const effectiveGap = justify === "space-between" && frames.length > 1 ? naturalGap + free / (frames.length - 1) : naturalGap;
+  const align = layout.align ?? "center", childMain = mainSizes[index], childCross = align === "stretch" ? crossAvailable : crossSizes[index];
+  const crossOffset = align === "center" ? Math.max(0, (crossAvailable - childCross) / 2)
+    : align === "end" ? Math.max(0, crossAvailable - childCross) : 0;
+  const mainPosition = mainStart + offset + mainSizes.slice(0, index).reduce((sum, value) => sum + value + effectiveGap, 0);
+  const crossPosition = crossStart + crossOffset, x = horizontal ? mainPosition : crossPosition, y = horizontal ? crossPosition : mainPosition;
+  const width = horizontal ? childMain : childCross, height = horizontal ? childCross : childMain;
+  return { x: x / parentWidth, y: y / parentHeight, width: width / parentWidth, height: height / parentHeight };
+}
+
 function layerFrameMap(project, slideId, variantId) {
   const slideIndex = project.slides.findIndex((slide) => slide.id === slideId), slide = project.slides[slideIndex];
   const variant = project.variants.find((entry) => entry.id === variantId), cache = new Map();
@@ -328,9 +371,10 @@ function layerFrameMap(project, slideId, variantId) {
     if (cache.has(id)) return cache.get(id);
     const source = project.nodes[id], patch = slide.overrides[id] ?? {};
     if (!source || source.kind === "legacy-image") return null;
-    const frame = clone(patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame);
+    let frame = clone(patch.variantFrames?.[variant.id] ?? patch.frame ?? source.variantFrames?.[variant.id] ?? source.frame);
     if (source.parentId) {
       const parent = resolve(source.parentId), parentNode = project.nodes[source.parentId];
+      if (parentNode.style?.layout) frame = arrangedFrame(project, slide, source.parentId, id, frame, parent.frame, variant, parentNode.style.layout);
       const width = frame.width * parent.frame.width, height = frame.height * parent.frame.height;
       const parentCenterX = (parent.frame.x + parent.frame.width / 2) * variant.width;
       const parentCenterY = (parent.frame.y + parent.frame.height / 2) * variant.height;

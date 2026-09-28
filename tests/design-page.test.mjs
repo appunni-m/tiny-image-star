@@ -4,7 +4,7 @@ import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerComma
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
-import { ENGINE_IDENTITY, resolveLayerFrames, resolveSlide } from "../src/project/model.js";
+import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
 import { designRecipePatch, designRecipeProblem } from "../src/design/recipes.js";
 
@@ -166,6 +166,31 @@ test("frame constraints preserve anchored margins and resize stretch-constrained
   assert.ok(Math.abs(after.frame.y * nextFrame.height - topGap) < 1e-8);
   assert.ok(Math.abs((1 - after.frame.y - after.frame.height) * nextFrame.height - bottomGap) < 1e-8,
     "top-bottom constraints stretch to preserve both vertical margins");
+});
+
+test("frame Auto Layout resolves horizontal and vertical flow with pixel spacing, padding and alignment", () => {
+  const project = createSceneProject({ id: "auto-layout", variants: [{ id: "page", width: 1000, height: 500 }],
+    slides: [{ id: "layout-page", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: .1, y: .1, width: .6, height: .4 },
+        style: { layout: { direction: "horizontal", gap: 20, padding: { top: 10, right: 10, bottom: 10, left: 10 }, justify: "start", align: "center" } } },
+      first: { id: "first", kind: "shape", space: "slide", frame: { x: .9, y: .9, width: .2, height: .25 }, parentId: "frame",
+        constraints: { horizontal: "left", vertical: "top" }, style: { shape: "rectangle" } },
+      second: { id: "second", kind: "shape", space: "slide", frame: { x: .01, y: .01, width: .2, height: .25 }, parentId: "frame",
+        constraints: { horizontal: "left", vertical: "top" }, style: { shape: "rectangle" } },
+    } });
+  const horizontal = resolveLayerFrames(project, "layout-page");
+  const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-9, `${value} ≈ ${expected}`);
+  close(horizontal.get("first").frame.x, .11);
+  close(horizontal.get("first").frame.y, .25);
+  close(horizontal.get("first").frame.width, .12);
+  close(horizontal.get("second").frame.x, .25); // first child plus the 20px gap
+  project.nodes.frame.style.layout.direction = "vertical"; project.nodes.frame.style.layout.gap = 8;
+  const vertical = resolveLayerFrames(project, "layout-page");
+  close(vertical.get("first").frame.x, .34); // cross-axis center alignment overrides stored X positions
+  close(vertical.get("first").frame.y, .12);
+  close(vertical.get("second").frame.y, .236); // vertical flow applies padding and the 8px gap
+  const invalid = structuredClone(project); invalid.nodes.frame.style.layout.justify = "unknown";
+  assert.throws(() => validateProject(invalid), /alignment/);
 });
 
 test("design image recipes keep visual edits non-destructive and reject export-only settings", () => {

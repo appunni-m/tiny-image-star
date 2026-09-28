@@ -227,6 +227,21 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     const noClip = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].clipFrames.length, shapeId);
     assert.equal(noClip, 0, "the frame inspector can disable content clipping");
+    const childBeforeLayout = framed.resolvedFrames[shapeId].frame;
+    await page.locator("#design-frame-layout").selectOption("horizontal");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[frameId].style.layout.direction, "horizontal");
+    assert.ok(autoLayout.resolvedFrames[shapeId].frame.x > childBeforeLayout.x,
+      "Auto Layout computes child positions from layer order inside the frame");
+    await page.locator("#design-layout-gap").fill("12");
+    await page.locator("#design-layout-gap").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[frameId].style.layout.gap, 12, "pixel spacing is editable and stored on the frame");
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
+    assert.equal(await page.locator("#design-x").isDisabled(), true, "Auto Layout owns the child's position fields");
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     for (const id of imageIds) await page.locator(`#design-layer-list [data-layer-id="${id}"] button[aria-label^="Show"]`).click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
 
@@ -296,6 +311,7 @@ export async function assertDesignWorkspace(browser, address) {
     const reopened = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(reopened.pages.length, 2, "saved pages reopen after a browser reload");
     assert.equal(reopened.pages[0].nodeIds.length, 5, "saved image, text, shape and frame layers reopen together");
+    assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
     assert.equal(reopened.retainedSourceBytes, image.byteLength * 2, "reopen retains the original encoded image sources");
     await page.locator("#mobile-more-button").click();
     await page.locator("#design-button").click();

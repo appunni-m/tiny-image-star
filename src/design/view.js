@@ -63,6 +63,16 @@ export function createDesignView() {
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
           <label id="design-frame-clip-field" class="design-field design-checkbox-field" hidden><span>Clip content</span><input id="design-frame-clip" type="checkbox" checked /></label>
           <label id="design-frame-radius-field" class="design-range-field" hidden><span>Corner radius <output id="design-frame-radius-value">0%</output></span><input id="design-frame-radius" type="range" min="0" max="0.5" step="0.01" value="0" /></label>
+          <label id="design-frame-layout-field" class="design-field" hidden><span>Auto Layout</span><select id="design-frame-layout"><option value="manual">Manual positioning</option><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>
+          <fieldset id="design-frame-layout-options" class="design-fieldset" hidden><legend>Layout</legend>
+            <label class="design-field"><span>Gap (px)</span><input id="design-layout-gap" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
+            <label class="design-field"><span>Padding left</span><input id="design-layout-padding-left" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
+            <label class="design-field"><span>Padding right</span><input id="design-layout-padding-right" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
+            <label class="design-field"><span>Padding top</span><input id="design-layout-padding-top" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
+            <label class="design-field"><span>Padding bottom</span><input id="design-layout-padding-bottom" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
+            <label class="design-field"><span>Justify</span><select id="design-layout-justify"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option><option value="space-between">Space between</option></select></label>
+            <label class="design-field"><span>Align</span><select id="design-layout-align"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option><option value="stretch">Stretch</option></select></label>
+          </fieldset>
           <fieldset id="design-constraints-field" class="design-fieldset" hidden><legend>Constraints</legend>
             <label class="design-field"><span>Horizontal</span><select id="design-constraint-horizontal"><option value="left">Left</option><option value="right">Right</option><option value="left-right">Left and right</option><option value="center">Center</option><option value="scale">Scale</option></select></label>
             <label class="design-field"><span>Vertical</span><select id="design-constraint-vertical"><option value="top">Top</option><option value="bottom">Bottom</option><option value="top-bottom">Top and bottom</option><option value="center">Center</option><option value="scale">Scale</option></select></label>
