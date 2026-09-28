@@ -87,6 +87,10 @@ export function createDesignView() {
           <label id="design-fit-field" class="design-field" hidden><span>Image fit</span><select id="design-image-fit"><option value="contain">Fit inside</option><option value="cover">Fill frame</option></select></label>
           <div id="design-image-adjustments" class="design-adjustments" hidden>
             <h3>Image adjustments</h3>
+            <div class="design-image-crop-actions" role="group" aria-label="Image crop">
+              <button id="design-crop-tool" class="button secondary" type="button" aria-pressed="false">Crop image</button>
+              <button id="design-crop-reset" class="button secondary" type="button" disabled>Reset crop</button>
+            </div>
             <div class="design-image-flips" role="group" aria-label="Image orientation">
               <button id="design-flip-x" class="button secondary" type="button" aria-pressed="false">Flip horizontal</button>
               <button id="design-flip-y" class="button secondary" type="button" aria-pressed="false">Flip vertical</button>

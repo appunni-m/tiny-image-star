@@ -80,6 +80,70 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-redo").click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
 
+    const beforeCrop = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    await page.locator("#design-crop-tool").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().cropModeId === id, selectedId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const otherImageId = initial.pages[0].nodeIds.find((id) => id !== selectedId);
+    const selectionPreviewStarted = page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Updating page preview"));
+    await page.locator(`#design-layer-list [data-layer-id="${otherImageId}"] .design-layer-select`).click();
+    await selectionPreviewStarted;
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().cropModeId === null
+      && window.tinyImageStarDesign.getSnapshot().selection[0] === id, otherImageId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().cropModeId)), null,
+      "selecting another layer closes crop mode and schedules the normal page preview");
+    await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().selection[0] === id, selectedId);
+    await page.locator("#design-crop-tool").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().cropModeId === id, selectedId);
+    const cropCenter = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), frame = state.resolvedFrames[id].frame, view = state.canvas.geometry;
+      const bounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: bounds.left + view.x + (frame.x + frame.width / 2) * view.width * view.scale,
+        y: bounds.top + view.y + (frame.y + frame.height / 2) * view.height * view.scale };
+    }, selectedId);
+    await page.mouse.move(cropCenter.x - 18, cropCenter.y - 18);
+    await page.mouse.down();
+    await page.mouse.move(cropCenter.x + 18, cropCenter.y + 18, { steps: 4 });
+    await page.mouse.up();
+    try {
+      await page.waitForFunction((id) => {
+        const crop = window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop;
+        return crop && crop.width < 1 && crop.height < 1;
+      }, selectedId, { timeout: 5000 });
+    } catch (error) {
+      console.error("crop drag diagnostics", await page.evaluate((id) => ({
+        id, cropModeId: window.tinyImageStarDesign.getSnapshot().cropModeId,
+        selected: window.tinyImageStarDesign.getSnapshot().selection,
+        frame: window.tinyImageStarDesign.getSnapshot().resolvedFrames[id]?.frame,
+        geometry: window.tinyImageStarDesign.getSnapshot().canvas.geometry,
+        bounds: document.querySelector("#design-canvas").getBoundingClientRect().toJSON(),
+        node: window.tinyImageStarDesign.getSnapshot().nodes[id],
+        status: document.querySelector("#design-canvas-status")?.textContent,
+      }), selectedId), pageErrors);
+      throw error;
+    }
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const cropped = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    assert.ok(cropped.crop.x > 0 && cropped.crop.y > 0 && cropped.crop.width > 0 && cropped.crop.height > 0,
+      `on-canvas crop creation stores a bounded normalized source rectangle: ${JSON.stringify(cropped.crop)}`);
+    assert.equal(cropped.assetId, sourceId, "cropping preserves the original encoded image asset");
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((id) => !window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop, selectedId);
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((id) => Boolean(window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop), selectedId);
+    await page.locator("#design-crop-tool").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const afterCrop = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    assert.notEqual(afterCrop, beforeCrop, "committing a crop redraws the same layer's page preview");
+    assert.equal(await page.locator("#design-crop-reset").isDisabled(), false, "the inspector can reset a committed source crop");
+    await page.locator("#design-crop-reset").click();
+    await page.waitForFunction((id) => !window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop, selectedId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    assert.equal(await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL()), beforeCrop,
+      "reset restores the original full-source preview without changing the image layer");
+
     const frameBeforeResize = structuredClone(edited.frame);
     const canvasBox = await page.locator("#design-canvas").boundingBox();
     const resizeHandle = await page.evaluate((id) => {
@@ -123,6 +187,25 @@ export async function assertDesignWorkspace(browser, address) {
     const rotated = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
     assert.ok(Math.abs(rotated.rotation - 45) < 1, `rotation handle applies an in-place 45° rotation: ${rotated.rotation}`);
     assert.equal(rotated.assetId, sourceId, "rotating preserves the source image bytes");
+
+    await page.locator("#design-crop-tool").click();
+    const rotatedCropCenter = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), frame = state.resolvedFrames[id].frame, view = state.canvas.geometry;
+      const bounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: bounds.left + view.x + (frame.x + frame.width / 2) * view.width * view.scale,
+        y: bounds.top + view.y + (frame.y + frame.height / 2) * view.height * view.scale };
+    }, selectedId);
+    await page.mouse.move(rotatedCropCenter.x - 18, rotatedCropCenter.y - 18);
+    await page.mouse.down();
+    await page.mouse.move(rotatedCropCenter.x + 18, rotatedCropCenter.y + 18, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForFunction((id) => Boolean(window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop), selectedId);
+    const rotatedCrop = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], selectedId);
+    assert.equal(rotatedCrop.assetId, sourceId, "cropping a rotated layer still edits the retained source asset");
+    await page.locator("#design-crop-tool").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-crop-reset").click();
+    await page.waitForFunction((id) => !window.tinyImageStarDesign.getSnapshot().nodes[id]?.crop, selectedId);
 
     await page.locator("#design-zoom-in").click();
     assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().canvas.zoom)), 1.25,
@@ -297,6 +380,18 @@ export async function assertDesignWorkspace(browser, address) {
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => document.querySelector("#design-canvas")?.getBoundingClientRect().width > 0);
+    await page.locator(`#design-layer-list [data-layer-id="${selectedId}"] .design-layer-select`).click();
+    await page.locator("#design-crop-tool").scrollIntoViewIfNeeded();
+    const mobileCropLayout = await page.evaluate(() => ({ width: innerWidth,
+      buttons: [...document.querySelectorAll("#design-image-adjustments .design-image-crop-actions .button")]
+        .map((button) => button.getBoundingClientRect().toJSON()) }));
+    assert.equal(mobileCropLayout.buttons.length, 2, "mobile image inspector exposes crop and reset actions");
+    assert.ok(mobileCropLayout.buttons.every((box) => box.height >= 43 && box.left >= 0 && box.right <= mobileCropLayout.width),
+      `mobile crop actions remain touch-sized and on-screen: ${JSON.stringify(mobileCropLayout.buttons)}`);
+    await page.locator("#design-crop-tool").click();
+    assert.equal(await page.locator("#design-crop-tool").getAttribute("aria-pressed"), "true", "crop mode is directly reachable on a phone");
+    await page.locator("#design-crop-tool").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().cropModeId !== id, selectedId);
     await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
     const mobileResizing = await page.evaluate(() => ({
       visible: !document.querySelector("#design-resizing-options")?.hidden,

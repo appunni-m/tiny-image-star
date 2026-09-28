@@ -2,7 +2,8 @@ import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, updatePageSelection } from "../project/design-page.js";
-import { canonicalJSON, clone, newId, resolveLayerFrames } from "../project/model.js";
+import { canonicalJSON, clone, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
+import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
 import { listLocalPageProjects, readLocalPageProject, writeLocalPageProject } from "../project/storage.js";
 import { getProcessingScheduler } from "../processing/client.js";
@@ -19,13 +20,17 @@ export function attachDesignWorkspace() {
   let history = null, pageId = null, selection = { ids: [], anchorId: null }, sources = new Map(), fileOwner = null;
   let saveTimer = null, openSequence = 0;
   let previewTask = null, previewTimer = null, previewEpoch = 0, previewBitmap = null, exportBusy = false, importing = false, recipeJob = null;
-  let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null;
+  let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null, cropModeId = null;
   const touchPoints = new Map();
   let frameMapProject = null, frameMapPage = null, frameMap = null;
   const renderProject = () => history?.document ?? null;
   const currentPage = () => renderProject()?.slides.find((page) => page.id === pageId) ?? renderProject()?.slides[0] ?? null;
   const currentSelection = () => currentPage() ? snapshotPageSelection(selection, currentPage()) : [];
   const layer = (id) => renderProject()?.nodes[id] ?? null;
+  function effectiveCrop(id) {
+    const project = renderProject(), page = currentPage();
+    return page?.overrides?.[id]?.crop ?? project?.nodes[id]?.crop ?? null;
+  }
   function resolvedLayerMap() {
     const project = renderProject(), page = currentPage();
     if (!project || !page) return new Map();
@@ -114,8 +119,11 @@ export function attachDesignWorkspace() {
 
   function selectionChanged() {
     selection.ids = currentPage()?.nodeIds.filter((id) => selection.ids.includes(id)) ?? [];
+    const exitedCropMode = Boolean(cropModeId && !selection.ids.includes(cropModeId));
+    if (exitedCropMode) cropModeId = null;
     get("frame-selection").disabled = selection.ids.length < 2;
     renderLayers(); renderInspector(); drawCanvas();
+    if (exitedCropMode) schedulePreview(0);
   }
 
   function renderPages() {
@@ -125,7 +133,7 @@ export function attachDesignWorkspace() {
     project.slides.forEach((page, index) => {
       const button = document.createElement("button"); button.type = "button"; button.className = "design-page-current";
       button.textContent = page.name || `Page ${index + 1}`; button.setAttribute("aria-current", String(page.id === currentPage()?.id));
-      button.addEventListener("click", () => { pageId = page.id; selection = { ids: [], anchorId: null }; renderWorkspace(); schedulePreview(0); });
+      button.addEventListener("click", () => { cropModeId = null; pageId = page.id; selection = { ids: [], anchorId: null }; renderWorkspace(); schedulePreview(0); });
       list.append(button);
     });
     get("page-title").textContent = currentPage()?.name ?? "Page";
@@ -220,6 +228,9 @@ export function attachDesignWorkspace() {
     }
     if (node.kind === "image") {
       get("image-fit").value = node.fit ?? "contain";
+      get("crop-tool").setAttribute("aria-pressed", String(cropModeId === node.id));
+      get("crop-tool").textContent = cropModeId === node.id ? "Done cropping" : "Crop image";
+      get("crop-reset").disabled = !effectiveCrop(node.id);
       get("flip-x").setAttribute("aria-pressed", String(Boolean(node.flipX)));
       get("flip-y").setAttribute("aria-pressed", String(Boolean(node.flipY)));
       for (const key of ["brightness", "contrast", "saturation"]) {
@@ -228,6 +239,8 @@ export function attachDesignWorkspace() {
       }
     }
     const isLocked = Boolean(world.locked);
+    get("crop-tool").disabled = node.kind !== "image" || isLocked;
+    get("crop-reset").disabled = node.kind !== "image" || isLocked || !effectiveCrop(node.id);
     for (const control of root.querySelectorAll("#design-inspector-content input, #design-inspector-content textarea, #design-inspector-content select")) control.disabled = isLocked;
     if (world.layoutManaged) { get("x").disabled = true; get("y").disabled = true; }
     get("toggle-visibility").textContent = node.visible === false ? "Show" : "Hide";
@@ -371,6 +384,7 @@ export function attachDesignWorkspace() {
     if (previewBitmap) ctx.drawImage(previewBitmap, x, y, pageWidth * scale, pageHeight * scale);
     ctx.strokeStyle = "rgba(45, 126, 247, .95)"; ctx.lineWidth = 1.5;
     for (const id of currentSelection()) {
+      if (id === cropModeId) continue;
       const world = worldLayer(id); if (!world?.frame || world.visible === false) continue;
       const rect = formatGeometry(layer(id));
       if (world.rotation) {
@@ -378,7 +392,7 @@ export function attachDesignWorkspace() {
         ctx.rotate(world.rotation * Math.PI / 180); ctx.strokeRect(-rect.width / 2, -rect.height / 2, rect.width, rect.height); ctx.restore();
       } else ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
     }
-    const selectedBounds = selectionViewBounds();
+    const selectedBounds = cropModeId ? null : selectionViewBounds();
     if (selectedBounds && selectedBounds.width > 14 && selectedBounds.height > 14) {
       const { x, y, width: boxWidth, height: boxHeight, right, bottom, centerX } = selectedBounds;
       ctx.save(); ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, boxWidth, boxHeight);
@@ -391,6 +405,7 @@ export function attachDesignWorkspace() {
       for (const [hx, hy] of handles) { ctx.fillRect(hx - 4, hy - 4, 8, 8); ctx.strokeRect(hx - 4, hy - 4, 8, 8); }
       ctx.restore();
     }
+    if (cropModeId) drawCropOverlay(ctx, cropGeometryFor(cropModeId));
     if (marquee) { ctx.setLineDash([5, 4]); ctx.strokeStyle = "#2d7ef7"; ctx.fillStyle = "rgba(45,126,247,.12)";
       ctx.fillRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.strokeRect(marquee.x, marquee.y, marquee.width, marquee.height); ctx.setLineDash([]); }
   }
@@ -402,6 +417,167 @@ export function attachDesignWorkspace() {
     if (!geometry) return null;
     return { x: (point.x - geometry.x) / geometry.scale, y: (point.y - geometry.y) / geometry.scale };
   }
+
+  function cropIsFull(crop) {
+    return !crop || Math.abs(crop.x) < 1e-9 && Math.abs(crop.y) < 1e-9
+      && Math.abs(crop.width - 1) < 1e-9 && Math.abs(crop.height - 1) < 1e-9;
+  }
+
+  function cropGeometryFor(id) {
+    const project = renderProject(), page = currentPage(), node = project?.nodes[id], asset = node && project.assets[node.assetId];
+    if (!project || !page || node?.kind !== "image" || !asset || !geometry) return null;
+    const variant = project.variants[0];
+    const resolved = resolveSlide(project, page.id, variant.id).nodes.find((entry) => entry.id === id);
+    if (!resolved?.viewport) return null;
+    const fullSource = { ...resolved, crop: null, fit: "contain" };
+    const placement = imagePlacement(fullSource, asset.width, asset.height), [a, b, c, d, e, f] = placement.matrix;
+    const determinant = a * e - b * d;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+    const sourceToCanvas = (source) => {
+      const dx = source.x - c, dy = source.y - f;
+      const viewportX = (e * dx - b * dy) / determinant, viewportY = (-d * dx + a * dy) / determinant;
+      return { x: geometry.x + viewportX * geometry.scale, y: geometry.y + viewportY * geometry.scale };
+    };
+    const canvasToSource = (point) => {
+      const pagePointValue = pagePoint(point);
+      if (!pagePointValue) return null;
+      const viewportX = pagePointValue.x;
+      const viewportY = pagePointValue.y;
+      return { x: a * viewportX + b * viewportY + c, y: d * viewportX + e * viewportY + f };
+    };
+    const crop = resolved.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+    const polygon = (value) => [
+      { x: value.x * asset.width, y: value.y * asset.height },
+      { x: (value.x + value.width) * asset.width, y: value.y * asset.height },
+      { x: (value.x + value.width) * asset.width, y: (value.y + value.height) * asset.height },
+      { x: value.x * asset.width, y: (value.y + value.height) * asset.height },
+    ].map(sourceToCanvas);
+    return { asset, crop, fullPolygon: polygon({ x: 0, y: 0, width: 1, height: 1 }), cropPolygon: polygon(crop),
+      sourceToCanvas, canvasToSource, normalizePoint: (point) => {
+        const source = canvasToSource(point);
+        return source ? { x: Math.max(0, Math.min(1, source.x / asset.width)), y: Math.max(0, Math.min(1, source.y / asset.height)) } : null;
+      } };
+  }
+
+  function cropHandlePoints(cropGeometry) {
+    const crop = cropGeometry.crop, left = crop.x, right = crop.x + crop.width, top = crop.y, bottom = crop.y + crop.height;
+    return [
+      ["nw", left, top], ["n", (left + right) / 2, top], ["ne", right, top], ["e", right, (top + bottom) / 2],
+      ["se", right, bottom], ["s", (left + right) / 2, bottom], ["sw", left, bottom], ["w", left, (top + bottom) / 2],
+    ].map(([handle, x, y]) => ({ handle, ...cropGeometry.sourceToCanvas({ x: x * cropGeometry.asset.width, y: y * cropGeometry.asset.height }) }));
+  }
+
+  function drawCropOverlay(ctx, cropGeometry) {
+    if (!cropGeometry) return;
+    const { fullPolygon, cropPolygon } = cropGeometry;
+    const path = (points) => { ctx.moveTo(points[0].x, points[0].y); for (const point of points.slice(1)) ctx.lineTo(point.x, point.y); ctx.closePath(); };
+    ctx.save();
+    ctx.beginPath(); path(fullPolygon); path(cropPolygon);
+    ctx.fillStyle = "rgba(7, 13, 24, .52)"; ctx.fill("evenodd");
+    ctx.beginPath(); path(cropPolygon); ctx.strokeStyle = "#b7f36d"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = "rgba(183, 243, 109, .62)"; ctx.lineWidth = 1;
+    for (const fraction of [1 / 3, 2 / 3]) {
+      const mix = (from, to) => ({ x: from.x + (to.x - from.x) * fraction, y: from.y + (to.y - from.y) * fraction });
+      const top = mix(cropPolygon[0], cropPolygon[1]), bottom = mix(cropPolygon[3], cropPolygon[2]);
+      const left = mix(cropPolygon[0], cropPolygon[3]), right = mix(cropPolygon[1], cropPolygon[2]);
+      ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bottom.x, bottom.y); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+    }
+    for (const handle of cropHandlePoints(cropGeometry)) {
+      ctx.fillStyle = "#fff"; ctx.strokeStyle = "#26333f"; ctx.lineWidth = 1.5;
+      ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10); ctx.strokeRect(handle.x - 5, handle.y - 5, 10, 10);
+    }
+    ctx.restore();
+  }
+
+  function pointInPolygon(point, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i], b = polygon[j];
+      if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+  }
+
+  function cropHandleAt(point, cropGeometry) {
+    if (!cropGeometry) return null;
+    const hit = cropHandlePoints(cropGeometry).find((handle) => Math.hypot(point.x - handle.x, point.y - handle.y) <= 22);
+    return hit?.handle ?? null;
+  }
+
+  function cropCommand(id, crop) {
+    const project = renderProject(), node = layer(id);
+    if (!project || node?.kind !== "image") throw new Error("Choose an image layer to crop.");
+    const value = { ...clone(node) };
+    if (cropIsFull(crop)) delete value.crop;
+    else value.crop = clone(crop);
+    const slides = project.slides.map((slide) => {
+      if (!slide.overrides?.[id] || !Object.hasOwn(slide.overrides[id], "crop")) return clone(slide);
+      const overrides = clone(slide.overrides), override = { ...overrides[id] };
+      delete override.crop;
+      if (Object.keys(override).length) overrides[id] = override; else delete overrides[id];
+      return { ...clone(slide), overrides };
+    });
+    return { type: "group", commands: [{ type: "node", id, value }, { type: "slides", value: slides }] };
+  }
+
+  function cropForPointerDrag(current, point) {
+    const next = current.mapping.normalizePoint(point);
+    if (!next) return current.baseCrop;
+    const base = current.baseCrop, minimumWidth = 1 / current.mapping.asset.width, minimumHeight = 1 / current.mapping.asset.height;
+    if (current.cropKind === "create") {
+      const left = Math.min(current.start.x, next.x), top = Math.min(current.start.y, next.y);
+      return { x: Math.min(1 - minimumWidth, left), y: Math.min(1 - minimumHeight, top),
+        width: Math.max(minimumWidth, Math.min(1 - left, Math.abs(next.x - current.start.x))),
+        height: Math.max(minimumHeight, Math.min(1 - top, Math.abs(next.y - current.start.y))) };
+    }
+    if (current.cropKind === "move") {
+      const x = Math.max(0, Math.min(1 - base.width, base.x + next.x - current.start.x));
+      const y = Math.max(0, Math.min(1 - base.height, base.y + next.y - current.start.y));
+      return { ...base, x, y };
+    }
+    let left = base.x, right = base.x + base.width, top = base.y, bottom = base.y + base.height;
+    if (current.handle.includes("w")) left = Math.max(0, Math.min(right - minimumWidth, next.x));
+    if (current.handle.includes("e")) right = Math.min(1, Math.max(left + minimumWidth, next.x));
+    if (current.handle.includes("n")) top = Math.max(0, Math.min(bottom - minimumHeight, next.y));
+    if (current.handle.includes("s")) bottom = Math.min(1, Math.max(top + minimumHeight, next.y));
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  function startCropInteraction(point, pointerId) {
+    const cropGeometry = cropGeometryFor(cropModeId), node = layer(cropModeId);
+    if (!cropGeometry || !node || worldLayer(cropModeId)?.locked) return false;
+    const handle = cropHandleAt(point, cropGeometry);
+    if (!handle && !pointInPolygon(point, cropGeometry.fullPolygon)) return false;
+    const crop = { ...cropGeometry.crop };
+    const existing = !cropIsFull(node.crop ?? cropGeometry.crop), insideCrop = pointInPolygon(point, cropGeometry.cropPolygon);
+    const cropKind = handle ? "resize" : existing && insideCrop ? "move" : "create";
+    const start = cropGeometry.normalizePoint(point);
+    if (!start) return false;
+    drag = { kind: "crop", cropKind, handle, pointerId, mapping: cropGeometry, baseCrop: crop, start, moved: false };
+    return true;
+  }
+
+  function toggleCropMode() {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (cropModeId === id) {
+      if (history?.base) commitEdit("Crop image");
+      cropModeId = null; renderWorkspace(); schedulePreview(0); setStatus("Crop mode closed."); return;
+    }
+    if (node?.kind !== "image" || worldLayer(id)?.locked) return;
+    if (history?.base) commitEdit("Edit image");
+    cropModeId = id; selection = { ids: [id], anchorId: id };
+    renderWorkspace(); schedulePreview(0);
+    setStatus(!cropIsFull(effectiveCrop(id)) ? "Crop mode · drag a handle to resize, or drag inside the crop to move it."
+      : "Crop mode · drag over the image to create a crop, then drag inside it to move it.");
+  }
+
+  function resetImageCrop() {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (!node || node.kind !== "image" || !effectiveCrop(id)) return;
+    try { history.apply(cropCommand(id, null), "Reset image crop"); edited("Image crop reset."); }
+    catch (error) { setStatus(error.message); }
+  }
+
   function hitTest(point) {
     const page = currentPage(); if (!page || !geometry) return null;
     const local = pagePoint(point); if (!local || local.x < 0 || local.y < 0 || local.x > geometry.width || local.y > geometry.height) return null;
@@ -480,8 +656,8 @@ export function attachDesignWorkspace() {
   function startPinch() {
     const points = [...touchPoints.values()];
     if (points.length < 2) return;
-    if (drag?.moved && ["layers", "resize", "rotate"].includes(drag.kind)) {
-      commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : "Rotate selection");
+    if (drag?.moved && ["layers", "resize", "rotate", "crop"].includes(drag.kind)) {
+      commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : drag.kind === "rotate" ? "Rotate selection" : "Crop image");
     }
     drag = null; marquee = null;
     const first = points[0], second = points[1], center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
@@ -515,6 +691,12 @@ export function attachDesignWorkspace() {
       captureCanvasPointer(event); event.preventDefault(); return;
     }
     if (event.button !== 0) return;
+    if (cropModeId) {
+      if (startCropInteraction(point, event.pointerId)) {
+        captureCanvasPointer(event); event.preventDefault();
+      }
+      return;
+    }
     const handle = transformHandleAt(point);
     if (handle && beginResizeOrRotate(handle === "rotate" ? "rotate" : "resize", handle, point, event.pointerId)) {
       captureCanvasPointer(event); event.preventDefault(); return;
@@ -541,13 +723,20 @@ export function attachDesignWorkspace() {
     if (touchPoints.has(event.pointerId)) { touchPoints.set(event.pointerId, point); if (pinch) { updatePinch(); return; } }
     if (!drag || drag.pointerId !== event.pointerId) {
       if (event.pointerType !== "touch" && event.buttons === 0) {
-        const handle = transformHandleAt(point), canvas = get("canvas");
-        canvas.style.cursor = handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+        const handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
+        canvas.style.cursor = cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+          ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : "crosshair" : handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : hitTest(point) ? "move" : "default";
       }
       return;
     }
-    if (drag.kind === "layers") {
+    if (drag.kind === "crop") {
+      const sourceStart = drag.mapping.sourceToCanvas({ x: drag.start.x * drag.mapping.asset.width, y: drag.start.y * drag.mapping.asset.height });
+      if (Math.hypot(point.x - sourceStart.x, point.y - sourceStart.y) < 1) return;
+      drag.moved = true;
+      try { history.preview(cropCommand(cropModeId, cropForPointerDrag(drag, point))); edited("Cropping image…", { previewOnly: true }); }
+      catch (error) { setStatus(error.message); }
+    } else if (drag.kind === "layers") {
       const world = pagePoint(point), dx = world.x - drag.start.x, dy = world.y - drag.start.y;
       if (Math.abs(dx) * geometry.scale + Math.abs(dy) * geometry.scale < 1) return;
       drag.moved = true;
@@ -578,6 +767,7 @@ export function attachDesignWorkspace() {
       if (wasPinching) { if (touchPoints.size < 2) { pinch = null; drag = null; } return; }
     }
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (drag.kind === "crop" && drag.moved) commitEdit("Crop image");
     if (drag.kind === "layers" && drag.moved) commitEdit("Move layers");
     if (drag.kind === "resize" && drag.moved) commitEdit("Resize selection");
     if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
@@ -594,7 +784,7 @@ export function attachDesignWorkspace() {
   }
 
   function canvasPointerCancel(event) {
-    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate"].includes(drag.kind) && drag.moved) {
+    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop"].includes(drag.kind) && drag.moved) {
       history.cancel(); drag = null; marquee = null; selectionChanged(); edited("Edit cancelled."); return;
     }
     canvasPointerUp(event);
@@ -604,6 +794,16 @@ export function attachDesignWorkspace() {
     clearTimeout(previewTimer); previewTask?.cancel(); previewTask = null;
     if (root.hidden || !history || !currentPage()) return;
     const epoch = ++previewEpoch, project = clone(history.document), selectedPage = currentPage().id, sourceSnapshot = sources;
+    if (cropModeId && project.nodes[cropModeId]?.kind === "image") {
+      project.nodes[cropModeId] = { ...project.nodes[cropModeId], crop: null, fit: "contain" };
+      for (const page of project.slides) {
+        if (!page.overrides?.[cropModeId] || !Object.hasOwn(page.overrides[cropModeId], "crop")) continue;
+        const overrides = clone(page.overrides), patch = { ...overrides[cropModeId] };
+        delete patch.crop;
+        if (Object.keys(patch).length) overrides[cropModeId] = patch; else delete overrides[cropModeId];
+        page.overrides = overrides;
+      }
+    }
     previewTimer = setTimeout(async () => {
       let nextTask;
       try {
@@ -856,6 +1056,7 @@ export function attachDesignWorkspace() {
 
   function activateProject(project, { key = null, kind = "design", revision = null, sources: nextSources = new Map() } = {}) {
     cancelDesignRecipeJob("The document changed.");
+    cropModeId = null;
     clearTimeout(saveTimer); previewTask?.cancel(); previewTask = null; previewEpoch += 1;
     previewBitmap?.close(); previewBitmap = null;
     history = new ProjectHistory(project); pageId = project.slides[0]?.id ?? null;
@@ -967,6 +1168,10 @@ export function attachDesignWorkspace() {
     else if (event.key === "0") { event.preventDefault(); fitCanvas(); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") { event.preventDefault(); selection = { ids: currentPage()?.nodeIds.filter((id) => layer(id)?.visible !== false) ?? [], anchorId: currentPage()?.nodeIds[0] ?? null }; selectionChanged(); }
     else if (["Delete", "Backspace"].includes(event.key)) { event.preventDefault(); deleteSelected(); }
+    else if (event.key === "Escape" && cropModeId) {
+      if (history?.base) history.cancel(); drag = null; marquee = null; cropModeId = null;
+      selectionChanged(); schedulePreview(0); setStatus("Crop mode cancelled.");
+    }
     else if (event.key === "Escape") { selection = { ids: [], anchorId: null }; selectionChanged(); }
   });
 
@@ -977,6 +1182,8 @@ export function attachDesignWorkspace() {
   get("recipe-job-pause").addEventListener("click", toggleDesignRecipePause);
   get("recipe-job-cancel").addEventListener("click", () => cancelDesignRecipeJob("Cancelled by user."));
   get("recipe-job-speed").addEventListener("change", setDesignRecipeSpeed);
+  get("crop-tool").addEventListener("click", toggleCropMode);
+  get("crop-reset").addEventListener("click", resetImageCrop);
   get("document-name").addEventListener("change", () => {
     if (!history) return;
     const name = get("document-name").value.trim();
@@ -989,6 +1196,7 @@ export function attachDesignWorkspace() {
   get("new-page").addEventListener("click", () => {
     try {
       if (!history) { newDesign(); return; }
+      cropModeId = null;
       const added = addDesignPageCommand(history.document); history.apply(added.command, "Add page"); pageId = added.id;
       selection = { ids: [], anchorId: null }; edited("Page added.");
     } catch (error) { setStatus(error.message); }
@@ -1120,7 +1328,7 @@ export function attachDesignWorkspace() {
       return { id: project.id, revision: project.revision, name: project.name, key: fileOwner?.key ?? null, savedRevision: fileOwner?.savedRevision ?? null, pageId: currentPage()?.id,
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
         resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
-        canvas: { zoom, panX, panY, geometry: clone(geometry) },
+        canvas: { zoom, panX, panY, geometry: clone(geometry) }, cropModeId,
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },
   };
