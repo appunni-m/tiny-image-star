@@ -1,7 +1,7 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
-  deleteLayersCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  reorderLayerCommand, resizeFrameChildren, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
+  addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, moveGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
+  reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
@@ -182,7 +182,7 @@ export function attachDesignWorkspace() {
 
   function setField(name, value) { get(name).value = String(value); }
 
-  function renderGridTrackControls(axis, count, layout) {
+  function renderGridTrackControls(axis, count, layout, locked) {
     const list = get(axis === "columns" ? "grid-column-tracks" : "grid-row-tracks");
     list.replaceChildren();
     const name = axis === "columns" ? "Column" : "Row", tracks = gridTrackDefinitions(layout, axis, count);
@@ -208,6 +208,16 @@ export function attachDesignWorkspace() {
       valueField.append(value); row.append(valueField);
       const unit = document.createElement("span"); unit.className = "design-grid-track-unit";
       unit.textContent = track.mode === "fixed" ? "px" : track.mode === "fill" ? "fr" : ""; row.append(unit);
+      const actions = document.createElement("div"); actions.className = "design-grid-track-actions";
+      for (const [action, glyph, label] of [["move-before", axis === "columns" ? "←" : "↑", "Move before"],
+        ["move-after", axis === "columns" ? "→" : "↓", "Move after"], ["delete", "×", "Delete track and its contents"]]) {
+        const button = document.createElement("button"); button.type = "button"; button.className = "button secondary design-grid-track-action";
+        button.textContent = glyph; button.disabled = locked; button.dataset.gridTrackAction = action;
+        button.dataset.gridTrackAxis = axis; button.dataset.gridTrackIndex = String(index);
+        button.setAttribute("aria-label", `${name} ${index + 1}: ${label}`); button.title = `${name} ${index + 1}: ${label}`;
+        actions.append(button);
+      }
+      row.append(actions);
       list.append(row);
     });
   }
@@ -320,10 +330,14 @@ export function attachDesignWorkspace() {
       if (layout?.direction === "grid") {
         const children = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === node.id && project.nodes[id]?.visible !== false);
         const { rows } = gridPlacementsForChildren(children, project.nodes, layout);
-        renderGridTrackControls("columns", layout.columns, layout);
-        renderGridTrackControls("rows", rows, layout);
+        const locked = Boolean(worldLayer(node.id)?.locked);
+        renderGridTrackControls("columns", layout.columns, layout, locked);
+        renderGridTrackControls("rows", rows, layout, locked);
+        get("grid-add-column").disabled = locked || layout.columns >= 24;
+        get("grid-add-row").disabled = locked || (layout.rows || rows) >= 24;
       } else {
         get("grid-column-tracks").replaceChildren(); get("grid-row-tracks").replaceChildren();
+        get("grid-add-column").disabled = true; get("grid-add-row").disabled = true;
       }
     }
     if (node.parentId) {
@@ -1594,6 +1608,13 @@ export function attachDesignWorkspace() {
   });
   function updateFrameLayout(key, value) {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame" || !node.style?.layout) return;
+    if (node.style.layout.direction === "grid" && ["columns", "rows"].includes(key)) {
+      try {
+        history.preview(resizeGridTrackCountCommand(history.document, currentPage().id, id, key, value));
+        edited("Previewing grid track count…", { previewOnly: true });
+      } catch (error) { setStatus(error.message); renderWorkspace(); }
+      return;
+    }
     const layout = clone(node.style.layout);
     if (key.startsWith("padding.")) layout.padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding,
       [key.slice("padding.".length)]: value };
@@ -1649,6 +1670,24 @@ export function attachDesignWorkspace() {
     try {
       history.apply({ type: "node", id, value: { ...clone(node), style: { ...node.style, layout } } }, "Change grid track");
       edited("Grid track updated.");
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
+  });
+  for (const [buttonId, axis] of [["grid-add-column", "columns"], ["grid-add-row", "rows"]]) get(buttonId).addEventListener("click", () => {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (node?.kind !== "frame" || node.style?.layout?.direction !== "grid" || worldLayer(id)?.locked) return;
+    try { history.apply(addGridTrackCommand(history.document, currentPage().id, id, axis), `Add grid ${axis.slice(0, -1)}`); edited(`Grid ${axis} updated.`); }
+    catch (error) { setStatus(error.message); renderWorkspace(); }
+  });
+  get("grid-tracks").addEventListener("click", (event) => {
+    const control = event.target.closest("[data-grid-track-action]"); if (!control || control.disabled) return;
+    const id = currentSelection()[0], node = id && layer(id), axis = control.dataset.gridTrackAxis, index = Number(control.dataset.gridTrackIndex);
+    if (node?.kind !== "frame" || node.style?.layout?.direction !== "grid" || worldLayer(id)?.locked) return;
+    try {
+      const command = control.dataset.gridTrackAction === "delete"
+        ? deleteGridTrackCommand(history.document, currentPage().id, id, axis, index)
+        : moveGridTrackCommand(history.document, currentPage().id, id, axis, index, control.dataset.gridTrackAction === "move-before" ? -1 : 1);
+      history.apply(command, control.dataset.gridTrackAction === "delete" ? "Delete grid track" : "Reorder grid track");
+      edited(control.dataset.gridTrackAction === "delete" ? "Grid track deleted." : "Grid track reordered.");
     } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   for (const field of ["grid-row", "grid-column", "grid-row-span", "grid-column-span"]) get(field).addEventListener("change", () => {

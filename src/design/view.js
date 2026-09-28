@@ -96,8 +96,8 @@ export function createDesignView() {
             <fieldset id="design-grid-tracks" class="design-fieldset" hidden><legend>Grid tracks</legend>
               <label class="design-field"><span>Columns</span><input id="design-layout-columns" type="number" min="1" max="24" step="1" inputmode="numeric" /></label>
               <label class="design-field"><span>Rows (0 = auto)</span><input id="design-layout-rows" type="number" min="0" max="24" step="1" inputmode="numeric" /></label>
-              <div class="design-grid-track-section"><span class="design-grid-track-heading">Column sizing</span><div id="design-grid-column-tracks" class="design-grid-track-list"></div></div>
-              <div class="design-grid-track-section"><span class="design-grid-track-heading">Row sizing</span><div id="design-grid-row-tracks" class="design-grid-track-list"></div></div>
+              <div class="design-grid-track-section"><span class="design-grid-track-heading">Column sizing</span><button id="design-grid-add-column" class="button secondary design-grid-track-add" type="button" aria-label="Add column">+ Column</button><div id="design-grid-column-tracks" class="design-grid-track-list"></div></div>
+              <div class="design-grid-track-section"><span class="design-grid-track-heading">Row sizing</span><button id="design-grid-add-row" class="button secondary design-grid-track-add" type="button" aria-label="Add row">+ Row</button><div id="design-grid-row-tracks" class="design-grid-track-list"></div></div>
             </fieldset>
             <label class="design-field"><span>Justify</span><select id="design-layout-justify"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option><option value="stretch">Stretch</option><option value="space-between">Space between</option></select></label>
             <label class="design-field"><span>Align</span><select id="design-layout-align"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option><option value="stretch">Stretch</option></select></label>

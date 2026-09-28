@@ -1,4 +1,4 @@
-import { clone, createSceneProject, newId, resolveLayerFrames } from "./model.js";
+import { clone, createSceneProject, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveLayerFrames } from "./model.js";
 
 export const DESIGN_PAGE_SIZE = Object.freeze({ width: 1920, height: 1080 });
 export const MAX_DESIGN_PAGE_LAYERS = 200;
@@ -308,6 +308,171 @@ export function setGridAlignmentCommand(project, pageId, nodeId, axis, alignment
   if (Object.keys(gridAlignment).length) value.gridAlignment = gridAlignment;
   else delete value.gridAlignment;
   return { type: "node", id: nodeId, value };
+}
+
+function gridTrackContext(project, pageId, frameId, axis) {
+  const page = project.slides.find((entry) => entry.id === pageId), frame = project.nodes[frameId];
+  const layout = frame?.style?.layout;
+  if (!page?.nodeIds.includes(frameId) || !frame || frame.kind !== "frame" || layout?.direction !== "grid")
+    throw new Error("Choose a grid frame to edit its tracks.");
+  if (!["columns", "rows"].includes(axis)) throw new Error("Choose a grid row or column.");
+  const childIds = page.nodeIds.filter((id) => project.nodes[id]?.parentId === frameId);
+  const visibleIds = childIds.filter((id) => project.nodes[id]?.visible !== false);
+  const { placements, rows } = gridPlacementsForChildren(visibleIds, project.nodes, layout);
+  const allPlacements = new Map(placements);
+  for (const id of childIds) if (!placements.has(id) && project.nodes[id]?.gridPlacement)
+    allPlacements.set(id, clone(project.nodes[id].gridPlacement));
+  return { frame, layout, childIds, visibleIds, placements, allPlacements,
+    count: axis === "columns" ? layout.columns : rows };
+}
+
+function gridTrackEditCommand(project, frameId, context, layout, placements, deleteIds = []) {
+  const deletion = deleteIds.length ? deleteLayersCommand(project, deleteIds) : null;
+  const removed = new Set(deletion?.commands.filter((command) => command.type === "node" && command.value === null).map((command) => command.id) ?? []);
+  const commands = deletion?.commands.filter((command) => command.type !== "slides") ?? [];
+  for (const [id, placement] of placements) {
+    if (!removed.has(id)) commands.push({ type: "node", id, value: { ...clone(project.nodes[id]), gridPlacement: clone(placement) } });
+  }
+  commands.push({ type: "node", id: frameId, value: { ...clone(context.frame), style: { ...context.frame.style, layout } } });
+  commands.push({ type: "slides", value: project.slides.map((slide) => removed.size
+    ? { ...clone(slide), nodeIds: slide.nodeIds.filter((id) => !removed.has(id)) } : clone(slide)) });
+  return { type: "group", commands };
+}
+
+/** Append one default Fill track; converting auto rows to a numbered grid keeps the new row available. */
+export function addGridTrackCommand(project, pageId, frameId, axis) {
+  const context = gridTrackContext(project, pageId, frameId, axis), layout = clone(context.layout);
+  if (axis === "columns") {
+    if (layout.columns >= 24) throw new Error("A grid can have at most 24 columns.");
+    layout.columns += 1;
+    layout.columnTracks = gridTrackDefinitions(context.layout, axis, context.count + 1);
+  } else {
+    const rows = layout.rows || context.count;
+    if (rows >= 24) throw new Error("A fixed grid can have at most 24 rows.");
+    layout.rows = rows + 1;
+    layout.rowTracks = gridTrackDefinitions(context.layout, axis, context.count + 1);
+  }
+  return { type: "node", id: frameId, value: { ...clone(context.frame), style: { ...context.frame.style, layout } } };
+}
+
+/** Change the picker track count while keeping explicit cell objects in the nearest available cells. */
+export function resizeGridTrackCountCommand(project, pageId, frameId, axis, count) {
+  const context = gridTrackContext(project, pageId, frameId, axis), layout = clone(context.layout);
+  const key = axis === "columns" ? "columns" : "rows", minimum = axis === "columns" ? 1 : 0;
+  if (!Number.isInteger(count) || count < minimum || count > 24) throw new Error(`Grid ${axis} count must be between ${minimum} and 24.`);
+  if (layout[key] === count) return { type: "node", id: frameId, value: clone(context.frame) };
+  const shrinking = axis === "columns" ? count < layout.columns : count > 0 && count < (layout.rows || context.count);
+  if (axis === "columns") layout.columns = count;
+  else layout.rows = count;
+  if (axis === "columns") layout.columnTracks = gridTrackDefinitions(context.layout, axis, Math.min(context.count, count));
+  else if (count > 0) layout.rowTracks = gridTrackDefinitions(context.layout, axis, Math.min(context.count, count));
+  if (!shrinking) return { type: "node", id: frameId, value: { ...clone(context.frame), style: { ...context.frame.style, layout } } };
+
+  const positionKey = axis === "columns" ? "column" : "row", spanKey = axis === "columns" ? "columnSpan" : "rowSpan";
+  const visibleExplicit = context.visibleIds.filter((id) => project.nodes[id]?.gridPlacement)
+    .map((id) => ({ id, placement: clone(context.placements.get(id)) }));
+  const fixedRows = layout.rows || 0, columns = layout.columns;
+  const rowsLimit = fixedRows || 200, rowMasks = new Uint32Array(rowsLimit + 1), remapped = new Map();
+  const mask = (placement) => (((1 << placement.columnSpan) - 1) << (placement.column - 1)) >>> 0;
+  const free = (placement) => {
+    const columnsMask = mask(placement);
+    for (let row = placement.row; row < placement.row + placement.rowSpan; row++) if ((rowMasks[row] & columnsMask) !== 0) return false;
+    return true;
+  };
+  const reserve = (placement) => {
+    const columnsMask = mask(placement);
+    for (let row = placement.row; row < placement.row + placement.rowSpan; row++) rowMasks[row] |= columnsMask;
+  };
+  const preferred = visibleExplicit.map(({ id, placement }) => {
+    const span = Math.min(placement[spanKey], count), start = Math.min(placement[positionKey], count - span + 1);
+    const next = { ...placement, [positionKey]: Math.max(1, start), [spanKey]: span };
+    return { id, next, stable: next[positionKey] === placement[positionKey] && next[spanKey] === placement[spanKey]
+      && (!fixedRows || next.row + next.rowSpan - 1 <= fixedRows) };
+  }).sort((left, right) => Number(right.stable) - Number(left.stable));
+  for (const record of preferred) {
+    const desired = record.next, maxRow = Math.max(1, rowsLimit - desired.rowSpan + 1), maxColumn = Math.max(1, columns - desired.columnSpan + 1);
+    let best = null;
+    for (let distance = 0; distance <= maxRow + maxColumn; distance++) {
+      const firstRow = Math.max(1, desired.row - distance), lastRow = Math.min(maxRow, desired.row + distance);
+      for (let row = firstRow; row <= lastRow && !best; row++) {
+        const columnDistance = distance - Math.abs(row - desired.row);
+        const candidates = columnDistance ? [desired.column - columnDistance, desired.column + columnDistance] : [desired.column];
+        for (const column of candidates) {
+          if (column < 1 || column > maxColumn) continue;
+          const candidate = { ...desired, row, column };
+          if (free(candidate)) { best = candidate; break; }
+        }
+      }
+      if (best) break;
+    }
+    if (!best) throw new Error("This grid size cannot fit its current cell objects. Increase the row or column count.");
+    reserve(best);
+    remapped.set(record.id, best);
+  }
+  for (const id of context.childIds) {
+    if (!project.nodes[id]?.gridPlacement || remapped.has(id)) continue;
+    const placement = clone(project.nodes[id].gridPlacement), span = Math.min(placement[spanKey], count);
+    placement[spanKey] = span; placement[positionKey] = Math.min(placement[positionKey], count - span + 1);
+    remapped.set(id, placement);
+  }
+  return gridTrackEditCommand(project, frameId, context, layout, remapped);
+}
+
+/** Reorder a track one slot; any track connected by a spanning cell moves with it. */
+export function moveGridTrackCommand(project, pageId, frameId, axis, index, delta) {
+  const context = gridTrackContext(project, pageId, frameId, axis), { count } = context;
+  if (!Number.isInteger(index) || index < 0 || index >= count || ![-1, 1].includes(delta)) throw new Error("Invalid grid track move.");
+  const positionKey = axis === "columns" ? "column" : "row", spanKey = axis === "columns" ? "columnSpan" : "rowSpan";
+  const moving = new Set([index]); let changed = true;
+  while (changed) {
+    changed = false;
+    for (const placement of context.allPlacements.values()) {
+      const start = placement[positionKey] - 1, end = start + placement[spanKey] - 1;
+      if (![...moving].some((track) => track >= start && track <= end)) continue;
+      for (let track = start; track <= end; track++) if (!moving.has(track)) { moving.add(track); changed = true; }
+    }
+  }
+  const first = Math.min(...moving), last = Math.max(...moving);
+  if (delta < 0 && first === 0 || delta > 0 && last === count - 1) throw new Error("The selected track group is already at that edge.");
+  const order = Array.from({ length: count }, (_, track) => track);
+  const nextOrder = delta < 0
+    ? [...order.slice(0, first - 1), ...order.slice(first, last + 1), first - 1, ...order.slice(last + 1)]
+    : [...order.slice(0, first), last + 1, ...order.slice(first, last + 1), ...order.slice(last + 2)];
+  const position = new Map(nextOrder.map((track, at) => [track, at]));
+  const tracks = gridTrackDefinitions(context.layout, axis, count);
+  const layout = clone(context.layout);
+  layout[axis === "columns" ? "columnTracks" : "rowTracks"] = nextOrder.map((track) => tracks[track]);
+  const placements = new Map();
+  for (const [id, placement] of context.allPlacements) {
+    const start = placement[positionKey] - 1, span = placement[spanKey];
+    const mapped = Array.from({ length: span }, (_, offset) => position.get(start + offset));
+    if (mapped.some((track, at) => !Number.isInteger(track) || at > 0 && track !== mapped[at - 1] + 1))
+      throw new Error("This track move would split a spanning grid object.");
+    placements.set(id, { ...clone(placement), [positionKey]: mapped[0] + 1 });
+  }
+  return gridTrackEditCommand(project, frameId, context, layout, placements);
+}
+
+/** Delete one track and its single-track contents; spanning contents shrink into the nearest remaining cells. */
+export function deleteGridTrackCommand(project, pageId, frameId, axis, index) {
+  const context = gridTrackContext(project, pageId, frameId, axis), { count } = context;
+  if (!Number.isInteger(index) || index < 0 || index >= count) throw new Error("Invalid grid track deletion.");
+  if (count <= 1) throw new Error("A grid must keep at least one row and one column.");
+  const positionKey = axis === "columns" ? "column" : "row", spanKey = axis === "columns" ? "columnSpan" : "rowSpan";
+  const layout = clone(context.layout), tracks = gridTrackDefinitions(context.layout, axis, count);
+  layout[axis === "columns" ? "columnTracks" : "rowTracks"] = tracks.filter((_, track) => track !== index);
+  if (axis === "columns") layout.columns -= 1;
+  else if (layout.rows > 0) layout.rows -= 1;
+  const placements = new Map(), deleteIds = [];
+  for (const [id, placement] of context.allPlacements) {
+    const start = placement[positionKey] - 1, span = placement[spanKey], end = start + span - 1;
+    if (start === index && span === 1) { deleteIds.push(id); continue; }
+    const next = clone(placement);
+    if (index < start) next[positionKey] -= 1;
+    else if (index <= end) next[spanKey] -= 1;
+    placements.set(id, next);
+  }
+  return gridTrackEditCommand(project, frameId, context, layout, placements, deleteIds);
 }
 
 export function deleteLayersCommand(project, nodeIds) {

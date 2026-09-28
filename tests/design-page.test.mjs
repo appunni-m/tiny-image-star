@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
-  setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+  addGridTrackCommand, deleteGridTrackCommand, moveGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
+  setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
@@ -363,6 +364,68 @@ test("grid children override horizontal and vertical alignment and can return to
   const invalid = structuredClone(project);
   invalid.nodes.child.gridAlignment = { horizontal: "middle" };
   assert.throws(() => validateProject(invalid), /Invalid grid alignment/);
+});
+
+test("grid track add, reorder and delete are reversible and preserve spanning cell geometry", () => {
+  const project = createSceneProject({ id: "grid-track-actions", variants: [{ id: "page", width: 600, height: 300 }],
+    slides: [{ id: "grid-page", nodeIds: ["frame", "wide", "single"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+        style: { layout: { direction: "grid", columns: 3, rows: 1, columnTracks: [
+          { mode: "fixed", value: 100 }, { mode: "fixed", value: 200 }, { mode: "fixed", value: 300 },
+        ], rowTracks: [{ mode: "fill", value: 1 }] } } },
+      wide: { id: "wide", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .5, height: 1 }, gridPlacement: { row: 1, column: 1, rowSpan: 1, columnSpan: 2 },
+        style: { shape: "rectangle" } },
+      single: { id: "single", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: .5, y: 0, width: .5, height: 1 }, gridPlacement: { row: 1, column: 3, rowSpan: 1, columnSpan: 1 },
+        style: { shape: "rectangle" } },
+    } });
+  const history = new ProjectHistory(project);
+  history.apply(moveGridTrackCommand(history.document, "grid-page", "frame", "columns", 0, 1), "Move spanning track group");
+  assert.deepEqual(history.document.nodes.frame.style.layout.columnTracks, [
+    { mode: "fixed", value: 300 }, { mode: "fixed", value: 100 }, { mode: "fixed", value: 200 },
+  ]);
+  assert.deepEqual(history.document.nodes.wide.gridPlacement, { row: 1, column: 2, rowSpan: 1, columnSpan: 2 });
+  assert.deepEqual(history.document.nodes.single.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 1 });
+  history.undo();
+  assert.deepEqual(history.document.nodes.frame.style.layout.columnTracks[0], { mode: "fixed", value: 100 });
+
+  history.apply(deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 0), "Delete first column");
+  assert.equal(history.document.nodes.frame.style.layout.columns, 2);
+  assert.deepEqual(history.document.nodes.wide.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 1 },
+    "a cell spanning the deleted track shrinks into the closest remaining cell");
+  assert.deepEqual(history.document.nodes.single.gridPlacement, { row: 1, column: 2, rowSpan: 1, columnSpan: 1 });
+  history.undo();
+
+  history.apply(deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 2), "Delete occupied column");
+  assert.equal(history.document.nodes.single, undefined, "deleting a track deletes its single-cell contents");
+  assert.deepEqual(history.document.slides[0].nodeIds, ["frame", "wide"]);
+  history.undo();
+  assert.ok(history.document.nodes.single, "undo restores deleted layers and their track membership");
+
+  history.apply(addGridTrackCommand(history.document, "grid-page", "frame", "columns"), "Add column");
+  assert.equal(history.document.nodes.frame.style.layout.columns, 4);
+  assert.deepEqual(history.document.nodes.frame.style.layout.columnTracks.at(-1), { mode: "fill", value: 1 });
+  history.undo();
+  history.apply(deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 2), "Delete to two columns");
+  history.apply(deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 1), "Delete to one column");
+  assert.throws(() => deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 0), /at least one/);
+
+  const automaticRows = structuredClone(project);
+  automaticRows.nodes.frame.style.layout.rows = 0;
+  delete automaticRows.nodes.frame.style.layout.rowTracks;
+  const rowsHistory = new ProjectHistory(validateProject(automaticRows));
+  rowsHistory.apply(addGridTrackCommand(rowsHistory.document, "grid-page", "frame", "rows"), "Add row to auto grid");
+  assert.equal(rowsHistory.document.nodes.frame.style.layout.rows, 2, "adding a row converts auto rows to an explicit count that includes the new track");
+
+  const autoGrid = structuredClone(project);
+  autoGrid.nodes.frame.style.layout.rows = 0;
+  const countHistory = new ProjectHistory(validateProject(autoGrid));
+  countHistory.apply(resizeGridTrackCountCommand(countHistory.document, "grid-page", "frame", "columns", 2), "Reduce grid columns");
+  assert.equal(countHistory.document.nodes.frame.style.layout.columns, 2);
+  assert.deepEqual(countHistory.document.nodes.wide.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 2 });
+  assert.deepEqual(countHistory.document.nodes.single.gridPlacement, { row: 2, column: 2, rowSpan: 1, columnSpan: 1 },
+    "the count picker preserves a cell that no longer fits by moving it to the nearest free auto-row cell");
 });
 
 test("Auto Layout Hug sizes a frame around fixed children and Fill makes the parent fixed on that axis", () => {

@@ -516,6 +516,10 @@ export async function assertDesignWorkspace(browser, address) {
       .map((input) => input.getBoundingClientRect().toJSON()));
     assert.ok(mobileGridSizing.length === 6 && mobileGridSizing.every((box) => box.height >= 43 && box.left >= 0 && box.right <= 390),
       `fixed and Fill sizing controls remain touch-sized on a phone: ${JSON.stringify(mobileGridSizing)}`);
+    const mobileGridTrackActions = await page.evaluate(() => [...document.querySelectorAll("#design-grid-tracks [data-grid-track-action]")]
+      .map((button) => button.getBoundingClientRect().toJSON()));
+    assert.ok(mobileGridTrackActions.length === 12 && mobileGridTrackActions.every((box) => box.height >= 43 && box.width >= 43 && box.left >= 0 && box.right <= 390),
+      `track reorder/delete actions remain touch-sized on a phone: ${JSON.stringify(mobileGridTrackActions)}`);
     await page.locator(`#design-layer-list [data-layer-id="${gridOtherId}"] .design-layer-select`).click();
     const mobileGridPlacement = await page.evaluate(() => [...document.querySelectorAll("#design-grid-placement input")]
       .map((input) => input.getBoundingClientRect().toJSON()));
@@ -537,6 +541,14 @@ export async function assertDesignWorkspace(browser, address) {
     gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.deepEqual(gridState.nodes[gridOtherId].gridAlignment, { vertical: "center" }, "Auto removes one axis override while preserving the other");
     await page.setViewportSize({ width: 1280, height: 850 });
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
+    await page.locator("#design-layout-columns").fill("2");
+    await page.locator("#design-layout-columns").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(gridState.nodes[frameId].style.layout.columns, 2);
+    assert.ok(gridState.resolvedFrames[gridOtherId].frame.y > gridState.resolvedFrames[shapeId].frame.y,
+      "reducing the picker count keeps automatic children and flows the overflow into an auto row");
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     await page.locator("#design-frame-layout").selectOption("horizontal");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
@@ -673,6 +685,20 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator('#design-grid-column-tracks [data-grid-track-index="0"][data-grid-track-control="value"]').fill("72");
     await page.locator('#design-grid-column-tracks [data-grid-track-index="0"][data-grid-track-control="value"]').press("Tab");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator('#design-grid-column-tracks [data-grid-track-index="0"][data-grid-track-action="move-after"]').click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let trackState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.deepEqual(trackState.nodes[gridFrameId].style.layout.columnTracks.slice(0, 2), [
+      { mode: "fill", value: 1 }, { mode: "fixed", value: 72 },
+    ], "track controls reorder the sizing rule and cells as one undoable operation");
+    await page.locator("#design-grid-add-column").click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    trackState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(trackState.nodes[gridFrameId].style.layout.columns, 3, "the inspector can append a responsive track");
+    await page.locator('#design-grid-column-tracks [data-grid-track-index="2"][data-grid-track-action="delete"]').click();
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    trackState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(trackState.nodes[gridFrameId].style.layout.columns, 2, "deleting an empty track preserves the other tracks");
     const gridChildId = await page.evaluate((id) => {
       const snapshot = window.tinyImageStarDesign.getSnapshot();
       return snapshot.pages[1].nodeIds.find((childId) => snapshot.nodes[childId].parentId === id);
@@ -684,8 +710,8 @@ export async function assertDesignWorkspace(browser, address) {
     const gridSaved = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(gridSaved.nodes[gridFrameId].style.layout.direction, "grid");
     assert.equal(gridSaved.nodes[gridFrameId].style.layout.rows, 0, "saved grid layouts retain auto-row behavior");
-    assert.deepEqual(gridSaved.nodes[gridFrameId].style.layout.columnTracks[0], { mode: "fixed", value: 72 },
-      "custom fixed track sizing is stored with the local page");
+    assert.deepEqual(gridSaved.nodes[gridFrameId].style.layout.columnTracks[1], { mode: "fixed", value: 72 },
+      "custom fixed track sizing survives track reordering and is stored with the local page");
     assert.deepEqual(gridSaved.nodes[gridChildId].gridAlignment, { horizontal: "center", vertical: "end" },
       "per-cell alignment is saved with the page child");
     const pages = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().pages.map((entry) => entry.name));
@@ -704,8 +730,8 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopened.pages[1].nodeIds.length, 8, "all mobile-added shapes and their grid frame survive local save and reload");
     assert.equal(reopened.nodes[gridFrameId].style.layout.direction, "grid", "grid flow survives local project reload");
     assert.equal(reopened.nodes[gridFrameId].style.layout.columns, 2);
-    assert.deepEqual(reopened.nodes[gridFrameId].style.layout.columnTracks[0], { mode: "fixed", value: 72 },
-      "per-track size modes survive local project reload");
+    assert.deepEqual(reopened.nodes[gridFrameId].style.layout.columnTracks[1], { mode: "fixed", value: 72 },
+      "per-track size modes and their reordered positions survive local project reload");
     assert.deepEqual(reopened.nodes[gridChildId].gridAlignment, { horizontal: "center", vertical: "end" },
       "per-cell alignment survives local project reload");
     assert.equal(reopened.nodes[frameId].style.layout.direction, "horizontal", "Auto Layout settings survive local save and reload");
