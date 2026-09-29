@@ -21,6 +21,21 @@ test('horizontal fill children divide remaining main-axis space', () => {
   assert.deepEqual([fixed.x, fill.x, fill.width], [10, 60, 150]);
 });
 
+test('resolved variable settings drive layout without overwriting the saved base settings', () => {
+  const frame = createNode('frame', {
+    width: 220, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: 8, padding: 8 })
+  });
+  const first = createNode('rectangle', { width: 30, height: 20 });
+  const second = createNode('rectangle', { width: 30, height: 20 });
+  frame.children.push(first, second);
+  const resolved = createAutoLayout({ ...frame.autoLayout, columnGap: 20, padding: { ...frame.autoLayout.padding, left: 24 } });
+  applyAutoLayout(frame, resolved);
+  assert.deepEqual([first.x, second.x], [24, 74]);
+  assert.equal(frame.autoLayout.columnGap, 8, 'mode-resolved values must not replace the serialized base values');
+  assert.equal(frame.autoLayout.padding.left, 8);
+});
+
 test('linear fill sizes honor min and max bounds while redistributing available space', () => {
   const frame = createNode('frame', { width: 230, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', gap: 10, padding: 10 }) });
   const fixed = createNode('rectangle', { width: 40, height: 30 });

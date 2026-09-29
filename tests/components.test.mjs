@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addNode, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, detachComponentInstance,
-  findNode, removeNode, serializeDocument, parseDocument, setComponentVariantProperty, switchComponentInstanceVariant,
+  canSwapComponentTo, createComponentProperty, findNode, removeNode, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant,
   syncComponentInstances, validateDocument
 } from '../src/model.js';
 
@@ -246,4 +246,130 @@ test('variant value changes reject duplicate combinations and deleting a variant
   assert.equal(a.componentSetId, undefined);
   assert.equal(a.variantProperties, undefined);
   assert.equal(validateDocument(document), true);
+});
+
+test('typed component properties project defaults and instance values through sync and reload', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Card' });
+  const label = createNode('text', { text: 'Default label' });
+  const badge = createNode('ellipse', { name: 'Badge', visible: true });
+  const icon = createNode('rectangle', { name: 'Icon', fill: '#112233' });
+  addNode(document, main); addNode(document, label, { parentId: main.id });
+  addNode(document, badge, { parentId: main.id }); addNode(document, icon, { parentId: main.id });
+  const component = createComponent(document, main.id, 'Card');
+  const visibleProperty = createComponentProperty(document, component.id, { name: 'Show badge', type: 'BOOLEAN', targetNodeId: badge.id });
+  const textProperty = createComponentProperty(document, component.id, { name: 'Label', type: 'TEXT', targetNodeId: label.id });
+  const instance = createComponentInstance(document, component.id);
+  assert.equal(instance.children.find(node => node.componentSourceId === badge.id).visible, true);
+  assert.equal(instance.children.find(node => node.componentSourceId === label.id).text, 'Default label');
+
+  instance.componentOverrides[icon.id] = { fill: '#445566' };
+  assert.equal(setComponentPropertyValue(document, instance.id, visibleProperty.id, false), true);
+  assert.equal(setComponentPropertyValue(document, instance.id, textProperty.id, 'Special label'), true);
+  assert.equal(instance.componentPropertyValues[visibleProperty.id], false);
+  assert.equal(instance.componentPropertyValues[textProperty.id], 'Special label');
+  assert.equal(instance.children.find(node => node.componentSourceId === badge.id).visible, false);
+  assert.equal(instance.children.find(node => node.componentSourceId === label.id).text, 'Special label');
+
+  label.text = 'Updated default';
+  badge.visible = false;
+  icon.fill = '#abcdef';
+  assert.equal(syncComponentInstances(document, component.id), 1);
+  const synced = findNode(document, instance.id).node;
+  assert.equal(synced.children.find(node => node.componentSourceId === badge.id).visible, false);
+  assert.equal(synced.children.find(node => node.componentSourceId === label.id).text, 'Special label');
+  assert.equal(synced.children.find(node => node.componentSourceId === icon.id).fill, '#445566');
+
+  assert.equal(setComponentPropertyValue(document, instance.id, visibleProperty.id, undefined), true);
+  assert.equal(setComponentPropertyValue(document, instance.id, textProperty.id, undefined), true);
+  assert.equal(synced.children.find(node => node.componentSourceId === badge.id).visible, true);
+  assert.equal(synced.children.find(node => node.componentSourceId === label.id).text, 'Default label');
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reloaded), true);
+  assert.deepEqual(reloaded.components[0].componentProperties, [visibleProperty, textProperty]);
+});
+
+test('instance-swap properties accept compatible components outside variant sets and keep ordinary overrides', () => {
+  const document = createDocument();
+  const baseNode = createNode('frame', { name: 'Original', width: 80, height: 40 });
+  addNode(document, baseNode);
+  const baseComponent = createComponent(document, baseNode.id, 'Original');
+
+  const replacementNode = createNode('text', { name: 'Replacement', text: 'Swapped content' });
+  addNode(document, replacementNode);
+  const replacementComponent = createComponent(document, replacementNode.id, 'Replacement');
+
+  const card = createNode('frame', { name: 'Card' });
+  addNode(document, card);
+  const slotGroup = createNode('group', { name: 'Slot group' });
+  addNode(document, slotGroup, { parentId: card.id });
+  const nested = createComponentInstance(document, baseComponent.id);
+  document.pages[0].children.splice(document.pages[0].children.indexOf(nested), 1);
+  slotGroup.children.push(nested);
+  nested.x = 12; nested.y = 8;
+  const accent = createNode('rectangle', { name: 'Accent' });
+  addNode(document, accent, { parentId: card.id });
+  const cardComponent = createComponent(document, card.id, 'Card');
+  const swapProperty = createComponentProperty(document, cardComponent.id, { name: 'Content', type: 'INSTANCE_SWAP', targetNodeId: nested.id });
+  assert.equal(canSwapComponentTo(document, cardComponent.id, replacementComponent.id), true);
+  assert.equal(canSwapComponentTo(document, cardComponent.id, cardComponent.id), false);
+  const instance = createComponentInstance(document, cardComponent.id);
+  instance.componentOverrides[nested.id] = { opacity: 0.65, name: 'Custom content name' };
+  const instanceNodeBySource = sourceId => {
+    let found = null;
+    const visit = node => {
+      if (node.componentSourceId === sourceId) { found = node; return; }
+      for (const child of node.children || []) visit(child);
+    };
+    visit(instance);
+    return found;
+  };
+  instance.children.find(node => node.componentSourceId === accent.id).fill = '#00aa88';
+  instance.componentOverrides[accent.id] = { fill: '#00aa88' };
+
+  assert.equal(setComponentPropertyValue(document, instance.id, swapProperty.id, replacementComponent.id), true);
+  let instanceNested = instanceNodeBySource(nested.id);
+  assert.equal(instanceNested.type, 'text');
+  assert.equal(instanceNested.componentId, replacementComponent.id);
+  assert.equal(instanceNested.componentSourceId, nested.id);
+  assert.equal(instanceNested.text, 'Swapped content');
+  assert.equal(instanceNested.opacity, 0.65);
+  assert.equal(instanceNested.name, 'Custom content name');
+  assert.equal(instance.children.find(node => node.componentSourceId === accent.id).fill, '#00aa88');
+
+  card.width = 280;
+  assert.equal(syncComponentInstances(document, cardComponent.id), 1);
+  instanceNested = instanceNodeBySource(nested.id);
+  assert.equal(instanceNested.componentId, replacementComponent.id);
+  assert.equal(instanceNested.type, 'text');
+  assert.equal(instanceNested.opacity, 0.65);
+  assert.equal(instanceNested.name, 'Custom content name');
+  assert.equal(instance.width, 280);
+  assert.throws(() => setComponentPropertyValue(document, instance.id, swapProperty.id, cardComponent.id), /Invalid value/);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('component-property validation rejects duplicate IDs, unsupported targets, and invalid instance values', () => {
+  const document = createDocument();
+  const main = createNode('frame'); const label = createNode('text', { text: 'Hello' });
+  addNode(document, main); addNode(document, label, { parentId: main.id });
+  const component = createComponent(document, main.id);
+  const property = createComponentProperty(document, component.id, { name: 'Label', type: 'TEXT', targetNodeId: label.id });
+  const instance = createComponentInstance(document, component.id);
+  assert.equal(validateDocument(document), true);
+
+  const duplicateId = parseDocument(serializeDocument(document));
+  duplicateId.components[0].componentProperties.push({ ...duplicateId.components[0].componentProperties[0], name: 'Other' });
+  assert.throws(() => validateDocument(duplicateId), /Invalid component property/);
+
+  const missingTarget = parseDocument(serializeDocument(document));
+  missingTarget.components[0].componentProperties[0].targetSourceId = 'missing-layer';
+  assert.throws(() => validateDocument(missingTarget), /Invalid component property/);
+
+  const wrongTarget = parseDocument(serializeDocument(document));
+  wrongTarget.components[0].componentProperties[0].targetSourceId = main.id;
+  assert.throws(() => validateDocument(wrongTarget), /Invalid TEXT default/);
+
+  instance.componentPropertyValues = { [property.id]: false };
+  assert.throws(() => validateDocument(document), /Invalid component property value/);
 });

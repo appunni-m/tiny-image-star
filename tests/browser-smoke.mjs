@@ -2,6 +2,7 @@ import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, create
 import { SceneRenderer } from '../src/renderer.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 import { createImageFill } from '../src/image-fills.js';
+import { createAutoLayout } from '../src/layout-engine.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -392,11 +393,31 @@ try {
   dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 85);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Open overlay'), 'prototype overlay connection');
 
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  actionSelect = app.querySelector('#prototype-action');
+  actionSelect.value = 'swap-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 86);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 86);
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('Swap overlay') && row.textContent.includes(overlayFrame.name)), 'prototype swap overlay connection');
+
   dispatchClick(app.querySelector(`[data-layer-id="${overlayFrame.id}"]`));
   actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'close-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Close overlay'), 'close overlay interaction');
+  actionSelect = app.querySelector('#prototype-action');
+  actionSelect.value = 'back'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('Back') && row.textContent.includes('Previous screen')), 'back interaction');
+  actionSelect = app.querySelector('#prototype-action');
+  actionSelect.value = 'open-link'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  const linkInput = app.querySelector('#prototype-url');
+  assert(linkInput, 'Open Link did not expose a URL input');
+  linkInput.value = 'https://example.com/help?from=smoke'; linkInput.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('example.com/help?from=smoke')), 'safe Open Link interaction');
+  await waitForSaveCycle(app, 'prototype action persistence');
 
   app.defaultView.prompt = () => 'Smoke white';
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
@@ -425,6 +446,17 @@ try {
   dispatchClick(app.querySelector('[data-action="create-component"]'));
   await waitFor(() => app.querySelector('#components-list [data-component-id]'), 'component creation and asset listing');
   const componentId = app.querySelector('#components-list [data-component-id]').dataset.componentId;
+  const componentPropertyName = app.querySelector('#component-property-name');
+  const componentPropertyButton = app.querySelector('[data-action="create-component-property"]');
+  assert(componentPropertyName && componentPropertyButton, 'main components did not expose typed property creation controls');
+  componentPropertyName.value = 'Enabled';
+  dispatchClick(componentPropertyButton);
+  await waitFor(() => app.querySelector('.component-property-definition')?.textContent.includes('Enabled') || app.querySelector('#toast-region .toast'), 'BOOLEAN component property creation or error');
+  assert(app.querySelector('.component-property-definition')?.textContent.includes('Enabled'), `BOOLEAN component property creation failed: ${app.querySelector('#toast-region .toast')?.textContent || 'the Inspector did not refresh'}`);
+  await waitForSaveCycle(app, 'BOOLEAN component property definition');
+  let definitionRecords = await readStore('documents'); definitionRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const componentPropertyId = definitionRecords[0]?.document?.components?.find(component => component.id === componentId)?.componentProperties?.find(property => property.name === 'Enabled')?.id;
+  assert(componentPropertyId, 'the BOOLEAN component property definition was not persisted');
   const instanceButton = app.querySelector('[data-action="create-component-instance"]');
   assert(instanceButton?.dataset.componentId === componentId, 'component inspector did not expose instance creation');
   dispatchClick(instanceButton);
@@ -432,6 +464,21 @@ try {
   const instanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const instanceId = instanceRow?.dataset.layerId;
   assert(instanceId && instanceId !== destinationFrame.id, 'the component instance has no independent layer identity');
+  const componentPropertyCheckbox = app.querySelector(`[data-instance-id="${instanceId}"][data-component-property-value="${componentPropertyId}"]`);
+  assert(componentPropertyCheckbox?.checked, 'the Boolean property did not initialize to the component default');
+  componentPropertyCheckbox.checked = false; componentPropertyCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'Boolean component property override');
+  let propertyRecords = await readStore('documents'); propertyRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let propertyDocument = propertyRecords[0]?.document;
+  let propertyNodes = flattenNodes(propertyDocument?.pages.flatMap(page => page.children));
+  const savedPropertyInstance = propertyNodes.find(node => node.id === instanceId);
+  assert(savedPropertyInstance?.visible === false && savedPropertyInstance.componentPropertyValues?.[componentPropertyId] === false,
+    'changing the Boolean property did not project and persist the instance visibility');
+  assert(propertyNodes.find(node => node.id === destinationFrame.id)?.visible === true,
+    'changing an instance property modified the main component');
+  const resetComponentProperty = app.querySelector(`[data-instance-id="${instanceId}"][data-component-property-value="${componentPropertyId}"]`);
+  resetComponentProperty.checked = true; resetComponentProperty.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'Boolean component property reset');
 
   dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
   const mainWidth = app.querySelector('[data-prop="width"]');
@@ -655,21 +702,31 @@ try {
   brandColors.modes[0].name = 'Light';
   const lightMode = brandColors.modes[0];
   const darkMode = addVariableMode(variablesDocument, brandColors.id, 'Dark');
+  brandColors.defaultModeId = darkMode.id;
   const surfaceVariable = createColorVariable(variablesDocument, brandColors.id, 'Surface', '#f7f7f7');
   setColorVariableValue(variablesDocument, surfaceVariable.id, '#202124', darkMode.id);
   const cardWidthVariable = createVariable(variablesDocument, brandColors.id, 'Card width', 'number', 90);
   setVariableValue(variablesDocument, cardWidthVariable.id, 210, darkMode.id);
+  const layoutGapVariable = createVariable(variablesDocument, brandColors.id, 'Layout gap', 'number', 8);
+  setVariableValue(variablesDocument, layoutGapVariable.id, 24, darkMode.id);
   const themeFrame = createNode('frame', { name: 'Theme frame', width: 300, height: 210 });
   const nestedThemeFrame = createNode('frame', { name: 'Nested theme', x: 20, y: 20, width: 250, height: 160 });
+  const themeModeTrigger = createNode('rectangle', { name: 'Switch to dark', x: 215, y: 150, width: 70, height: 42, fill: '#40444d' });
   const variableSurface = createNode('rectangle', { name: 'Variable surface', x: 12, y: 12, width: 150, height: 80, fillVariableId: surfaceVariable.id });
   const variableHeading = createNode('text', { name: 'Variable heading', x: 12, y: 108, width: 180, height: 32, text: 'Local variables', textVariableId: surfaceVariable.id });
   const typographyFrame = createNode('frame', { name: 'Typography styles', x: 340, y: 20, width: 220, height: 240 });
+  const layoutFrame = createNode('frame', { name: 'Bound layout', x: 600, y: 20, width: 200, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: 4, padding: 10 }) });
+  const layoutFirst = createNode('rectangle', { name: 'Layout first', width: 20, height: 20 });
+  const layoutSecond = createNode('rectangle', { name: 'Layout second', width: 20, height: 20 });
+  layoutFrame.children.push(layoutFirst, layoutSecond);
   const typographySource = createNode('text', { name: 'Typography source', x: 12, y: 145, width: 180, height: 32, text: 'Source style' });
   const typographyTarget = createNode('text', { name: 'Typography target', x: 12, y: 180, width: 180, height: 32, text: 'First target' });
   const typographyUpdatedTarget = createNode('text', { name: 'Typography updated target', x: 12, y: 215, width: 180, height: 32, text: 'Updated target' });
   addNode(variablesDocument, themeFrame);
   addNode(variablesDocument, typographyFrame);
+  addNode(variablesDocument, layoutFrame);
   addNode(variablesDocument, nestedThemeFrame, { parentId: themeFrame.id });
+  addNode(variablesDocument, themeModeTrigger, { parentId: themeFrame.id });
   addNode(variablesDocument, variableSurface, { parentId: nestedThemeFrame.id });
   addNode(variablesDocument, variableHeading, { parentId: nestedThemeFrame.id });
   addNode(variablesDocument, typographySource, { parentId: typographyFrame.id });
@@ -680,13 +737,35 @@ try {
   Object.defineProperty(variablesInput, 'files', { configurable: true, value: variablesTransfer.files });
   variablesInput.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'variable collection fixture import');
+  dispatchClick(app.querySelector(`[data-layer-id="${themeModeTrigger.id}"]`));
+  dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="prototype"]'));
+  const themeAction = app.querySelector('#prototype-action');
+  themeAction.value = 'set-variable-mode'; themeAction.dispatchEvent(new Event('change', { bubbles: true }));
+  const themeCollectionSelect = app.querySelector('#prototype-variable-collection');
+  const themeModeSelect = app.querySelector('#prototype-variable-mode');
+  assert(themeCollectionSelect && themeModeSelect, 'prototype variable-mode controls were not shown');
+  themeCollectionSelect.value = brandColors.id; themeCollectionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(app.querySelector('#prototype-variable-mode').value === darkMode.id, 'prototype variable-mode control did not select the collection default mode');
+  app.querySelector('#prototype-variable-mode').value = darkMode.id;
+  app.querySelector('#prototype-variable-mode').dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Dark · Brand colors'), 'prototype variable-mode interaction');
+  await waitForSaveCycle(app, 'prototype variable-mode persistence');
+  let themeModeRecords = await readStore('documents'); themeModeRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const savedThemeModeDocument = themeModeRecords[0]?.document;
+  const savedThemeModeTrigger = flattenNodes(savedThemeModeDocument.pages.flatMap(page => page.children)).find(node => node.id === themeModeTrigger.id);
+  assert(savedThemeModeTrigger?.interactions?.some(item => item.action === 'set-variable-mode' && item.collectionId === brandColors.id && item.modeId === darkMode.id), 'prototype mode action was not serialized');
   dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  const themeDefaultModeControl = app.querySelector(`[data-variable-default-mode="${brandColors.id}"]`);
+  themeDefaultModeControl.value = lightMode.id; themeDefaultModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'restore light default mode after prototype mode check');
   dispatchClick(app.querySelector(`.variable-mode-add[data-collection-id="${brandColors.id}"]`));
   assert(app.querySelector('#variable-dialog').open, 'adding a mode did not open the native variable dialog');
   app.querySelector('#variable-name').value = 'Contrast';
   dispatchClick(app.querySelector('#variable-save'));
   await waitFor(() => [...app.querySelectorAll(`[data-variable-default-mode="${brandColors.id}"] option`)].some(option => option.textContent === 'Contrast'), 'new variable mode');
   dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
   dispatchClick(app.querySelector(`[data-layer-id="${themeFrame.id}"]`));
   let frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
   assert(frameModeControl, 'frame inspector did not expose collection mode overrides');
@@ -697,6 +776,22 @@ try {
   let savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
   let savedVariableHeading = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
   assert(getNodeColor(savedVariables, savedVariableSurface) === '#202124' && getNodeColor(savedVariables, savedVariableHeading, 'text') === '#202124', 'frame mode did not update bound fills and text together');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${layoutFrame.id}"]`));
+  const layoutGapBinding = app.querySelector('[data-variable-property-binding="autoLayout.columnGap"]');
+  assert(layoutGapBinding && [...layoutGapBinding.options].some(option => option.value === layoutGapVariable.id), 'Auto Layout inspector did not expose numeric variable bindings');
+  layoutGapBinding.value = layoutGapVariable.id; layoutGapBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'Auto Layout variable binding autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  let savedLayoutFrame = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === layoutFrame.id);
+  assert(savedLayoutFrame.children[1].x === 38, `default Auto Layout variable value did not reflow the frame (${savedLayoutFrame.children[1].x})`);
+  frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  frameModeControl.value = darkMode.id; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'Auto Layout variable mode autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedLayoutFrame = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === layoutFrame.id);
+  assert(getNodePropertyValue(savedVariables, savedLayoutFrame, 'autoLayout.columnGap') === 24 && savedLayoutFrame.children[1].x === 54,
+    'changing the frame variable mode did not update its live and persisted Auto Layout');
 
   dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
   frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
@@ -1236,7 +1331,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP'], componentPropertyInspector: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

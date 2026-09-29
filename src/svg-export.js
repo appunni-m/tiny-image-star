@@ -5,6 +5,7 @@ import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from './vector-path.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -18,7 +19,7 @@ export class SvgExportError extends TypeError {
   }
 }
 
-const supportedTypes = new Set(['frame', 'section', 'group', 'rectangle', 'ellipse', 'line', 'text', 'star', 'polygon', 'path', 'image']);
+const supportedTypes = new Set(['frame', 'section', 'group', 'rectangle', 'ellipse', 'line', 'text', 'star', 'polygon', 'path', 'network', 'image']);
 const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
 const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
@@ -152,7 +153,6 @@ function radius(document, node) {
 
 function unsupportedFeature(node, assets) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
-  if (node.mask) return 'mask groups';
   if (node.type === 'image' || node.imageFill) {
     if (node.imageFill && (!isImageFillSupported(node) || !isValidImageFill(node.imageFill))) return 'image fills';
     const image = resolveLocalImage(node, assets, node.type === 'image' ? node.assetId : node.imageFill?.assetId);
@@ -169,12 +169,13 @@ function unsupportedFeature(node, assets) {
       throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     }
   }
-  if (node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
+  if (node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon', 'network'].includes(node.type)
     && !(node.type === 'path' && node.closed)) return 'gradient fills';
+  if (node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`SVG export requires a supported blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.fillGradient && !isValidGradientFill(node.fillGradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
-  if (node.type === 'group' && node.maskSourceId) return 'mask groups';
+  if (node.type === 'group' && node.maskSourceId && !node.mask) return 'mask groups';
   return null;
 }
 
@@ -182,15 +183,44 @@ function isNodeVisible(document, node) {
   return getNodePropertyValue(document, node, 'visible') !== false;
 }
 
-function validateTree(nodes, document, assets) {
+const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
+
+function validateMaskGroup(node, document) {
+  if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string') {
+    throw new SvgExportError('mask groups', node);
+  }
+  if (!(Number(node.width) > 0) || !(Number(node.height) > 0)) throw new SvgExportError('zero-size mask groups', node);
+  const source = node.children.find(child => child?.id === node.maskSourceId);
+  if (!source) throw new SvgExportError('mask groups with a missing source', node);
+  if (!isNodeVisible(document, source)) return source;
+  if (!svgMaskSourceTypes.has(source.type)) throw new SvgExportError(`${source.type || 'unknown'} alpha mask contents`, source);
+  if (source.type === 'path' && source.closed !== true) throw new SvgExportError('open path alpha mask contents', source);
+  if (source.type === 'network' && !(source.faces || []).length) throw new SvgExportError('open vector network alpha mask contents', source);
+  if ((source.blendMode || 'normal') !== 'normal') throw new SvgExportError('blended alpha mask contents', source);
+  const fillOpacity = Number(source.fillOpacity ?? 1);
+  if (!Number.isFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1) {
+    throw new TypeError(`SVG export requires valid fill opacity on alpha mask source ${source.name || source.id || '(unnamed)'}.`);
+  }
+  const opacity = Number(getNodePropertyValue(document, source, 'opacity') ?? 1);
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+    throw new TypeError(`SVG export requires valid opacity on alpha mask source ${source.name || source.id || '(unnamed)'}.`);
+  }
+  dimensions({ ...source, ...getNodeGeometry(document, source) });
+  return source;
+}
+
+function validateTree(nodes, document, assets, ignoredNodeIds = new Set()) {
   for (const node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
+    if (ignoredNodeIds.has(node.id)) continue;
     if (!isNodeVisible(document, node)) continue;
+    const maskSource = node.mask ? validateMaskGroup(node, document) : null;
     const unsupported = unsupportedFeature(node, assets);
     if (unsupported) throw new SvgExportError(unsupported, node);
     dimensions({ ...node, ...getNodeGeometry(document, node) });
     if (!Array.isArray(node.children || [])) throw new TypeError(`SVG export requires a child layer list on ${node.name || node.id || '(unnamed)'}.`);
-    validateTree(node.children || [], document, assets);
+    const ignoredChildren = maskSource ? new Set([...ignoredNodeIds, maskSource.id]) : ignoredNodeIds;
+    validateTree(node.children || [], document, assets, ignoredChildren);
   }
 }
 
@@ -251,11 +281,79 @@ function shapeMarkup(node, document, measureText, gradientId = null) {
       if (node.closed) path += ' Z';
       return `<path d="${path}"${node.closed ? fill : ' fill="none"'}${stroke}/>`;
     }
+    case 'network':
+      // Network faces and edges are emitted individually below so SVG retains their graph topology.
+      return '';
     case 'text':
       return textMarkup(node, document, measureText);
     default:
       return '';
   }
+}
+
+function networkEdgePath(node, edge) {
+  const points = vectorNetworkEdgePoints(node, edge.id, { x: 0, y: 0 });
+  if (!points) throw new TypeError(`SVG export requires valid vector network edges on layer ${node.name || node.id || '(unnamed)'}.`);
+  const [start, control1, control2, end] = points;
+  const d = edge.control1 || edge.control2
+    ? `M ${number(start.x)} ${number(start.y)} C ${number(control1.x)} ${number(control1.y)} ${number(control2.x)} ${number(control2.y)} ${number(end.x)} ${number(end.y)}`
+    : `M ${number(start.x)} ${number(start.y)} L ${number(end.x)} ${number(end.y)}`;
+  return d;
+}
+
+function networkFacePath(node, face, edgesByPair) {
+  const ids = face.vertexIds || [];
+  if (ids.length < 3) throw new TypeError(`SVG export requires valid vector network faces on layer ${node.name || node.id || '(unnamed)'}.`);
+  const first = vectorNetworkVertexPoint(node, ids[0], { x: 0, y: 0 });
+  if (!first) throw new TypeError(`SVG export requires valid vector network vertices on layer ${node.name || node.id || '(unnamed)'}.`);
+  let d = `M ${number(first.x)} ${number(first.y)}`;
+  for (let index = 0; index < ids.length; index += 1) {
+    const fromId = ids[index]; const toId = ids[(index + 1) % ids.length];
+    const edge = edgesByPair.get(`${fromId}\0${toId}`);
+    const end = vectorNetworkVertexPoint(node, toId, { x: 0, y: 0 });
+    if (!edge || !end) throw new TypeError(`SVG export requires each vector network face boundary to follow an edge on layer ${node.name || node.id || '(unnamed)'}.`);
+    const points = vectorNetworkEdgePoints(node, edge.id, { x: 0, y: 0 });
+    const reversed = edge.from !== fromId;
+    const control1 = points[reversed ? 2 : 1]; const control2 = points[reversed ? 1 : 2];
+    if (edge.control1 || edge.control2) d += ` C ${number(control1.x)} ${number(control1.y)} ${number(control2.x)} ${number(control2.y)} ${number(end.x)} ${number(end.y)}`;
+    else d += ` L ${number(end.x)} ${number(end.y)}`;
+  }
+  return `${d} Z`;
+}
+
+function networkEdgesByPair(node) {
+  const result = new Map();
+  for (const edge of node.edges || []) {
+    if (!edge || typeof edge.id !== 'string' || typeof edge.from !== 'string' || typeof edge.to !== 'string') {
+      throw new TypeError(`SVG export requires valid vector network edges on layer ${node.name || node.id || '(unnamed)'}.`);
+    }
+    if (!result.has(`${edge.from}\0${edge.to}`)) result.set(`${edge.from}\0${edge.to}`, edge);
+    if (!result.has(`${edge.to}\0${edge.from}`)) result.set(`${edge.to}\0${edge.from}`, edge);
+  }
+  return result;
+}
+
+function networkMarkup(node, document, gradientId = null, { includeFills = true } = {}) {
+  const faces = node.faces || [];
+  const edgesByPair = networkEdgesByPair(node);
+  let markup = '';
+  const fillOpacity = Number(node.fillOpacity ?? 1);
+  if (!Number.isFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1) {
+    throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  if (includeFills) faces.forEach((face, index) => {
+    const path = networkFacePath(node, face, edgesByPair);
+    const value = face.fill == null ? (gradientId ? null : color(document, node, 'fill')) : face.fill;
+    const fill = gradientId && face.fill == null ? `url(#${gradientId})` : value === 'transparent' ? 'none' : color(document, { ...node, fill: value, fillVariableId: null, fillStyleId: null }, 'fill');
+    const faceOpacity = Number(face.fillOpacity ?? 1);
+    if (!Number.isFinite(faceOpacity) || faceOpacity < 0 || faceOpacity > 1) throw new TypeError(`SVG export requires valid face fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
+    markup += `<path data-tiny-image-star-face-id="${escapeXml(face.id || index)}" d="${path}" fill="${escapeXml(fill)}" fill-opacity="${number(fillOpacity * faceOpacity)}"/>`;
+  });
+  const stroke = strokeAttributes(document, node);
+  for (const edge of node.edges || []) {
+    markup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}" d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
+  }
+  return markup;
 }
 
 function textLines(node, document, measureText) {
@@ -371,6 +469,44 @@ function clipDefinition(document, id, node) {
   return `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(r)}" ry="${number(r)}"/></clipPath>`;
 }
 
+function maskSourceMarkup(source, document, measureText) {
+  const node = { ...source, ...getNodeGeometry(document, source) };
+  const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
+  const fillOpacity = Number(node.fillOpacity ?? 1);
+  const alpha = opacity * fillOpacity;
+  const transform = matrixAttribute(nodeMatrix(node, { includePosition: true }));
+  if (node.type === 'network') {
+    const edgesByPair = networkEdgesByPair(node);
+    const faces = (node.faces || []).map((face, index) => {
+      const path = networkFacePath(node, face, edgesByPair);
+      const faceOpacity = Number(face.fillOpacity ?? 1);
+      if (!Number.isFinite(faceOpacity) || faceOpacity < 0 || faceOpacity > 1) {
+        throw new TypeError(`SVG export requires valid face fill opacity on alpha mask source ${node.name || node.id || '(unnamed)'}.`);
+      }
+      return `<path data-tiny-image-star-face-id="${escapeXml(face.id || index)}" d="${path}" fill="#ffffff" fill-opacity="${number(alpha * faceOpacity)}"/>`;
+    }).join('');
+    return `<g${transform}>${faces}</g>`;
+  }
+  const whiteShape = {
+    ...node,
+    fill: '#ffffff', fillOpacity: alpha, fillGradient: null, imageFill: null,
+    fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0,
+    radius: getNodePropertyValue(document, node, 'radius') ?? node.radius,
+    variableBindings: {}
+  };
+  return `<g${transform}>${shapeMarkup(whiteShape, document, measureText)}</g>`;
+}
+
+function maskDefinition(group, source, index, document, measureText) {
+  const id = `tis-mask-${index}`;
+  const { width, height } = group;
+  const content = maskSourceMarkup(source, document, measureText);
+  return {
+    id,
+    markup: `<mask id="${id}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(width)}" height="${number(height)}">${content}</mask>`
+  };
+}
+
 function effectDefinition(node, index, document, measureText) {
   const effects = (node.effects || []).filter(effect => effect.visible !== false);
   if (!effects.length) return null;
@@ -401,15 +537,31 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
     const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}`;
-    const gradient = gradientDefinition(node, index);
+    const gradient = node.mask ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
-    let ownShape = shapeMarkup(node, document, measureText, gradient?.id || null);
+    let ownShape = node.mask ? '' : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null) : shapeMarkup(node, document, measureText, gradient?.id || null);
+    const maskSource = node.mask ? node.children.find(child => child?.id === node.maskSourceId) : null;
+    const alphaMask = maskSource && isNodeVisible(document, maskSource)
+      ? maskDefinition(node, maskSource, index, document, measureText)
+      : null;
+    if (alphaMask) context.defs.push(alphaMask.markup);
     if (node.type === 'image' || node.imageFill) {
       const isLayer = node.type === 'image';
       const asset = resolveLocalImage(node, context.assets, isLayer ? node.assetId : node.imageFill.assetId);
       const fit = imageFit(node);
       const clipId = `tis-image-clip-${index}`;
-      if (isLayer) {
+      if (!isLayer && node.type === 'network') {
+        const edgesByPair = networkEdgesByPair(node);
+        const fills = (node.faces || []).map((face, faceIndex) => {
+          const facePath = networkFacePath(node, face, edgesByPair);
+          const faceClipId = `${clipId}-${faceIndex}`;
+          const faceOpacity = Number(face.fillOpacity ?? 1);
+          if (!Number.isFinite(faceOpacity) || faceOpacity < 0 || faceOpacity > 1) throw new TypeError(`SVG export requires valid face fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
+          context.defs.push(`<clipPath id="${faceClipId}" clipPathUnits="userSpaceOnUse"><path d="${facePath}"/></clipPath>`);
+          return `<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}" href="${asset.href}" opacity="${number(Number(node.fillOpacity ?? 1) * faceOpacity)}" clip-path="url(#${faceClipId})"/>`;
+        }).join('');
+        ownShape = fills + networkMarkup(node, document, null, { includeFills: false });
+      } else if (isLayer) {
         context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(radius(document, node))}" ry="${number(radius(document, node))}"/></clipPath>`);
         ownShape = `<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}" href="${asset.href}" clip-path="url(#${clipId})"/>`;
         if (node.stroke && Number(node.strokeWidth) > 0) ownShape += `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(radius(document, node))}" ry="${number(radius(document, node))}" fill="none"${strokeAttributes(document, node)}/>`;
@@ -423,15 +575,17 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
       }
     }
     if (node.type === 'line' && !node.stroke) ownShape = ownShape.replace(/ stroke="none" stroke-width="[^"]*"\/>$/, ' stroke="none"/>');
-    const childClipId = node.clip ? `tis-clip-${index}` : null;
+    const childClipId = node.clip && !node.mask ? `tis-clip-${index}` : null;
     if (childClipId) context.defs.push(clipDefinition(document, childClipId, node));
     const filter = effectDefinition(node, index, document, measureText);
     if (filter) context.defs.push(filter.markup);
-    const childNodes = node.children?.length
-      ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(node.children, document, context, true, measureText)}</g>`
+    const visibleChildren = maskSource ? node.children.filter(child => child !== maskSource) : node.children;
+    const childNodes = visibleChildren?.length
+      ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(visibleChildren, document, context, true, measureText)}</g>`
       : '';
     const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
-    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${metadata}>${title}${ownShape}${childNodes}</g>`;
+    const maskAttribute = alphaMask ? ` mask="url(#${alphaMask.id})"` : '';
+    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${maskAttribute}${metadata}>${title}${ownShape}${childNodes}</g>`;
   }
   return markup;
 }
@@ -477,6 +631,16 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
           }
         }
       }
+      if (node.type === 'network') {
+        for (const vertex of node.vertices || []) {
+          if (!vertex || !Number.isFinite(Number(vertex.x)) || !Number.isFinite(Number(vertex.y))) throw new TypeError(`SVG export requires finite vector network vertices on layer ${node.name || node.id || '(unnamed)'}.`);
+          include(transformPoint(matrix, Number(vertex.x) * width, Number(vertex.y) * height), bounds);
+        }
+        for (const edge of node.edges || []) for (const part of ['control1', 'control2']) if (edge?.[part]) {
+          if (!Number.isFinite(Number(edge[part].x)) || !Number.isFinite(Number(edge[part].y))) throw new TypeError(`SVG export requires finite vector network controls on layer ${node.name || node.id || '(unnamed)'}.`);
+          include(transformPoint(matrix, Number(edge[part].x) * width, Number(edge[part].y) * height), bounds);
+        }
+      }
       if (node.type === 'text') {
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -517,12 +681,13 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         maxX = Math.max(maxX, visibleBounds.maxX); maxY = Math.max(maxY, visibleBounds.maxY);
       }
       let childClip = clipBounds;
-      if (node.clip) {
+      if (node.clip || node.mask) {
         const clip = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
         for (const [x, y] of [[0, 0], [width, 0], [width, height], [0, height]]) include(transformPoint(matrix, x, y), clip);
         childClip = intersectBounds(childClip, clip);
       }
-      if (childClip || !clipBounds) visit(node.children, matrix, false, childClip);
+      const childNodes = node.mask ? node.children.filter(child => child?.id !== node.maskSourceId) : node.children;
+      if (childClip || !clipBounds) visit(childNodes, matrix, false, childClip);
     }
   };
   visit(nodes, identity, true, null);

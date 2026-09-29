@@ -220,15 +220,16 @@ function applyGridAutoLayout(frame, settings) {
   }
 }
 
-export function applyAutoLayout(frame) {
+export function applyAutoLayout(frame, resolvedSettings = null) {
   if (!frame || frame.type !== 'frame' || !frame.autoLayout) return frame;
   constrainNodeSize(frame);
-  const settings = createAutoLayout(frame.autoLayout);
+  const settings = createAutoLayout(resolvedSettings || frame.autoLayout);
+  const persistNormalizedSettings = !resolvedSettings;
   const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
   for (const item of frame.children || []) constrainNodeSize(item);
   if (settings.axis === 'grid') {
     applyGridAutoLayout(frame, settings);
-    frame.autoLayout = settings;
+    if (persistNormalizedSettings) frame.autoLayout = settings;
     return frame;
   }
   const horizontal = settings.axis === 'horizontal';
@@ -288,6 +289,6 @@ export function applyAutoLayout(frame) {
       else frame.width = constrainSize(frame, 'Width', crossExtent + padding.left + padding.right);
     }
   }
-  frame.autoLayout = settings;
+  if (persistNormalizedSettings) frame.autoLayout = settings;
   return frame;
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode, findNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
+import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
 
 test('prototype links persist as local navigation to a destination frame', () => {
   const document = createDocument();
@@ -126,4 +126,118 @@ test('prototype overlays open, close, preserve navigation history, and survive l
   assert.equal(backPrototypeSession(session), 'overlay-closed');
   assert.equal(session.overlays.length, 0);
   assert.equal(applyPrototypeInteraction(reloaded, session, close), false);
+});
+
+test('swap overlay replaces the top overlay in place without adding history', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home' });
+  const menu = createNode('frame', { name: 'Menu' });
+  const details = createNode('frame', { name: 'Details' });
+  const swapButton = createNode('rectangle', { name: 'Show details' });
+  menu.children.push(swapButton);
+  addNode(document, home); addNode(document, menu); addNode(document, details);
+
+  const open = addPrototypeInteraction(document, home.id, menu.id, {
+    action: 'open-overlay', overlayPosition: 'bottom-right', overlayOutsideClick: false,
+    overlayBackground: true, overlayBackgroundColor: '#abcdef', overlayBackgroundOpacity: 0.6
+  });
+  const swap = addPrototypeInteraction(document, swapButton.id, details.id, { action: 'swap-overlay' });
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  applyPrototypeInteraction(document, session, open);
+  const before = structuredClone(session.overlays[0]);
+  assert.equal(applyPrototypeInteraction(document, session, swap), 'overlay-swapped');
+  assert.equal(session.overlays.length, 1);
+  assert.equal(session.overlays[0].frameId, details.id);
+  assert.deepEqual({ ...session.overlays[0], frameId: before.frameId }, before);
+  assert.equal(session.stack.length, 0);
+  assert.equal(backPrototypeSession(session), 'overlay-closed');
+  assert.equal(session.frameId, home.id);
+  assert.equal(session.stack.length, 0);
+});
+
+test('swap overlay from a regular frame behaves like navigation and remains backable', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Destination' });
+  addNode(document, home); addNode(document, destination);
+  const swap = addPrototypeInteraction(document, home.id, destination.id, { action: 'swap-overlay' });
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, session, swap), 'navigated');
+  assert.equal(session.frameId, destination.id);
+  assert.equal(session.stack.length, 1);
+  assert.equal(backPrototypeSession(session), 'navigated-back');
+  assert.equal(session.frameId, home.id);
+});
+
+test('back and open-link actions are stored without frame destinations and links are restricted to safe schemes', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'External resource' });
+  const home = createNode('frame', { name: 'Home' });
+  const details = createNode('frame', { name: 'Details' });
+  home.children.push(source);
+  addNode(document, home); addNode(document, details);
+
+  const link = addPrototypeInteraction(document, source.id, null, { action: 'open-link', url: 'https://example.com/help?q=a b' });
+  assert.equal(link.url, 'https://example.com/help?q=a%20b');
+  assert.equal(link.destinationId, null);
+  assert.equal(applyPrototypeInteraction(document, createPrototypeSession({ page: document.pages[0], frame: home }), link), 'link-opened');
+  assert.equal(normalizePrototypeLinkUrl('mailto:help@example.com?subject=Hello'), 'mailto:help@example.com?subject=Hello');
+  for (const unsafe of ['javascript:alert(1)', 'data:text/html,hi', '//example.com', 'mailto:', 'mailto://example.com', 'http://']) {
+    assert.equal(normalizePrototypeLinkUrl(unsafe), null, unsafe);
+    assert.throws(() => addPrototypeInteraction(document, source.id, null, { action: 'open-link', url: unsafe }), /safe http\(s\) or mailto URL/);
+  }
+
+  const back = addPrototypeInteraction(document, source.id, null, { action: 'back' });
+  assert.equal(back.destinationId, null);
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reloaded, source.id).node.interactions.find(item => item.action === 'open-link').url, link.url);
+  const invalidDocument = structuredClone(document);
+  invalidDocument.pages[0].children[0].children[0].interactions.find(item => item.action === 'open-link').url = 'javascript:alert(1)';
+  assert.throws(() => validateDocument(invalidDocument), /Invalid prototype interactions/);
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, session, back), false);
+  applyPrototypeInteraction(document, session, addPrototypeInteraction(document, home.id, details.id));
+  assert.equal(applyPrototypeInteraction(document, session, back), 'navigated-back');
+  assert.equal(session.frameId, home.id);
+  assert.equal(applyPrototypeInteraction(document, session, { ...link, url: 'javascript:alert(1)' }), false);
+});
+
+test('prototype variable-mode actions update the presentation session without mutating saved frame settings', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Theme');
+  const light = collection.modes[0];
+  const dark = addVariableMode(document, collection.id, 'Dark');
+  const radius = createVariable(document, collection.id, 'Card radius', 'number', 8);
+  radius.valuesByMode[dark.id] = 24;
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Switch theme' });
+  const card = createNode('rectangle', { radius: 4 });
+  home.children.push(trigger, card);
+  addNode(document, home);
+  assert.equal(bindVariable(document, card.id, radius.id, 'radius'), true);
+
+  const interaction = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable-mode', collectionId: collection.id, modeId: dark.id
+  });
+  assert.equal(interaction.collectionId, collection.id);
+  assert.equal(interaction.modeId, dark.id);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, session, interaction), 'variables-updated');
+  assert.deepEqual(session.variableModes, { [collection.id]: dark.id });
+  assert.equal(home.variableModes, undefined, 'prototype actions must not modify the saved frame');
+  assert.equal(getNodePropertyValue(document, card, 'radius'), 8);
+
+  const presentationDocument = structuredClone(document);
+  findNode(presentationDocument, home.id).node.variableModes = { ...session.variableModes };
+  const presentationCard = findNode(presentationDocument, card.id).node;
+  assert.equal(getNodePropertyValue(presentationDocument, presentationCard, 'radius'), 24);
+
+  const changedMode = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable-mode', collectionId: collection.id, modeId: light.id
+  });
+  assert.equal(changedMode.id, interaction.id, 'changing the chosen mode updates that collection action');
+  assert.equal(changedMode.modeId, light.id);
+  assert.equal(applyPrototypeInteraction(document, session, { ...interaction, modeId: 'missing-mode' }), false);
 });

@@ -18,7 +18,22 @@ const variableBindingSpecs = {
   text: { type: 'string', nodeTypes: ['text'] },
   fontSize: { type: 'number', nodeTypes: ['text'] },
   lineHeight: { type: 'number', nodeTypes: ['text'] },
-  letterSpacing: { type: 'number', nodeTypes: ['text'] }
+  letterSpacing: { type: 'number', nodeTypes: ['text'] },
+  'autoLayout.axis': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.align': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.justify': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.mainSizing': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.crossSizing': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.wrap': { type: 'boolean', nodeTypes: ['frame'] },
+  'autoLayout.autoPositioning': { type: 'boolean', nodeTypes: ['frame'] },
+  'autoLayout.columns': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.rows': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.rowGap': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.columnGap': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.padding.top': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.padding.right': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.padding.bottom': { type: 'number', nodeTypes: ['frame'] },
+  'autoLayout.padding.left': { type: 'number', nodeTypes: ['frame'] }
 };
 
 function isVariableValue(type, value) {
@@ -35,7 +50,8 @@ function defaultVariableValue(type) {
 
 function canBindVariableToNode(node, property) {
   const spec = variableBindingSpecs[property];
-  return Boolean(spec && (!spec.nodeTypes || spec.nodeTypes.includes(node?.type)));
+  return Boolean(spec && (!spec.nodeTypes || spec.nodeTypes.includes(node?.type))
+    && (!property.startsWith('autoLayout.') || node?.autoLayout));
 }
 
 function isVariableBindingValue(property, value) {
@@ -45,7 +61,30 @@ function isVariableBindingValue(property, value) {
   if (property === 'radius') return value >= 0;
   if (property === 'width' || property === 'height') return value >= 0;
   if (property === 'fontSize' || property === 'lineHeight') return value > 0;
+  if (property.startsWith('autoLayout.')) {
+    if (property.endsWith('.axis')) return ['vertical', 'horizontal', 'grid'].includes(value);
+    if (property.endsWith('.align')) return ['start', 'center', 'end', 'stretch'].includes(value);
+    if (property.endsWith('.justify')) return ['start', 'center', 'end', 'space-between'].includes(value);
+    if (property.endsWith('.mainSizing') || property.endsWith('.crossSizing')) return ['fixed', 'hug'].includes(value);
+    if (property.endsWith('.columns') || property.endsWith('.rows')) return Number.isInteger(value) && value >= 1 && value <= 64;
+    if (property.endsWith('.rowGap') || property.endsWith('.columnGap') || property.includes('.padding.')) return value >= 0 && value <= 100_000;
+  }
   return true;
+}
+
+function readNodePropertyPath(node, property) {
+  return property.split('.').reduce((value, key) => value?.[key], node);
+}
+
+function writeNodePropertyPath(node, property, value) {
+  const keys = property.split('.');
+  const key = keys.pop();
+  let target = node;
+  for (const segment of keys) {
+    if (!target[segment] || typeof target[segment] !== 'object' || Array.isArray(target[segment])) target[segment] = {};
+    target = target[segment];
+  }
+  target[key] = value;
 }
 
 function isValidFontWeight(value) {
@@ -118,11 +157,19 @@ const defaults = {
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
-const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
+const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
 const prototypeTriggers = new Set(['on-click', 'while-hovering']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
+function isSafePrototypeLinkUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  try {
+    const url = new URL(value.trim());
+    return (['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname))
+      || (url.protocol === 'mailto:' && !url.host && !url.username && !url.password && Boolean(url.pathname.trim()));
+  } catch { return false; }
+}
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
@@ -141,6 +188,7 @@ const componentOverrideProperties = new Set([
   'blendMode',
   'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
+const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP']);
 
 export function createNode(type, overrides = {}) {
   const preset = defaults[type];
@@ -287,12 +335,17 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);
   const removedComponents = [];
-  walkNodes([removed], ({ node }) => { if (node.isComponent && node.componentId) removedComponents.push(node.componentId); });
+  const removedNodeIds = new Set();
+  walkNodes([removed], ({ node }) => {
+    removedNodeIds.add(node.id);
+    if (node.isComponent && node.componentId) removedComponents.push(node.componentId);
+  });
   for (const componentId of removedComponents) {
     document.components = (document.components || []).filter(component => component.id !== componentId);
     detachComponentInstances(document, componentId);
     removeComponentFromSets(document, componentId);
   }
+  removeDanglingComponentProperties(document, removedNodeIds, new Set(removedComponents));
   return removed;
 }
 
@@ -820,11 +873,11 @@ export function resolveVariableValue(document, variableId, node = null) {
 export function getNodePropertyValue(document, node, property) {
   if (!node) return undefined;
   const variableId = node.variableBindings?.[property];
-  if (!variableId || !canBindVariableToNode(node, property)) return node[property];
+  if (!variableId || !canBindVariableToNode(node, property)) return readNodePropertyPath(node, property);
   const variable = document.variables?.find(item => item.id === variableId);
-  if (!variable || variable.type !== variableBindingSpecs[property].type) return node[property];
+  if (!variable || variable.type !== variableBindingSpecs[property].type) return readNodePropertyPath(node, property);
   const value = resolveVariableValue(document, variableId, node);
-  return isVariableBindingValue(property, value) ? value : node[property];
+  return isVariableBindingValue(property, value) ? value : readNodePropertyPath(node, property);
 }
 
 /** Return the current mode-resolved transform fields for a layer. */
@@ -855,7 +908,7 @@ export function bindVariable(document, nodeId, variableId, property, pageId = do
   if (!canBindVariable(document, nodeId, variableId, property, pageId)) return false;
   if (!variableId) {
     const value = getNodePropertyValue(document, node, property);
-    if (isVariableBindingValue(property, value)) node[property] = value;
+    if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property, value);
     if (node.variableBindings) {
       delete node.variableBindings[property];
       if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
@@ -872,7 +925,7 @@ function materializeVariableBindingsToRemovedVariables(document, removedIds) {
     for (const [property, variableId] of Object.entries(node.variableBindings || {})) {
       if (!removedIds.has(variableId)) continue;
       const value = getNodePropertyValue(document, node, property);
-      if (isVariableBindingValue(property, value)) node[property] = value;
+      if (isVariableBindingValue(property, value)) writeNodePropertyPath(node, property, value);
       delete node.variableBindings[property];
     }
     if (!Object.keys(node.variableBindings || {}).length) delete node.variableBindings;
@@ -1072,6 +1125,197 @@ export function updateTypographyStyle(document, styleId, nodeId, pageId = docume
   return true;
 }
 
+function findComponentPropertyTarget(document, component, targetSourceId) {
+  const root = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+  if (!root) return null;
+  let found = null;
+  const visit = (node, isRoot = false) => {
+    if (node.id === targetSourceId) { found = node; return; }
+    // A nested component instance is one layer in this component. Its internal
+    // layers belong to another component and have a separate property scope.
+    if (!isRoot && node.isInstance) return;
+    for (const child of node.children || []) visit(child);
+  };
+  visit(root, true);
+  return found;
+}
+
+function componentDependencies(document, componentId) {
+  const component = document.components?.find(item => item.id === componentId);
+  const root = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+  if (!root) return [];
+  const dependencies = [];
+  const visit = (node, isRoot = false) => {
+    if (!isRoot && node.isInstance) {
+      if (node.componentId) dependencies.push(node.componentId);
+      return;
+    }
+    for (const child of node.children || []) visit(child);
+  };
+  visit(root, true);
+  return dependencies;
+}
+
+function componentSwapIsCompatible(document, ownerComponentId, targetComponentId) {
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = componentId => {
+    if (componentId === ownerComponentId || visiting.has(componentId)) return false;
+    if (visited.has(componentId)) return true;
+    const component = document.components?.find(item => item.id === componentId);
+    const root = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+    if (!root?.isComponent) return false;
+    visiting.add(componentId);
+    for (const dependencyId of componentDependencies(document, componentId)) {
+      if (!visit(dependencyId)) return false;
+    }
+    visiting.delete(componentId);
+    visited.add(componentId);
+    return true;
+  };
+  return visit(targetComponentId);
+}
+
+/** Return whether a nested instance can be swapped to another component without creating a cycle. */
+export function canSwapComponentTo(document, ownerComponentId, targetComponentId) {
+  return typeof ownerComponentId === 'string' && typeof targetComponentId === 'string'
+    && componentSwapIsCompatible(document, ownerComponentId, targetComponentId);
+}
+
+function componentPropertyValueIsValid(document, component, property, value) {
+  if (property.type === 'BOOLEAN') return typeof value === 'boolean';
+  if (property.type === 'TEXT') return typeof value === 'string' && value.length <= 1_000_000;
+  if (property.type !== 'INSTANCE_SWAP' || typeof value !== 'string') return false;
+  return Boolean(document.components?.some(item => item.id === value)
+    && canSwapComponentTo(document, component.id, value));
+}
+
+/** Add a stable, typed property to a component definition. */
+export function createComponentProperty(document, componentId, { id = null, name, type, targetNodeId, preferredComponentIds } = {}) {
+  const component = document.components?.find(item => item.id === componentId);
+  const target = component && findComponentPropertyTarget(document, component, targetNodeId);
+  const propertyName = String(name || '').trim();
+  if (!component || !target || !propertyName || propertyName.length > 80 || !componentPropertyTypes.has(type)) throw new Error('Choose a component, property name, supported type, and target layer.');
+  component.componentProperties ||= [];
+  if (component.componentProperties.length >= 100) throw new Error('A component can have at most 100 component properties.');
+  if (component.componentProperties.some(property => property.name.toLocaleLowerCase() === propertyName.toLocaleLowerCase())) throw new Error('Component property names must be unique.');
+  if (component.componentProperties.some(property => property.type === type && property.targetSourceId === target.id)) throw new Error('That layer already has a property of this type.');
+
+  let defaultValue;
+  if (type === 'BOOLEAN' && typeof getNodePropertyValue(document, target, 'visible') === 'boolean') defaultValue = getNodePropertyValue(document, target, 'visible');
+  else if (type === 'TEXT' && target.type === 'text' && typeof getNodePropertyValue(document, target, 'text') === 'string') defaultValue = getNodePropertyValue(document, target, 'text');
+  else if (type === 'INSTANCE_SWAP' && target.isInstance && typeof target.componentId === 'string') defaultValue = target.componentId;
+  else throw new Error(`The ${type} property is not supported by the selected layer.`);
+
+  const property = {
+    id: id || createId('component-property'), name: propertyName, type,
+    targetSourceId: target.id, defaultValue
+  };
+  if (type === 'INSTANCE_SWAP' && preferredComponentIds != null) {
+    if (!Array.isArray(preferredComponentIds)) throw new TypeError('Preferred swap targets must be a list.');
+    property.preferredComponentIds = [...new Set(preferredComponentIds)];
+    if (property.preferredComponentIds.some(targetId => !componentPropertyValueIsValid(document, component, property, targetId))) throw new Error('Choose existing, compatible components for the swap options.');
+  }
+  if (!property.id || document.components.some(item => item.componentProperties?.some(existing => existing.id === property.id))) throw new Error('Component property IDs must be unique.');
+  if (!componentPropertyValueIsValid(document, component, property, defaultValue)) throw new Error('The component property default is invalid.');
+  component.componentProperties.push(property);
+  return property;
+}
+
+function findInstancePropertyTarget(instance, targetSourceId) {
+  let found = null;
+  const visit = (node, isRoot = false) => {
+    if (node.componentSourceId === targetSourceId) { found = node; return; }
+    if (!isRoot && node.isInstance) return;
+    for (const child of node.children || []) visit(child);
+  };
+  visit(instance, true);
+  return found;
+}
+
+function assignComponentPropertyValue(document, component, instance, property, value) {
+  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+  if (!target) return false;
+  if (property.type === 'BOOLEAN') {
+    target.visible = value;
+    if (target.variableBindings) {
+      delete target.variableBindings.visible;
+      if (!Object.keys(target.variableBindings).length) delete target.variableBindings;
+    }
+  } else if (property.type === 'TEXT') {
+    if (target.text !== value) delete target.textRuns;
+    target.text = value;
+    if (target.variableBindings) {
+      delete target.variableBindings.text;
+      if (!Object.keys(target.variableBindings).length) delete target.variableBindings;
+    }
+  } else {
+    if (target.componentId !== value) {
+      const swapComponent = document.components?.find(item => item.id === value);
+      const master = swapComponent && findNodeAcrossPages(document, swapComponent.rootNodeId)?.node;
+      if (!master?.isComponent || !componentSwapIsCompatible(document, component.id, value)) return false;
+      const sourceId = target.componentSourceId;
+      const sourceKey = target.componentSourceKey;
+      const name = target.name;
+      const inheritedName = target.componentNameIsInherited;
+      target.componentOverrides = {};
+      target.componentPropertyValues = {};
+      syncInstanceNode(target, master, value, {}, true);
+      target.componentSourceId = sourceId;
+      if (sourceKey) target.componentSourceKey = sourceKey;
+      else delete target.componentSourceKey;
+      if (inheritedName) target.name = `${swapComponent.name} instance`;
+      else target.name = name;
+      if (inheritedName != null) target.componentNameIsInherited = inheritedName;
+      // Overrides authored on the owning component instance are keyed by the
+      // swappable layer's source ID. Keep compatible ones after replacing the
+      // nested component's subtree.
+      const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
+      for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
+        if (key === '__childOrder' || !componentOverrideProperties.has(key)) continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (key === 'transforms' && target.type !== 'image') continue;
+        target[key] = clone(overrideValue);
+      }
+    }
+  }
+  return true;
+}
+
+function applyComponentPropertyValues(document, instance) {
+  if (!instance?.isInstance) return;
+  const component = document.components?.find(item => item.id === instance.componentId);
+  if (component) {
+    const values = instance.componentPropertyValues || {};
+    for (const property of component.componentProperties || []) {
+      const value = Object.hasOwn(values, property.id) ? values[property.id] : property.defaultValue;
+      assignComponentPropertyValue(document, component, instance, property, value);
+    }
+  }
+  const applyNested = node => {
+    for (const child of node.children || []) {
+      if (child.isInstance) applyComponentPropertyValues(document, child);
+      else applyNested(child);
+    }
+  };
+  applyNested(instance);
+}
+
+/** Set or reset an instance property. Pass undefined to restore its default. */
+export function setComponentPropertyValue(document, instanceId, propertyId, value, pageId = document.activePageId) {
+  const instance = findNode(document, instanceId, pageId)?.node;
+  const component = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
+  const property = component?.componentProperties?.find(item => item.id === propertyId);
+  if (!instance || !component || !property) return false;
+  if (value !== undefined && !componentPropertyValueIsValid(document, component, property, value)) throw new TypeError(`Invalid value for component property ${property.name}.`);
+  instance.componentPropertyValues ||= {};
+  if (value === undefined || Object.is(value, property.defaultValue)) delete instance.componentPropertyValues[property.id];
+  else instance.componentPropertyValues[property.id] = value;
+  if (!Object.keys(instance.componentPropertyValues).length) delete instance.componentPropertyValues;
+  applyComponentPropertyValues(document, instance);
+  return true;
+}
+
 export function deleteTypographyStyle(document, styleId) {
   const index = (document.typographyStyles || []).findIndex(style => style.id === styleId);
   if (index < 0) return false;
@@ -1198,8 +1442,12 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
   }
   instance.componentId = targetComponent.id;
   instance.componentOverrides = nextOverrides;
+  const targetPropertyIds = new Set((targetComponent.componentProperties || []).map(property => property.id));
+  for (const propertyId of Object.keys(instance.componentPropertyValues || {})) if (!targetPropertyIds.has(propertyId)) delete instance.componentPropertyValues[propertyId];
+  if (!Object.keys(instance.componentPropertyValues || {}).length) delete instance.componentPropertyValues;
   if (instance.componentNameIsInherited !== false) instance.name = `${targetComponent.name} instance`;
   syncInstanceNode(instance, targetMaster, targetComponent.id, nextOverrides, true);
+  applyComponentPropertyValues(document, instance);
   return true;
 }
 
@@ -1217,6 +1465,30 @@ function removeComponentFromSets(document, componentId) {
       set.properties = set.properties.map(property => ({ ...property, values: [...new Set(remaining.map(component => component.variantProperties?.[property.name]).filter(Boolean))] }));
     }
   }
+}
+
+function removeDanglingComponentProperties(document, removedNodeIds, removedComponentIds) {
+  const removedPropertyIds = new Set();
+  for (const component of document.components || []) {
+    component.componentProperties = (component.componentProperties || []).filter(property => {
+      const invalid = removedNodeIds.has(property.targetSourceId)
+        || (property.type === 'INSTANCE_SWAP' && removedComponentIds.has(property.defaultValue));
+      if (invalid) removedPropertyIds.add(property.id);
+      else if (property.preferredComponentIds) property.preferredComponentIds = property.preferredComponentIds.filter(id => !removedComponentIds.has(id));
+      return !invalid;
+    });
+    if (!component.componentProperties.length) delete component.componentProperties;
+  }
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node }) => {
+    if (!node.componentPropertyValues) return;
+    const component = document.components?.find(item => item.id === node.componentId);
+    const definitions = new Map((component?.componentProperties || []).map(property => [property.id, property]));
+    for (const [propertyId, value] of Object.entries(node.componentPropertyValues)) {
+      const property = definitions.get(propertyId);
+      if (removedPropertyIds.has(propertyId) || (property?.type === 'INSTANCE_SWAP' && removedComponentIds.has(value))) delete node.componentPropertyValues[propertyId];
+    }
+    if (!Object.keys(node.componentPropertyValues).length) delete node.componentPropertyValues;
+  });
 }
 
 export function createComponentInstance(document, componentId, { pageId = document.activePageId, parentId = null, x = null, y = null } = {}) {
@@ -1249,6 +1521,7 @@ export function createComponentInstance(document, componentId, { pageId = docume
   };
   renew(instance, true);
   addNode(document, instance, { pageId, parentId });
+  applyComponentPropertyValues(document, instance);
   return instance;
 }
 
@@ -1260,11 +1533,11 @@ export function detachComponentInstances(document, componentId) {
 
 function clearComponentInstanceLink(instance) {
   const componentId = instance.componentId;
-  delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides; delete instance.componentNameIsInherited;
+  delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides; delete instance.componentPropertyValues; delete instance.componentNameIsInherited;
   walkNodes(instance.children || [], ({ node, parents }) => {
     const belongsToNestedInstance = parents.some(parent => parent.isInstance && parent.componentId !== componentId);
     if (!belongsToNestedInstance) { delete node.componentSourceId; delete node.componentSourceKey; }
-    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; delete node.componentOverrides; }
+    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; delete node.componentOverrides; delete node.componentPropertyValues; }
   });
   delete instance.componentSourceId; delete instance.componentSourceKey;
 }
@@ -1282,6 +1555,8 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const rootY = instance?.y ?? master.y;
   const rootName = instance?.name ?? `${master.name} instance`;
   const componentOverrides = isRoot ? clone(instance?.componentOverrides || {}) : null;
+  const componentPropertyValues = instance?.componentPropertyValues && typeof instance.componentPropertyValues === 'object'
+    ? clone(instance.componentPropertyValues) : clone(master.componentPropertyValues || {});
   const oldChildren = instance?.children || [];
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
@@ -1327,6 +1602,8 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     delete target.isComponent;
     delete target.isInstance;
   }
+  if (target.isInstance && Object.keys(componentPropertyValues || {}).length) target.componentPropertyValues = componentPropertyValues;
+  else delete target.componentPropertyValues;
   if (master.variantNodeKey) target.componentSourceKey = master.variantNodeKey;
   else delete target.componentSourceKey;
   if (nodeOverrides && typeof nodeOverrides === 'object' && !Array.isArray(nodeOverrides)) {
@@ -1346,6 +1623,7 @@ export function syncComponentInstances(document, componentId) {
   for (const instance of instances) {
     syncInstanceNode(instance, master, componentId, instance.componentOverrides || {}, true);
     if (instance.componentNameIsInherited !== false) instance.name = `${component.name} instance`;
+    applyComponentPropertyValues(document, instance);
   }
   return instances.length;
 }
@@ -1500,7 +1778,12 @@ export function validateDocument(document) {
       if ((node.layoutSizingX != null && !['fixed', 'fill'].includes(node.layoutSizingX)) || (node.layoutSizingY != null && !['fixed', 'fill'].includes(node.layoutSizingY))) throw new TypeError(`Invalid grid sizing on layer ${node.name || node.id}.`);
       if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => {
         if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
-        if (item.action === 'close-overlay' ? item.destinationId != null : typeof item.destinationId !== 'string') return true;
+        const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(item.action);
+        if (needsDestination ? typeof item.destinationId !== 'string' : item.destinationId != null) return true;
+        if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;
+        if (item.action === 'set-variable-mode'
+          ? (typeof item.collectionId !== 'string' || !item.collectionId || (item.modeId != null && (typeof item.modeId !== 'string' || !item.modeId)))
+          : (Object.hasOwn(item, 'collectionId') || Object.hasOwn(item, 'modeId'))) return true;
         if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
         if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
         if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
@@ -1540,6 +1823,7 @@ export function validateDocument(document) {
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
         }
       }
+      if (node.componentPropertyValues != null && (!node.isInstance || typeof node.componentPropertyValues !== 'object' || Array.isArray(node.componentPropertyValues))) throw new TypeError(`Invalid component property values on ${node.name || node.id}.`);
     });
   }
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
@@ -1566,6 +1850,7 @@ export function validateDocument(document) {
   if (document.components != null) {
     if (!Array.isArray(document.components)) throw new TypeError('Components must be a list.');
     const componentIds = new Set();
+    const componentPropertyIds = new Set();
     for (const component of document.components) {
       const root = findNodeAcrossPages(document, component.rootNodeId);
       if (!component.id || componentIds.has(component.id) || !root?.node.isComponent || root.node.componentId !== component.id) throw new TypeError('Invalid or duplicate component.');
@@ -1573,9 +1858,43 @@ export function validateDocument(document) {
       if (component.variantProperties != null && (!component.variantProperties || typeof component.variantProperties !== 'object' || Array.isArray(component.variantProperties) || Object.values(component.variantProperties).some(value => typeof value !== 'string' || !value))) throw new TypeError('Invalid component variant properties.');
       componentIds.add(component.id);
     }
+    for (const component of document.components) {
+      if (component.componentProperties != null && (!Array.isArray(component.componentProperties) || component.componentProperties.length > 100)) throw new TypeError(`Invalid component properties on ${component.name || component.id}.`);
+      const propertyNames = new Set(); const propertyTargets = new Set();
+      for (const property of component.componentProperties || []) {
+        const nameKey = typeof property?.name === 'string' ? property.name.trim().toLocaleLowerCase() : '';
+        const target = property?.targetSourceId && findComponentPropertyTarget(document, component, property.targetSourceId);
+        const allowedKeys = new Set(['id', 'name', 'type', 'targetSourceId', 'defaultValue', 'preferredComponentIds']);
+        if (!property || typeof property !== 'object' || Array.isArray(property)
+          || Object.keys(property).some(key => !allowedKeys.has(key))
+          || typeof property.id !== 'string' || !property.id || componentPropertyIds.has(property.id)
+          || !nameKey || nameKey.length > 80 || propertyNames.has(nameKey)
+          || !componentPropertyTypes.has(property.type)
+          || typeof property.targetSourceId !== 'string' || !target) throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
+        const targetKey = `${property.type}:${property.targetSourceId}`;
+        if (propertyTargets.has(targetKey)) throw new TypeError(`Duplicate component property target on ${component.name || component.id}.`);
+        propertyTargets.add(targetKey); propertyNames.add(nameKey); componentPropertyIds.add(property.id);
+        if ((property.type === 'BOOLEAN' && typeof property.defaultValue !== 'boolean')
+          || (property.type === 'TEXT' && (target.type !== 'text' || typeof property.defaultValue !== 'string' || property.defaultValue.length > 1_000_000))
+          || (property.type === 'INSTANCE_SWAP' && (!target.isInstance || !componentPropertyValueIsValid(document, component, property, property.defaultValue)))) throw new TypeError(`Invalid ${property.type} default on component property ${property.name}.`);
+        if (property.preferredComponentIds != null) {
+          if (property.type !== 'INSTANCE_SWAP' || !Array.isArray(property.preferredComponentIds)
+            || new Set(property.preferredComponentIds).size !== property.preferredComponentIds.length
+            || property.preferredComponentIds.some(targetId => !componentPropertyValueIsValid(document, component, property, targetId))) throw new TypeError(`Invalid swap choices on component property ${property.name}.`);
+        }
+      }
+    }
     for (const page of document.pages) walkNodes(page.children, ({ node }) => {
       if (node.isComponent && !componentIds.has(node.componentId)) throw new TypeError(`Missing component definition on layer ${node.name || node.id}.`);
       if (node.isInstance && !componentIds.has(node.componentId)) throw new TypeError(`Missing component source on layer ${node.name || node.id}.`);
+      if (node.componentPropertyValues != null) {
+        const component = document.components.find(item => item.id === node.componentId);
+        const properties = new Map((component?.componentProperties || []).map(property => [property.id, property]));
+        if (Object.entries(node.componentPropertyValues).some(([propertyId, value]) => {
+          const property = properties.get(propertyId);
+          return !property || !componentPropertyValueIsValid(document, component, property, value);
+        })) throw new TypeError(`Invalid component property value on layer ${node.name || node.id}.`);
+      }
     });
   }
   if (document.componentSets != null) {
@@ -1640,6 +1959,13 @@ export function validateDocument(document) {
   }
   if (variableAliasesHaveCycle(variables)) throw new TypeError('Variable aliases cannot contain a cycle.');
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const interaction of node.interactions || []) if (interaction.action === 'set-variable-mode') {
+      const modes = modesByCollection.get(interaction.collectionId);
+      const collection = variableCollections.find(item => item.id === interaction.collectionId);
+      if (!modes || (interaction.modeId != null && !modes.has(interaction.modeId)) || (interaction.modeId == null && !collection?.defaultModeId)) {
+        throw new TypeError(`Missing variable mode on prototype interaction ${interaction.id}.`);
+      }
+    }
     for (const [property, kind] of [['fillVariableId', 'fill'], ['textVariableId', 'text'], ['strokeVariableId', 'stroke']]) {
       const variable = variableById.get(node[property]);
       if (node[property] && (!variable || variable.type !== 'color')) throw new TypeError(`Missing ${kind} variable on layer ${node.name || node.id}.`);

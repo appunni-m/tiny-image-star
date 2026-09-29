@@ -78,6 +78,114 @@ test('exports a selected node in its own rotated local bounds and supports vecto
   assert.match(exportNodeToSvg(vector), /<path d="M 0 0 C 25 0 75 80 100 80 L 0 0 Z" fill="#ccddaa"/);
 });
 
+test('exports graph-backed vector networks as editable face and edge paths', () => {
+  const network = createNode('network', {
+    id: 'graph', width: 100, height: 80, fill: '#abcdef', fillOpacity: 0.4,
+    stroke: '#123456', strokeWidth: 3,
+    vertices: [
+      { id: 'v1', x: 0, y: 0 }, { id: 'v2', x: 1, y: 0 },
+      { id: 'v3', x: 1, y: 1 }, { id: 'v4', x: 0, y: 1 }
+    ],
+    edges: [
+      { id: 'e1', from: 'v1', to: 'v2', control1: { x: 0.25, y: -0.1 }, control2: { x: 0.75, y: -0.1 } },
+      { id: 'e2', from: 'v2', to: 'v3' }, { id: 'e3', from: 'v3', to: 'v4' }, { id: 'e4', from: 'v4', to: 'v1' },
+      { id: 'e5', from: 'v1', to: 'v3', control1: { x: 0.2, y: 0.2 }, control2: { x: 0.8, y: 0.8 } }
+    ],
+    faces: [{ id: 'face-a', vertexIds: ['v1', 'v2', 'v3', 'v4'], fill: '#fedcba', fillOpacity: 0.5 }]
+  });
+  const svg = exportNodeToSvg(network);
+  assert.match(svg, /data-tiny-image-star-face-id="face-a" d="M 0 0 C 25 -8 75 -8 100 0 L 100 80 L 0 80 L 0 0 Z" fill="#fedcba" fill-opacity="0\.2"/);
+  assert.match(svg, /data-tiny-image-star-edge-id="e1" data-tiny-image-star-from="v1" data-tiny-image-star-to="v2" d="M 0 0 C 25 -8 75 -8 100 0" fill="none" stroke="#123456" stroke-width="3"/);
+  assert.match(svg, /data-tiny-image-star-edge-id="e5" data-tiny-image-star-from="v1" data-tiny-image-star-to="v3" d="M 0 0 C 20 16 80 64 100 80"/);
+  assert.match(svg, /viewBox="-1\.5 -9\.5 103 91"/);
+
+  const container = createNode('frame', { width: 60, height: 50, rotation: 10, clip: true, children: [network] });
+  const nested = exportNodeToSvg(container);
+  assert.match(nested, /clipPath id="tis-clip-0"/);
+  assert.match(nested, /matrix\(/);
+  assert.match(nested, /data-tiny-image-star-node-id="graph"/);
+
+  const gradientNetwork = createNode('network', {
+    width: 10, height: 10, fill: '#ffffff',
+    fillGradient: { type: 'linear', angle: 0, stops: [{ id: 'a', color: '#000000', position: 0 }, { id: 'b', color: '#ffffff', position: 1 }] },
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 1, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'triangle', vertexIds: ['a', 'b', 'c'] }]
+  });
+  assert.match(exportNodeToSvg(gradientNetwork), /fill="url\(#tis-gradient-0\)"/);
+});
+
+test('exports simple vector alpha-mask groups with editable mask geometry and source opacity', () => {
+  const content = createNode('rectangle', { id: 'masked-content', x: 4, y: 6, width: 96, height: 72, fill: '#123456' });
+  const source = createNode('ellipse', {
+    id: 'alpha-source', x: 12, y: 8, width: 60, height: 50, rotation: 15,
+    fill: '#eeddcc', fillOpacity: 0.5, opacity: 0.4, stroke: '#ff0000', strokeWidth: 8
+  });
+  const group = createNode('group', {
+    id: 'alpha-group', width: 100, height: 80, opacity: 0.7,
+    mask: true, maskSourceId: source.id, children: [content, source]
+  });
+  const svg = exportNodeToSvg(group);
+
+  assert.match(svg, /<mask id="tis-mask-0" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="100" height="80">/);
+  assert.match(svg, /<g transform="matrix\([^)]*\)"><ellipse cx="30" cy="25" rx="30" ry="25" fill="#ffffff" fill-opacity="0\.2" stroke="none" stroke-width="0"\/><\/g>/);
+  assert.match(svg, /<g opacity="0\.7" mask="url\(#tis-mask-0\)" data-tiny-image-star-type="group" data-tiny-image-star-node-id="alpha-group">/);
+  assert.match(svg, /data-tiny-image-star-node-id="masked-content"/);
+  assert.doesNotMatch(svg, /data-tiny-image-star-node-id="alpha-source"/);
+
+  const networkSource = createNode('network', {
+    id: 'network-mask', x: 10, y: 5, width: 50, height: 40, fillOpacity: 0.6, opacity: 0.5,
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 0.5, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'triangle', vertexIds: ['a', 'b', 'c'], fill: '#ff00ff', fillOpacity: 0.5 }]
+  });
+  const networkGroup = createNode('group', {
+    width: 80, height: 60, mask: true, maskSourceId: networkSource.id,
+    children: [createNode('rectangle', { width: 80, height: 60 }), networkSource]
+  });
+  const networkSvg = exportNodeToSvg(networkGroup);
+  assert.match(networkSvg, /data-tiny-image-star-face-id="triangle" d="M 0 0 L 50 0 L 25 40 L 0 0 Z" fill="#ffffff" fill-opacity="0\.15"/);
+  assert.doesNotMatch(networkSvg, /data-tiny-image-star-edge-id=/);
+
+  const hiddenSource = { ...source, visible: false };
+  const unmasked = createNode('group', {
+    width: 100, height: 80, mask: true, maskSourceId: hiddenSource.id,
+    children: [content, hiddenSource]
+  });
+  const unmaskedSvg = exportNodeToSvg(unmasked);
+  assert.doesNotMatch(unmaskedSvg, /tis-mask-0|mask="url/);
+  assert.match(unmaskedSvg, /data-tiny-image-star-node-id="masked-content"/);
+  assert.doesNotMatch(unmaskedSvg, /data-tiny-image-star-node-id="alpha-source"/);
+});
+
+test('reports unsupported alpha-mask source contents precisely', () => {
+  const cases = [
+    [createNode('text', { id: 'text-mask' }), 'text alpha mask contents'],
+    [createNode('path', { id: 'open-path-mask', closed: false }), 'open path alpha mask contents'],
+    [createNode('network', { id: 'open-network-mask' }), 'open vector network alpha mask contents'],
+    [createNode('boolean', { id: 'boolean-mask' }), 'boolean alpha mask contents']
+  ];
+  for (const [source, feature] of cases) {
+    const group = createNode('group', {
+      id: `group-${source.id}`, width: 80, height: 60, mask: true, maskSourceId: source.id,
+      children: [createNode('rectangle', { width: 80, height: 60 }), source]
+    });
+    assert.throws(() => exportNodeToSvg(group), error => {
+      assert.ok(error instanceof SvgExportError);
+      assert.equal(error.feature, feature);
+      assert.equal(error.nodeId, source.id);
+      return true;
+    });
+  }
+
+  const blendedSource = createNode('ellipse', { id: 'blended-mask', blendMode: 'multiply' });
+  const blendedGroup = createNode('group', {
+    width: 80, height: 60, mask: true, maskSourceId: blendedSource.id,
+    children: [createNode('rectangle', { width: 80, height: 60 }), blendedSource]
+  });
+  assert.throws(() => exportNodeToSvg(blendedGroup), error => error instanceof SvgExportError && error.feature === 'blended alpha mask contents');
+});
+
 test('exports user-space gradient fills, layer effects, and CSS blend modes as editable SVG', () => {
   const gradient = createNode('rectangle', {
     id: 'gradient-layer', name: 'Gradient card', x: 8, y: 12, width: 100, height: 50,

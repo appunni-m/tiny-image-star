@@ -2,7 +2,7 @@ import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodeP
 
 const triggers = new Set(['on-click', 'while-hovering']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
-const actions = new Set(['navigate', 'open-overlay', 'close-overlay']);
+const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
 const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
@@ -38,6 +38,20 @@ export function prototypeEasingTimingFunction(easing = 'ease-in-out') {
   return easings.has(easing) ? easing : 'ease-in-out';
 }
 
+export function normalizePrototypeLinkUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return url.hostname ? url.href : null;
+    }
+    if (url.protocol === 'mailto:' && !url.host && !url.username && !url.password && url.pathname.trim()) return url.href;
+  } catch {
+    // Invalid URLs are never stored as prototype actions.
+  }
+  return null;
+}
+
 export function getPrototypeStartFrame(document, selectedId = null) {
   const start = document.prototypeStartPoint;
   if (start) {
@@ -67,7 +81,10 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   overlayOutsideClick = true,
   overlayBackground = true,
   overlayBackgroundColor = '#000000',
-  overlayBackgroundOpacity = 0.32
+  overlayBackgroundOpacity = 0.32,
+  url,
+  collectionId,
+  modeId
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
@@ -75,15 +92,25 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (!easings.has(easing)) throw new TypeError('Unsupported prototype easing.');
   if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
   const source = findNode(document, sourceId, sourcePageId);
-  const needsDestination = action !== 'close-overlay';
+  const needsDestination = action === 'navigate' || action === 'open-overlay' || action === 'swap-overlay';
   const candidateDestination = needsDestination ? findNodeAcrossPages(document, destinationId) : null;
   const destination = candidateDestination && (!destinationPageId || candidateDestination.page.id === destinationPageId) ? candidateDestination : null;
+  const linkUrl = action === 'open-link' ? normalizePrototypeLinkUrl(url) : null;
+  const collection = action === 'set-variable-mode'
+    ? document.variableCollections?.find(item => item.id === collectionId)
+    : null;
   if (!source) throw new Error('The interaction source layer no longer exists.');
   if (needsDestination && (!destination || destination.node.type !== 'frame')) throw new Error('Prototype navigation and overlay actions must end at a frame.');
-  if (action === 'close-overlay' && destinationId != null) throw new TypeError('Close overlay actions cannot have a destination.');
+  if (!needsDestination && destinationId != null) throw new TypeError('Back, close overlay, and open link actions cannot have a frame destination.');
+  if (action === 'open-link' && !linkUrl) throw new TypeError('Open link actions require a safe http(s) or mailto URL.');
+  if (action === 'set-variable-mode' && (!collection || (modeId != null && !collection.modes.some(mode => mode.id === modeId)))) {
+    throw new TypeError('Choose a variable collection and one of its modes.');
+  }
   if (action === 'open-overlay' && !overlayPositions.has(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
   const interactions = source.node.interactions ||= [];
-  const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null));
+  const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null)
+    && (action !== 'open-link' || normalizePrototypeLinkUrl(item.url) === linkUrl)
+    && (action !== 'set-variable-mode' || item.collectionId === collectionId));
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
@@ -95,6 +122,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
       existing.overlayBackgroundColor = /^#[0-9a-f]{6}$/i.test(overlayBackgroundColor) ? overlayBackgroundColor : '#000000';
       existing.overlayBackgroundOpacity = Math.max(0, Math.min(1, Number(overlayBackgroundOpacity) || 0));
     }
+    if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
     return existing;
   }
   const interaction = {
@@ -107,6 +135,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     easing,
     duration: Math.max(0, Math.min(2000, Number(duration) || 0))
   };
+  if (action === 'open-link') interaction.url = linkUrl;
+  if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
   if (action === 'open-overlay') Object.assign(interaction, {
     overlayPosition,
     overlayOutsideClick: Boolean(overlayOutsideClick),
@@ -120,11 +150,21 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
 
 export function createPrototypeSession(start) {
   if (!start?.page?.id || start.frame?.type !== 'frame') throw new TypeError('Choose a frame to start this prototype.');
-  return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], lastHoverInteractionId: null };
+  return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, lastHoverInteractionId: null };
 }
 
 export function applyPrototypeInteraction(document, session, interaction) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
+  if (interaction.action === 'back') return backPrototypeSession(session);
+  if (interaction.action === 'open-link') return normalizePrototypeLinkUrl(interaction.url) ? 'link-opened' : false;
+  if (interaction.action === 'set-variable-mode') {
+    const collection = document.variableCollections?.find(item => item.id === interaction.collectionId);
+    if (!collection || (interaction.modeId != null && !collection.modes.some(mode => mode.id === interaction.modeId))) return false;
+    session.variableModes ||= {};
+    session.variableModes[collection.id] = interaction.modeId ?? collection.defaultModeId;
+    session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+    return 'variables-updated';
+  }
   if (interaction.action === 'close-overlay') {
     if (!session.overlays.length) return false;
     session.overlays.pop();
@@ -135,6 +175,20 @@ export function applyPrototypeInteraction(document, session, interaction) {
   const candidateDestination = findNodeAcrossPages(document, interaction.destinationId);
   const destination = candidateDestination && (!interaction.destinationPageId || candidateDestination.page.id === interaction.destinationPageId) ? candidateDestination : null;
   if (!destination || destination.node.type !== 'frame') return false;
+
+  if (interaction.action === 'swap-overlay') {
+    if (session.overlays.length) {
+      const current = session.overlays[session.overlays.length - 1];
+      session.overlays[session.overlays.length - 1] = { ...current, pageId: destination.page.id, frameId: destination.node.id };
+      session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+      return 'overlay-swapped';
+    }
+    session.stack.push({ pageId: session.pageId, frameId: session.frameId, overlays: structuredClone(session.overlays) });
+    session.pageId = destination.page.id;
+    session.frameId = destination.node.id;
+    session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+    return 'navigated';
+  }
 
   if (interaction.action === 'open-overlay') {
     const position = overlayPositions.has(interaction.overlayPosition) ? interaction.overlayPosition : 'center';

@@ -23,6 +23,36 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
 });
 
+test('smart animation takes the shortest rotation arc and preserves exact frame and layer endpoints', () => {
+  const from = createNode('frame', {
+    rotation: 350,
+    children: [createNode('rectangle', { name: 'Compass needle', rotation: 350 })]
+  });
+  const to = createNode('frame', {
+    rotation: 10,
+    children: [createNode('rectangle', { name: 'Compass needle', rotation: 10 })]
+  });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const start = interpolateSmartFrame(from, to, 0);
+  const quarter = interpolateSmartFrame(from, to, 0.25);
+  const middle = interpolateSmartFrame(from, to, 0.5);
+  const threeQuarter = interpolateSmartFrame(from, to, 0.75);
+  const end = interpolateSmartFrame(from, to, 1);
+
+  assert.deepEqual([start.rotation, start.children[0].rotation], [350, 350]);
+  assert.deepEqual([quarter.rotation, quarter.children[0].rotation], [355, 355]);
+  assert.deepEqual([middle.rotation, middle.children[0].rotation], [360, 360]);
+  assert.deepEqual([threeQuarter.rotation, threeQuarter.children[0].rotation], [365, 365]);
+  assert.deepEqual([end.rotation, end.children[0].rotation], [10, 10]);
+
+  const reverse = interpolateSmartFrame(to, from, 0.5);
+  assert.deepEqual([reverse.rotation, reverse.children[0].rotation], [0, 0], 'reverse transitions also take the short path');
+  assert.deepEqual(from, originalFrom, 'interpolation leaves the source frame untouched');
+  assert.deepEqual(to, originalTo, 'interpolation leaves the destination frame untouched');
+});
+
 test('smart animation interpolates numeric font weight and snaps categorical text and paint at the midpoint', () => {
   const from = createNode('frame', { fill: '#000000', fillVariableId: 'surface-light', children: [
     createNode('text', {
@@ -111,7 +141,7 @@ test('smart animation crossfades incompatible content instead of morphing it', (
   ] });
   const to = createNode('frame', { children: [
     createNode('text', { name: 'Title', text: 'After' }),
-    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 20, y: 20 }] }),
+    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 0.5, y: 0.5 }, { x: 20, y: 20 }] }),
     createNode('network', { name: 'Branch', vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: .5, y: 1 }, { id: 'v3', x: 1, y: 0 }], edges: [{ id: 'e1', from: 'v1', to: 'v2' }, { id: 'e2', from: 'v2', to: 'v3' }], faces: [] })
   ] });
 
@@ -123,10 +153,70 @@ test('smart animation crossfades incompatible content instead of morphing it', (
   assert.equal(titles.find(node => node.text === 'Before').opacity, 0.4);
   assert.equal(titles.find(node => node.text === 'After').opacity, 0.5);
   assert.equal(icons.length, 2);
-  assert.equal(icons.find(node => node.points[1].x === 10).opacity, 0.5);
-  assert.equal(icons.find(node => node.points[1].x === 20).opacity, 0.5);
+  assert.equal(icons.find(node => node.points.length === 2).opacity, 0.5);
+  assert.equal(icons.find(node => node.points.length === 3).opacity, 0.5);
   assert.equal(networks.length, 2);
   assert.deepEqual(networks.map(node => node.opacity), [0.5, 0.5]);
+});
+
+test('smart animation morphs compatible vector anchors and Bézier handles with exact immutable endpoints', () => {
+  const from = createNode('frame', { children: [createNode('path', {
+    name: 'Curve', x: 0, y: 0, width: 100, height: 80,
+    points: [
+      { x: .1, y: .2, in: { x: 0, y: 0 }, out: { x: .2, y: 0 } },
+      { x: .8, y: .7, in: { x: -.1, y: .2 }, out: { x: 0, y: 0 } }
+    ]
+  })] });
+  const to = createNode('frame', { children: [createNode('path', {
+    name: 'Curve', x: 20, y: 40, width: 200, height: 160,
+    points: [
+      { x: .5, y: .6, out: { x: .4, y: -.2 } },
+      { x: .4, y: .3, in: { x: -.3, y: .4 } }
+    ]
+  })] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const start = interpolateSmartFrame(from, to, 0).children[0];
+  const middle = interpolateSmartFrame(from, to, .5).children[0];
+  const end = interpolateSmartFrame(from, to, 1).children[0];
+
+  assert.equal(middle.points.length, 2, 'matching topology stays a single interpolated layer');
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} should be close to ${expected}`);
+  near(middle.points[0].x, .3);
+  near(middle.points[0].y, .4);
+  near(middle.points[0].out.x, .3);
+  near(middle.points[0].out.y, -.1);
+  near(middle.points[0].in.x, 0);
+  near(middle.points[0].in.y, 0);
+  near(middle.points[1].x, .6);
+  near(middle.points[1].y, .5);
+  near(middle.points[1].in.x, -.2);
+  near(middle.points[1].in.y, .3);
+  near(middle.points[1].out.x, 0);
+  near(middle.points[1].out.y, 0);
+  assert.deepEqual(start.points, from.children[0].points, 'the source endpoint retains its exact handle representation');
+  assert.deepEqual(end.points, to.children[0].points, 'the target endpoint retains its exact handle representation');
+  assert.deepEqual(from, originalFrom, 'interpolation does not mutate the source path');
+  assert.deepEqual(to, originalTo, 'interpolation does not mutate the target path');
+});
+
+test('smart animation crossfades paths with different closure or invalid coordinates', () => {
+  const from = createNode('frame', { children: [
+    createNode('path', { name: 'Closure', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }),
+    createNode('path', { name: 'Invalid', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('path', { name: 'Closure', closed: true, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }),
+    createNode('path', { name: 'Invalid', points: [{ x: 0, y: 0 }, { x: Number.NaN, y: 1 }] })
+  ] });
+
+  const middle = interpolateSmartFrame(from, to, .5).children;
+  for (const name of ['Closure', 'Invalid']) {
+    const copies = middle.filter(node => node.name === name);
+    assert.equal(copies.length, 2, `${name} should crossfade because its path geometry is incompatible`);
+    assert.deepEqual(copies.map(node => node.opacity), [0.5, 0.5]);
+  }
 });
 
 test('smart animation interpolates compatible rich-text run metrics and solid colors', () => {

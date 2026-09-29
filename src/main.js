@@ -1,9 +1,9 @@
 import {
-  addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
+  createComponentProperty, createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
-  canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
-  updateNode, walkNodes
+  canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
+  setComponentPropertyValue, updateNode, walkNodes
 } from './model.js';
 import { createImageFill } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
@@ -14,11 +14,11 @@ import { calculateTextBox, measureTrackedText } from './text-layout.js';
 import { LocalImageEngine } from './image-engine.js';
 import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listSavedDocuments, loadDocumentById, loadImageAsset, loadLatestDocument, renameStoredDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
-import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
+import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect } from './transform-geometry.js';
@@ -43,7 +43,9 @@ const state = {
   documentGeneration: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
-  prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
+  prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
+  prototypeVariableCollectionId: null, prototypeVariableModeId: null,
+  componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
   presenting: null
@@ -77,7 +79,7 @@ function recordComponentOverride(instanceRoot, node, property) {
   if (node.id === instanceRoot.id && (key === 'x' || key === 'y')) return;
   instanceRoot.componentOverrides ||= {};
   instanceRoot.componentOverrides[node.componentSourceId] ||= {};
-  instanceRoot.componentOverrides[node.componentSourceId][key] = structuredClone(node[key]);
+  instanceRoot.componentOverrides[node.componentSourceId][key] = node[key] === undefined ? null : structuredClone(node[key]);
 }
 function recordNodeComponentOverrides(node, properties) {
   const instanceRoot = componentInstanceRoot(node.id);
@@ -261,7 +263,15 @@ function variableBindingControl(node, kind) {
   return `<label class="variable-binding-row"><span>Variable</span><select class="select-field" data-variable-binding="${kind}" aria-label="${kind} color variable"><option value="">No variable</option>${options}</select></label>`;
 }
 function variablePropertyBindingControl(node, property, label) {
-  const type = { x: 'number', y: 'number', width: 'number', height: 'number', rotation: 'number', visible: 'boolean', opacity: 'number', radius: 'number', text: 'string', fontSize: 'number', lineHeight: 'number', letterSpacing: 'number' }[property];
+  const type = {
+    x: 'number', y: 'number', width: 'number', height: 'number', rotation: 'number', visible: 'boolean', opacity: 'number', radius: 'number',
+    text: 'string', fontSize: 'number', lineHeight: 'number', letterSpacing: 'number',
+    'autoLayout.axis': 'string', 'autoLayout.align': 'string', 'autoLayout.justify': 'string',
+    'autoLayout.mainSizing': 'string', 'autoLayout.crossSizing': 'string', 'autoLayout.wrap': 'boolean',
+    'autoLayout.autoPositioning': 'boolean', 'autoLayout.columns': 'number', 'autoLayout.rows': 'number', 'autoLayout.rowGap': 'number',
+    'autoLayout.columnGap': 'number', 'autoLayout.padding.top': 'number', 'autoLayout.padding.right': 'number',
+    'autoLayout.padding.bottom': 'number', 'autoLayout.padding.left': 'number'
+  }[property];
   const selected = node.variableBindings?.[property] || '';
   const matchingVariables = (state.document.variables || []).filter(variable => variable.type === type);
   if (!matchingVariables.length && !selected) return '';
@@ -388,18 +398,62 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes, text, and local raster images, including linear and radial fills, shadows, blur, and blend modes. Image adjustments, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, and blend modes. Vector networks become ordinary SVG paths; their graph editing controls are not retained. Adjusted images, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${svgExport}`);
+}
+const autoLayoutBindingProperties = [
+  ['autoLayout.axis', 'Flow direction'], ['autoLayout.align', 'Alignment'], ['autoLayout.justify', 'Distribution'],
+  ['autoLayout.mainSizing', 'Main size'], ['autoLayout.crossSizing', 'Cross size'], ['autoLayout.wrap', 'Wrap'],
+  ['autoLayout.autoPositioning', 'Grid auto position'], ['autoLayout.columns', 'Grid columns'], ['autoLayout.rows', 'Grid rows'],
+  ['autoLayout.columnGap', 'Horizontal gap'], ['autoLayout.rowGap', 'Vertical gap'],
+  ['autoLayout.padding.top', 'Top padding'], ['autoLayout.padding.right', 'Right padding'],
+  ['autoLayout.padding.bottom', 'Bottom padding'], ['autoLayout.padding.left', 'Left padding']
+];
+function resolveAutoLayoutSettings(node) {
+  const settings = createAutoLayout(node.autoLayout || {});
+  for (const [property] of autoLayoutBindingProperties) {
+    if (!node.variableBindings?.[property]) continue;
+    const value = getNodePropertyValue(state.document, node, property);
+    const keys = property.slice('autoLayout.'.length).split('.');
+    let target = settings;
+    for (const key of keys.slice(0, -1)) target = target[key];
+    target[keys.at(-1)] = value;
+  }
+  return createAutoLayout(settings);
+}
+function applyAutoLayout(frame) {
+  if (!frame?.autoLayout) return applyAutoLayoutEngine(frame);
+  const baseSettings = createAutoLayout(frame.autoLayout);
+  const hasBindings = autoLayoutBindingProperties.some(([property]) => frame.variableBindings?.[property]);
+  if (!hasBindings) return applyAutoLayoutEngine(frame);
+  const resolvedSettings = resolveAutoLayoutSettings(frame);
+  const result = applyAutoLayoutEngine(frame, resolvedSettings);
+  frame.autoLayout = baseSettings;
+  return result;
+}
+function relayoutVariableBoundFrames() {
+  const affected = new Map();
+  for (const page of state.document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (node.type !== 'frame' || !node.autoLayout || !autoLayoutBindingProperties.some(([property]) => node.variableBindings?.[property])) return;
+    for (let index = 0; index < parents.length; index += 1) {
+      const frame = parents[index];
+      if (frame.type === 'frame' && frame.autoLayout) affected.set(frame.id, { node: frame, depth: index + 1 });
+    }
+    affected.set(node.id, { node, depth: parents.length + 1 });
+  });
+  for (const { node } of [...affected.values()].sort((left, right) => right.depth - left.depth)) applyAutoLayout(node);
 }
 function autoLayoutSection(node) {
   if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
-  const layout = createAutoLayout(node.autoLayout);
-  const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
+  const layout = resolveAutoLayoutSettings(node);
+  const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${String(value) === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
   const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 1, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 1, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 1, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 1, 0)}</div>`;
+  const variableProperties = autoLayoutBindingProperties.map(([property, label]) => variablePropertyBindingControl(node, property, label)).filter(Boolean).join('');
+  const variableBindings = variableProperties ? `<details class="auto-layout-variable-bindings"><summary>Bind layout properties</summary>${variableProperties}</details>` : '';
   const body = layout.axis === 'grid'
-    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Grid cells flow in layer order. Turn off Auto position to edit a layer’s row and column.</div><button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
-    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Grid cells flow in layer order. Turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
 function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 1) {
@@ -443,6 +497,59 @@ function sizeLimitsSection(node, parent) {
   const fields = `<div class="property-grid size-limits-grid">${optionalNumberField('Min width', 'minWidth', node.minWidth)}${optionalNumberField('Max width', 'maxWidth', node.maxWidth)}${optionalNumberField('Min height', 'minHeight', node.minHeight)}${optionalNumberField('Max height', 'maxHeight', node.maxHeight)}</div><div class="image-properties-note">Leave a value blank for no limit. Limits are in pixels and apply as this layer resizes.</div>`;
   return section('Size limits', fields);
 }
+function componentPropertyTargets(root) {
+  const targets = [];
+  const visit = (node, isRoot = false) => {
+    targets.push(node);
+    if (!isRoot && node.isInstance) return;
+    for (const child of node.children || []) visit(child);
+  };
+  visit(root, true);
+  return targets;
+}
+function defaultVariableMode(collection) {
+  return collection?.modes?.find(mode => mode.id === collection.defaultModeId) || collection?.modes?.[0] || null;
+}
+function componentInstancePropertyControls(component, instance) {
+  const rows = (component?.componentProperties || []).map(property => {
+    const current = Object.hasOwn(instance.componentPropertyValues || {}, property.id)
+      ? instance.componentPropertyValues[property.id] : property.defaultValue;
+    const label = `<span>${escapeHtml(property.name)}</span>`;
+    if (property.type === 'BOOLEAN') return `<label class="component-property-value">${label}<input type="checkbox" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}"${current ? ' checked' : ''} aria-label="${escapeHtml(property.name)}"/></label>`;
+    if (property.type === 'TEXT') return `<label class="component-property-value">${label}<input type="text" maxlength="1000000" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" value="${escapeHtml(current)}" aria-label="${escapeHtml(property.name)}"/></label>`;
+    const validCandidates = (state.document.components || []).filter(candidate => canSwapComponentTo(state.document, component.id, candidate.id));
+    const preferredCandidates = property.preferredComponentIds?.length
+      ? validCandidates.filter(candidate => property.preferredComponentIds.includes(candidate.id))
+      : validCandidates;
+    const currentCandidate = state.document.components?.find(item => item.id === current);
+    const candidates = currentCandidate && canSwapComponentTo(state.document, component.id, currentCandidate.id)
+      && !preferredCandidates.some(item => item.id === currentCandidate.id)
+      ? [...preferredCandidates, currentCandidate]
+      : preferredCandidates;
+    const choices = candidates.map(candidate => `<option value="${escapeHtml(candidate.id)}"${candidate.id === current ? ' selected' : ''}>${escapeHtml(candidate.name)}</option>`).join('');
+    return `<label class="component-property-value">${label}<select class="select-field" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" aria-label="${escapeHtml(property.name)} component">${choices}</select></label>`;
+  }).join('');
+  return rows ? `<div class="component-property-values">${rows}</div>` : '';
+}
+function componentPropertyDefinitions(component, root) {
+  const targets = componentPropertyTargets(root);
+  const selectedTarget = targets.find(target => target.id === state.componentPropertyTargetId) || targets[0];
+  const supportedTypes = [['BOOLEAN', 'Visibility']];
+  if (selectedTarget?.type === 'text') supportedTypes.push(['TEXT', 'Text']);
+  if (selectedTarget?.isInstance) supportedTypes.push(['INSTANCE_SWAP', 'Instance swap']);
+  const selectedType = supportedTypes.some(([type]) => type === state.componentPropertyType) ? state.componentPropertyType : supportedTypes[0]?.[0] || 'BOOLEAN';
+  const definitions = (component.componentProperties || []).map(property => {
+    const target = targets.find(item => item.id === property.targetSourceId);
+    const summary = property.type === 'BOOLEAN' ? 'Visibility' : property.type === 'TEXT' ? 'Text' : 'Instance swap';
+    return `<div class="component-property-definition"><strong>${escapeHtml(property.name)}</strong><small>${summary}${target ? ` · ${escapeHtml(target.name)}` : ''}</small></div>`;
+  }).join('');
+  const targetOptions = targets.map(target => `<option value="${escapeHtml(target.id)}"${target.id === selectedTarget?.id ? ' selected' : ''}>${escapeHtml(target.name)}</option>`).join('');
+  const typeOptions = supportedTypes.map(([type, label]) => `<option value="${type}"${type === selectedType ? ' selected' : ''}>${label}</option>`).join('');
+  const editor = targets.length && (component.componentProperties || []).length < 100
+    ? `<div class="component-property-editor"><input class="text-field" id="component-property-name" maxlength="80" value="" placeholder="Property name" aria-label="New component property name"/><select class="select-field" id="component-property-target" aria-label="Component property target">${targetOptions}</select><select class="select-field" id="component-property-type" aria-label="Component property type">${typeOptions}</select><button class="add-fill" data-action="create-component-property" data-component-id="${escapeHtml(component.id)}" data-target-id="${escapeHtml(selectedTarget.id)}" data-property-type="${selectedType}">＋ Add property</button></div>`
+    : '';
+  return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${(component.componentProperties || []).length}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, or a nested instance as a reusable control.</div>'}${component.componentProperties?.length >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}</div>`;
+}
 function componentSection(node) {
   const linkedInstance = componentInstanceRoot(node.id);
   if (linkedInstance) {
@@ -454,18 +561,20 @@ function componentSection(node) {
       const options = property.values.map(value => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(value)}</option>`).join('');
       return `<label class="variant-control"><span>${escapeHtml(property.name)}</span><select class="prop-input select-field" data-variant-property="${escapeHtml(property.name)}" data-instance-id="${escapeHtml(linkedInstance.id)}" aria-label="${escapeHtml(property.name)} variant">${options}</select></label>`;
     }).join('') : '';
-    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(set?.name || component?.name || 'Missing component')}</strong><span>${label}</span></div>${selectors ? `<div class="variant-controls">${selectors}</div>` : ''}<button class="add-fill" data-action="detach-component-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach instance</button>`);
+    const propertyControls = componentInstancePropertyControls(component, linkedInstance);
+    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(set?.name || component?.name || 'Missing component')}</strong><span>${label}</span></div>${selectors ? `<div class="variant-controls">${selectors}</div>` : ''}${propertyControls}<button class="add-fill" data-action="detach-component-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach instance</button>`);
   }
   if (node.isComponent) {
     const component = state.document.components?.find(item => item.id === node.componentId);
     const set = state.document.componentSets?.find(item => item.id === component?.componentSetId);
     const variantFields = set ? set.properties.map(property => `<label class="variant-control"><span>${escapeHtml(property.name)}</span><input class="prop-input" data-variant-master-property="${escapeHtml(property.name)}" data-component-id="${escapeHtml(component.id)}" value="${escapeHtml(component.variantProperties?.[property.name] || '')}" aria-label="${escapeHtml(property.name)} variant value"/></label>`).join('') : '';
     const variantLabel = set ? `Variant in ${set.name} · changes update linked instances` : 'Main component · changes update linked instances';
-    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>${escapeHtml(variantLabel)}</span></div>${variantFields ? `<div class="variant-controls">${variantFields}</div>` : ''}<button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
+    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>${escapeHtml(variantLabel)}</span></div>${variantFields ? `<div class="variant-controls">${variantFields}</div>` : ''}${component ? componentPropertyDefinitions(component, node) : ''}<button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
   }
   if (node.isInstance) {
     const component = state.document.components?.find(item => item.id === node.componentId);
-    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || 'Missing component')}</strong><span>Linked instance · local edits remain as overrides</span></div><button class="add-fill" data-action="detach-component-instance">Detach instance</button>`);
+    const propertyControls = componentInstancePropertyControls(component, node);
+    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || 'Missing component')}</strong><span>Linked instance · local edits remain as overrides</span></div>${propertyControls}<button class="add-fill" data-action="detach-component-instance">Detach instance</button>`);
   }
   return section('Component', '<button class="add-fill" data-action="create-component">◇ Create component</button><div class="image-properties-note">Create a reusable main component from this layer and its children.</div>');
 }
@@ -531,21 +640,33 @@ function prototypeInspector() {
   const interactions = (node?.interactions || []).map(interaction => {
     const target = interaction.destinationId ? findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node : null;
     const targetPage = interaction.destinationPageId ? state.document.pages.find(page => page.id === interaction.destinationPageId) : null;
-    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'close-overlay' ? 'Close overlay' : 'Navigate to';
+    const variableCollection = state.document.variableCollections?.find(collection => collection.id === interaction.collectionId);
+    const variableMode = variableCollection?.modes.find(mode => mode.id === interaction.modeId);
+    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : 'Navigate to';
     const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap';
-    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : 'Missing frame';
-    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'open-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
+    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
-  const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
+  const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
+  const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : state.prototypeAction === 'swap-overlay' ? 'Click the frame to swap into the overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
   const overlayControls = state.prototypeAction === 'open-overlay' ? `<label>Position<select id="prototype-overlay-position" class="select-field">${[['center','Center'],['top-left','Top left'],['top-center','Top center'],['top-right','Top right'],['left-center','Left center'],['right-center','Right center'],['bottom-left','Bottom left'],['bottom-center','Bottom center'],['bottom-right','Bottom right']].map(([value, label]) => `<option value="${value}"${state.prototypeOverlayPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label><span>Dismiss on outside click</span><input id="prototype-overlay-outside" type="checkbox"${state.prototypeOverlayOutsideClick ? ' checked' : ''}/></label><label><span>Show background</span><input id="prototype-overlay-background" type="checkbox"${state.prototypeOverlayBackground ? ' checked' : ''}/></label>${state.prototypeOverlayBackground ? `<label>Background<input id="prototype-overlay-color" type="color" value="${state.prototypeOverlayBackgroundColor}"/><input id="prototype-overlay-opacity" type="range" min="0" max="100" value="${Math.round(state.prototypeOverlayBackgroundOpacity * 100)}" aria-label="Overlay background opacity"/></label>` : ''}` : '';
   const transitionOptions = [['instant', 'Instant'], ['dissolve', 'Dissolve'], ['move-left', 'Move in · left'], ['move-right', 'Move in · right'], ...(state.prototypeAction === 'navigate' ? [['smart-animate', 'Smart animate']] : [])]
     .map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
   const easingOptions = [['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out']]
     .map(([value, label]) => `<option value="${value}"${state.prototypeEasing === value ? ' selected' : ''}>${label}</option>`).join('');
   const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option></select></label>${state.prototypeAction !== 'close-overlay' ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect">${state.prototypeAction === 'close-overlay' ? '＋ Add close overlay' : '＋ Add interaction'}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const variableCollections = state.document.variableCollections || [];
+  const prototypeCollection = variableCollections.find(collection => collection.id === state.prototypeVariableCollectionId) || variableCollections[0] || null;
+  const prototypeModes = prototypeCollection?.modes || [];
+  const selectedPrototypeMode = prototypeModes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(prototypeCollection);
+  const variableModeControls = state.prototypeAction === 'set-variable-mode'
+    ? prototypeCollection
+      ? `<label>Collection<select id="prototype-variable-collection" class="select-field">${variableCollections.map(collection => `<option value="${escapeHtml(collection.id)}"${collection.id === prototypeCollection.id ? ' selected' : ''}>${escapeHtml(collection.name)}</option>`).join('')}</select></label><label>Mode<select id="prototype-variable-mode" class="select-field">${prototypeModes.map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === selectedPrototypeMode?.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('')}</select></label>`
+      : '<p class="prototype-hint">Create a variable collection and modes before adding this action.</p>'
+    : '';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
-  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow.</span></section></div>`;
+  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow. Variable mode actions update the active flow without changing the saved frame settings.</span></section></div>`;
 }
 
 function pageComments(pageId = activePage()?.id) {
@@ -2146,7 +2267,6 @@ function updateInspectorInput(event) {
         const side = key.slice('padding.'.length);
         if (['top', 'right', 'bottom', 'left'].includes(side)) node.autoLayout.padding[side] = value;
       } else node.autoLayout[key] = value;
-      applyAutoLayout(node);
     } else if (gridCellSetting) {
       const parent = findNode(state.document, node.id)?.parent;
       node.gridCell ||= {};
@@ -2176,6 +2296,11 @@ function updateInspectorInput(event) {
     if (node.type === 'image' && adjustments) schedulePreview(node);
     if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
+      const parent = findNode(state.document, node.id)?.parent;
+      if (parent?.autoLayout) applyAutoLayout(parent);
+    }
+    if (layoutSetting && node.type === 'frame' && node.autoLayout) {
+      applyAutoLayout(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
@@ -2565,6 +2690,7 @@ function applyVariablePropertyToSelection(property, variableId) {
     const instanceRoot = componentInstanceRoot(node.id);
     if (instanceRoot) recordComponentOverride(instanceRoot, node, 'variableBindings');
   }
+  if (property.startsWith('autoLayout.')) relayoutVariableBoundFrames();
   renderUI(); queueSave(); renderer.invalidate();
 }
 
@@ -2975,6 +3101,35 @@ function changeInstanceVariant(instanceId, propertyName, value) {
     renderUI(); queueSave(); showToast(`${set.name} switched to ${value}.`);
   } catch (error) { showToast(error.message); renderInspector(); }
 }
+function changeInstanceComponentProperty(instanceId, propertyId, value) {
+  const instance = findNode(state.document, instanceId)?.node;
+  const property = instance?.isInstance
+    ? state.document.components?.find(item => item.id === instance.componentId)?.componentProperties?.find(item => item.id === propertyId)
+    : null;
+  if (!instance || !property) return;
+  try {
+    checkpoint(`Change component property ${property.name}`);
+    setComponentPropertyValue(state.document, instanceId, propertyId, value);
+    renderUI(); queueSave(); renderer.invalidate();
+  } catch (error) {
+    showToast(error.message || `Could not update ${property.name}.`);
+    renderInspector();
+  }
+}
+function addComponentProperty(componentId, targetNodeId, type) {
+  const name = $('#component-property-name')?.value.trim();
+  if (!name) { showToast('Enter a name for this component property.'); $('#component-property-name')?.focus(); return; }
+  try {
+    checkpoint(`Add component property ${name}`);
+    const property = createComponentProperty(state.document, componentId, { name, type, targetNodeId });
+    syncComponentInstances(state.document, componentId);
+    state.componentPropertyTargetId = targetNodeId;
+    state.componentPropertyType = type;
+    renderUI(); queueSave(); renderer.invalidate(); showToast(`${property.name} is ready on component instances.`);
+  } catch (error) {
+    showToast(error.message || 'Could not add this component property.');
+  }
+}
 function changeMainVariantProperty(componentId, propertyName, value) {
   try {
     checkpoint(`Rename ${propertyName} variant`);
@@ -3113,9 +3268,15 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   if (!state.presenting || !presentRenderState) return;
   const target = findNodeAcrossPages(state.document, state.presenting.frameId);
   if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); $('#present-dialog').close(); return; }
-  const displayFrame = previousFrame && Number.isFinite(progress)
+  const applySessionVariableModes = frame => {
+    const modes = state.presenting.variableModes || {};
+    if (!Object.keys(modes).length) return frame;
+    frame.variableModes = { ...(frame.variableModes || {}), ...modes };
+    return frame;
+  };
+  const displayFrame = applySessionVariableModes(previousFrame && Number.isFinite(progress)
     ? interpolateSmartFrame(previousFrame, target.node, progress)
-    : structuredClone(target.node);
+    : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
   for (const [index, overlayState] of state.presenting.overlays.entries()) {
@@ -3127,7 +3288,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
       opacity: overlayState.backgroundOpacity, visible: true, fill: overlayState.backgroundColor,
       fillOpacity: 1, stroke: null, strokeWidth: 0, radius: 0, clip: false, children: []
     });
-    const displayOverlay = structuredClone(overlayTarget.node);
+    const displayOverlay = applySessionVariableModes(structuredClone(overlayTarget.node));
     Object.assign(displayOverlay, overlayPositionInFrame(overlayState.position, displayFrame, displayOverlay));
     sceneChildren.push(displayOverlay);
   }
@@ -3217,6 +3378,7 @@ function startPresentation(selectedId = null) {
 
 function navigatePresentation(interaction) {
   if (!state.presenting) return;
+  const linkUrl = interaction.action === 'open-link' ? normalizePrototypeLinkUrl(interaction.url) : null;
   const source = interaction.action === 'navigate' && interaction.transition === 'smart-animate'
     ? findNode(state.document, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
@@ -3224,6 +3386,10 @@ function navigatePresentation(interaction) {
   cancelPresentationAnimation();
   const result = applyPrototypeInteraction(state.document, state.presenting, interaction);
   if (!result) { showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.'); return; }
+  if (result === 'link-opened' && linkUrl) {
+    window.open(linkUrl, '_blank', 'noopener,noreferrer');
+    return;
+  }
   if (result === 'navigated' && previousFrame) animateSmartTransition(previousFrame, interaction);
   else renderPresentationFrame(interaction);
 }
@@ -3232,7 +3398,7 @@ function handlePresentationPointer(event, trigger) {
   if (!state.presenting || !presentRenderState?.document) return;
   if ($('#present-dialog').dataset.smartAnimating === 'true') return;
   const page = presentRenderState.document.pages[0];
-  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, state.document);
+  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document);
   const topOverlayState = state.presenting.overlays.at(-1);
   if (trigger === 'on-click' && topOverlayState) {
     const overlayTarget = findNode(state.document, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(state.document, topOverlayState.frameId);
@@ -3791,6 +3957,7 @@ function applyInspectorAction(action, details = {}) {
     try { exportSelectedNodeSvg(node.id); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); }
   } else if (action === 'create-component') makeComponent(node?.id);
   else if (action === 'combine-components') combineSelectedComponents();
+  else if (action === 'create-component-property') addComponentProperty(details.componentId, details.targetId, details.propertyType);
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
   else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
   else if (action === 'prototype-start') {
@@ -3802,14 +3969,20 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
   } else if (action === 'prototype-connect') {
     if (!node) { showToast('Select a layer to add an interaction.'); return; }
-    if (state.prototypeAction === 'close-overlay') {
+    if (['close-overlay', 'back', 'open-link', 'set-variable-mode'].includes(state.prototypeAction)) {
       try {
-        checkpoint('Add close overlay interaction');
+        const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
+        const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
+        checkpoint(`Add ${state.prototypeAction} prototype interaction`);
         addPrototypeInteraction(state.document, node.id, null, {
-          action: 'close-overlay', trigger: state.prototypeTrigger,
-          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration
+          action: state.prototypeAction, trigger: state.prototypeTrigger,
+          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
+          url: state.prototypeUrl,
+          collectionId: selectedCollection?.id,
+          modeId: selectedMode?.id
         });
-        renderInspector(); queueSave(); renderer.invalidate(); showToast('Close overlay interaction added.');
+        const label = state.prototypeAction === 'open-link' ? 'Open link' : state.prototypeAction === 'back' ? 'Back' : state.prototypeAction === 'set-variable-mode' ? 'Set variable mode' : 'Close overlay';
+        renderInspector(); queueSave(); renderer.invalidate(); showToast(`${label} interaction added.`);
       } catch (error) { showToast(error.message); }
       return;
     }
@@ -3855,7 +4028,12 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'auto-layout-toggle') {
     if (!node || node.type !== 'frame') return;
     checkpoint(node.autoLayout ? 'Remove auto layout' : 'Add auto layout');
-    if (node.autoLayout) delete node.autoLayout;
+    if (node.autoLayout) {
+      delete node.autoLayout;
+      for (const property of Object.keys(node.variableBindings || {})) if (property.startsWith('autoLayout.')) delete node.variableBindings[property];
+      if (!Object.keys(node.variableBindings || {}).length) delete node.variableBindings;
+      recordNodeComponentOverrides(node, ['autoLayout', 'variableBindings']);
+    }
     else { node.autoLayout = createAutoLayout(); applyAutoLayout(node); }
     renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
   }
@@ -4003,19 +4181,48 @@ function initEvents() {
         checkpoint('Set frame variable mode');
         setFrameVariableMode(state.document, frame.id, event.target.dataset.frameVariableMode, event.target.value || null);
         resizeTextLayers([frame]);
+        relayoutVariableBoundFrames();
         const instanceRoot = componentInstanceRoot(frame.id);
         if (instanceRoot) recordComponentOverride(instanceRoot, frame, 'variableModes');
         renderUI(); queueSave(); renderer.invalidate();
       }
+    }
+    if (event.target.id === 'component-property-target') {
+      state.componentPropertyTargetId = event.target.value;
+      renderInspector();
+    }
+    if (event.target.id === 'component-property-type') {
+      state.componentPropertyType = event.target.value;
+      renderInspector();
+    }
+    if (event.target.matches('[data-component-property-value]')) {
+      const instanceId = event.target.dataset.instanceId;
+      const propertyId = event.target.dataset.componentPropertyValue;
+      const instance = findNode(state.document, instanceId)?.node;
+      const property = state.document.components?.find(item => item.id === instance?.componentId)?.componentProperties?.find(item => item.id === propertyId);
+      const value = property?.type === 'BOOLEAN' ? event.target.checked : event.target.value;
+      changeInstanceComponentProperty(instanceId, propertyId, value);
     }
     if (event.target.matches('[data-variant-property]')) changeInstanceVariant(event.target.dataset.instanceId, event.target.dataset.variantProperty, event.target.value);
     if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
     if (event.target.id === 'prototype-action') {
       state.prototypeAction = event.target.value;
       if (state.prototypeAction !== 'navigate' && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
+      if (state.prototypeAction === 'set-variable-mode') {
+        const collection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
+        state.prototypeVariableCollectionId = collection?.id || null;
+        state.prototypeVariableModeId = defaultVariableMode(collection)?.id || null;
+      }
       renderInspector();
     }
+    if (event.target.id === 'prototype-variable-collection') {
+      state.prototypeVariableCollectionId = event.target.value;
+      state.prototypeVariableModeId = defaultVariableMode(state.document.variableCollections?.find(item => item.id === event.target.value))?.id || null;
+      renderInspector();
+    }
+    if (event.target.id === 'prototype-variable-mode') state.prototypeVariableModeId = event.target.value;
     if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
+    if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-easing') state.prototypeEasing = event.target.value;
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
@@ -4070,6 +4277,7 @@ function initEvents() {
     if (!state.controlEdit) { checkpoint('Edit variable'); state.controlEdit = true; }
     setVariableValue(state.document, input.dataset.variableValue, value, input.dataset.modeId);
     resizeTextLayers(state.document.pages.flatMap(page => page.children), input.dataset.variableValue);
+    relayoutVariableBoundFrames();
     renderer.invalidate();
   });
   $('#variable-collections-list').addEventListener('change', event => {
@@ -4079,6 +4287,7 @@ function initEvents() {
       checkpoint(`Change ${variable?.name || 'variable'} alias`);
       if (!setVariableAlias(state.document, alias.dataset.variableAlias, alias.value || null, alias.dataset.modeId)) showToast('Aliases must target another variable of the same type and cannot create a cycle.');
       resizeTextLayers(state.document.pages.flatMap(page => page.children));
+      relayoutVariableBoundFrames();
       state.controlEdit = false; renderUI(); queueSave(); renderer.invalidate(); return;
     }
     const mode = event.target.closest('[data-variable-default-mode]');

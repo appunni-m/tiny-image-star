@@ -302,3 +302,49 @@ test('geometry bindings reject incompatible values and unknown properties during
   unknown.pages[0].children[0].variableBindings.depth = width.id;
   assert.throws(() => validateDocument(unknown), /Invalid depth variable binding/);
 });
+
+test('auto layout variables resolve by mode and preserve their resolved value when unbound', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Layout');
+  const compact = collection.defaultModeId;
+  const roomy = addVariableMode(document, collection.id, 'Roomy');
+  const columnGap = createVariable(document, collection.id, 'Column gap', 'number', 8);
+  const leftPadding = createVariable(document, collection.id, 'Left padding', 'number', 12);
+  const gridRows = createVariable(document, collection.id, 'Grid rows', 'number', 2);
+  const wrap = createVariable(document, collection.id, 'Wrap', 'boolean', false);
+  assert.equal(setVariableValue(document, columnGap.id, 24, roomy.id), true);
+  assert.equal(setVariableValue(document, leftPadding.id, 28, roomy.id), true);
+  assert.equal(setVariableValue(document, gridRows.id, 4, roomy.id), true);
+  assert.equal(setVariableValue(document, wrap.id, true, roomy.id), true);
+
+  const frame = createNode('frame', {
+    autoLayout: { axis: 'horizontal', columnGap: 4, padding: { left: 5, right: 5, top: 5, bottom: 5 } },
+    variableModes: { [collection.id]: compact }
+  });
+  addNode(document, frame);
+  assert.equal(bindVariable(document, frame.id, columnGap.id, 'autoLayout.columnGap'), true);
+  assert.equal(bindVariable(document, frame.id, leftPadding.id, 'autoLayout.padding.left'), true);
+  assert.equal(bindVariable(document, frame.id, gridRows.id, 'autoLayout.rows'), true);
+  assert.equal(bindVariable(document, frame.id, wrap.id, 'autoLayout.wrap'), true);
+  assert.deepEqual([
+    getNodePropertyValue(document, frame, 'autoLayout.columnGap'),
+    getNodePropertyValue(document, frame, 'autoLayout.padding.left'),
+    getNodePropertyValue(document, frame, 'autoLayout.rows'),
+    getNodePropertyValue(document, frame, 'autoLayout.wrap')
+  ], [8, 12, 2, false]);
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, roomy.id), true);
+  assert.deepEqual([
+    getNodePropertyValue(document, frame, 'autoLayout.columnGap'),
+    getNodePropertyValue(document, frame, 'autoLayout.padding.left'),
+    getNodePropertyValue(document, frame, 'autoLayout.rows'),
+    getNodePropertyValue(document, frame, 'autoLayout.wrap')
+  ], [24, 28, 4, true]);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  assert.equal(setVariableValue(document, columnGap.id, -1, compact), false, 'negative gaps cannot be applied in any variable mode');
+  assert.equal(setVariableValue(document, gridRows.id, 0, compact), false, 'grid row counts must remain in the supported 1–64 range');
+  assert.equal(bindVariable(document, frame.id, null, 'autoLayout.padding.left'), true);
+  assert.equal(frame.autoLayout.padding.left, 28, 'unbinding stores the active mode’s resolved padding');
+  assert.equal(getNodePropertyValue(document, frame, 'autoLayout.padding.left'), 28);
+  assert.equal(validateDocument(document), true);
+});
