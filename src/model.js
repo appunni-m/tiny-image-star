@@ -17,6 +17,8 @@ export function createDocument() {
     componentSets: [],
     recipes: [],
     colorStyles: [],
+    variableCollections: [],
+    variables: [],
     prototypeStartPoint: null,
     settings: { unit: 'px', grid: 8, snap: true }
   };
@@ -46,6 +48,7 @@ const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
+  'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'layoutSizingMain', 'layoutSizingCross', 'points', 'closed', 'operation', '__childOrder'
 ]);
 
@@ -206,6 +209,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
     x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top),
     fill: styleSource.fill || '#d9d9d9', fillOpacity: styleSource.fillOpacity ?? 1,
     ...(styleSource.fillStyleId ? { fillStyleId: styleSource.fillStyleId } : {}),
+    ...(styleSource.fillVariableId ? { fillVariableId: styleSource.fillVariableId } : {}),
     children: selectedEntries.map(entry => {
       entry.node.x -= left;
       entry.node.y -= top;
@@ -281,12 +285,152 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   return true;
 }
 
+export function createVariableCollection(document, name = 'Colors') {
+  const mode = { id: createId('mode'), name: 'Mode 1' };
+  const collection = {
+    id: createId('collection'), name: String(name).trim() || 'Colors',
+    defaultModeId: mode.id, modes: [mode]
+  };
+  document.variableCollections ||= [];
+  document.variableCollections.push(collection);
+  return collection;
+}
+
+export function addVariableMode(document, collectionId, name = null) {
+  const collection = document.variableCollections?.find(item => item.id === collectionId);
+  if (!collection) throw new Error('The variable collection no longer exists.');
+  const nextName = String(name || `Mode ${collection.modes.length + 1}`).trim();
+  if (!nextName || collection.modes.some(mode => mode.name.toLowerCase() === nextName.toLowerCase())) throw new TypeError('Choose a unique name for this mode.');
+  const mode = { id: createId('mode'), name: nextName };
+  const sourceModeId = collection.defaultModeId;
+  collection.modes.push(mode);
+  for (const variable of document.variables || []) {
+    if (variable.collectionId === collectionId) variable.valuesByMode[mode.id] = variable.valuesByMode[sourceModeId];
+  }
+  return mode;
+}
+
+export function createColorVariable(document, collectionId, name, value = '#1e1e1e') {
+  const collection = document.variableCollections?.find(item => item.id === collectionId);
+  if (!collection) throw new Error('The variable collection no longer exists.');
+  if (!/^#[0-9a-f]{6}$/i.test(String(value))) throw new TypeError('Color variables require a solid six-digit color.');
+  const nextName = String(name).trim() || `Color ${(document.variables || []).filter(item => item.collectionId === collectionId).length + 1}`;
+  if ((document.variables || []).some(variable => variable.collectionId === collectionId && variable.name.toLowerCase() === nextName.toLowerCase())) throw new TypeError('A variable with that name already exists in this collection.');
+  const valuesByMode = Object.fromEntries(collection.modes.map(mode => [mode.id, value]));
+  const variable = { id: createId('variable'), collectionId, name: nextName, type: 'color', valuesByMode };
+  document.variables ||= [];
+  document.variables.push(variable);
+  return variable;
+}
+
+export function setColorVariableValue(document, variableId, value, modeId = null) {
+  const variable = document.variables?.find(item => item.id === variableId);
+  const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+  if (!variable || variable.type !== 'color' || !collection) return false;
+  const targetModeId = modeId || collection.defaultModeId;
+  if (!collection.modes.some(mode => mode.id === targetModeId) || !/^#[0-9a-f]{6}$/i.test(String(value))) return false;
+  variable.valuesByMode[targetModeId] = value;
+  return true;
+}
+
+function clearVariableReferencesFromComponentOverrides(document, variableIds, collectionId = null) {
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    if (!node.componentOverrides) return;
+    for (const overrides of Object.values(node.componentOverrides)) {
+      for (const property of ['fillVariableId', 'textVariableId', 'strokeVariableId']) if (variableIds.has(overrides[property])) delete overrides[property];
+      if (collectionId && overrides.variableModes) {
+        delete overrides.variableModes[collectionId];
+        if (!Object.keys(overrides.variableModes).length) delete overrides.variableModes;
+      }
+    }
+    for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) if (!Object.keys(overrides).length) delete node.componentOverrides[sourceId];
+    if (!Object.keys(node.componentOverrides).length) delete node.componentOverrides;
+  });
+}
+
+export function deleteVariable(document, variableId) {
+  const index = (document.variables || []).findIndex(variable => variable.id === variableId);
+  if (index < 0) return false;
+  document.variables.splice(index, 1);
+  const properties = ['fillVariableId', 'textVariableId', 'strokeVariableId'];
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const property of properties) if (node[property] === variableId) delete node[property];
+  });
+  clearVariableReferencesFromComponentOverrides(document, new Set([variableId]));
+  return true;
+}
+
+export function deleteVariableCollection(document, collectionId) {
+  const index = (document.variableCollections || []).findIndex(collection => collection.id === collectionId);
+  if (index < 0) return false;
+  const variableIds = new Set((document.variables || []).filter(variable => variable.collectionId === collectionId).map(variable => variable.id));
+  document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
+  document.variableCollections.splice(index, 1);
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const property of ['fillVariableId', 'textVariableId', 'strokeVariableId']) if (variableIds.has(node[property])) delete node[property];
+    if (node.variableModes) { delete node.variableModes[collectionId]; if (!Object.keys(node.variableModes).length) delete node.variableModes; }
+  });
+  clearVariableReferencesFromComponentOverrides(document, variableIds, collectionId);
+  return true;
+}
+
+export function setFrameVariableMode(document, frameId, collectionId, modeId = null, pageId = document.activePageId) {
+  const frame = findNode(document, frameId, pageId)?.node;
+  const collection = document.variableCollections?.find(item => item.id === collectionId);
+  if (!frame || frame.type !== 'frame' || !collection || (modeId && !collection.modes.some(mode => mode.id === modeId))) return false;
+  frame.variableModes ||= {};
+  if (modeId) frame.variableModes[collectionId] = modeId;
+  else delete frame.variableModes[collectionId];
+  if (!Object.keys(frame.variableModes).length) delete frame.variableModes;
+  return true;
+}
+
+export function variableModeForNode(document, collectionId, node) {
+  const collection = document.variableCollections?.find(item => item.id === collectionId);
+  if (!collection) return null;
+  const entry = node?.id ? findNodeAcrossPages(document, node.id) : null;
+  const frames = [...(entry?.parents || []), ...(node?.type === 'frame' ? [node] : [])].filter(parent => parent.type === 'frame');
+  let modeId = collection.defaultModeId;
+  for (const frame of frames) if (frame.variableModes?.[collectionId]) modeId = frame.variableModes[collectionId];
+  return collection.modes.some(mode => mode.id === modeId) ? modeId : collection.defaultModeId;
+}
+
+export function resolveColorVariable(document, variableId, node = null) {
+  const variable = document.variables?.find(item => item.id === variableId && item.type === 'color');
+  if (!variable) return null;
+  const collection = document.variableCollections?.find(item => item.id === variable.collectionId);
+  if (!collection) return null;
+  const modeId = variableModeForNode(document, collection.id, node);
+  return variable.valuesByMode?.[modeId] || variable.valuesByMode?.[collection.defaultModeId] || null;
+}
+
+export function bindColorVariable(document, nodeId, variableId, kind = 'fill', pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const variable = variableId ? document.variables?.find(item => item.id === variableId && item.type === 'color') : null;
+  const properties = { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' };
+  const property = properties[kind];
+  if (!node || !property || (variableId && !variable)) return false;
+  const compatible = kind === 'text' ? node.type === 'text'
+    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+      : !['text', 'image', 'group', 'boolean'].includes(node.type);
+  if (!compatible) return false;
+  if (variableId) {
+    node[property] = variableId;
+    if (kind === 'fill') delete node.fillStyleId;
+    if (kind === 'text') delete node.textStyleId;
+  } else delete node[property];
+  return true;
+}
+
 export function getNodeColor(document, node, kind = node?.type === 'text' ? 'text' : 'fill') {
   if (!node) return '#000000';
-  const styleId = kind === 'text' ? node.textStyleId : node.fillStyleId;
+  const variableId = kind === 'text' ? node.textVariableId : kind === 'stroke' ? node.strokeVariableId : node.fillVariableId;
+  const variableValue = resolveColorVariable(document, variableId, node);
+  if (variableValue) return variableValue;
+  const styleId = kind === 'text' ? node.textStyleId : kind === 'stroke' ? null : node.fillStyleId;
   const style = (document.colorStyles || []).find(item => item.id === styleId && item.kind === kind);
   if (style) return style.value;
-  return kind === 'text' ? (node.color || '#1e1e1e') : (node.fill || '#ffffff');
+  return kind === 'text' ? (node.color || '#1e1e1e') : kind === 'stroke' ? (node.stroke || '#1e1e1e') : (node.fill || '#ffffff');
 }
 
 export function createColorStyle(document, nodeId, name, pageId = document.activePageId) {
@@ -298,8 +442,8 @@ export function createColorStyle(document, nodeId, name, pageId = document.activ
   const style = { id: createId('style'), name: String(name).trim() || `${node.name} color`, kind, value };
   document.colorStyles ||= [];
   document.colorStyles.push(style);
-  if (kind === 'text') node.textStyleId = style.id;
-  else node.fillStyleId = style.id;
+  if (kind === 'text') { delete node.textVariableId; node.textStyleId = style.id; }
+  else { delete node.fillVariableId; node.fillStyleId = style.id; }
   return style;
 }
 
@@ -307,8 +451,8 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   const node = findNode(document, nodeId, pageId)?.node;
   const style = document.colorStyles?.find(item => item.id === styleId);
   if (!node || !style) return false;
-  if (style.kind === 'text' && node.type === 'text') node.textStyleId = style.id;
-  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type)) node.fillStyleId = style.id;
+  if (style.kind === 'text' && node.type === 'text') { delete node.textVariableId; node.textStyleId = style.id; }
+  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type)) { delete node.fillVariableId; node.fillStyleId = style.id; }
   else return false;
   return true;
 }
@@ -679,6 +823,49 @@ export function validateDocument(document) {
       if (!component.componentSetId && component.variantProperties != null) throw new TypeError('Variant properties require a component set.');
     }
   }
+  const variableCollections = document.variableCollections ?? [];
+  if (!Array.isArray(variableCollections)) throw new TypeError('Variable collections must be a list.');
+  const collectionIds = new Set();
+  const modesByCollection = new Map();
+  for (const collection of variableCollections) {
+    if (!collection.id || collectionIds.has(collection.id) || typeof collection.name !== 'string' || !collection.name.trim() || !Array.isArray(collection.modes) || !collection.modes.length) throw new TypeError('Invalid or duplicate variable collection.');
+    collectionIds.add(collection.id);
+    const modeIds = new Set();
+    for (const mode of collection.modes) {
+      if (!mode?.id || modeIds.has(mode.id) || typeof mode.name !== 'string' || !mode.name.trim()) throw new TypeError('Invalid or duplicate variable mode.');
+      modeIds.add(mode.id);
+    }
+    if (!modeIds.has(collection.defaultModeId)) throw new TypeError('Variable collection default mode is missing.');
+    modesByCollection.set(collection.id, modeIds);
+  }
+  if (document.variables != null && !Array.isArray(document.variables)) throw new TypeError('Variables must be a list.');
+  const variables = document.variables ?? [];
+  const variableIds = new Set();
+  const variableNames = new Set();
+  const variableById = new Map();
+  for (const variable of variables) {
+    const modes = modesByCollection.get(variable.collectionId);
+    const values = variable.valuesByMode;
+    const nameKey = `${variable.collectionId}:${String(variable.name || '').toLocaleLowerCase()}`;
+    if (!variable.id || variableIds.has(variable.id) || !modes || typeof variable.name !== 'string' || !variable.name.trim() || variableNames.has(nameKey) || variable.type !== 'color' || !values || typeof values !== 'object' || Array.isArray(values)) throw new TypeError('Invalid or duplicate variable.');
+    if (Object.keys(values).length !== modes.size || [...modes].some(modeId => !/^#[0-9a-f]{6}$/i.test(values[modeId] || ''))) throw new TypeError(`Invalid mode values for variable ${variable.name}.`);
+    variableIds.add(variable.id); variableNames.add(nameKey); variableById.set(variable.id, variable);
+  }
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const [property, kind] of [['fillVariableId', 'fill'], ['textVariableId', 'text'], ['strokeVariableId', 'stroke']]) {
+      const variable = variableById.get(node[property]);
+      if (node[property] && (!variable || variable.type !== 'color')) throw new TypeError(`Missing ${kind} variable on layer ${node.name || node.id}.`);
+      if (!variable) continue;
+      const compatible = kind === 'text' ? node.type === 'text'
+        : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+          : !['text', 'image', 'group', 'boolean'].includes(node.type);
+      if (!compatible) throw new TypeError(`Incompatible ${kind} variable on layer ${node.name || node.id}.`);
+    }
+    if (node.variableModes != null) {
+      if (node.type !== 'frame' || !node.variableModes || typeof node.variableModes !== 'object' || Array.isArray(node.variableModes)) throw new TypeError(`Invalid variable mode overrides on layer ${node.name || node.id}.`);
+      for (const [collectionId, modeId] of Object.entries(node.variableModes)) if (!modesByCollection.get(collectionId)?.has(modeId)) throw new TypeError(`Missing variable mode on layer ${node.name || node.id}.`);
+    }
+  });
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
   if (document.colorStyles != null) {
     if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');

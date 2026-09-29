@@ -218,7 +218,7 @@ export class SceneRenderer {
         ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('Loading image…', cx, cy);
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, node.radius); ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, node.radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'text') {
       ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
       ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${node.fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
@@ -227,11 +227,11 @@ export class SceneRenderer {
       const lineHeight = (node.fontSize || 24) * (node.lineHeight || 1.25);
       const offsetX = node.align === 'center' ? width / 2 : node.align === 'right' ? width : 0;
       lines.forEach((line, index) => ctx.fillText(line, x + offsetX, y + index * lineHeight, width));
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
       if (fill && fill !== 'transparent' && node.type !== 'line' && (node.type !== 'path' || node.closed)) { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
-      if (node.stroke && node.strokeWidth) { ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     }
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }

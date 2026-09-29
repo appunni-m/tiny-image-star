@@ -1,4 +1,4 @@
-import { addNode, createDocument, createNode } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, setColorVariableValue } from '../src/model.js';
 import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
@@ -403,6 +403,85 @@ try {
   const savedEditedPath = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(savedEditedPath?.points.length === 3 && savedEditedPath.closed, 'vector point edits did not preserve the closed path on disk');
 
+  const variablesDocument = createDocument();
+  const brandColors = createVariableCollection(variablesDocument, 'Brand colors');
+  brandColors.modes[0].name = 'Light';
+  const lightMode = brandColors.modes[0];
+  const darkMode = addVariableMode(variablesDocument, brandColors.id, 'Dark');
+  const surfaceVariable = createColorVariable(variablesDocument, brandColors.id, 'Surface', '#f7f7f7');
+  setColorVariableValue(variablesDocument, surfaceVariable.id, '#202124', darkMode.id);
+  const themeFrame = createNode('frame', { name: 'Theme frame', width: 300, height: 210 });
+  const nestedThemeFrame = createNode('frame', { name: 'Nested theme', x: 20, y: 20, width: 250, height: 160 });
+  const variableSurface = createNode('rectangle', { name: 'Variable surface', x: 12, y: 12, width: 150, height: 80, fillVariableId: surfaceVariable.id });
+  const variableHeading = createNode('text', { name: 'Variable heading', x: 12, y: 108, width: 180, height: 32, text: 'Local variables', textVariableId: surfaceVariable.id });
+  addNode(variablesDocument, themeFrame);
+  addNode(variablesDocument, nestedThemeFrame, { parentId: themeFrame.id });
+  addNode(variablesDocument, variableSurface, { parentId: nestedThemeFrame.id });
+  addNode(variablesDocument, variableHeading, { parentId: nestedThemeFrame.id });
+  const variablesInput = app.querySelector('#open-file-input'); const variablesTransfer = new DataTransfer();
+  variablesTransfer.items.add(new File([buildPackage(variablesDocument, [])], 'variables-smoke.flocal', { type: 'application/octet-stream' }));
+  Object.defineProperty(variablesInput, 'files', { configurable: true, value: variablesTransfer.files });
+  variablesInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'variable collection fixture import');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  dispatchClick(app.querySelector(`.variable-mode-add[data-collection-id="${brandColors.id}"]`));
+  assert(app.querySelector('#variable-dialog').open, 'adding a mode did not open the native variable dialog');
+  app.querySelector('#variable-name').value = 'Contrast';
+  dispatchClick(app.querySelector('#variable-save'));
+  await waitFor(() => [...app.querySelectorAll(`[data-variable-default-mode="${brandColors.id}"] option`)].some(option => option.textContent === 'Contrast'), 'new variable mode');
+  dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  dispatchClick(app.querySelector(`[data-layer-id="${themeFrame.id}"]`));
+  let frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  assert(frameModeControl, 'frame inspector did not expose collection mode overrides');
+  frameModeControl.value = darkMode.id; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'dark frame mode autosave');
+  let variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let savedVariables = variableRecords[0]?.document;
+  let savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  let savedVariableHeading = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
+  assert(getNodeColor(savedVariables, savedVariableSurface) === '#202124' && getNodeColor(savedVariables, savedVariableHeading, 'text') === '#202124', 'frame mode did not update bound fills and text together');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
+  frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  frameModeControl.value = lightMode.id; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'nested frame mode autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  assert(getNodeColor(savedVariables, savedVariableSurface) === '#f7f7f7', 'nested frame mode did not override its parent mode');
+  frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  frameModeControl.value = ''; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'inherited frame mode autosave');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  dispatchClick(app.querySelector('[data-action="create-color-variable"][data-kind="fill"]'));
+  assert(app.querySelector('#variable-dialog').open, 'creating a variable from a layer did not open the native dialog');
+  app.querySelector('#variable-name').value = 'Card accent';
+  dispatchClick(app.querySelector('#variable-save'));
+  await waitFor(() => [...app.querySelectorAll('[data-variable-binding="fill"] option')].some(option => option.textContent.includes('Card accent')), 'color variable creation from a layer');
+  const accentOption = [...app.querySelectorAll('[data-variable-binding="fill"] option')].find(option => option.textContent.includes('Card accent'));
+  const accentId = accentOption?.value;
+  assert(accentId, 'new color variable was not available for binding');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  const defaultModeControl = app.querySelector(`[data-variable-default-mode="${brandColors.id}"]`);
+  defaultModeControl.value = darkMode.id; defaultModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  const accentValue = app.querySelector(`[data-variable-value="${accentId}"]`);
+  assert(accentValue, 'new variable did not appear in the Assets collection');
+  accentValue.value = '#eeaa33'; accentValue.dispatchEvent(new Event('input', { bubbles: true })); accentValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'color variable edit autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  assert(savedVariableSurface.fillVariableId === accentId && getNodeColor(savedVariables, savedVariableSurface) === '#eeaa33', 'edited variable did not repaint its bound layer');
+  const fillBinding = app.querySelector('[data-variable-binding="fill"]');
+  fillBinding.value = ''; fillBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'variable unlink autosave');
+  assert(!app.querySelector('[data-variable-binding="fill"]')?.value, 'inspector could not remove a variable binding');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  dispatchClick(app.querySelector(`[data-variable-apply="${accentId}"]`));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'variable Assets binding autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  assert(savedVariableSurface.fillVariableId === accentId && getNodeColor(savedVariables, savedVariableSurface) === '#eeaa33', 'Assets variable card did not bind the selected layer');
+
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
   const booleanBase = createNode('rectangle', { name: 'Boolean base', x: 0, y: 0, width: 160, height: 90, fill: '#0055ff' });
@@ -464,7 +543,7 @@ try {
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

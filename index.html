@@ -49,6 +49,8 @@
           <section class="assets-section" id="assets-section" hidden>
             <div class="section-heading"><span>Components</span></div>
             <div id="components-list" class="components-list"></div>
+            <div class="section-heading"><span>Variables</span><button class="tiny-icon-button" id="add-variable-collection" aria-label="Create variable collection" title="Create variable collection">＋</button></div>
+            <div id="variable-collections-list" class="variable-collections-list"></div>
             <div class="section-heading"><span>Color styles</span></div>
             <div id="color-styles-list" class="color-styles-list"></div>
             <div class="section-heading local-assets-heading"><span>Local images</span><button class="tiny-icon-button" id="place-image-assets" title="Place image">＋</button></div>
@@ -125,6 +127,15 @@
           <label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required />
           <div class="recipe-preview" id="recipe-preview"><span class="recipe-preview-icon">✦</span><span id="recipe-preview-summary">Brightness · Contrast · Color</span></div>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-recipe-confirm" value="save">Save recipe</button></div>
+        </form>
+      </dialog>
+
+      <dialog class="modal" id="variable-dialog" aria-labelledby="variable-dialog-title">
+        <form method="dialog" id="variable-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL DESIGN SYSTEM</span><h2 id="variable-dialog-title">Create variable</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <p class="modal-copy" id="variable-dialog-copy">Name this item for your design system.</p>
+          <label class="field-label" for="variable-name" id="variable-name-label">Name</label><input id="variable-name" class="text-field" maxlength="60" required />
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="variable-save" value="save">Create</button></div>
         </form>
       </dialog>
 

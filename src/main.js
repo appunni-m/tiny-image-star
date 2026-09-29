@@ -1,7 +1,7 @@
 import {
-  addNode, applyColorStyle, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createComponent, createComponentInstance, createComponentSet,
-  createDocument, createId, createImageRecipe, createNode, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, setComponentVariantProperty,
+  addNode, addVariableMode, applyColorStyle, bindColorVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createComponent, createComponentInstance, createComponentSet,
+  createDocument, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, setColorVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
@@ -26,6 +26,7 @@ const state = {
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
   bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '',
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
+  pendingVariableDialog: null,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
@@ -182,16 +183,26 @@ function colorField(label, prop, value, opacity = 100) {
   const safe = /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#ffffff';
   return `<div class="fill-row"><label class="color-swatch" title="${label}"><input class="prop-input" data-prop="${prop}" type="color" value="${safe}" aria-label="${label} color"/></label><input class="prop-input color-value" data-prop="${prop}" type="text" value="${safe}" maxlength="7" aria-label="${label} color value"/><input class="prop-input fill-opacity" data-prop="fillOpacity" type="number" min="0" max="100" value="${opacity}" title="Opacity percent"/></div>`;
 }
+function variableBindingControl(node, kind) {
+  const property = { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind];
+  const variables = state.document.variables || [];
+  const selected = node[property] || '';
+  const options = variables.filter(variable => variable.type === 'color').map(variable => {
+    const collection = state.document.variableCollections?.find(item => item.id === variable.collectionId);
+    return `<option value="${escapeHtml(variable.id)}"${selected === variable.id ? ' selected' : ''}>${escapeHtml(variable.name)} · ${escapeHtml(collection?.name || 'Collection')}</option>`;
+  }).join('');
+  return `<label class="variable-binding-row"><span>Variable</span><select class="select-field" data-variable-binding="${kind}" aria-label="${kind} color variable"><option value="">No variable</option>${options}</select></label>`;
+}
 function transformSection(node) {
   const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((node.opacity ?? 1) * 100))}</div>`;
   return section('Position', body);
 }
 function appearanceSection(node) {
   const fill = colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100));
-  const stroke = node.stroke ? colorField('Stroke', 'stroke', node.stroke, 100) : '';
+  const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>` : '';
   const radius = ['rectangle', 'frame', 'section'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', node.radius || 0)}</div>` : '';
-  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>`;
-  const body = `${fill}${stroke}${styleActions}${radius}`;
+  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
+  const body = `${fill}${variableBindingControl(node, 'fill')}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -240,8 +251,18 @@ function componentSection(node) {
   return section('Component', '<button class="add-fill" data-action="create-component">◇ Create component</button><div class="image-properties-note">Create a reusable main component from this layer and its children.</div>');
 }
 function textSection(node) {
-  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}</div><button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button>`;
+  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div><button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   return section('Typography', body);
+}
+function frameVariableModesSection(frame) {
+  const collections = state.document.variableCollections || [];
+  if (!collections.length) return '';
+  const controls = collections.map(collection => {
+    const selected = frame.variableModes?.[collection.id] || '';
+    const modes = collection.modes.map(mode => `<option value="${escapeHtml(mode.id)}"${selected === mode.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('');
+    return `<label class="frame-variable-mode"><span>${escapeHtml(collection.name)}</span><select class="select-field" data-frame-variable-mode="${escapeHtml(collection.id)}"><option value="">Inherit</option>${modes}</select></label>`;
+  }).join('');
+  return section('Variables', `${controls}<div class="image-properties-note">Nested layers use the closest frame mode override.</div>`);
 }
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
@@ -300,10 +321,10 @@ function renderInspector() {
     const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
     body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.closed) body += appearanceSection(node);
-    else body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+    else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
-  else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
-  if (node.type === 'frame') body += autoLayoutSection(node);
+  else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
     const sizing = node.layoutSizingMain || 'hug';
@@ -319,6 +340,37 @@ function renderInspector() {
 function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
   const components = $('#components-list'); components.replaceChildren();
+  const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
+  const collections = state.document.variableCollections || [];
+  if (!collections.length) {
+    const empty = document.createElement('div'); empty.className = 'variables-empty'; empty.textContent = 'Create color variables to share colors and switch themes by frame.'; variableCollections.append(empty);
+  }
+  for (const collection of collections) {
+    const card = document.createElement('section'); card.className = 'variable-collection-card';
+    const header = document.createElement('div'); header.className = 'variable-collection-header';
+    const title = document.createElement('strong'); title.textContent = collection.name;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'tiny-icon-button'; remove.dataset.action = 'delete-variable-collection'; remove.dataset.collectionId = collection.id; remove.setAttribute('aria-label', `Delete ${collection.name} variable collection`); remove.title = 'Delete collection'; remove.textContent = '×';
+    header.append(title, remove);
+    const controls = document.createElement('div'); controls.className = 'variable-collection-controls';
+    const mode = document.createElement('select'); mode.className = 'select-field'; mode.dataset.variableDefaultMode = collection.id; mode.setAttribute('aria-label', `${collection.name} default mode`);
+    for (const item of collection.modes) { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; option.selected = item.id === collection.defaultModeId; mode.append(option); }
+    const addMode = document.createElement('button'); addMode.type = 'button'; addMode.className = 'variable-mode-add'; addMode.dataset.action = 'add-variable-mode'; addMode.dataset.collectionId = collection.id; addMode.textContent = '+ Mode';
+    controls.append(mode, addMode);
+    const rows = document.createElement('div'); rows.className = 'variable-rows';
+    const variables = (state.document.variables || []).filter(variable => variable.collectionId === collection.id);
+    for (const variable of variables) {
+      const row = document.createElement('div'); row.className = 'variable-row';
+      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'variable-apply'; apply.dataset.variableApply = variable.id; apply.title = `Apply ${variable.name} to selected layers`;
+      const swatch = document.createElement('span'); swatch.className = 'variable-swatch'; swatch.style.backgroundColor = variable.valuesByMode?.[collection.defaultModeId] || '#ffffff';
+      const name = document.createElement('span'); name.className = 'variable-name'; name.textContent = variable.name;
+      apply.append(swatch, name);
+      const value = document.createElement('input'); value.type = 'color'; value.className = 'variable-value'; value.value = variable.valuesByMode?.[collection.defaultModeId] || '#1e1e1e'; value.dataset.variableValue = variable.id; value.dataset.modeId = collection.defaultModeId; value.title = `${variable.name} · ${collection.modes.find(item => item.id === collection.defaultModeId)?.name || 'Mode'}`; value.setAttribute('aria-label', `${variable.name} color value`);
+      const removeVariable = document.createElement('button'); removeVariable.type = 'button'; removeVariable.className = 'tiny-icon-button variable-remove'; removeVariable.dataset.action = 'delete-color-variable'; removeVariable.dataset.variableId = variable.id; removeVariable.setAttribute('aria-label', `Delete ${variable.name}`); removeVariable.title = 'Delete variable'; removeVariable.textContent = '×';
+      row.append(apply, value, removeVariable); rows.append(row);
+    }
+    const addVariable = document.createElement('button'); addVariable.type = 'button'; addVariable.className = 'add-fill'; addVariable.dataset.action = 'add-color-variable'; addVariable.dataset.collectionId = collection.id; addVariable.textContent = '＋ New color variable';
+    card.append(header, controls, rows, addVariable); variableCollections.append(card);
+  }
   const componentItems = state.document.components || [];
   const componentSetItems = state.document.componentSets || [];
   const groupedComponentIds = new Set(componentSetItems.flatMap(set => set.componentIds));
@@ -818,7 +870,7 @@ function editTextNode(nodeId) {
   editor.style.fontFamily = entry.node.fontFamily;
   editor.style.fontSize = `${entry.node.fontSize * state.zoom}px`;
   editor.style.lineHeight = String(entry.node.lineHeight);
-  editor.style.color = entry.node.color;
+  editor.style.color = getNodeColor(state.document, entry.node, 'text');
   editor.textContent = entry.node.text;
   editor.hidden = false; editor.focus();
   if (!entry.node.text) document.execCommand?.('selectAll', false, null);
@@ -883,8 +935,13 @@ function updateInspectorInput(event) {
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
     const oldWidth = node.width; const oldHeight = node.height;
+    const variableProperty = prop === 'fill' ? 'fillVariableId' : prop === 'color' ? 'textVariableId' : prop === 'stroke' ? 'strokeVariableId' : null;
     if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
     else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
+    else if (variableProperty && instanceRoot) { delete node[variableProperty]; if (prop === 'fill') delete node.fillStyleId; if (prop === 'color') delete node.textStyleId; node[prop] = value; }
+    else if (prop === 'fill' && node.fillVariableId) setColorVariableValue(state.document, node.fillVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.fillVariableId)?.collectionId, node));
+    else if (prop === 'color' && node.textVariableId) setColorVariableValue(state.document, node.textVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.textVariableId)?.collectionId, node));
+    else if (prop === 'stroke' && node.strokeVariableId) setColorVariableValue(state.document, node.strokeVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.strokeVariableId)?.collectionId, node));
     else if (prop === 'fill' && instanceRoot) { delete node.fillStyleId; node.fill = value; }
     else if (prop === 'color' && instanceRoot) { delete node.textStyleId; node.color = value; }
     else if (prop === 'fill' && node.fillStyleId) {
@@ -1090,6 +1147,117 @@ function applyStyleToSelection(styleId) {
     if (instanceRoot) recordComponentOverride(instanceRoot, node, style.kind === 'text' ? 'textStyleId' : 'fillStyleId');
   }
   renderUI(); queueSave();
+}
+
+function applyColorVariableToSelection(variableId, requestedKind = null) {
+  if (!state.selectedIds.length) { showToast('Select a layer to bind a color variable.'); return; }
+  if (variableId && !state.document.variables?.some(variable => variable.id === variableId && variable.type === 'color')) { showToast('This color variable no longer exists.'); return; }
+  const nodes = selectedNodes();
+  const changes = nodes.map(node => {
+    const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+    const compatible = kind === 'text' ? node.type === 'text'
+      : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+        : !['text', 'image', 'group', 'boolean'].includes(node.type);
+    return compatible ? { node, kind } : null;
+  }).filter(Boolean);
+  if (!changes.length) { showToast('This color variable is not compatible with the selection.'); return; }
+  checkpoint(variableId ? 'Bind color variable' : 'Remove color variable');
+  for (const { node, kind } of changes) {
+    bindColorVariable(state.document, node.id, variableId || null, kind);
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind]);
+  }
+  renderUI(); queueSave(); renderer.invalidate();
+}
+
+function createColorVariableFromSelection(kind = null) {
+  const nodes = selectedNodes();
+  if (!nodes.length) { showToast('Select a layer before creating a color variable.'); return; }
+  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed));
+  if (!source) { showToast('Select a compatible color layer first.'); return; }
+  const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !source.closed) ? 'stroke' : 'fill');
+  const current = getNodeColor(state.document, source, variableKind);
+  openVariableNameDialog({
+    type: 'selection', colorKind: variableKind, colorValue: /^#[0-9a-f]{6}$/i.test(current) ? current : '#1e1e1e',
+    title: 'Create color variable', label: 'Variable name', copy: 'Create a reusable color and bind it to the selected layer.', defaultName: `${source.name} color`
+  });
+}
+
+function selectedColorForVariable() {
+  const node = selectedNodes()[0];
+  if (!node) return '#1e1e1e';
+  return getNodeColor(state.document, node, node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+}
+
+function handleVariableAssetsAction(action, details = {}) {
+  if (action === 'add-variable-collection') {
+    openVariableNameDialog({ type: 'collection', title: 'Create variable collection', label: 'Collection name', copy: 'Collections group color variables and their theme modes.', defaultName: 'Colors' });
+  } else if (action === 'add-variable-mode') {
+    const collection = state.document.variableCollections?.find(item => item.id === details.collectionId);
+    if (!collection) return;
+    openVariableNameDialog({ type: 'mode', collectionId: collection.id, title: 'Create mode', label: 'Mode name', copy: `Add a theme mode to ${collection.name}. Existing values start from the collection default mode.`, defaultName: `Mode ${collection.modes.length + 1}` });
+  } else if (action === 'add-color-variable') {
+    const collection = state.document.variableCollections?.find(item => item.id === details.collectionId);
+    if (!collection) return;
+    openVariableNameDialog({ type: 'variable', collectionId: collection.id, title: 'Create color variable', label: 'Variable name', copy: `Add a color token to ${collection.name}.`, defaultName: `Color ${(state.document.variables || []).filter(item => item.collectionId === collection.id).length + 1}` });
+  } else if (action === 'delete-color-variable') {
+    checkpoint('Delete color variable'); deleteVariable(state.document, details.variableId);
+  } else if (action === 'delete-variable-collection') {
+    checkpoint('Delete variable collection'); deleteVariableCollection(state.document, details.collectionId);
+  } else return;
+  renderUI(); queueSave(); renderer.invalidate();
+}
+
+function openVariableNameDialog(options) {
+  const dialog = $('#variable-dialog');
+  const input = $('#variable-name');
+  state.pendingVariableDialog = options;
+  $('#variable-dialog-title').textContent = options.title;
+  $('#variable-dialog-copy').textContent = options.copy;
+  $('#variable-name-label').textContent = options.label;
+  input.value = options.defaultName || '';
+  dialog.returnValue = '';
+  dialog.showModal();
+  input.focus(); input.select();
+}
+
+function commitVariableNameDialog() {
+  const pending = state.pendingVariableDialog;
+  state.pendingVariableDialog = null;
+  if (!pending || $('#variable-dialog').returnValue !== 'save') return;
+  const name = $('#variable-name').value.trim();
+  if (!name) { showToast('Enter a name before creating this item.'); return; }
+  try {
+    if (pending.type === 'mode') {
+      const collection = state.document.variableCollections?.find(item => item.id === pending.collectionId);
+      if (!collection) throw new Error('The variable collection no longer exists.');
+      if (collection.modes.some(mode => mode.name.toLowerCase() === name.toLowerCase())) throw new Error('Choose a unique name for this mode.');
+      checkpoint('Add variable mode'); addVariableMode(state.document, collection.id, name);
+    } else if (pending.type === 'variable') {
+      const collection = state.document.variableCollections?.find(item => item.id === pending.collectionId);
+      if (!collection) throw new Error('The variable collection no longer exists.');
+      if ((state.document.variables || []).some(variable => variable.collectionId === collection.id && variable.name.toLowerCase() === name.toLowerCase())) throw new Error('A variable with that name already exists in this collection.');
+      checkpoint('Create color variable'); createColorVariable(state.document, collection.id, name, selectedColorForVariable());
+    } else if (pending.type === 'collection') {
+      checkpoint('Create variable collection'); createVariableCollection(state.document, name);
+    } else if (pending.type === 'selection') {
+      const nodes = selectedNodes();
+      if (!nodes.length) throw new Error('Select a layer before creating a color variable.');
+      const collection = state.document.variableCollections?.[0] || null;
+      if (collection && (state.document.variables || []).some(variable => variable.collectionId === collection.id && variable.name.toLowerCase() === name.toLowerCase())) throw new Error('A variable with that name already exists in this collection.');
+      checkpoint('Create color variable');
+      const targetCollection = collection || createVariableCollection(state.document, 'Colors');
+      const variable = createColorVariable(state.document, targetCollection.id, name, pending.colorValue || '#1e1e1e');
+      for (const node of nodes) {
+        const kind = pending.colorKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+        if (!bindColorVariable(state.document, node.id, variable.id, kind)) continue;
+        const instanceRoot = componentInstanceRoot(node.id);
+        if (instanceRoot) recordComponentOverride(instanceRoot, node, { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind]);
+      }
+      showToast(`Color variable “${variable.name}” created.`);
+    } else return;
+  } catch (error) { showToast(error.message || 'Could not create this variable item.'); return; }
+  renderUI(); queueSave(); renderer.invalidate();
 }
 
 function showMenu(items, x, y) {
@@ -1368,7 +1536,10 @@ function renderPresentationFrame(interaction = null) {
     Object.assign(displayOverlay, overlayPositionInFrame(overlayState.position, displayFrame, displayOverlay));
     sceneChildren.push(displayOverlay);
   }
-  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: sceneChildren }], colorStyles: state.document.colorStyles || [] };
+  presentRenderState.document = {
+    activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: sceneChildren }],
+    colorStyles: state.document.colorStyles || [], variableCollections: state.document.variableCollections || [], variables: state.document.variables || []
+  };
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
   const rect = $('#present-canvas').getBoundingClientRect();
@@ -1518,6 +1689,7 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
   else if (action === 'insert-vector-point' && node?.type === 'path') insertPathPointOnLongestSegment(node.id);
   else if (action === 'delete-vector-point' && node?.type === 'path') deleteSelectedVectorPoint(node.id);
+  else if (action === 'create-color-variable') createColorVariableFromSelection(details.kind || null);
   else if (action === 'create-color-style') {
     if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }
     const current = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
@@ -1627,6 +1799,17 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (event.target.matches('[data-prop]')) finishInspectorInput();
+    if (event.target.matches('[data-variable-binding]')) applyColorVariableToSelection(event.target.value, event.target.dataset.variableBinding);
+    if (event.target.matches('[data-frame-variable-mode]')) {
+      const frame = selectedNodes()[0];
+      if (frame?.type === 'frame') {
+        checkpoint('Set frame variable mode');
+        setFrameVariableMode(state.document, frame.id, event.target.dataset.frameVariableMode, event.target.value || null);
+        const instanceRoot = componentInstanceRoot(frame.id);
+        if (instanceRoot) recordComponentOverride(instanceRoot, frame, 'variableModes');
+        renderUI(); queueSave(); renderer.invalidate();
+      }
+    }
     if (event.target.matches('[data-variant-property]')) changeInstanceVariant(event.target.dataset.instanceId, event.target.dataset.variantProperty, event.target.value);
     if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
     if (event.target.id === 'prototype-action') { state.prototypeAction = event.target.value; renderInspector(); }
@@ -1646,6 +1829,32 @@ function initEvents() {
   $('#layer-search').addEventListener('input', event => { state.layerSearch = event.currentTarget.value; renderLayers(); });
   $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { node.visible = true; }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
+  $('#add-variable-collection').addEventListener('click', () => handleVariableAssetsAction('add-variable-collection'));
+  $('#variable-collections-list').addEventListener('click', event => {
+    const apply = event.target.closest('[data-variable-apply]');
+    if (apply) { applyColorVariableToSelection(apply.dataset.variableApply); return; }
+    const action = event.target.closest('[data-action]');
+    if (action) handleVariableAssetsAction(action.dataset.action, action.dataset);
+  });
+  $('#variable-collections-list').addEventListener('input', event => {
+    const input = event.target.closest('[data-variable-value]');
+    if (!input) return;
+    if (!state.controlEdit) { checkpoint('Edit color variable'); state.controlEdit = true; }
+    setColorVariableValue(state.document, input.dataset.variableValue, input.value, input.dataset.modeId);
+    renderer.invalidate();
+  });
+  $('#variable-collections-list').addEventListener('change', event => {
+    const mode = event.target.closest('[data-variable-default-mode]');
+    if (mode) {
+      const collection = state.document.variableCollections?.find(item => item.id === mode.dataset.variableDefaultMode);
+      if (!collection || collection.defaultModeId === mode.value) return;
+      checkpoint('Change default variable mode'); collection.defaultModeId = mode.value;
+      renderUI(); queueSave(); renderer.invalidate(); return;
+    }
+    if (event.target.matches('[data-variable-value]')) {
+      state.controlEdit = false; renderUI(); queueSave(); renderer.invalidate();
+    }
+  });
   $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
   $('#components-list').addEventListener('click', event => {
     const setCard = event.target.closest('[data-component-set-id]');
@@ -1679,6 +1888,8 @@ function initEvents() {
     queueSave(); showToast(`Recipe “${recipe.name}” saved. Right-click selected images to apply it.`);
   });
   $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
+  $('#variable-dialog').addEventListener('close', commitVariableNameDialog);
+  $('#variable-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#variable-dialog').returnValue = 'save'; });
   $('#bulk-speed').max = String(CPU_LIMIT);
   $('#bulk-speed').addEventListener('input', event => { if (!state.bulk) return; state.bulk.concurrency = Number(event.currentTarget.value); imageEngine.setConcurrency(state.bulk.concurrency); renderBulkBar(); scheduleBulk(); });
   $('#bulk-pause').addEventListener('click', () => { if (!state.bulk) return; state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk(); });
