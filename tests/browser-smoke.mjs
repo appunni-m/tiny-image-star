@@ -1,4 +1,4 @@
-import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, setColorVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
@@ -464,7 +464,7 @@ try {
   dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
   const defaultModeControl = app.querySelector(`[data-variable-default-mode="${brandColors.id}"]`);
   defaultModeControl.value = darkMode.id; defaultModeControl.dispatchEvent(new Event('change', { bubbles: true }));
-  const accentValue = app.querySelector(`[data-variable-value="${accentId}"]`);
+  const accentValue = app.querySelector(`[data-variable-value="${accentId}"][data-mode-id="${darkMode.id}"]`);
   assert(accentValue, 'new variable did not appear in the Assets collection');
   accentValue.value = '#eeaa33'; accentValue.dispatchEvent(new Event('input', { bubbles: true })); accentValue.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'color variable edit autosave');
@@ -481,6 +481,57 @@ try {
   variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
   savedVariableSurface = flattenNodes(savedVariables?.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
   assert(savedVariableSurface.fillVariableId === accentId && getNodeColor(savedVariables, savedVariableSurface) === '#eeaa33', 'Assets variable card did not bind the selected layer');
+
+  dispatchClick(app.querySelector(`[data-action="add-variable"][data-collection-id="${brandColors.id}"]`));
+  app.querySelector('#variable-name').value = 'Spacing base';
+  app.querySelector('#variable-type').value = 'number';
+  dispatchClick(app.querySelector('#variable-save'));
+  await waitFor(() => [...app.querySelectorAll('.variable-type-badge')].some(item => item.textContent === 'number'), 'number variable creation');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'number variable autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  const spacingBase = savedVariables.variables.find(variable => variable.name === 'Spacing base');
+  assert(spacingBase?.type === 'number', 'variable type selector did not create a numeric variable');
+  let spacingValue = app.querySelector(`[data-variable-value="${spacingBase.id}"][data-mode-id="${darkMode.id}"]`);
+  spacingValue.value = '12'; spacingValue.dispatchEvent(new Event('input', { bubbles: true })); spacingValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'numeric variable edit autosave');
+
+  dispatchClick(app.querySelector(`[data-action="add-variable"][data-collection-id="${brandColors.id}"]`));
+  app.querySelector('#variable-name').value = 'Spacing component';
+  app.querySelector('#variable-type').value = 'number';
+  dispatchClick(app.querySelector('#variable-save'));
+  await waitFor(() => [...app.querySelectorAll('.variable-name')].some(item => item.textContent === 'Spacing component'), 'second numeric variable creation');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'second number variable autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  const spacingComponent = savedVariables.variables.find(variable => variable.name === 'Spacing component');
+  const spacingAlias = app.querySelector(`[data-variable-alias="${spacingComponent.id}"][data-mode-id="${darkMode.id}"]`);
+  spacingAlias.value = spacingBase.id; spacingAlias.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector(`[data-variable-value="${spacingComponent.id}"][data-mode-id="${darkMode.id}"]`)?.disabled, 'numeric variable alias selection');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'numeric variable alias autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  assert(resolveVariableValue(savedVariables, spacingComponent.id) === 12, 'numeric variable alias did not resolve its source value');
+  spacingValue = app.querySelector(`[data-variable-value="${spacingBase.id}"][data-mode-id="${darkMode.id}"]`);
+  spacingValue.value = '21'; spacingValue.dispatchEvent(new Event('input', { bubbles: true })); spacingValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'numeric alias source autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  assert(resolveVariableValue(savedVariables, spacingComponent.id) === 21, 'numeric variable alias did not update with its source');
+
+  for (const [type, name, expected] of [['string', 'Action text', 'Save changes'], ['boolean', 'Action enabled', true]]) {
+    dispatchClick(app.querySelector(`[data-action="add-variable"][data-collection-id="${brandColors.id}"]`));
+    app.querySelector('#variable-name').value = name;
+    app.querySelector('#variable-type').value = type;
+    dispatchClick(app.querySelector('#variable-save'));
+    await waitFor(() => [...app.querySelectorAll('.variable-name')].some(item => item.textContent === name), `${type} variable creation`);
+    await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${type} variable autosave`);
+    variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+    const variable = savedVariables.variables.find(item => item.name === name);
+    const value = app.querySelector(`[data-variable-value="${variable.id}"][data-mode-id="${darkMode.id}"]`);
+    if (type === 'boolean') value.checked = expected;
+    else value.value = expected;
+    value.dispatchEvent(new Event('input', { bubbles: true })); value.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${type} value autosave`);
+    variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+    assert(resolveVariableValue(savedVariables, variable.id) === expected, `${type} variable did not retain its typed value`);
+  }
 
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
@@ -543,7 +594,7 @@ try {
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

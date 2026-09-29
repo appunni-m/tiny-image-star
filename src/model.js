@@ -1,4 +1,17 @@
 const clone = value => structuredClone(value);
+const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
+
+function isVariableValue(type, value) {
+  if (type === 'color') return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+  if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+  if (type === 'string') return typeof value === 'string';
+  if (type === 'boolean') return typeof value === 'boolean';
+  return false;
+}
+
+function defaultVariableValue(type) {
+  return type === 'color' ? '#1e1e1e' : type === 'number' ? 0 : type === 'string' ? '' : false;
+}
 
 export function createId(prefix = 'id') {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -305,32 +318,130 @@ export function addVariableMode(document, collectionId, name = null) {
   const sourceModeId = collection.defaultModeId;
   collection.modes.push(mode);
   for (const variable of document.variables || []) {
-    if (variable.collectionId === collectionId) variable.valuesByMode[mode.id] = variable.valuesByMode[sourceModeId];
+    if (variable.collectionId !== collectionId) continue;
+    variable.valuesByMode[mode.id] = variable.valuesByMode[sourceModeId];
+    if (variable.aliasesByMode?.[sourceModeId]) {
+      variable.aliasesByMode ||= {};
+      variable.aliasesByMode[mode.id] = variable.aliasesByMode[sourceModeId];
+    }
   }
   return mode;
 }
 
-export function createColorVariable(document, collectionId, name, value = '#1e1e1e') {
+export function createVariable(document, collectionId, name, type = 'color', value = defaultVariableValue(type)) {
   const collection = document.variableCollections?.find(item => item.id === collectionId);
   if (!collection) throw new Error('The variable collection no longer exists.');
-  if (!/^#[0-9a-f]{6}$/i.test(String(value))) throw new TypeError('Color variables require a solid six-digit color.');
-  const nextName = String(name).trim() || `Color ${(document.variables || []).filter(item => item.collectionId === collectionId).length + 1}`;
+  if (!variableTypes.has(type) || !isVariableValue(type, value)) throw new TypeError(`Invalid ${type} variable value.`);
+  const nextName = String(name).trim() || `${type[0].toUpperCase()}${type.slice(1)} ${(document.variables || []).filter(item => item.collectionId === collectionId).length + 1}`;
   if ((document.variables || []).some(variable => variable.collectionId === collectionId && variable.name.toLowerCase() === nextName.toLowerCase())) throw new TypeError('A variable with that name already exists in this collection.');
   const valuesByMode = Object.fromEntries(collection.modes.map(mode => [mode.id, value]));
-  const variable = { id: createId('variable'), collectionId, name: nextName, type: 'color', valuesByMode };
+  const variable = { id: createId('variable'), collectionId, name: nextName, type, valuesByMode };
   document.variables ||= [];
   document.variables.push(variable);
   return variable;
 }
 
-export function setColorVariableValue(document, variableId, value, modeId = null) {
+export function createColorVariable(document, collectionId, name, value = '#1e1e1e') {
+  return createVariable(document, collectionId, name, 'color', value);
+}
+
+export function setVariableValue(document, variableId, value, modeId = null) {
   const variable = document.variables?.find(item => item.id === variableId);
   const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
-  if (!variable || variable.type !== 'color' || !collection) return false;
+  if (!variable || !collection || !isVariableValue(variable.type, value)) return false;
   const targetModeId = modeId || collection.defaultModeId;
-  if (!collection.modes.some(mode => mode.id === targetModeId) || !/^#[0-9a-f]{6}$/i.test(String(value))) return false;
+  if (!collection.modes.some(mode => mode.id === targetModeId)) return false;
   variable.valuesByMode[targetModeId] = value;
+  if (variable.aliasesByMode) {
+    delete variable.aliasesByMode[targetModeId];
+    if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
+  }
   return true;
+}
+
+export function setColorVariableValue(document, variableId, value, modeId = null) {
+  const normalized = typeof value === 'string' ? value : String(value);
+  const variable = document.variables?.find(item => item.id === variableId);
+  if (!variable || variable.type !== 'color') return false;
+  return setVariableValue(document, variableId, normalized, modeId);
+}
+
+function variableAliasesHaveCycle(variables) {
+  const byId = new Map(variables.map(variable => [variable.id, variable]));
+  const indegree = new Map(variables.map(variable => [variable.id, 0]));
+  for (const variable of variables) for (const targetId of new Set(Object.values(variable.aliasesByMode || {}))) {
+    if (indegree.has(targetId)) indegree.set(targetId, indegree.get(targetId) + 1);
+  }
+  const ready = [...indegree].filter(([, count]) => count === 0).map(([id]) => id);
+  let visited = 0;
+  for (let index = 0; index < ready.length; index += 1) {
+    const variable = byId.get(ready[index]);
+    visited += 1;
+    for (const targetId of new Set(Object.values(variable.aliasesByMode || {}))) {
+      if (!indegree.has(targetId)) continue;
+      const count = indegree.get(targetId) - 1;
+      indegree.set(targetId, count);
+      if (count === 0) ready.push(targetId);
+    }
+  }
+  return visited !== variables.length;
+}
+
+export function setVariableAlias(document, variableId, targetVariableId, modeId = null) {
+  const variable = document.variables?.find(item => item.id === variableId);
+  const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+  const target = targetVariableId ? document.variables?.find(item => item.id === targetVariableId) : null;
+  if (!variable || !collection || (targetVariableId && (!target || target.id === variable.id || target.type !== variable.type))) return false;
+  const targetModeId = modeId || collection.defaultModeId;
+  if (!collection.modes.some(mode => mode.id === targetModeId)) return false;
+  variable.aliasesByMode ||= {};
+  const previousTargetId = variable.aliasesByMode[targetModeId];
+  if (targetVariableId) variable.aliasesByMode[targetModeId] = targetVariableId;
+  else delete variable.aliasesByMode[targetModeId];
+  if (variableAliasesHaveCycle(document.variables || [])) {
+    if (previousTargetId) variable.aliasesByMode[targetModeId] = previousTargetId;
+    else delete variable.aliasesByMode[targetModeId];
+    if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
+    return false;
+  }
+  if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
+  return true;
+}
+
+function resolveVariableValueInternal(document, variableId, node, modeOverrides, resolving) {
+  if (resolving.has(variableId)) return null;
+  const variable = document.variables?.find(item => item.id === variableId);
+  const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+  if (!variable || !collection) return null;
+  const requestedModeId = modeOverrides.get(collection.id);
+  const modeId = requestedModeId && collection.modes.some(mode => mode.id === requestedModeId)
+    ? requestedModeId : variableModeForNode(document, collection.id, node);
+  const targetId = variable.aliasesByMode?.[modeId];
+  if (targetId) {
+    resolving.add(variableId);
+    const value = resolveVariableValueInternal(document, targetId, node, modeOverrides, resolving);
+    resolving.delete(variableId);
+    return value;
+  }
+  return variable.valuesByMode?.[modeId] ?? variable.valuesByMode?.[collection.defaultModeId] ?? null;
+}
+
+export function resolveVariableValue(document, variableId, node = null) {
+  return resolveVariableValueInternal(document, variableId, node, new Map(), new Set());
+}
+
+function materializeAliasesToRemovedVariables(document, removedIds) {
+  for (const variable of document.variables || []) {
+    if (removedIds.has(variable.id)) continue;
+    const collection = document.variableCollections.find(item => item.id === variable.collectionId);
+    for (const [modeId, targetId] of Object.entries(variable.aliasesByMode || {})) {
+      if (!removedIds.has(targetId)) continue;
+      const value = resolveVariableValueInternal(document, variable.id, null, new Map([[collection.id, modeId]]), new Set());
+      if (isVariableValue(variable.type, value)) variable.valuesByMode[modeId] = value;
+      delete variable.aliasesByMode[modeId];
+    }
+    if (!Object.keys(variable.aliasesByMode || {}).length) delete variable.aliasesByMode;
+  }
 }
 
 function clearVariableReferencesFromComponentOverrides(document, variableIds, collectionId = null) {
@@ -351,6 +462,7 @@ function clearVariableReferencesFromComponentOverrides(document, variableIds, co
 export function deleteVariable(document, variableId) {
   const index = (document.variables || []).findIndex(variable => variable.id === variableId);
   if (index < 0) return false;
+  materializeAliasesToRemovedVariables(document, new Set([variableId]));
   document.variables.splice(index, 1);
   const properties = ['fillVariableId', 'textVariableId', 'strokeVariableId'];
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
@@ -364,6 +476,7 @@ export function deleteVariableCollection(document, collectionId) {
   const index = (document.variableCollections || []).findIndex(collection => collection.id === collectionId);
   if (index < 0) return false;
   const variableIds = new Set((document.variables || []).filter(variable => variable.collectionId === collectionId).map(variable => variable.id));
+  materializeAliasesToRemovedVariables(document, variableIds);
   document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
   document.variableCollections.splice(index, 1);
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
@@ -398,10 +511,8 @@ export function variableModeForNode(document, collectionId, node) {
 export function resolveColorVariable(document, variableId, node = null) {
   const variable = document.variables?.find(item => item.id === variableId && item.type === 'color');
   if (!variable) return null;
-  const collection = document.variableCollections?.find(item => item.id === variable.collectionId);
-  if (!collection) return null;
-  const modeId = variableModeForNode(document, collection.id, node);
-  return variable.valuesByMode?.[modeId] || variable.valuesByMode?.[collection.defaultModeId] || null;
+  const value = resolveVariableValue(document, variable.id, node);
+  return isVariableValue('color', value) ? value : null;
 }
 
 export function bindColorVariable(document, nodeId, variableId, kind = 'fill', pageId = document.activePageId) {
@@ -847,10 +958,20 @@ export function validateDocument(document) {
     const modes = modesByCollection.get(variable.collectionId);
     const values = variable.valuesByMode;
     const nameKey = `${variable.collectionId}:${String(variable.name || '').toLocaleLowerCase()}`;
-    if (!variable.id || variableIds.has(variable.id) || !modes || typeof variable.name !== 'string' || !variable.name.trim() || variableNames.has(nameKey) || variable.type !== 'color' || !values || typeof values !== 'object' || Array.isArray(values)) throw new TypeError('Invalid or duplicate variable.');
-    if (Object.keys(values).length !== modes.size || [...modes].some(modeId => !/^#[0-9a-f]{6}$/i.test(values[modeId] || ''))) throw new TypeError(`Invalid mode values for variable ${variable.name}.`);
+    if (!variable.id || variableIds.has(variable.id) || !modes || typeof variable.name !== 'string' || !variable.name.trim() || variableNames.has(nameKey) || !variableTypes.has(variable.type) || !values || typeof values !== 'object' || Array.isArray(values)) throw new TypeError('Invalid or duplicate variable.');
+    if (Object.keys(values).length !== modes.size || [...modes].some(modeId => !isVariableValue(variable.type, values[modeId]))) throw new TypeError(`Invalid mode values for variable ${variable.name}.`);
     variableIds.add(variable.id); variableNames.add(nameKey); variableById.set(variable.id, variable);
   }
+  for (const variable of variables) {
+    const modes = modesByCollection.get(variable.collectionId);
+    const aliases = variable.aliasesByMode;
+    if (aliases != null && (!aliases || typeof aliases !== 'object' || Array.isArray(aliases) || Object.keys(aliases).some(modeId => !modes.has(modeId)))) throw new TypeError(`Invalid aliases for variable ${variable.name}.`);
+    for (const targetId of Object.values(aliases || {})) {
+      const target = variableById.get(targetId);
+      if (!target || target.id === variable.id || target.type !== variable.type) throw new TypeError(`Invalid alias for variable ${variable.name}.`);
+    }
+  }
+  if (variableAliasesHaveCycle(variables)) throw new TypeError('Variable aliases cannot contain a cycle.');
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const [property, kind] of [['fillVariableId', 'fill'], ['textVariableId', 'text'], ['strokeVariableId', 'stroke']]) {
       const variable = variableById.get(node[property]);

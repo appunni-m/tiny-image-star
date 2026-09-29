@@ -1,7 +1,7 @@
 import {
-  addNode, addVariableMode, applyColorStyle, bindColorVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createComponent, createComponentInstance, createComponentSet,
+  addNode, addVariableMode, applyColorStyle, bindColorVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet,
   createDocument, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, setColorVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
@@ -343,7 +343,7 @@ function renderAssetsTab() {
   const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
   const collections = state.document.variableCollections || [];
   if (!collections.length) {
-    const empty = document.createElement('div'); empty.className = 'variables-empty'; empty.textContent = 'Create color variables to share colors and switch themes by frame.'; variableCollections.append(empty);
+    const empty = document.createElement('div'); empty.className = 'variables-empty'; empty.textContent = 'Create typed variables, aliases, and theme modes for this design.'; variableCollections.append(empty);
   }
   for (const collection of collections) {
     const card = document.createElement('section'); card.className = 'variable-collection-card';
@@ -360,15 +360,44 @@ function renderAssetsTab() {
     const variables = (state.document.variables || []).filter(variable => variable.collectionId === collection.id);
     for (const variable of variables) {
       const row = document.createElement('div'); row.className = 'variable-row';
-      const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'variable-apply'; apply.dataset.variableApply = variable.id; apply.title = `Apply ${variable.name} to selected layers`;
-      const swatch = document.createElement('span'); swatch.className = 'variable-swatch'; swatch.style.backgroundColor = variable.valuesByMode?.[collection.defaultModeId] || '#ffffff';
-      const name = document.createElement('span'); name.className = 'variable-name'; name.textContent = variable.name;
-      apply.append(swatch, name);
-      const value = document.createElement('input'); value.type = 'color'; value.className = 'variable-value'; value.value = variable.valuesByMode?.[collection.defaultModeId] || '#1e1e1e'; value.dataset.variableValue = variable.id; value.dataset.modeId = collection.defaultModeId; value.title = `${variable.name} · ${collection.modes.find(item => item.id === collection.defaultModeId)?.name || 'Mode'}`; value.setAttribute('aria-label', `${variable.name} color value`);
-      const removeVariable = document.createElement('button'); removeVariable.type = 'button'; removeVariable.className = 'tiny-icon-button variable-remove'; removeVariable.dataset.action = 'delete-color-variable'; removeVariable.dataset.variableId = variable.id; removeVariable.setAttribute('aria-label', `Delete ${variable.name}`); removeVariable.title = 'Delete variable'; removeVariable.textContent = '×';
-      row.append(apply, value, removeVariable); rows.append(row);
+      const heading = document.createElement('div'); heading.className = 'variable-item-heading';
+      if (variable.type === 'color') {
+        const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'variable-apply'; apply.dataset.variableApply = variable.id; apply.title = `Apply ${variable.name} to selected layers`;
+        const swatch = document.createElement('span'); swatch.className = 'variable-swatch'; swatch.style.backgroundColor = resolveVariableValue(state.document, variable.id) || '#ffffff';
+        const name = document.createElement('span'); name.className = 'variable-name'; name.textContent = variable.name;
+        apply.append(swatch, name); heading.append(apply);
+      } else {
+        const name = document.createElement('span'); name.className = 'variable-name'; name.textContent = variable.name; heading.append(name);
+      }
+      const kind = document.createElement('span'); kind.className = 'variable-type-badge'; kind.textContent = variable.type;
+      const removeVariable = document.createElement('button'); removeVariable.type = 'button'; removeVariable.className = 'tiny-icon-button variable-remove'; removeVariable.dataset.action = 'delete-variable'; removeVariable.dataset.variableId = variable.id; removeVariable.setAttribute('aria-label', `Delete ${variable.name}`); removeVariable.title = 'Delete variable'; removeVariable.textContent = '×';
+      heading.append(kind, removeVariable);
+      const values = document.createElement('div'); values.className = 'variable-mode-values';
+      for (const item of collection.modes) {
+        const modeRow = document.createElement('div'); modeRow.className = 'variable-mode-value';
+        const modeName = document.createElement('span'); modeName.className = 'variable-mode-name'; modeName.textContent = item.name;
+        const alias = document.createElement('select'); alias.className = 'select-field variable-alias'; alias.dataset.variableAlias = variable.id; alias.dataset.modeId = item.id; alias.setAttribute('aria-label', `${variable.name} ${item.name} alias`);
+        const literalOption = document.createElement('option'); literalOption.value = ''; literalOption.textContent = 'Value'; alias.append(literalOption);
+        for (const target of state.document.variables || []) {
+          if (target.id === variable.id || target.type !== variable.type) continue;
+          const option = document.createElement('option'); option.value = target.id; option.textContent = `${target.collectionId === collection.id ? '' : `${state.document.variableCollections.find(entry => entry.id === target.collectionId)?.name || 'Collection'} · `}${target.name}`; alias.append(option);
+        }
+        const aliasId = variable.aliasesByMode?.[item.id] || '';
+        alias.value = aliasId;
+        const input = document.createElement('input'); input.className = 'variable-value'; input.dataset.variableValue = variable.id; input.dataset.modeId = item.id; input.disabled = Boolean(aliasId);
+        if (variable.type === 'boolean') {
+          input.type = 'checkbox'; input.checked = Boolean(variable.valuesByMode?.[item.id]);
+        } else {
+          input.type = variable.type === 'color' ? 'color' : variable.type === 'number' ? 'number' : 'text';
+          if (input.type === 'number') input.step = 'any';
+          input.value = String(variable.valuesByMode?.[item.id] ?? (variable.type === 'color' ? '#1e1e1e' : ''));
+        }
+        input.title = `${variable.name} · ${item.name}`; input.setAttribute('aria-label', `${variable.name} ${item.name} value`);
+        modeRow.append(modeName, alias, input); values.append(modeRow);
+      }
+      row.append(heading, values); rows.append(row);
     }
-    const addVariable = document.createElement('button'); addVariable.type = 'button'; addVariable.className = 'add-fill'; addVariable.dataset.action = 'add-color-variable'; addVariable.dataset.collectionId = collection.id; addVariable.textContent = '＋ New color variable';
+    const addVariable = document.createElement('button'); addVariable.type = 'button'; addVariable.className = 'add-fill'; addVariable.dataset.action = 'add-variable'; addVariable.dataset.collectionId = collection.id; addVariable.textContent = '＋ New variable';
     card.append(header, controls, rows, addVariable); variableCollections.append(card);
   }
   const componentItems = state.document.components || [];
@@ -1196,12 +1225,12 @@ function handleVariableAssetsAction(action, details = {}) {
     const collection = state.document.variableCollections?.find(item => item.id === details.collectionId);
     if (!collection) return;
     openVariableNameDialog({ type: 'mode', collectionId: collection.id, title: 'Create mode', label: 'Mode name', copy: `Add a theme mode to ${collection.name}. Existing values start from the collection default mode.`, defaultName: `Mode ${collection.modes.length + 1}` });
-  } else if (action === 'add-color-variable') {
+  } else if (action === 'add-variable') {
     const collection = state.document.variableCollections?.find(item => item.id === details.collectionId);
     if (!collection) return;
-    openVariableNameDialog({ type: 'variable', collectionId: collection.id, title: 'Create color variable', label: 'Variable name', copy: `Add a color token to ${collection.name}.`, defaultName: `Color ${(state.document.variables || []).filter(item => item.collectionId === collection.id).length + 1}` });
-  } else if (action === 'delete-color-variable') {
-    checkpoint('Delete color variable'); deleteVariable(state.document, details.variableId);
+    openVariableNameDialog({ type: 'variable', collectionId: collection.id, title: 'Create variable', label: 'Variable name', copy: `Add a typed design token to ${collection.name}.`, defaultName: `Variable ${(state.document.variables || []).filter(item => item.collectionId === collection.id).length + 1}` });
+  } else if (action === 'delete-variable') {
+    checkpoint('Delete variable'); deleteVariable(state.document, details.variableId);
   } else if (action === 'delete-variable-collection') {
     checkpoint('Delete variable collection'); deleteVariableCollection(state.document, details.collectionId);
   } else return;
@@ -1215,6 +1244,8 @@ function openVariableNameDialog(options) {
   $('#variable-dialog-title').textContent = options.title;
   $('#variable-dialog-copy').textContent = options.copy;
   $('#variable-name-label').textContent = options.label;
+  $('#variable-type-field').hidden = options.type !== 'variable';
+  $('#variable-type').value = options.variableType || 'color';
   input.value = options.defaultName || '';
   dialog.returnValue = '';
   dialog.showModal();
@@ -1237,7 +1268,9 @@ function commitVariableNameDialog() {
       const collection = state.document.variableCollections?.find(item => item.id === pending.collectionId);
       if (!collection) throw new Error('The variable collection no longer exists.');
       if ((state.document.variables || []).some(variable => variable.collectionId === collection.id && variable.name.toLowerCase() === name.toLowerCase())) throw new Error('A variable with that name already exists in this collection.');
-      checkpoint('Create color variable'); createColorVariable(state.document, collection.id, name, selectedColorForVariable());
+      const variableType = $('#variable-type').value;
+      const initialValue = variableType === 'color' ? selectedColorForVariable() : variableType === 'number' ? 0 : variableType === 'boolean' ? false : '';
+      checkpoint(`Create ${variableType} variable`); createVariable(state.document, collection.id, name, variableType, initialValue);
     } else if (pending.type === 'collection') {
       checkpoint('Create variable collection'); createVariableCollection(state.document, name);
     } else if (pending.type === 'selection') {
@@ -1839,11 +1872,20 @@ function initEvents() {
   $('#variable-collections-list').addEventListener('input', event => {
     const input = event.target.closest('[data-variable-value]');
     if (!input) return;
-    if (!state.controlEdit) { checkpoint('Edit color variable'); state.controlEdit = true; }
-    setColorVariableValue(state.document, input.dataset.variableValue, input.value, input.dataset.modeId);
+    if (input.type === 'number' && (!input.value || !Number.isFinite(Number(input.value)))) return;
+    const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
+    if (!state.controlEdit) { checkpoint('Edit variable'); state.controlEdit = true; }
+    setVariableValue(state.document, input.dataset.variableValue, value, input.dataset.modeId);
     renderer.invalidate();
   });
   $('#variable-collections-list').addEventListener('change', event => {
+    const alias = event.target.closest('[data-variable-alias]');
+    if (alias) {
+      const variable = state.document.variables?.find(item => item.id === alias.dataset.variableAlias);
+      checkpoint(`Change ${variable?.name || 'variable'} alias`);
+      if (!setVariableAlias(state.document, alias.dataset.variableAlias, alias.value || null, alias.dataset.modeId)) showToast('Aliases must target another variable of the same type and cannot create a cycle.');
+      state.controlEdit = false; renderUI(); queueSave(); renderer.invalidate(); return;
+    }
     const mode = event.target.closest('[data-variable-default-mode]');
     if (mode) {
       const collection = state.document.variableCollections?.find(item => item.id === mode.dataset.variableDefaultMode);

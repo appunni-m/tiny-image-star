@@ -135,6 +135,7 @@
           <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL DESIGN SYSTEM</span><h2 id="variable-dialog-title">Create variable</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
           <p class="modal-copy" id="variable-dialog-copy">Name this item for your design system.</p>
           <label class="field-label" for="variable-name" id="variable-name-label">Name</label><input id="variable-name" class="text-field" maxlength="60" required />
+          <label class="field-label variable-type-field" id="variable-type-field" for="variable-type" hidden>Type<select id="variable-type" class="select-field"><option value="color">Color</option><option value="number">Number</option><option value="string">String</option><option value="boolean">Boolean</option></select></label>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="variable-save" value="save">Create</button></div>
         </form>
       </dialog>

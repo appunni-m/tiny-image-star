@@ -86,13 +86,22 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .variable-collection-controls .select-field { min-width: 0; flex: 1; height: 26px; }
 .variable-mode-add { height: 25px; padding: 0 6px; border: 1px solid #e9e9e9; border-radius: 5px; color: #666; font-size: 9px; white-space: nowrap; }
 .variable-mode-add:hover { background: #f7f7f7; }
-.variable-rows { display: grid; gap: 2px; margin-top: 5px; }
-.variable-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 28px 21px; align-items: center; gap: 4px; }
-.variable-apply { min-width: 0; height: 27px; display: flex; align-items: center; gap: 7px; padding: 0 4px; border-radius: 4px; text-align: left; }
+.variable-rows { display: grid; gap: 5px; margin-top: 5px; }
+.variable-row { min-width: 0; display: grid; gap: 5px; padding: 5px; border: 1px solid #f0f0f0; border-radius: 5px; }
+.variable-item-heading { min-width: 0; display: flex; align-items: center; gap: 5px; }
+.variable-apply { min-width: 0; flex: 1; height: 25px; display: flex; align-items: center; gap: 7px; padding: 0 4px; border-radius: 4px; text-align: left; }
 .variable-apply:hover { background: #f5f5f5; }
 .variable-swatch { width: 16px; height: 16px; flex: 0 0 16px; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; }
-.variable-name { min-width: 0; overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.variable-value { width: 26px; height: 25px; padding: 2px; border: 1px solid #e5e5e5; border-radius: 5px; background: #fff; }
+.variable-name { min-width: 0; flex: 1; overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.variable-type-badge { padding: 2px 4px; border-radius: 3px; background: #f4f4f4; color: #777; font-size: 8px; }
+.variable-mode-values { display: grid; gap: 4px; }
+.variable-mode-value { min-width: 0; display: grid; grid-template-columns: minmax(42px, .8fr) minmax(68px, 1fr) minmax(50px, .8fr); align-items: center; gap: 4px; }
+.variable-mode-name { overflow: hidden; color: #888; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.variable-alias { width: 100%; height: 25px; padding: 0 4px; font-size: 8px; }
+.variable-value { width: 100%; min-width: 0; height: 25px; padding: 2px 4px; border: 1px solid #e5e5e5; border-radius: 5px; background: #fff; font-size: 9px; }
+.variable-value[type="color"] { padding: 2px; }
+.variable-value[type="checkbox"] { justify-self: start; width: 16px; height: 16px; }
+.variable-value:disabled { opacity: .45; }
 .variable-remove { width: 21px; height: 21px; font-size: 13px; }
 .variables-empty { padding: 4px 2px 7px; color: #999; font-size: 9px; line-height: 1.45; }
 .component-card { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 5px 7px; border: 1px solid #ededed; border-radius: 6px; text-align: left; }
@@ -270,6 +279,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .modal h2 { margin: 5px 0 0; font-size: 18px; font-weight: 600; }
 .modal-copy { margin: 13px 0 17px; color: #777; font-size: 11px; line-height: 1.5; }
 .field-label { display: block; margin-bottom: 6px; color: #555; font-size: 10px; font-weight: 550; }
+.variable-type-field { display: grid; gap: 6px; margin-top: 12px; }
+.variable-type-field[hidden] { display: none; }
 .text-field { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #dedede; border-radius: 6px; font-size: 11px; }
 .recipe-preview { display: flex; align-items: center; gap: 9px; min-height: 43px; margin-top: 13px; padding: 0 10px; border: 1px solid #ece7f8; border-radius: 7px; background: #faf8ff; color: #6e5a99; font-size: 10px; }
 .recipe-preview-icon { font-size: 16px; }
