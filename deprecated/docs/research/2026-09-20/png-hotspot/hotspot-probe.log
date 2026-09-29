@@ -1,4 +1,0 @@
-{"id":"legacy-adapter-legacy-runtime","medianMs":0.03208604200000002,"minMs":0.03152254199999993,"maxMs":0.05250841599999998}
-{"id":"current-adapter-current-runtime","medianMs":0.05776295799999997,"minMs":0.05678637500000002,"maxMs":0.06354200000000003}
-{"id":"legacy-adapter-current-runtime","medianMs":0.03493537499999996,"minMs":0.034804000000000085,"maxMs":0.037426041}
-{"id":"current-adapter-legacy-runtime","medianMs":0.052846333000000016,"minMs":0.05245362499999999,"maxMs":0.053532875000000105}

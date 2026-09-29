@@ -1,5 +1,0 @@
-
-> migration:check
-> node scripts/migration/run.mjs check
-
-Specification and anti-cheat checks pass: 2 endpoints, 33 cases.

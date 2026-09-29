@@ -1,1 +1,0 @@
-{"source_inputs": 119, "archive_files": 230, "packaged_files": 210, "target": {"target_profile": "node-wasm", "target_id": "app-engine", "revision": "89cc88caa09022ec007d2e11d8b22cf1b04fd7d6:69d55b8f17300b37b4b6aa0d8f39438c83ff28e4359a88b485077f890913ca0c", "dirty": true, "runtime": "v24.18.0", "backend": "wasm-cpu", "features": ["png"]}}

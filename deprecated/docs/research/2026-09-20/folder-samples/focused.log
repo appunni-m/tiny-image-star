@@ -1,2 +1,0 @@
-folder sample observations: {"selected":[0,4,5,8,9],"concurrency":[{"workers":1,"peak":1,"violations":0},{"workers":4,"peak":4,"violations":0},{"workers":8,"peak":8,"violations":0}],"independentOutputs":27,"failedReview":true,"retryPreservesSuccess":true,"pinnedFontReload":true,"unboundLibraryMetadataIgnored":true,"cancellationCleanup":true,"indexedManifestEntries":100000}
-focused folder samples PASS

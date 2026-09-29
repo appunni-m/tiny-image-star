@@ -1,5 +1,0 @@
-
-> check:pages
-> node scripts/check-pages-artifact.mjs
-
-Pages artifact OK: 179 files under _site/

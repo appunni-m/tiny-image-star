@@ -1,8 +1,0 @@
-node scripts/assemble-pages.mjs "_site"
-Pages optimization: JS 851177 -> 520771 bytes; Brotli sidecars 169136 bytes.
-Pages optimization: CSS 72296 -> 63398 bytes; Brotli sidecar 9925 bytes.
-Pages optimization: published WASM unchanged (4548741 bytes); Brotli sidecar 1170855 bytes.
-Pages artifact assembled at _site/
-/Library/Developer/CommandLineTools/usr/bin/make check-pages PAGES_DIR="_site"
-node scripts/check-pages-artifact.mjs "_site"
-Pages artifact OK: 210 files under _site/

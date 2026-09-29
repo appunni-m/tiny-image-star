@@ -1,5 +1,0 @@
-
-> migration:coverage
-> node scripts/migration/run.mjs coverage
-
-Coverage engine-adapter: 27/34 functions, threshold 70% pass; snapshot coverage-91f7f4c9-a508-48c4-a4b5-9043287e51e6

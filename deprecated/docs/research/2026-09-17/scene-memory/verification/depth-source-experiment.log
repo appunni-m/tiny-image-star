@@ -1,9 +1,0 @@
-2000x1500-png-depth-finish-materialized: pass; Wasm 109.5 MiB; 4388 ms
-2000x1500-png-depth-finish-fork-materialized: pass; Wasm 117.1 MiB; 4215 ms
-2000x1500-jpg-depth-finish-materialized: pass; Wasm 117.0 MiB; 4005 ms
-2000x1500-jpg-depth-finish-fork-materialized: pass; Wasm 106.8 MiB; 3880 ms
-4000x3000-png-depth-finish-materialized: pass; Wasm 367.6 MiB; 5775 ms
-4000x3000-png-depth-finish-fork-materialized: pass; Wasm 275.9 MiB; 5258 ms
-4000x3000-jpg-depth-finish-materialized: pass; Wasm 319.9 MiB; 5388 ms
-4000x3000-jpg-depth-finish-fork-materialized: pass; Wasm 228.3 MiB; 4840 ms
-Saved docs/research/2026-09-17/scene-memory/scene-memory-3d1c2922-94c5-400b-8d42-10beaec9651f

@@ -1,4 +1,0 @@
-Pages optimization: JS 838601 -> 512662 bytes; Brotli sidecars 166243 bytes.
-Pages optimization: CSS 72296 -> 63398 bytes; Brotli sidecar 9925 bytes.
-Pages optimization: published WASM unchanged (4548741 bytes); Brotli sidecar 1170855 bytes.
-Pages artifact assembled at _site/

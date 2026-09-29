@@ -1,8 +1,0 @@
-
-> verify:security
-> node scripts/verify-security.mjs
-
-verify:security chromium/meta PASS (document only; unprotected-worker negative control confirmed, real WASM/font/2-worker export/download)
-verify:security chromium/headers PASS (document + worker + embedding, real WASM/font/2-worker export/download)
-verify:security webkit/meta PASS (document only; unprotected-worker negative control confirmed, real WASM/font/2-worker export/download)
-verify:security webkit/headers PASS (document + worker + embedding, real WASM/font/2-worker export/download)

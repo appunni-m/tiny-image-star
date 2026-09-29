@@ -1,5 +1,0 @@
-
-> migration:status
-> node scripts/migration/run.mjs docs
-
-docs: 0 compatible lanes; 3 unproven lanes

@@ -1,2 +1,0 @@
-folder source observations: {"runs":[{"workers":1,"peak":1,"violations":0,"matched":true,"pinned":true,"completed":9},{"workers":4,"peak":4,"violations":0,"matched":true,"pinned":true,"completed":9},{"workers":8,"peak":8,"violations":0,"matched":true,"pinned":true,"completed":9}],"independentOutputs":27,"staleEntry":true,"sameMetadataReplacement":true,"explicitRepair":true,"reload":true,"oneWinner":true,"staleClaim":true,"staleOwner":true,"journal":true,"preview":true,"saveFence":true}
-focused folder sources PASS
