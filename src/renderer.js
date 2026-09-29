@@ -2,6 +2,7 @@ import { findNode, getNodeColor, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
 import { measureTrackedText, textGraphemes, wrapText } from './text-layout.js';
+import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -222,6 +223,12 @@ export class SceneRenderer {
     const state = this.getState();
     const document = state.document;
     if (!getNodePropertyValue(document, node, 'visible')) return;
+    const effects = (node.effects || []).filter(effect => effect.visible);
+    const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
+    if (effects.length && !draft && !maskMode && !outline && renderOptions.effectBypassNodeId !== node.id && typeof ctx.filter === 'string') {
+      this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
+      return;
+    }
     const opacity = getNodePropertyValue(document, node, 'opacity');
     const radius = getNodePropertyValue(document, node, 'radius');
     const x = parentX + node.x; const y = parentY + node.y;
@@ -357,6 +364,39 @@ export class SceneRenderer {
       ctx.strokeStyle = 'rgba(30,30,30,.14)'; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.strokeRect(x, y, width, height);
     }
     if (node.type === 'frame' && !draft && !state.presenting && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
+    ctx.restore();
+  }
+
+  drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions = {}) {
+    const transform = ctx.getTransform?.();
+    const displayScale = transform ? Math.hypot(transform.a, transform.b) : Math.max(.1, (window.devicePixelRatio || 1) * (this.getState().zoom || 1));
+    const radians = (Number(node.rotation) || 0) * Math.PI / 180;
+    const rotatedWidth = Math.abs(node.width * Math.cos(radians)) + Math.abs(node.height * Math.sin(radians));
+    const rotatedHeight = Math.abs(node.height * Math.cos(radians)) + Math.abs(node.width * Math.sin(radians));
+    const effectPadding = layerEffectPadding(effects);
+    const padX = effectPadding.x + Math.max(0, rotatedWidth - node.width) / 2;
+    const padY = effectPadding.y + Math.max(0, rotatedHeight - node.height) / 2;
+    const logicalWidth = Math.max(1, node.width + padX * 2);
+    const logicalHeight = Math.max(1, node.height + padY * 2);
+    const pixelBudget = 4_000_000;
+    const rasterScale = Math.min(2, Math.max(.05, displayScale), Math.sqrt(pixelBudget / (logicalWidth * logicalHeight)), 4096 / logicalWidth, 4096 / logicalHeight);
+    const pixelWidth = Math.max(1, Math.ceil(logicalWidth * rasterScale));
+    const pixelHeight = Math.max(1, Math.ceil(logicalHeight * rasterScale));
+    const surface = typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(pixelWidth, pixelHeight)
+      : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+    const effectContext = surface.getContext('2d');
+    if (!effectContext) {
+      this.drawNode(ctx, node, parentX, parentY, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id });
+      return;
+    }
+    effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
+    const copy = { ...node, x: 0, y: 0 };
+    this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id });
+    const x = parentX + node.x; const y = parentY + node.y;
+    ctx.save();
+    ctx.filter = buildLayerEffectFilter(effects, displayScale);
+    ctx.drawImage(surface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
   }
 

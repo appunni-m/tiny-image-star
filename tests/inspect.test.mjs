@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, bindColorVariable, createDocument, createNode, createVariable, createVariableCollection, findNode } from '../src/model.js';
+import { addNode, bindColorVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, findNode } from '../src/model.js';
 import { buildInspectOutput } from '../src/inspect.js';
 
 test('Inspect output reports page-space geometry, resolved styles, text metrics and exact layer JSON', () => {
@@ -74,4 +74,16 @@ test('Inspect output includes auto layout size limits in CSS and layer summary',
   assert.match(output.css, /max-width: 180px;/);
   assert.match(output.css, /min-height: 36px;/);
   assert.deepEqual(output.layers[0].sizeLimits, { minWidth: 72, maxWidth: 180, minHeight: 36 });
+});
+
+test('Inspect output hands off enabled layer effects as CSS filters and structured data', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { effects: [
+    createLayerEffect('drop-shadow', { offsetX: 4, offsetY: 8, blur: 6, opacity: 0.3 }),
+    createLayerEffect('layer-blur', { radius: 2, visible: false })
+  ] });
+  addNode(document, shape);
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.match(output.css, /filter: drop-shadow\(4px 8px 6px rgba\(0, 0, 0, 0\.3\)\);/);
+  assert.deepEqual(output.layers[0].effects, shape.effects);
 });

@@ -1,4 +1,5 @@
 import { getNodeColor, getNodePropertyValue } from './model.js';
+import { buildLayerEffectFilter } from './layer-effects.js';
 
 function number(value) {
   const parsed = Number(value);
@@ -91,6 +92,8 @@ function cssForEntry(document, entry) {
   }
   const rotation = Number(node.rotation) || 0;
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
+  const effectFilter = buildLayerEffectFilter(node.effects);
+  if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
 
   if (node.type === 'text') {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize')) || 24;
@@ -161,6 +164,7 @@ function summaryForEntry(document, entry) {
   }
   if (node.type === 'image') summary.image = { fileName: node.fileName, fit: node.fit, sourceWidth: node.sourceWidth, sourceHeight: node.sourceHeight };
   if (node.autoLayout) summary.autoLayout = node.autoLayout;
+  if (node.effects?.length) summary.effects = node.effects;
   const sizeLimits = Object.fromEntries(['minWidth', 'maxWidth', 'minHeight', 'maxHeight'].filter(property => Number.isFinite(node[property])).map(property => [property, node[property]]));
   if (Object.keys(sizeLimits).length) summary.sizeLimits = sizeLimits;
   return summary;

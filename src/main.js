@@ -1,6 +1,6 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
@@ -259,6 +259,23 @@ function imageAdjustmentsSection(node) {
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
   const body = `${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
+}
+function effectNumberField(label, effect, field, step = 1, min = 0, max = 100) {
+  return `<div class="property-field"><label>${label}</label><input data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" type="number" step="${step}" min="${min}" max="${max}" value="${Number(effect[field])}" aria-label="${label}" /></div>`;
+}
+function layerEffectsSection(node) {
+  const effects = node.effects || [];
+  const rows = effects.map(effect => {
+    const name = effect.type === 'drop-shadow' ? 'Drop shadow' : 'Layer blur';
+    const fields = effect.type === 'drop-shadow'
+      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="Shadow color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="Shadow opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 1, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 1, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 1, 0, 100)}</div>`
+      : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 1, 0, 100)}</div>`;
+    return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button></div>${fields}</div>`;
+  }).join('');
+  const disabled = node.locked || effects.length >= 8;
+  const note = effects.length >= 8 ? 'A layer can have up to 8 effects.' : effects.length ? '' : '<div class="image-properties-note">Add shadows or blur. Effects stay editable and are saved with this design.</div>';
+  const buttons = `<div class="style-actions"><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="drop-shadow"${disabled ? ' disabled' : ''}>＋ Drop shadow</button><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="layer-blur"${disabled ? ' disabled' : ''}>＋ Layer blur</button></div>`;
+  return section('Effects', `${rows}${note}${buttons}`);
 }
 function exportSettingsSection(node) {
   const settings = node.exportSettings || [];
@@ -580,6 +597,7 @@ function renderInspector() {
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  body += layerEffectsSection(node);
   if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
@@ -1364,6 +1382,23 @@ function zoomToSelection() {
   const zoom = Math.min(2, (canvas.clientWidth - 100) / Math.max(1, right - x), (canvas.clientHeight - 100) / Math.max(1, bottom - y));
   state.zoom = Math.max(.08, zoom); state.panX = (canvas.clientWidth - (right - x) * state.zoom) / 2 - x * state.zoom; state.panY = (canvas.clientHeight - (bottom - y) * state.zoom) / 2 - y * state.zoom;
   updateZoomUI(); renderer.invalidate();
+}
+
+function updateLayerEffectInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  const effect = node?.effects?.find(item => item.id === input.dataset.effectId);
+  if (!effect || node.locked) return;
+  if (!state.controlEdit) { checkpoint('Edit layer effect'); state.controlEdit = true; }
+  const field = input.dataset.effectField;
+  if (field === 'visible') effect.visible = input.checked;
+  else if (field === 'color') effect.color = input.value;
+  else if (field === 'opacity') {
+    effect.opacity = Number(input.value) / 100;
+    input.nextElementSibling.value = `${input.value}%`;
+  } else if (['offsetX', 'offsetY', 'blur', 'radius'].includes(field) && Number.isFinite(Number(input.value))) effect[field] = Number(input.value);
+  else return;
+  recordNodeComponentOverrides(node, ['effects']);
+  renderer.invalidate();
 }
 
 function updateInspectorInput(event) {
@@ -2466,6 +2501,22 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'align-selection') alignSelectedLayers(details.alignMode);
+  else if (action === 'add-layer-effect' && node && !node.locked) {
+    if ((node.effects || []).length >= 8) { showToast('A layer can have up to 8 effects.'); return; }
+    try {
+      checkpoint('Add layer effect');
+      node.effects ||= [];
+      node.effects.push(createLayerEffect(details.effectType));
+      recordNodeComponentOverrides(node, ['effects']);
+      renderInspector(); queueSave(); renderer.invalidate();
+    } catch (error) { showToast(error.message); }
+  } else if (action === 'remove-layer-effect' && node && !node.locked) {
+    if (!node.effects?.some(effect => effect.id === details.effectId)) return;
+    checkpoint('Remove layer effect');
+    node.effects = node.effects.filter(effect => effect.id !== details.effectId);
+    recordNodeComponentOverrides(node, ['effects']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  }
   else if (action === 'add-layout-guide' && node?.type === 'frame') {
     node.layoutGuides ||= [];
     if (node.layoutGuides.length >= 32) { showToast('A frame can have up to 32 layout guides.'); return; }
@@ -2646,6 +2697,8 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    const effectField = event.target.closest('[data-effect-field]');
+    if (effectField) { updateLayerEffectInput(effectField); return; }
     const networkFace = event.target.closest('[data-network-face-fill], [data-network-face-opacity]');
     if (networkFace) { updateNetworkFaceInput(networkFace); return; }
     const quality = event.target.closest('[data-export-field="quality"]');
@@ -2664,6 +2717,7 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-network-face-fill], [data-network-face-opacity]')) { finishInspectorInput(); return; }
     const guideField = event.target.closest('[data-guide-field]');
     if (guideField) { updateLayoutGuide(guideField, true); return; }
