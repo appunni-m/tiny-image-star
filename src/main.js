@@ -11,6 +11,7 @@ import { LocalImageEngine } from './image-engine.js';
 import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
+import { buildInspectOutput } from './inspect.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { closestVectorSegment, insertVectorNodePoint, longestVectorSegment, removeVectorNodePoint, setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
@@ -340,6 +341,29 @@ function frameVariableModesSection(frame) {
   }).join('');
   return section('Variables', `${controls}<div class="image-properties-note">Nested layers use the closest frame mode override.</div>`);
 }
+function inspectPanel() {
+  const entries = selectedEntries();
+  if (!entries.length) return '<div class="inspect-empty"><strong>Inspect design values</strong><span>Select a layer to review its page-space geometry, resolved styles, and copyable handoff data.</span></div>';
+  const output = buildInspectOutput(state.document, entries);
+  const number = value => Number.isFinite(Number(value)) ? String(Number(Number(value).toFixed(2))) : '0';
+  const cards = output.layers.map(layer => {
+    const properties = [
+      ['Position', `${number(layer.position.x)}, ${number(layer.position.y)} px`],
+      ['Size', `${number(layer.size.width)} × ${number(layer.size.height)} px`],
+      ['Rotation', `${number(layer.rotation)}°`],
+      ['Opacity', `${Math.round(layer.opacity * 100)}%`]
+    ];
+    if (layer.color) properties.push(['Color', `<span class="inspect-color"><i style="background:${escapeHtml(layer.color)}"></i>${escapeHtml(layer.color)}</span>`]);
+    if (layer.stroke) properties.push(['Stroke', `${escapeHtml(layer.stroke.color)} · ${number(layer.stroke.width)} px`]);
+    if (layer.typography) properties.push(['Type', `${number(layer.typography.fontSize)} px · ${escapeHtml(layer.typography.fontFamily || 'Arial')}`]);
+    if (layer.image) properties.push(['Source', `${number(layer.image.sourceWidth || layer.size.width)} × ${number(layer.image.sourceHeight || layer.size.height)} px`]);
+    if (layer.autoLayout) properties.push(['Layout', layer.autoLayout.axis === 'grid' ? `Grid · ${layer.autoLayout.columns} columns` : `${layer.autoLayout.axis} auto layout`]);
+    return `<article class="inspect-layer-card"><header><strong>${escapeHtml(layer.name)}</strong><span>${escapeHtml(layer.type)} · ${escapeHtml(layer.parent)}</span></header><dl>${properties.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${label === 'Color' ? value : escapeHtml(value)}</dd></div>`).join('')}</dl>${layer.text ? `<div class="inspect-text-value"><span>Text content</span><p>${escapeHtml(layer.text)}</p></div>` : ''}</article>`;
+  }).join('');
+  const css = output.css || '/* Select a layer to generate CSS. */';
+  const json = output.json || '[]';
+  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
+}
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const entry = node ? findNode(state.document, node.id) : null;
@@ -367,10 +391,8 @@ function renderInspector() {
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
-    const messages = {
-      inspect: '<strong>Layer inspection</strong><br/>Select a layer to inspect its local properties and export a raster preview.'
-    };
-    content.innerHTML = `<div class="prototype-placeholder">${messages[state.inspectorTab] || messages.prototype}</div>`;
+    if (state.inspectorTab === 'inspect') { content.innerHTML = inspectPanel(); return; }
+    content.innerHTML = '<div class="prototype-placeholder">Choose a properties tab.</div>';
     return;
   }
   const entries = selectedEntries();
@@ -1989,6 +2011,24 @@ function updateExportSetting(input) {
   renderInspector(); queueSave();
 }
 
+async function copyInspectText(kind) {
+  const text = buildInspectOutput(state.document, selectedEntries())[kind];
+  if (!text) { showToast('Select a layer before copying handoff data.'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`${kind === 'css' ? 'CSS' : 'Layer JSON'} copied.`);
+    return;
+  } catch { /* Use the selection-based fallback when clipboard access is unavailable. */ }
+  const field = document.createElement('textarea');
+  field.value = text; field.setAttribute('readonly', ''); field.setAttribute('aria-hidden', 'true');
+  field.style.position = 'fixed'; field.style.left = '-9999px'; field.style.top = '0';
+  document.body.append(field); field.select();
+  let copied = false;
+  try { copied = document.execCommand('copy'); } catch { /* A blocked clipboard can still be copied from the visible code block. */ }
+  field.remove();
+  showToast(copied ? `${kind === 'css' ? 'CSS' : 'Layer JSON'} copied.` : 'Clipboard unavailable. Select the code block and copy it.');
+}
+
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'add-layout-guide' && node?.type === 'frame') {
@@ -2217,7 +2257,12 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
-  $('#inspector-content').addEventListener('click', event => { const button = event.target.closest('[data-action]'); if (button) applyInspectorAction(button.dataset.action, button.dataset); });
+  $('#inspector-content').addEventListener('click', event => {
+    const copy = event.target.closest('[data-inspect-copy]');
+    if (copy) { copyInspectText(copy.dataset.inspectCopy); return; }
+    const button = event.target.closest('[data-action]');
+    if (button) applyInspectorAction(button.dataset.action, button.dataset);
+  });
   $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
   $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
   $('#layer-search').addEventListener('input', event => { state.layerSearch = event.currentTarget.value; renderLayers(); });
