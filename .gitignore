@@ -1,10 +1,5 @@
-.DS_Store
 node_modules/
-dist/
-/coverage/
-.coverage-mcp/
-.migration-results/
-/docs/generated/
-.segmentation-cache/
 _site/
-/tiny-image-star-*/
+.DS_Store
+.local-data/
+.coverage-mcp/

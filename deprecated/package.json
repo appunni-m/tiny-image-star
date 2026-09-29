@@ -1,0 +1,51 @@
+{
+  "name": "tiny-image-star",
+  "description": "Private browser-based image editing for one image or a set.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/appunni-m/tiny-image-star.git"
+  },
+  "bugs": {
+    "url": "https://github.com/appunni-m/tiny-image-star/issues"
+  },
+  "homepage": "https://appunni-m.github.io/tiny-image-star/",
+  "scripts": {
+    "test": "npm run verify",
+    "stage:runtime": "node scripts/stage-pillow-runtime.mjs",
+    "check:runtime": "node scripts/stage-pillow-runtime.mjs --check",
+    "migration:check": "node scripts/migration/run.mjs check",
+    "migration:parity": "node scripts/migration/run.mjs parity",
+    "migration:coverage": "node scripts/migration/run.mjs coverage",
+    "migration:benchmark": "node scripts/migration/run.mjs benchmark",
+    "migration:status": "node scripts/migration/run.mjs docs",
+    "preverify": "npm run check:runtime",
+    "verify": "node scripts/verify.mjs && npm run verify:scheduler && npm run verify:project-model",
+    "verify:project-model": "node --test tests/staging-plan.test.mjs tests/scene-collection.test.mjs tests/folder-source.test.mjs tests/folder-sample.test.mjs tests/project.test.mjs tests/design-page.test.mjs tests/design-geometry.test.mjs tests/story-layout.test.mjs tests/story-export.test.mjs tests/story-designs.test.mjs tests/story-fonts.test.mjs tests/working-copies.test.mjs tests/source-resolution.test.mjs tests/folder-contract.test.mjs tests/styles.test.mjs tests/legacy-styles.test.mjs tests/recipe-catalog.test.mjs tests/recipe-selection.test.mjs tests/photo-look.test.mjs tests/masks.test.mjs tests/depth.test.mjs tests/connections.test.mjs tests/cutout-effects.test.mjs tests/render-diagnostics.test.mjs tests/engine-output-validation.test.mjs tests/text-compositor-concurrency.test.mjs",
+    "verify:scheduler": "node --test tests/processing.test.mjs tests/processing-startup.test.mjs",
+    "verify:watch": "node scripts/watch-verify.mjs",
+    "verify:browser": "node scripts/browser-smoke.mjs",
+    "verify:bulk-context": "node scripts/browser-smoke.mjs --bulk-recipe-context-only",
+    "verify:design-workspace": "node scripts/browser-smoke.mjs --design-workspace-only",
+    "verify:scene-compositor": "node scripts/browser-smoke.mjs --scene-compositor-only",
+    "verify:security": "node scripts/verify-security.mjs",
+    "verify:staged-browser": "node scripts/verify-staged-browser.mjs",
+    "verify:folder-recovery": "node scripts/verify-folder-recovery.mjs",
+    "verify:all": "npm run verify && npm run verify:browser && npm run verify:staged-browser && npm run verify:security && npm run verify:folder-recovery && npm run check:docs",
+    "check:docs": "node scripts/check-doc-links.mjs",
+    "check:pages": "node scripts/check-pages-artifact.mjs",
+    "check:deployment-security": "node scripts/check-deployment-security.mjs",
+    "profile:folder": "node scripts/profile-folder.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "playwright": "^1.62.1"
+  },
+  "dependencies": {
+    "pillow-rs": "12.2.0-alpha.1"
+  }
+}

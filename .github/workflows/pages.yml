@@ -1,4 +1,4 @@
-name: Verify and deploy Tiny Image Star
+name: Verify and deploy local design app
 
 on:
   push:
@@ -11,96 +11,47 @@ permissions:
   contents: read
 
 concurrency:
-  group: tiny-image-star-${{ github.workflow }}-${{ github.ref }}
+  group: tiny-image-star-design-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    name: Verify (Node ${{ matrix.node }})
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [20, 24]
-    runs-on: ubuntu-latest
-    # The complete browser, storage, security, and migration gates exceed the
-    # default-sized window on hosted runners; leave time for all of them.
-    timeout-minutes: 45
-    steps:
-      - name: Check out the app
-        uses: actions/checkout@v7
-
-      - name: Use Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-
-      - name: Install locked dependencies
-        run: make install
-
-      - name: Verify published package signatures and provenance
-        run: npm audit signatures
-
-      - name: Install Chromium, WebKit and system dependencies
-        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium webkit"
-
-      - name: Run deterministic and browser checks
-        run: TINY_IMAGE_STAR_TEST_HARDWARE_CONCURRENCY=4 TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit make verify
-
-      - name: Verify folder ownership and interrupted writes
-        run: npm run verify:folder-recovery
-
-      - name: Verify engine migration contracts and exact output parity
-        run: npm run migration:check && npm run migration:parity && npm run migration:coverage
-
-  build:
-    needs: verify
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the app
-        uses: actions/checkout@v7
-
-      - name: Use Node.js 24 for artifact validation
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - run: npx playwright install --with-deps chromium
+      - run: npm run verify:browser
+      - run: node scripts/stage-runtime.mjs
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
-
-      - name: Install locked build dependencies
-        run: make install
-
-      - name: Assemble and validate the static site
-        run: make package-pages PAGES_DIR=_site
-
-      - name: Install Chromium, WebKit and system dependencies for release smoke
-        run: make setup-browser BROWSER_INSTALL_ARGS="--with-deps chromium webkit"
-
-      - name: Smoke-test the optimized Pages artifact
-        run: TINY_IMAGE_STAR_BROWSER_ROOT=_site make verify-browser
-
-      - name: Verify document and HTTP worker policies on the packaged artifact
-        run: TINY_IMAGE_STAR_BROWSER_ROOT=_site TINY_IMAGE_STAR_SECURITY_BROWSERS=chromium,webkit npm run verify:security
-
-      - name: Upload the Pages artifact
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: _site
-
-  deploy:
+  build:
     if: github.event_name != 'pull_request'
-    needs: build
+    needs: verify
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: write
       id-token: write
-    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/configure-pages@v6
+      - run: npm ci
+      - run: npm run build
+      - run: TINY_STAR_BROWSER_ROOT=_site npm run verify:browser
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v5
         id: deployment
-        uses: actions/deploy-pages@v5
