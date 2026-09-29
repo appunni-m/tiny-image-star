@@ -78,6 +78,9 @@ try {
   assert(saved.pages[0].children[0].children[0].exportSettings[0].scale === 2 && saved.pages[0].children[0].children[0].exportSettings[0].suffix === '@2x', 'The scale and suffix did not persist locally.');
   assert(saved.pages[0].children[0].children[0].exportSettings[0].quality === 84, 'The output quality did not persist locally.');
 
+  click(app.querySelector('#outline-mode'));
+  assert(app.querySelector('#outline-mode')?.getAttribute('aria-pressed') === 'true', 'The outline view should be active while checking export isolation.');
+
   const downloads = [];
   const objectUrls = new Map();
   const view = app.defaultView;
@@ -126,7 +129,7 @@ try {
   bitmap = await view.createImageBitmap(downloads[3].blob);
   assert(bitmap.width === 30 && bitmap.height === 44, 'The existing one-click path should use the selected layer’s nested rotated bounds at 1×.');
   bitmap.close();
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

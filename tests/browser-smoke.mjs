@@ -88,6 +88,11 @@ try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'isolated editor event handlers');
   const app = frame.contentDocument;
   assert(app.title === 'Tiny Image Star' && app.querySelector('.brand-mark')?.textContent.trim() === '✦', 'the editor branding does not use the Tiny Image Star identity');
+  dispatchClick(app.querySelector('#file-menu-button'));
+  const newDesign = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.includes('New design'));
+  assert(newDesign, 'the file menu did not expose a fresh local design for this isolated workflow');
+  dispatchClick(newDesign);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh local design');
   const source = fixtureBmp();
   const files = Array.from({ length: 3 }, (_, index) => new File([source], `local-fixture-${index + 1}.bmp`, { type: 'image/bmp' }));
   imageInput(app, files);

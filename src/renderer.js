@@ -203,6 +203,11 @@ export class SceneRenderer {
     ctx.save();
     ctx.globalAlpha *= opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
+    if (!draft && !state.presenting && (renderOptions.outlineMode ?? state.outlineMode)) {
+      this.drawNodeOutline(ctx, node, x, y, assets, renderOptions);
+      ctx.restore();
+      return;
+    }
     if (node.type === 'boolean') {
       this.drawBooleanGroup(ctx, node, x, y, assets, maskMode, renderOptions);
       if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
@@ -300,6 +305,62 @@ export class SceneRenderer {
     }
     if (node.type === 'frame' && !draft && !state.presenting && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
     ctx.restore();
+  }
+
+  drawNodeOutline(ctx, node, x, y, assets, renderOptions = {}) {
+    const state = this.getState();
+    const width = node.width; const height = node.height;
+    const cx = x + width / 2; const cy = y + height / 2;
+    const radius = getNodePropertyValue(state.document, node, 'radius') || 0;
+    ctx.beginPath();
+    if (node.type === 'boolean' || (node.type === 'group' && node.mask)) {
+      ctx.rect(x, y, width, height);
+      ctx.setLineDash(node.type === 'boolean' ? [3 / (state.zoom || 1), 2 / (state.zoom || 1)] : []);
+    } else {
+      switch (node.type) {
+        case 'frame':
+        case 'section':
+        case 'group':
+        case 'rectangle':
+          roundedRect(ctx, x, y, width, height, radius);
+          break;
+        case 'ellipse':
+          ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
+          break;
+        case 'line':
+          ctx.moveTo(x, y); ctx.lineTo(x + width, y + height);
+          break;
+        case 'star':
+          starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius || 0.48);
+          break;
+        case 'polygon':
+          polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);
+          break;
+        case 'path':
+          traceVectorPath(ctx, node, x, y);
+          break;
+        case 'image':
+          roundedRect(ctx, x, y, width, height, radius);
+          break;
+        default:
+          ctx.rect(x, y, width, height);
+      }
+      ctx.setLineDash([]);
+    }
+    ctx.strokeStyle = '#626b78';
+    ctx.lineWidth = 1 / (state.zoom || 1);
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    if (node.children?.length) {
+      ctx.save();
+      if (node.clip) {
+        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.clip();
+      }
+      for (const child of node.children) this.drawNode(ctx, child, x, y, assets, false, false, renderOptions);
+      ctx.restore();
+    }
+    if (node.type === 'frame' && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
   }
 
   drawLayoutGuides(ctx, frame, x, y, state = this.getState()) {

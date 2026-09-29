@@ -24,7 +24,7 @@ const state = {
   assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
-  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true,
+  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
   pendingVariableDialog: null,
   layoutGuideControlEdit: false,
@@ -1551,6 +1551,14 @@ function openFileMenu(x, y) {
   ], x, y);
 }
 function toggleLayoutGuides() { state.showLayoutGuides = !state.showLayoutGuides; renderer.invalidate(); }
+function toggleOutlineMode() {
+  state.outlineMode = !state.outlineMode;
+  const button = $('#outline-mode');
+  button.classList.toggle('is-active', state.outlineMode);
+  button.setAttribute('aria-pressed', String(state.outlineMode));
+  button.title = state.outlineMode ? 'Exit outline view' : 'Show outline view';
+  renderer.invalidate();
+}
 
 function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
@@ -1898,7 +1906,7 @@ async function renderAndDownload(ids, setting, baseName) {
   context.scale(scale, scale); context.translate(-left, -top);
   for (const id of ids) {
     const tree = exportRenderTree(id);
-    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, { showLayoutGuides: false });
+    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, { showLayoutGuides: false, outlineMode: false });
   }
   const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }[setting.format];
   const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[setting.format];
@@ -2302,7 +2310,7 @@ function initEvents() {
   $('#bulk-cancel').addEventListener('click', () => { if (!state.bulk) return; state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; state.bulk.paused = false; renderBulkBar(); if (!state.bulk.inflight) { state.bulk.done = true; renderBulkBar(); } });
   $('#bulk-done').addEventListener('click', () => { state.bulk = null; renderBulkBar(); });
   $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
-  $('#outline-mode').addEventListener('click', event => { event.currentTarget.classList.toggle('is-active'); showToast('Outline view is not enabled yet.'); });
+  $('#outline-mode').addEventListener('click', toggleOutlineMode);
   $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
   $('#sidebar-toggle').addEventListener('click', () => toggleMobilePanel('left'));
   $('#inspector-toggle').addEventListener('click', () => toggleMobilePanel('right'));
