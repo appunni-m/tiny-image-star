@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, selectionOverlayGeometry, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
@@ -112,6 +112,42 @@ test('rich text wraps using each run font and advances lines for larger styles',
   assert.deepEqual(result.lines.map(line => line.map(part => part.text).join('')), ['red words', 'split']);
   assert.ok(context.calls.some(call => call.transform === 'translate' && call.y === 2 + 12.5), 'second line should follow the first line’s 10px font metrics');
   assert.equal(result.height, 37.5, 'the second line contributes its 20px font metrics');
+});
+
+test('plain and rich text align their complete line stacks within fixed-height boxes', () => {
+  assert.equal(textVerticalOffset(50, 20, 'top'), 0);
+  assert.equal(textVerticalOffset(50, 20, 'middle'), 15);
+  assert.equal(textVerticalOffset(50, 20, 'bottom'), 30);
+  assert.equal(textVerticalOffset(10, 20, 'bottom'), 0, 'overflowing text remains anchored at the top instead of shifting out of view');
+
+  for (const [verticalAlign, expectedY] of [['top', 2], ['middle', 14.5], ['bottom', 27]]) {
+    const context = richContext();
+    const result = drawTextRuns(context, [{ text: 'one\ntwo' }], 4, 2, 100, {
+      ...defaultRunStyle, height: 50, verticalAlign
+    });
+    const firstLine = context.calls.find(call => call.transform === 'translate');
+    assert.equal(firstLine.y, expectedY, `${verticalAlign} rich text should offset the first line correctly`);
+    assert.equal(result.height, 25);
+  }
+
+  const document = createDocument();
+  const draws = [];
+  const context = {
+    font: '', fillStyle: '', textAlign: 'left', textBaseline: 'top',
+    save() {}, restore() {}, beginPath() {}, rect() {},
+    measureText(value) { return { width: String(value).length * 5 }; },
+    fillText(text, x, y) { draws.push({ text, x, y }); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, outlineMode: false, presenting: false, zoom: 1 });
+  for (const [verticalAlign, expectedY] of [['top', 12], ['middle', 30], ['bottom', 48]]) {
+    draws.length = 0;
+    renderer.drawNode(context, createNode('text', {
+      x: 4, y: 10, width: 80, height: 60, text: 'a\nb', textFit: 'fixed',
+      fontSize: 10, lineHeight: 1.2, verticalAlign
+    }), 0, 2, new Map());
+    assert.deepEqual(draws.map(draw => draw.y), [expectedY, expectedY + 12], `${verticalAlign} plain text should offset each line consistently`);
+  }
 });
 
 test('rich text case changes preserve run boundaries even when Unicode casing expands', () => {

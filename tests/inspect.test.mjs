@@ -25,6 +25,7 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   assert.equal(output.layers[0].typography.fontSize, 24);
   assert.equal(output.layers[0].typography.textCase, 'capitalize');
   assert.equal(output.layers[0].typography.textDecoration, 'underline');
+  assert.equal(output.layers[0].typography.verticalAlign, 'top');
   assert.match(output.css, /\.hero-title-[a-z0-9_-]+ \{/);
   assert.match(output.css, /left: 37px;/);
   assert.match(output.css, /top: 53px;/);
@@ -155,8 +156,20 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left', textCase: 'none', textDecoration: 'none'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
   });
+});
+
+test('Inspect preserves vertical alignment in copyable CSS and typography data', () => {
+  const document = createDocument();
+  const node = createNode('text', { text: 'Centered label', height: 80, verticalAlign: 'middle' });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.match(output.css, /display: flex;/);
+  assert.match(output.css, /flex-direction: column;/);
+  assert.match(output.css, /justify-content: center;/);
+  assert.equal(output.layers[0].typography.verticalAlign, 'middle');
+  assert.equal(JSON.parse(output.json).verticalAlign, 'middle');
 });
 
 test('Inspect handoff reports mode-resolved geometry instead of stale raw layer fields', () => {

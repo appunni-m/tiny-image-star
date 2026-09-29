@@ -19,6 +19,7 @@ import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './la
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
+import { importSvgToLayers } from './svg-import.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
@@ -607,7 +608,8 @@ function textSection(node) {
   const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
-  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select></div>`;
+  const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
+  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select><select class="prop-input select-field" data-prop="verticalAlign" aria-label="Vertical align"><option value="top"${verticalAlign === 'top' ? ' selected' : ''}>Top</option><option value="middle"${verticalAlign === 'middle' ? ' selected' : ''}>Middle</option><option value="bottom"${verticalAlign === 'bottom' ? ' selected' : ''}>Bottom</option></select></div>`;
   return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}<div class="image-properties-note">`));
 }
 function frameVariableModesSection(frame) {
@@ -889,7 +891,7 @@ function renderInspector() {
   if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
-  for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
+  for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
 }
 
 function renderAssetsTab() {
@@ -2700,7 +2702,7 @@ function applyTypographyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => node.type === 'text');
   if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
   const layoutParents = new Set();
   for (const node of compatible) {
     applyTypographyStyle(state.document, node.id, style.id);
@@ -3051,6 +3053,7 @@ function openFileMenu(x, y, commentAnchor = null) {
     { label: 'Your designs…', action: openDesignLibrary },
     { label: 'New design', shortcut: '⌘N', action: newDesign },
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
+    { label: 'Import SVG as editable layers…', action: () => $('#svg-input').click() },
     { separator: true },
     { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
     { label: 'Copy selected layers', shortcut: '⌘C', action: copySelected, disabled: !rootSelectedIds().length },
@@ -4314,6 +4317,37 @@ function initEvents() {
       });
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
     input.value = '';
+  });
+  $('#svg-input').addEventListener('change', async event => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    state.pendingImageImports += 1;
+    try {
+      if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before importing an SVG.');
+      const { nodes, width, height } = importSvgToLayers(await file.text());
+      if (!nodes.length) throw new Error('This SVG contains no editable vector layers.');
+      const imported = nodes;
+      const bounds = canvas.getBoundingClientRect();
+      const center = screenToWorld({ clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2 }, canvas, state);
+      checkpoint(`Import ${file.name}`);
+      for (const node of imported) {
+        walkNodes([node], entry => { entry.node.id = createId(entry.node.type); });
+        const name = file.name.replace(/\.svg$/i, '').trim().slice(0, 120);
+        if (name) node.name = name;
+        node.x = center.x - width / 2;
+        node.y = center.y - height / 2;
+        addNode(state.document, node, { pageId: state.document.activePageId });
+      }
+      setSelection(imported.map(node => node.id));
+      renderUI(); queueSave(); renderer.invalidate();
+      showToast(`${file.name} imported as editable layers.`);
+    } catch (error) {
+      showToast(error.message || 'Could not import this SVG.');
+    } finally {
+      state.pendingImageImports -= 1;
+      input.value = '';
+    }
   });
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { if (state.documentTransitioning) return; const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });

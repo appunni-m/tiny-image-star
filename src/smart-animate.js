@@ -1,4 +1,5 @@
 import { isValidGradientFill } from './fills.js';
+import { isValidLayerEffects } from './layer-effects.js';
 
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
@@ -6,7 +7,7 @@ const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'lette
 const midpointProperties = [
   ...colorProperties,
   'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
-  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'align', 'textFit', 'textStyleId'
+  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'align', 'verticalAlign', 'textFit', 'textStyleId'
 ];
 
 function interpolateColor(from, to, progress) {
@@ -44,6 +45,34 @@ function interpolateGradient(from, to, progress) {
       };
     })
   };
+}
+
+function canInterpolateEffects(from, to) {
+  return Array.isArray(from) && Array.isArray(to)
+    && from.length === to.length
+    && isValidLayerEffects(from) && isValidLayerEffects(to)
+    && from.every((effect, index) => effect.type === to[index].type);
+}
+
+function interpolateEffects(from, to, progress) {
+  if (progress === 0) return structuredClone(from);
+  if (progress === 1) return structuredClone(to);
+  if (!canInterpolateEffects(from, to)) return null;
+
+  const categoricalSource = progress < 0.5 ? from : to;
+  return to.map((effect, index) => {
+    const start = from[index];
+    const result = structuredClone(categoricalSource[index]);
+    if (effect.type === 'drop-shadow') {
+      for (const property of ['opacity', 'offsetX', 'offsetY', 'blur']) {
+        result[property] = start[property] + (effect[property] - start[property]) * progress;
+      }
+      result.color = interpolateColor(start.color, effect.color, progress) || result.color;
+    } else if (effect.type === 'layer-blur') {
+      result.radius = start.radius + (effect.radius - start.radius) * progress;
+    }
+    return result;
+  });
 }
 
 function canMatch(from, to) {
@@ -139,6 +168,8 @@ function fadeLayer(node, progress, entering) {
 function interpolateLayer(from, to, progress) {
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
+  const effects = interpolateEffects(from.effects, to.effects, progress);
+  if (effects) copy.effects = effects;
   for (const property of numericProperties) {
     const start = finiteStyleNumber(from[property]);
     const end = finiteStyleNumber(to[property]);

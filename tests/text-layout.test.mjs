@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode, validateDocument } from '../src/model.js';
+import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
 import { calculateTextBox, transformTextCase } from '../src/text-layout.js';
 
 function context() {
@@ -94,4 +94,50 @@ test('text case and decoration accept only supported values on text layers', () 
   const nonText = createNode('rectangle', { textDecoration: 'underline' });
   addNode(document, nonText);
   assert.throws(() => validateDocument(document), /Invalid text decoration/);
+});
+
+test('text vertical alignment validates, defaults old documents to top, and round-trips in saved text styles', () => {
+  const document = createDocument();
+  const text = createNode('text', { verticalAlign: 'bottom' });
+  addNode(document, text);
+  assert.equal(text.verticalAlign, 'bottom');
+  assert.equal(validateDocument(document), true);
+
+  const oldDocument = structuredClone(document);
+  delete oldDocument.pages[0].children[0].verticalAlign;
+  assert.equal(validateDocument(oldDocument), true, 'older files without the optional alignment field remain valid');
+
+  const invalid = structuredClone(document);
+  invalid.pages[0].children[0].verticalAlign = 'center';
+  assert.throws(() => validateDocument(invalid), /Invalid text vertical alignment/);
+  addNode(document, createNode('rectangle', { verticalAlign: 'bottom' }));
+  assert.throws(() => validateDocument(document), /Invalid text vertical alignment/);
+  document.pages[0].children.pop();
+
+  const style = createTypographyStyle(document, text.id, 'Bottom text');
+  assert.equal(style.verticalAlign, 'bottom');
+  text.verticalAlign = 'top';
+  assert.equal(applyTypographyStyle(document, text.id, style.id), true);
+  assert.equal(text.verticalAlign, 'bottom');
+
+  delete style.verticalAlign;
+  text.verticalAlign = 'bottom';
+  assert.equal(validateDocument(document), true, 'older typography styles may omit vertical alignment');
+  assert.equal(applyTypographyStyle(document, text.id, style.id), true);
+  assert.equal(text.verticalAlign, 'top', 'applying a legacy text style uses the historical top-aligned default');
+});
+
+test('text vertical alignment can be stored as an instance override for a nested component label', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Button' });
+  const label = createNode('text', { name: 'Label', text: 'Continue' });
+  addNode(document, master); addNode(document, label, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Button');
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  instanceNode.componentOverrides[label.id] = { verticalAlign: 'middle' };
+  assert.equal(validateDocument(document), true);
+
+  instanceNode.componentOverrides[label.id].verticalAlign = 'center';
+  assert.throws(() => validateDocument(document), /Invalid component text vertical alignment override/);
 });

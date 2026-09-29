@@ -64,9 +64,11 @@ try {
   const phoneInspectorRight = app.querySelector('#right-panel').getBoundingClientRect().right;
   const textCase = app.querySelector('[data-prop="textCase"]');
   const textDecoration = app.querySelector('[data-prop="textDecoration"]');
+  const verticalAlign = app.querySelector('[data-prop="verticalAlign"]');
   assert(textCase && ['none', 'uppercase', 'lowercase', 'capitalize'].every(value => [...textCase.options].some(option => option.value === value)), 'text case options should be available on the phone');
   assert(textDecoration && ['none', 'underline', 'line-through'].every(value => [...textDecoration.options].some(option => option.value === value)), 'text decoration options should be available on the phone');
-  assert(textCase.getBoundingClientRect().right <= phoneInspectorRight && textDecoration.getBoundingClientRect().right <= phoneInspectorRight, 'the text case and decoration controls should fit inside the phone inspector');
+  assert(verticalAlign && ['top', 'middle', 'bottom'].every(value => [...verticalAlign.options].some(option => option.value === value)), 'vertical text alignment options should be available on the phone');
+  assert(textCase.getBoundingClientRect().right <= phoneInspectorRight && textDecoration.getBoundingClientRect().right <= phoneInspectorRight && verticalAlign.getBoundingClientRect().right <= phoneInspectorRight, 'text styling controls should fit inside the phone inspector');
   const textWidth = app.querySelector('[data-prop="width"]');
   textWidth.value = '50'; textWidth.dispatchEvent(new Event('input', { bubbles: true })); textWidth.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'auto-height text');
@@ -88,6 +90,12 @@ try {
   const renderedTextRecords = await readDocuments(); renderedTextRecords.sort((a, b) => b.savedAt - a.savedAt);
   const savedRenderedText = renderedTextRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
   assert(savedRenderedText?.text === 'Continue' && savedRenderedText.textCase === 'uppercase' && savedRenderedText.textDecoration === 'underline', 'mobile text rendering controls should preserve the source copy and persist display casing and decoration');
+  const mobileVerticalAlign = app.querySelector('[data-prop="verticalAlign"]');
+  mobileVerticalAlign.value = 'bottom'; mobileVerticalAlign.dispatchEvent(new Event('input', { bubbles: true })); mobileVerticalAlign.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'bottom-aligned text');
+  const verticalRecords = await readDocuments(); verticalRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const savedVerticalText = verticalRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
+  assert(savedVerticalText?.verticalAlign === 'bottom', 'mobile vertical alignment should persist with the local design');
   click(app.querySelector(`[data-layer-id="${button.id}"]`));
   const limitFields = [...app.querySelectorAll('.size-limits-grid .size-limit-field')];
   assert(limitFields.length === 4 && limitFields.every(field => field.getBoundingClientRect().width >= 96), 'the four size-limit controls should remain readable in the phone inspector');
@@ -176,7 +184,12 @@ try {
   click(app.querySelector(`[data-layer-id="${label.id}"]`));
   await waitFor(() => app.querySelector('.inspect-panel')?.textContent.includes('16 px · Arial, sans-serif'), 'text metrics');
   assert(app.querySelector('.inspect-panel').textContent.includes('Continue'), 'Inspect panel did not show resolved text content.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, typography: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
+  const selectedVerticalAlign = app.querySelector('[data-prop="verticalAlign"]')?.value;
+  const handoffJson = app.querySelector('.inspect-json-card pre code')?.textContent || '[]';
+  const handoffLayer = JSON.parse(handoffJson)[0];
+  const verticalCss = app.querySelector('.inspect-panel .inspect-code-card code')?.textContent || '';
+  assert(verticalCss.includes('justify-content: flex-end;'), `Inspect CSS should hand off bottom-aligned text; control=${selectedVerticalAlign}, layer=${handoffLayer?.verticalAlign}, typography=${handoffLayer?.typography?.verticalAlign}; found: ${verticalCss}`);
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -364,6 +364,27 @@ test('text wraps into positioned tspans like the canvas editor and requires reli
   }), { measureText: value => value.length * 16 }), /zero-width box/);
 });
 
+test('SVG output applies vertical text alignment to plain and rich runs, including decoration geometry', () => {
+  const plain = createNode('text', {
+    width: 100, height: 100, fontSize: 10, lineHeight: 1, text: 'one\ntwo',
+    textFit: 'fixed', verticalAlign: 'bottom', textDecoration: 'underline'
+  });
+  const plainSvg = exportNodeToSvg(plain, { measureText: value => [...value].length * 5 });
+  assert.match(plainSvg, /<tspan x="0" y="80" textLength="15" lengthAdjust="spacingAndGlyphs">one<\/tspan>/);
+  assert.match(plainSvg, /<tspan x="0" y="90" textLength="15" lengthAdjust="spacingAndGlyphs">two<\/tspan>/);
+  assert.match(plainSvg, /<path d="M 0 100\.3 L 15 100\.3"/);
+  assert.match(plainSvg, /viewBox="0 0 100 102\.5"/, 'export bounds should include the bottom-aligned text glyphs');
+
+  const rich = createNode('text', {
+    width: 100, height: 100, fontSize: 10, lineHeight: 1.25, text: 'one\ntwo',
+    textFit: 'fixed', verticalAlign: 'middle',
+    textRuns: [{ text: 'one\ntwo' }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText: (value, node) => [...value].length * Number(node.fontSize) * .5 });
+  assert.match(richSvg, /<tspan x="0" y="37\.5" textLength="15" lengthAdjust="spacingAndGlyphs">/);
+  assert.match(richSvg, /<tspan x="0" y="50" textLength="15" lengthAdjust="spacingAndGlyphs">/);
+});
+
 test('exports mixed text runs with matching font metrics, wrapping, colors, and per-run decoration', () => {
   const text = createNode('text', {
     width: 35, height: 45, fontSize: 10, lineHeight: 1.25, align: 'center',

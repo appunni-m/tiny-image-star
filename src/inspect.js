@@ -136,6 +136,11 @@ function cssForEntry(document, entry) {
       `line-height: ${number(fontSize * lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`,
+      ...(['middle', 'bottom'].includes(node.verticalAlign) ? [
+        'display: flex;',
+        'flex-direction: column;',
+        `justify-content: ${node.verticalAlign === 'middle' ? 'center' : 'flex-end'};`
+      ] : []),
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
       `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`
     );
@@ -225,6 +230,7 @@ function summaryForEntry(document, entry) {
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
       align: node.align,
+      verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
       textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'
     };

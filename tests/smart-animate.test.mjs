@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNode } from '../src/model.js';
+import { createLayerEffect, createNode } from '../src/model.js';
 import { interpolateSmartFrame } from '../src/smart-animate.js';
 
 test('smart animation interpolates supported size, position, rotation, opacity, and solid-fill changes', () => {
@@ -102,6 +102,15 @@ test('smart animation interpolates numeric font weight and snaps categorical tex
   assert.deepEqual(middle.children[1].effects, [{ id: 'shadow', type: 'drop-shadow' }]);
   assert.equal(from.children[0].fontWeight, '400', 'interpolation leaves the source unchanged');
   assert.equal(to.children[0].fontWeight, 700, 'interpolation leaves the destination unchanged');
+});
+
+test('smart animation snaps vertical text alignment from source to target at the midpoint', () => {
+  const from = createNode('frame', { children: [createNode('text', { name: 'Label', text: 'Continue', verticalAlign: 'top' })] });
+  const to = createNode('frame', { children: [createNode('text', { name: 'Label', text: 'Continue', verticalAlign: 'bottom' })] });
+  assert.equal(interpolateSmartFrame(from, to, 0).children[0].verticalAlign, 'top');
+  assert.equal(interpolateSmartFrame(from, to, 0.499).children[0].verticalAlign, 'top');
+  assert.equal(interpolateSmartFrame(from, to, 0.5).children[0].verticalAlign, 'bottom');
+  assert.equal(interpolateSmartFrame(from, to, 1).children[0].verticalAlign, 'bottom');
 });
 
 test('smart animation interpolates compatible gradient angles, stop positions, and colors with exact endpoints', () => {
@@ -334,6 +343,79 @@ test('smart animation snaps rich-text styles when unchanged text has incompatibl
   assert.deepEqual(middle[0].textRuns, to.children[0].textRuns, 'unaligned run boundaries keep the existing destination-style snap');
   assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].textRuns, from.children[0].textRuns, 'the start endpoint keeps the source run segmentation');
   assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].textRuns, to.children[0].textRuns, 'the end endpoint keeps the destination run segmentation');
+});
+
+test('smart animation interpolates compatible drop-shadow and layer-blur effects with exact immutable endpoints', () => {
+  const fromEffects = [
+    createLayerEffect('drop-shadow', {
+      id: 'shadow-before', color: '#000000', opacity: 0.2, offsetX: 2, offsetY: 4, blur: 2, visible: true
+    }),
+    createLayerEffect('layer-blur', { id: 'blur-before', radius: 2 })
+  ];
+  const toEffects = [
+    createLayerEffect('drop-shadow', {
+      id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 10, offsetY: -4, blur: 10, visible: false
+    }),
+    createLayerEffect('layer-blur', { id: 'blur-after', radius: 10 })
+  ];
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: fromEffects })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: toEffects })] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const quarter = interpolateSmartFrame(from, to, 0.25).children[0].effects;
+  const threeQuarter = interpolateSmartFrame(from, to, 0.75).children[0].effects;
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} should be close to ${expected}`);
+  assert.deepEqual(quarter.map(({ id, type, visible }) => [id, type, visible]), [
+    ['shadow-before', 'drop-shadow', true], ['blur-before', 'layer-blur', true]
+  ]);
+  assert.equal(quarter[0].color, '#404040');
+  assert.deepEqual(threeQuarter.map(({ id, type, visible }) => [id, type, visible]), [
+    ['shadow-after', 'drop-shadow', false], ['blur-after', 'layer-blur', true]
+  ]);
+  assert.equal(threeQuarter[0].color, '#bfbfbf');
+  near(quarter[0].opacity, 0.35);
+  near(quarter[0].offsetX, 4);
+  near(quarter[0].offsetY, 2);
+  near(quarter[0].blur, 4);
+  near(quarter[1].radius, 4);
+  near(threeQuarter[0].opacity, 0.65);
+  near(threeQuarter[0].offsetX, 8);
+  near(threeQuarter[0].offsetY, -2);
+  near(threeQuarter[0].blur, 8);
+  near(threeQuarter[1].radius, 8);
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].effects, fromEffects);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].effects, toEffects);
+  assert.deepEqual(from, originalFrom, 'interpolation does not mutate source effect values');
+  assert.deepEqual(to, originalTo, 'interpolation does not mutate destination effect values');
+});
+
+test('smart animation snaps effect stacks with incompatible count, order, or invalid values at the midpoint', () => {
+  const shadow = createLayerEffect('drop-shadow', { id: 'shadow', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2 });
+  const blur = createLayerEffect('layer-blur', { id: 'blur', radius: 2 });
+  const changedCount = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' }), blur];
+  const changedOrder = [createLayerEffect('layer-blur', { ...blur, id: 'blur-end', radius: 10 }), createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' })];
+  const invalidValue = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: 'red' })];
+  const stacks = [
+    { from: [shadow], to: changedCount },
+    { from: [shadow, blur], to: changedOrder },
+    { from: [shadow], to: invalidValue }
+  ];
+
+  for (const [index, stack] of stacks.entries()) {
+    const from = createNode('frame', { children: [createNode('rectangle', { name: `Effect ${index}`, effects: stack.from })] });
+    const to = createNode('frame', { children: [createNode('rectangle', { name: `Effect ${index}`, effects: stack.to })] });
+    assert.deepEqual(
+      interpolateSmartFrame(from, to, 0.25).children[0].effects,
+      stack.from,
+      `incompatible effect topology ${index} should retain the source stack before halfway`
+    );
+    assert.deepEqual(
+      interpolateSmartFrame(from, to, 0.5).children[0].effects,
+      stack.to,
+      `incompatible effect topology ${index} should switch to the destination stack at halfway`
+    );
+  }
 });
 
 test('smart animation rejects non-frame endpoints and clamps its progress', () => {

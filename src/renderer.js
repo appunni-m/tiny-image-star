@@ -193,6 +193,16 @@ export function drawTextDecoration(ctx, x, y, width, fontSize, decoration) {
   return true;
 }
 
+/** Returns the non-negative vertical free-space offset for a text box. */
+export function textVerticalOffset(boxHeight, contentHeight, alignment = 'top') {
+  const box = Number(boxHeight);
+  const content = Number(contentHeight);
+  const freeSpace = Math.max(0, (Number.isFinite(box) ? box : 0) - (Number.isFinite(content) ? content : 0));
+  if (alignment === 'middle') return freeSpace / 2;
+  if (alignment === 'bottom') return freeSpace;
+  return 0;
+}
+
 const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
 
 function richStyle(baseStyle, run) {
@@ -313,16 +323,20 @@ function richParagraphs(ctx, runs, width, baseStyle) {
 export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   const lines = richParagraphs(ctx, runs, Math.max(1, width), baseStyle);
   const fallbackStyle = richStyle(baseStyle, {});
-  let top = y;
-  for (const line of lines) {
+  const lineHeights = lines.map(line => {
+    let lineHeight = line.length
+      ? line.reduce((maximum, part) => Math.max(maximum, part.style.fontSize * part.style.lineHeight), 0)
+      : fallbackStyle.fontSize * fallbackStyle.lineHeight;
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) lineHeight = fallbackStyle.fontSize * fallbackStyle.lineHeight;
+    return lineHeight;
+  });
+  const contentHeight = lineHeights.reduce((total, lineHeight) => total + lineHeight, 0);
+  let top = y + textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign);
+  for (const [lineIndex, line] of lines.entries()) {
     const naturalWidth = measureRichParts(ctx, line);
     const visibleWidth = Math.min(Math.max(1, width), naturalWidth);
     const offsetX = baseStyle.align === 'center' ? (width - visibleWidth) / 2 : baseStyle.align === 'right' ? width - visibleWidth : 0;
     const scaleX = naturalWidth > width && naturalWidth > 0 ? width / naturalWidth : 1;
-    let lineHeight = line.length
-      ? Math.max(...line.map(part => part.style.fontSize * part.style.lineHeight))
-      : fallbackStyle.fontSize * fallbackStyle.lineHeight;
-    if (!Number.isFinite(lineHeight) || lineHeight <= 0) lineHeight = fallbackStyle.fontSize * fallbackStyle.lineHeight;
 
     ctx.save();
     ctx.translate(x + offsetX, top);
@@ -339,9 +353,9 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
       cursor += partWidth;
     }
     ctx.restore();
-    top += lineHeight;
+    top += lineHeights[lineIndex];
   }
-  return { lines, height: top - y };
+  return { lines, height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign) };
 }
 
 export class SceneRenderer {
@@ -533,6 +547,8 @@ export class SceneRenderer {
           textCase: node.textCase || 'none',
           textDecoration: node.textDecoration || 'none',
           align: node.align || 'left',
+          verticalAlign: node.verticalAlign || 'top',
+          height,
           fillOpacity: node.fillOpacity ?? 1
         });
       } else {
@@ -545,11 +561,12 @@ export class SceneRenderer {
         ctx.textAlign = 'left'; ctx.textBaseline = 'top';
         const lines = wrapText(ctx, text, Math.max(1, width), letterSpacing);
         const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
+        const textY = y + textVerticalOffset(height, lines.length * lineHeight, node.verticalAlign || 'top');
         lines.forEach((line, index) => {
           const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
           const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
-          drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
-          drawTextDecoration(ctx, x + offsetX, y + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
+          drawTrackedText(ctx, line, x + offsetX, textY + index * lineHeight, letterSpacing, width);
+          drawTextDecoration(ctx, x + offsetX, textY + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
         });
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }

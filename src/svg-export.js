@@ -399,6 +399,16 @@ function textLines(node, document, measureText) {
   });
 }
 
+function textVerticalOffset(node, lines, lineHeight) {
+  const contentHeight = lines.some(line => Array.isArray(line.parts))
+    ? lines.reduce((height, line) => Math.max(height, Number(line.y) + Number(line.lineHeight || 0)), 0)
+    : lines.length * lineHeight;
+  const freeSpace = Math.max(0, Number(node.height) - contentHeight);
+  if (node.verticalAlign === 'middle') return freeSpace / 2;
+  if (node.verticalAlign === 'bottom') return freeSpace;
+  return 0;
+}
+
 function textMarkup(node, document, measureText) {
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -412,6 +422,7 @@ function textMarkup(node, document, measureText) {
   const fontFamily = node.fontFamily || 'Arial, sans-serif';
   const textCase = ['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? ` text-transform="${node.textCase}"` : '';
   const lines = textLines(node, document, measureText);
+  const verticalOffset = textVerticalOffset(node, lines, lineHeight);
   const richLines = lines.some(line => Array.isArray(line.parts));
   if (richLines) {
     const textOpacity = node.fillOpacity ?? 1;
@@ -430,12 +441,12 @@ function textMarkup(node, document, measureText) {
         const lineStartX = node.align === 'center' ? (Number(node.width) - line.width) / 2 : node.align === 'right' ? Number(node.width) - line.width : 0;
         const x = lineStartX + part.offsetX * scaleX;
         const decorationWidth = Math.max(1, style.fontSize / 16);
-        const y = line.y + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
+        const y = line.y + verticalOffset + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
         const stroke = partColor === 'none' ? 'none' : partColor;
         decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + part.width * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
         return partMarkup;
       }).join('');
-      return `<tspan x="${number(anchorX)}" y="${number(line.y)}"${textLength}>${parts}</tspan>`;
+      return `<tspan x="${number(anchorX)}" y="${number(line.y + verticalOffset)}"${textLength}>${parts}</tspan>`;
     }).join('');
     const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
     const border = node.stroke && Number(node.strokeWidth) > 0
@@ -446,7 +457,7 @@ function textMarkup(node, document, measureText) {
   const tspans = lines.map(({ displayText, index, width, naturalWidth }) => {
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
-    return `<tspan x="${number(anchorX)}" y="${number(index * lineHeight)}"${textLength}>${escapeXml(displayText)}</tspan>`;
+    return `<tspan x="${number(anchorX)}" y="${number(index * lineHeight + verticalOffset)}"${textLength}>${escapeXml(displayText)}</tspan>`;
   }).join('');
   const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
   const border = node.stroke && Number(node.strokeWidth) > 0
@@ -458,7 +469,7 @@ function textMarkup(node, document, measureText) {
   const decorationWidth = Math.max(1, fontSize / 16);
   const decorations = decoration ? lines.map(({ index, width }) => {
     const x = node.align === 'center' ? (Number(node.width) - width) / 2 : node.align === 'right' ? Number(node.width) - width : 0;
-    const y = index * lineHeight + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
+    const y = index * lineHeight + verticalOffset + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
     return `<path d="M ${number(x)} ${number(y)} L ${number(x + width)} ${number(y)}" fill="none" stroke="${escapeXml(textColor === 'transparent' ? 'none' : textColor)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`;
   }).join('') : '';
   return element + border + decorations;
@@ -644,7 +655,9 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       if (node.type === 'text') {
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
-        for (const line of textLines(node, document, measureText)) {
+        const lines = textLines(node, document, measureText);
+        const verticalOffset = textVerticalOffset(node, lines, lineHeight);
+        for (const line of lines) {
           const lineWidth = line.width;
           const startX = node.align === 'center' ? (width - lineWidth) / 2 : node.align === 'right' ? width - lineWidth : 0;
           if (Array.isArray(line.parts)) {
@@ -654,14 +667,16 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
               const size = part.style.fontSize;
               const x1 = startX + part.offsetX * scaleX;
               const x2 = x1 + part.width * scaleX;
-              const top = line.y - size * .15;
-              const decorationBottom = line.y + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
-              const bottom = Math.max(line.y + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);
+              const lineTop = line.y + verticalOffset;
+              const top = lineTop - size * .15;
+              const decorationBottom = lineTop + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
+              const bottom = Math.max(lineTop + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);
               for (const [x, y] of [[x1, top], [x2, top], [x1, bottom], [x2, bottom]]) include(transformPoint(matrix, x, y), bounds);
             }
           } else {
-            const top = line.index * lineHeight - fontSize * .15;
-            const bottom = Math.max(line.index * lineHeight + fontSize * 1.25, line.index * lineHeight + fontSize * (node.textDecoration === 'underline' ? 1.03 : .55));
+            const lineTop = line.index * lineHeight + verticalOffset;
+            const top = lineTop - fontSize * .15;
+            const bottom = Math.max(lineTop + fontSize * 1.25, lineTop + fontSize * (node.textDecoration === 'underline' ? 1.03 : .55));
             for (const [x, y] of [[startX, top], [startX + lineWidth, top], [startX, bottom], [startX + lineWidth, bottom]]) include(transformPoint(matrix, x, y), bounds);
           }
         }
