@@ -89,7 +89,7 @@ const componentOverrideProperties = new Set([
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -1096,10 +1096,16 @@ export function validateDocument(document) {
   for (const page of document.pages) {
     if (!page.id || pageIds.has(page.id) || !Array.isArray(page.children)) throw new TypeError('Invalid or duplicate page.');
     pageIds.add(page.id);
-    walkNodes(page.children, ({ node }) => {
+    walkNodes(page.children, ({ node, parent }) => {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      const sizeLimits = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'];
+      const hasSizeLimit = sizeLimits.some(property => node[property] != null);
+      if (hasSizeLimit && !(node.type === 'frame' && node.autoLayout) && !parent?.autoLayout) throw new TypeError(`Size limits require an auto layout frame on layer ${node.name || node.id}.`);
+      if (sizeLimits.some(property => node[property] != null && (typeof node[property] !== 'number' || !Number.isFinite(node[property]) || node[property] < 0))
+        || (node.minWidth != null && node.maxWidth != null && node.minWidth > node.maxWidth)
+        || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);

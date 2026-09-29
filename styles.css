@@ -219,6 +219,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .property-field label { width: 25px; flex: 0 0 25px; color: #929292; text-align: center; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .property-field input { width: 100%; min-width: 0; height: 100%; padding: 0 5px 0 1px; border: 0; outline: 0; background: transparent; color: #444; font-size: 10px; }
 .property-field input[type=number]::-webkit-inner-spin-button { display: none; }
+.size-limit-field { min-width: 0; height: 29px; display: flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 5px; background: #f6f6f6; }
+.size-limit-field:focus-within { border-color: #93cef6; background: #fff; }
+.size-limit-field span { flex: 0 0 auto; color: #777; font-size: 9px; white-space: nowrap; }
+.size-limit-field input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: #444; font-size: 10px; text-align: right; }
+.size-limit-field input::placeholder { color: #aaa; }
 .property-inline { display: flex; align-items: center; gap: 5px; }
 .property-inline .property-field { flex: 1; }
 .property-separator { width: 13px; text-align: center; color: #aaa; }

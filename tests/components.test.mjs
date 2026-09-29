@@ -82,6 +82,26 @@ test('local instance overrides survive main edits and synchronization', () => {
   assert.equal(validateDocument(document), true);
 });
 
+test('instance size-limit overrides survive main edits and local design reload', () => {
+  const document = createDocument();
+  const main = createNode('frame', { width: 220, height: 120, autoLayout: { axis: 'horizontal' } });
+  const tile = createNode('rectangle', { maxWidth: 220 });
+  addNode(document, main); addNode(document, tile, { parentId: main.id });
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceTile = instance.children[0];
+  instanceTile.maxWidth = 180;
+  instance.componentOverrides[instanceTile.componentSourceId] = { maxWidth: 180 };
+
+  tile.maxWidth = 260;
+  assert.equal(syncComponentInstances(document, component.id), 1);
+  const synchronizedTile = findNode(document, instanceTile.id).node;
+  assert.equal(synchronizedTile.maxWidth, 180);
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reloaded, instanceTile.id).node.maxWidth, 180);
+  assert.equal(validateDocument(reloaded), true);
+});
+
 test('local child ordering and geometry overrides are restored after a master edit', () => {
   const document = createDocument();
   const main = createNode('frame');

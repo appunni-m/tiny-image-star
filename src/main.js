@@ -188,6 +188,9 @@ function section(title, body, iconName = null) {
 function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false) {
   return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${label}" /></div>`;
 }
+function optionalNumberField(label, prop, value) {
+  return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="1" value="${Number.isFinite(value) ? value : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
+}
 function sliderField(label, prop, value, min, max, step = 1) {
   return `<div class="slider-row"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/><output>${Number(value).toFixed(step < 1 ? 2 : 0)}${prop === 'opacity' ? '%' : ''}</output></div>`;
 }
@@ -298,6 +301,11 @@ function constraintsSection(node) {
   const constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}) };
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="constraints.${prop}" aria-label="${prop} constraint">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   return section('Constraints', `<div class="property-grid"><span class="field-caption">Horizontal</span>${select('horizontal', constraints.horizontal, horizontalConstraints)}<span class="field-caption">Vertical</span>${select('vertical', constraints.vertical, verticalConstraints)}</div><div class="image-properties-note">Pins and scales this layer when its parent frame changes size.</div>`);
+}
+function sizeLimitsSection(node, parent) {
+  if (!node.autoLayout && !parent?.autoLayout) return '';
+  const fields = `<div class="property-grid size-limits-grid">${optionalNumberField('Min width', 'minWidth', node.minWidth)}${optionalNumberField('Max width', 'maxWidth', node.maxWidth)}${optionalNumberField('Min height', 'minHeight', node.minHeight)}${optionalNumberField('Max height', 'maxHeight', node.maxHeight)}</div><div class="image-properties-note">Leave a value blank for no limit. Limits are in pixels and apply as this layer resizes.</div>`;
+  return section('Size limits', fields);
 }
 function componentSection(node) {
   const linkedInstance = componentInstanceRoot(node.id);
@@ -549,6 +557,7 @@ function renderInspector() {
       body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
+  body += sizeLimitsSection(node, parent);
   if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
@@ -1191,7 +1200,7 @@ function updateInspectorInput(event) {
   if (!input || !selectedNodes().length) return;
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const prop = input.dataset.prop;
-  const value = input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' ? Number(input.value) : input.value;
+  const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' ? Number(input.value) : input.value;
   const propertyValue = prop === 'opacity' ? value / 100 : value;
   if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
@@ -1202,6 +1211,7 @@ function updateInspectorInput(event) {
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
     const oldWidth = node.width; const oldHeight = node.height;
+    let adjustedSizeLimit = null;
     const variableProperty = prop === 'fill' ? 'fillVariableId' : prop === 'color' ? 'textVariableId' : prop === 'stroke' ? 'strokeVariableId' : null;
     const boundVariableId = node.variableBindings?.[prop];
     if (boundVariableId) setNodePropertyValue(node, prop, propertyValue);
@@ -1232,6 +1242,16 @@ function updateInspectorInput(event) {
       node.gridCell ||= {};
       node.gridCell[key.slice('gridCell.'.length)] = value;
       if (parent?.autoLayout) applyAutoLayout(parent);
+    } else if (['minWidth', 'maxWidth', 'minHeight', 'maxHeight'].includes(prop)) {
+      node[prop] = propertyValue;
+      const pair = { minWidth: 'maxWidth', maxWidth: 'minWidth', minHeight: 'maxHeight', maxHeight: 'minHeight' }[prop];
+      if (propertyValue != null && Number.isFinite(node[pair]) && ((prop.startsWith('min') && propertyValue > node[pair]) || (prop.startsWith('max') && propertyValue < node[pair]))) {
+        node[pair] = propertyValue;
+        adjustedSizeLimit = pair;
+      }
+      const parent = findNode(state.document, node.id)?.parent;
+      if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
+      if (parent?.autoLayout) applyAutoLayout(parent);
     }
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
@@ -1242,7 +1262,10 @@ function updateInspectorInput(event) {
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop);
+    if (instanceRoot) {
+      recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop);
+      if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
+    }
   }
   renderer.invalidate();
 }

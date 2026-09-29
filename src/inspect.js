@@ -77,12 +77,15 @@ function cssForEntry(document, entry) {
     'box-sizing: border-box;',
     `opacity: ${number(getNodePropertyValue(document, node, 'opacity') ?? 1)};`
   ];
+  for (const [property, cssProperty] of [['minWidth', 'min-width'], ['maxWidth', 'max-width'], ['minHeight', 'min-height'], ['maxHeight', 'max-height']]) {
+    if (Number.isFinite(node[property])) declarations.push(`${cssProperty}: ${number(node[property])}px;`);
+  }
   if (parentLayout?.axis === 'grid') {
     const cell = node.gridCell || {};
     if (Number.isInteger(cell.column)) declarations.push(`grid-column: ${cell.column} / span ${Math.max(1, Number(cell.columnSpan) || 1)};`);
     if (Number.isInteger(cell.row)) declarations.push(`grid-row: ${cell.row} / span ${Math.max(1, Number(cell.rowSpan) || 1)};`);
   } else if (parentLayout) {
-    if (node.layoutSizingMain === 'fill') declarations.push('flex: 1 1 0;', ...(parentLayout.axis === 'horizontal' ? ['min-width: 0;'] : ['min-height: 0;']));
+    if (node.layoutSizingMain === 'fill') declarations.push('flex: 1 1 0;', ...(parentLayout.axis === 'horizontal' ? [Number.isFinite(node.minWidth) ? '' : 'min-width: 0;'] : [Number.isFinite(node.minHeight) ? '' : 'min-height: 0;']).filter(Boolean));
     else declarations.push('flex: 0 0 auto;');
     if (node.layoutSizingCross === 'fill') declarations.push('align-self: stretch;');
   }
@@ -158,6 +161,8 @@ function summaryForEntry(document, entry) {
   }
   if (node.type === 'image') summary.image = { fileName: node.fileName, fit: node.fit, sourceWidth: node.sourceWidth, sourceHeight: node.sourceHeight };
   if (node.autoLayout) summary.autoLayout = node.autoLayout;
+  const sizeLimits = Object.fromEntries(['minWidth', 'maxWidth', 'minHeight', 'maxHeight'].filter(property => Number.isFinite(node[property])).map(property => [property, node[property]]));
+  if (Object.keys(sizeLimits).length) summary.sizeLimits = sizeLimits;
   return summary;
 }
 

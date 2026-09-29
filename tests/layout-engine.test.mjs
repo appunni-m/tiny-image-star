@@ -21,6 +21,32 @@ test('horizontal fill children divide remaining main-axis space', () => {
   assert.deepEqual([fixed.x, fill.x, fill.width], [10, 60, 150]);
 });
 
+test('linear fill sizes honor min and max bounds while redistributing available space', () => {
+  const frame = createNode('frame', { width: 230, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', gap: 10, padding: 10 }) });
+  const fixed = createNode('rectangle', { width: 40, height: 30 });
+  const minimum = createNode('rectangle', { width: 20, height: 30, layoutSizingMain: 'fill', minWidth: 100 });
+  const maximum = createNode('rectangle', { width: 20, height: 30, layoutSizingMain: 'fill', minWidth: 20, maxWidth: 40 });
+  frame.children.push(fixed, minimum, maximum);
+  applyAutoLayout(frame);
+  assert.deepEqual([minimum.width, maximum.width, minimum.x, maximum.x], [100, 40, 60, 170]);
+});
+
+test('size limits constrain stretched children and hug-sized frames', () => {
+  const frame = createNode('frame', {
+    width: 220, height: 100, minWidth: 150, maxHeight: 50,
+    autoLayout: createAutoLayout({ axis: 'vertical', gap: 5, padding: 10, mainSizing: 'hug', crossSizing: 'hug' })
+  });
+  frame.children.push(createNode('rectangle', { width: 120, height: 20 }), createNode('rectangle', { width: 80, height: 30 }));
+  applyAutoLayout(frame);
+  assert.deepEqual([frame.width, frame.height], [150, 50]);
+
+  const row = createNode('frame', { width: 220, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', padding: 10, align: 'stretch' }) });
+  const stretched = createNode('rectangle', { width: 40, height: 20, minHeight: 50, maxHeight: 60 });
+  row.children.push(stretched);
+  applyAutoLayout(row);
+  assert.equal(stretched.height, 60);
+});
+
 test('hug sizing updates the frame to match its laid out content', () => {
   const frame = createNode('frame', { width: 220, height: 100, autoLayout: createAutoLayout({ axis: 'vertical', gap: 5, padding: 10, mainSizing: 'hug', crossSizing: 'hug' }) });
   frame.children.push(createNode('rectangle', { width: 60, height: 20 }), createNode('rectangle', { width: 80, height: 30 }));
@@ -51,6 +77,17 @@ test('grid auto layout preserves manual cells, spans tracks and fills the spanne
   assert.deepEqual([placedInFirstGap.gridCell.row, placedInFirstGap.gridCell.column], [1, 3]);
 });
 
+test('grid fill sizing applies bounds before aligning within its cell', () => {
+  const frame = createNode('frame', { width: 240, height: 120, autoLayout: createAutoLayout({ axis: 'grid', columns: 2, padding: 10, columnGap: 10 }) });
+  const tile = createNode('rectangle', {
+    width: 20, height: 10, layoutSizingX: 'fill', layoutSizingY: 'fill', maxWidth: 90, minHeight: 30,
+    gridCell: { row: 1, column: 1, alignX: 'center', alignY: 'end' }
+  });
+  frame.children.push(tile);
+  applyAutoLayout(frame);
+  assert.deepEqual([tile.x, tile.y, tile.width, tile.height], [17.5, 10, 90, 30]);
+});
+
 test('wrapped horizontal stacks use distinct row and column gaps', () => {
   const frame = createNode('frame', { width: 120, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, columnGap: 10, rowGap: 20, padding: 10 }) });
   const first = createNode('rectangle', { width: 40, height: 15 });
@@ -61,10 +98,20 @@ test('wrapped horizontal stacks use distinct row and column gaps', () => {
   assert.deepEqual([first.x, first.y, second.x, second.y, third.x, third.y], [10, 10, 60, 10, 10, 45]);
 });
 
+test('wrapped stacks measure children using their constrained dimensions', () => {
+  const frame = createNode('frame', { width: 120, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, columnGap: 0, rowGap: 12, padding: 10 }) });
+  const first = createNode('rectangle', { width: 40, height: 15 });
+  const wider = createNode('rectangle', { width: 40, height: 15, minWidth: 60 });
+  const third = createNode('rectangle', { width: 40, height: 15 });
+  frame.children.push(first, wider, third);
+  applyAutoLayout(frame);
+  assert.deepEqual([first.x, first.y, wider.x, wider.y, wider.width, third.x, third.y], [10, 10, 50, 10, 60, 10, 37]);
+});
+
 test('grid auto layout and cell placement validate and survive document reload', () => {
   const document = createDocument();
   const frame = createNode('frame', { autoLayout: createAutoLayout({ axis: 'grid', columns: 4, rows: 3 }) });
-  const tile = createNode('rectangle', { gridCell: { row: 2, column: 3, rowSpan: 2, columnSpan: 2, alignX: 'center' }, layoutSizingX: 'fill' });
+  const tile = createNode('rectangle', { gridCell: { row: 2, column: 3, rowSpan: 2, columnSpan: 2, alignX: 'center' }, layoutSizingX: 'fill', maxWidth: 180, minHeight: 32 });
   addNode(document, frame);
   addNode(document, tile, { parentId: frame.id });
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
@@ -72,4 +119,14 @@ test('grid auto layout and cell placement validate and survive document reload',
   const invalid = structuredClone(document);
   invalid.pages[0].children[0].autoLayout.columns = 0;
   assert.throws(() => validateDocument(invalid), /Invalid auto layout/);
+
+  const inverted = structuredClone(document);
+  inverted.pages[0].children[0].children[0].minWidth = 200;
+  inverted.pages[0].children[0].children[0].maxWidth = 100;
+  assert.throws(() => validateDocument(inverted), /Invalid size limits/);
+
+  const misplaced = structuredClone(document);
+  misplaced.pages[0].children[0].children[0].autoLayout = null;
+  misplaced.pages[0].children[0].autoLayout = null;
+  assert.throws(() => validateDocument(misplaced), /Size limits require an auto layout frame/);
 });

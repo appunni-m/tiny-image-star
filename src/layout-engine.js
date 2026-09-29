@@ -4,6 +4,45 @@ const trackCount = (value, fallback) => {
   return Number.isFinite(count) && count >= 1 ? Math.min(64, count) : fallback;
 };
 
+function constrainSize(node, axis, value) {
+  const min = Number.isFinite(node[`min${axis}`]) ? Math.max(0, node[`min${axis}`]) : 0;
+  const max = Number.isFinite(node[`max${axis}`]) ? Math.max(min, node[`max${axis}`]) : Infinity;
+  const size = Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+  return Math.max(min, Math.min(max, size));
+}
+
+function constrainNodeSize(node) {
+  node.width = constrainSize(node, 'Width', node.width);
+  node.height = constrainSize(node, 'Height', node.height);
+}
+
+function distributeFill(items, available, axis) {
+  const allocations = new Map();
+  const pending = new Set(items);
+  let remaining = Math.max(0, available);
+
+  while (pending.size) {
+    const share = Math.max(0, remaining / pending.size);
+    const capped = [];
+    for (const item of pending) {
+      const min = Number.isFinite(item[`min${axis}`]) ? Math.max(0, item[`min${axis}`]) : 0;
+      const max = Number.isFinite(item[`max${axis}`]) ? Math.max(min, item[`max${axis}`]) : Infinity;
+      if (share < min) capped.push([item, min]);
+      else if (share > max) capped.push([item, max]);
+    }
+    if (!capped.length) {
+      for (const item of pending) allocations.set(item.id, constrainSize(item, axis, share));
+      break;
+    }
+    for (const [item, size] of capped) {
+      allocations.set(item.id, size);
+      pending.delete(item);
+      remaining -= size;
+    }
+  }
+  return allocations;
+}
+
 export function createAutoLayout(overrides = {}) {
   const gap = clamp(overrides.gap ?? 8);
   const padding = typeof overrides.padding === 'object'
@@ -169,8 +208,8 @@ function applyGridAutoLayout(frame, settings) {
     const cellY = rowTop(cell.row);
     const spanWidth = cellWidth * cell.columnSpan + columnGap * (cell.columnSpan - 1);
     const spanHeight = rowSize(cell.row, cell.rowSpan);
-    const width = item.layoutSizingX === 'fill' ? spanWidth : item.width;
-    const height = item.layoutSizingY === 'fill' ? spanHeight : item.height;
+    const width = constrainSize(item, 'Width', item.layoutSizingX === 'fill' ? spanWidth : item.width);
+    const height = constrainSize(item, 'Height', item.layoutSizingY === 'fill' ? spanHeight : item.height);
     const alignOffset = (available, size, align) => align === 'center' ? (available - size) / 2 : align === 'end' ? available - size : 0;
     item.x = cellX + alignOffset(spanWidth, width, cell.alignX);
     item.y = cellY + alignOffset(spanHeight, height, cell.alignY);
@@ -183,7 +222,10 @@ function applyGridAutoLayout(frame, settings) {
 
 export function applyAutoLayout(frame) {
   if (!frame || frame.type !== 'frame' || !frame.autoLayout) return frame;
+  constrainNodeSize(frame);
   const settings = createAutoLayout(frame.autoLayout);
+  const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
+  for (const item of frame.children || []) constrainNodeSize(item);
   if (settings.axis === 'grid') {
     applyGridAutoLayout(frame, settings);
     frame.autoLayout = settings;
@@ -191,7 +233,6 @@ export function applyAutoLayout(frame) {
   }
   const horizontal = settings.axis === 'horizontal';
   const padding = settings.padding;
-  const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
   const gaps = flowGaps(settings);
   const groups = groupedItems(frame, settings, flowItems, gaps.main);
   const crossGap = clamp(gaps.cross);
@@ -210,8 +251,8 @@ export function applyAutoLayout(frame) {
     if (fillItems.length) {
       const usedByFixedItems = group.filter(item => item.layoutSizingMain !== 'fill').reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0);
       const remaining = Math.max(0, mainAvailable - usedByFixedItems - gaps.main * Math.max(0, group.length - 1));
-      const fillSize = Math.max(1, remaining / fillItems.length);
-      for (const item of fillItems) { if (horizontal) item.width = fillSize; else item.height = fillSize; }
+      const allocations = distributeFill(fillItems, remaining, horizontal ? 'Width' : 'Height');
+      for (const item of fillItems) { if (horizontal) item.width = allocations.get(item.id); else item.height = allocations.get(item.id); }
     }
     const content = distribute(group, mainAvailable, settings.mainSizing === 'hug' ? { ...settings, justify: 'start' } : settings, gaps.main);
     let mainCursor = (horizontal ? padding.left : padding.top) + (settings.mainSizing === 'hug' ? 0 : content.start);
@@ -220,7 +261,7 @@ export function applyAutoLayout(frame) {
       const mainSize = horizontal ? item.width : item.height;
       const crossSize = horizontal ? item.height : item.width;
       const canStretch = settings.align === 'stretch' && item.layoutSizingCross !== 'fixed';
-      const nextCrossSize = canStretch ? crossAvailable : crossSize;
+      const nextCrossSize = canStretch ? constrainSize(item, horizontal ? 'Height' : 'Width', crossAvailable) : crossSize;
       const alignOffset = settings.align === 'center' ? (lineCross - crossSize) / 2 : settings.align === 'end' ? lineCross - crossSize : 0;
       if (horizontal) {
         item.x = mainCursor;
@@ -238,13 +279,13 @@ export function applyAutoLayout(frame) {
 
   if (flowItems.length) {
     if (settings.mainSizing === 'hug') {
-      if (horizontal) frame.width = computedMain + padding.left + padding.right;
-      else frame.height = computedMain + padding.top + padding.bottom;
+      if (horizontal) frame.width = constrainSize(frame, 'Width', computedMain + padding.left + padding.right);
+      else frame.height = constrainSize(frame, 'Height', computedMain + padding.top + padding.bottom);
     }
     if (settings.crossSizing === 'hug') {
       const crossExtent = groups.reduce((sum, group) => sum + group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0), 0) + Math.max(0, groups.length - 1) * crossGap;
-      if (horizontal) frame.height = crossExtent + padding.top + padding.bottom;
-      else frame.width = crossExtent + padding.left + padding.right;
+      if (horizontal) frame.height = constrainSize(frame, 'Height', crossExtent + padding.top + padding.bottom);
+      else frame.width = constrainSize(frame, 'Width', crossExtent + padding.left + padding.right);
     }
   }
   frame.autoLayout = settings;

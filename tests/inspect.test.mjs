@@ -63,3 +63,15 @@ test('Inspect output safely encodes arbitrary font family names', () => {
   const output = buildInspectOutput(document, [{ node: label, parents: [] }]);
   assert.match(output.css, /font-family: "Font\\"; color: red;\/\*";/);
 });
+
+test('Inspect output includes auto layout size limits in CSS and layer summary', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { autoLayout: { axis: 'horizontal' } });
+  const tile = createNode('rectangle', { minWidth: 72, maxWidth: 180, minHeight: 36 });
+  addNode(document, frame); addNode(document, tile, { parentId: frame.id });
+  const output = buildInspectOutput(document, [findNode(document, tile.id)]);
+  assert.match(output.css, /min-width: 72px;/);
+  assert.match(output.css, /max-width: 180px;/);
+  assert.match(output.css, /min-height: 36px;/);
+  assert.deepEqual(output.layers[0].sizeLimits, { minWidth: 72, maxWidth: 180, minHeight: 36 });
+});
