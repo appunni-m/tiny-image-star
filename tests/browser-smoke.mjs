@@ -1,4 +1,5 @@
-import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, resolveVariableValue, setColorVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
+import { SceneRenderer } from '../src/renderer.js';
 import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
@@ -671,8 +672,30 @@ try {
   const separatedRecords = await readStore('documents'); separatedRecords.sort((a, b) => b.savedAt - a.savedAt);
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
+  const maskDocument = createDocument();
+  const maskedContent = createNode('rectangle', { name: 'Masked content', x: 0, y: 0, width: 100, height: 100, fill: '#00cc44' });
+  const maskShape = createNode('ellipse', { name: 'Circle mask', x: 25, y: 25, width: 50, height: 50 });
+  addNode(maskDocument, maskedContent); addNode(maskDocument, maskShape);
+  assert(canCreateMaskGroup(maskDocument, [maskedContent.id, maskShape.id]), 'valid mask siblings could not form a mask group');
+  const maskGroup = createMaskGroup(maskDocument, [maskedContent.id, maskShape.id]);
+  const maskCanvas = document.createElement('canvas'); maskCanvas.width = 100; maskCanvas.height = 100;
+  const maskContext = maskCanvas.getContext('2d');
+  const maskRenderer = Object.create(SceneRenderer.prototype);
+  maskRenderer.getState = () => ({ document: maskDocument, assets: new Map(), previews: new Map(), zoom: 1 });
+  maskRenderer.drawNode(maskContext, maskGroup, 0, 0, new Map());
+  const maskInside = [...maskContext.getImageData(40, 40, 1, 1).data];
+  const maskOutside = [...maskContext.getImageData(10, 10, 1, 1).data];
+  assert(maskInside[1] > 180 && maskInside[3] > 240 && maskOutside[3] === 0, `mask group did not clip editable content (${maskInside.join(',')} / ${maskOutside.join(',')})`);
+  const maskSource = maskGroup.children.find(node => node.id === maskGroup.maskSourceId);
+  maskSource.opacity = .5; maskSource.fillOpacity = .5;
+  maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  maskRenderer.drawNode(maskContext, maskGroup, 0, 0, new Map());
+  const translucentMaskPixel = maskContext.getImageData(40, 40, 1, 1).data[3];
+  assert(translucentMaskPixel >= 62 && translucentMaskPixel <= 66, `mask source opacity did not affect alpha composition (${translucentMaskPixel})`);
+  const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
+  assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

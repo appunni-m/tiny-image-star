@@ -63,7 +63,7 @@ export function createDocument() {
 const defaults = {
   frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true },
   section: { name: 'Section', width: 480, height: 320, fill: '#e6e6e6', clip: false },
-  group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false },
+  group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false, mask: false },
   boolean: { name: 'Boolean group', width: 120, height: 80, fill: '#d9d9d9', operation: 'union', clip: false },
   rectangle: { name: 'Rectangle', width: 120, height: 80, fill: '#d9d9d9', radius: 0 },
   ellipse: { name: 'Ellipse', width: 100, height: 100, fill: '#d9d9d9' },
@@ -82,7 +82,7 @@ const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude'])
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -258,6 +258,77 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
   list.splice(insertionIndex, 0, group);
   return group;
+}
+
+const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
+function isMaskSource(node) {
+  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || node.closed === true));
+}
+
+/** Return whether selected sibling layers can become a live alpha-mask group. */
+export function canCreateMaskGroup(document, nodeIds, pageId = document.activePageId) {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => !entry || entry.node.locked)) return false;
+  const parent = entries[0].parent;
+  if (!entries.every(entry => entry.parent === parent)) return false;
+  const frontmost = entries.reduce((top, entry) => entry.index > top.index ? entry : top);
+  return isMaskSource(frontmost.node);
+}
+
+/** Group sibling layers under the frontmost selected closed vector mask. */
+export function createMaskGroup(document, nodeIds, pageId = document.activePageId) {
+  if (!canCreateMaskGroup(document, nodeIds, pageId)) throw new Error('Select a closed vector shape and at least one unlocked sibling layer; the frontmost selected shape becomes the mask.');
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const page = document.pages.find(item => item.id === pageId);
+  const parent = entries[0].parent;
+  const list = parent ? parent.children : page.children;
+  const selectedIds = new Set(nodeIds);
+  const selectedEntries = entries.map(entry => ({ ...entry, index: list.indexOf(entry.node) })).sort((a, b) => a.index - b.index);
+  const maskEntry = selectedEntries.at(-1);
+  const bounds = selectedEntries.map(entry => visualBounds(entry.node));
+  const left = Math.min(...bounds.map(item => item.left));
+  const top = Math.min(...bounds.map(item => item.top));
+  const right = Math.max(...bounds.map(item => item.right));
+  const bottom = Math.max(...bounds.map(item => item.bottom));
+  const children = selectedEntries.map(entry => {
+    entry.node.x -= left;
+    entry.node.y -= top;
+    return entry.node;
+  });
+  const group = createNode('group', {
+    name: 'Mask group', x: left, y: top,
+    width: Math.max(1, right - left), height: Math.max(1, bottom - top),
+    mask: true, maskSourceId: maskEntry.node.id, children
+  });
+  const insertionIndex = list.slice(0, maskEntry.index).filter(node => !selectedIds.has(node.id)).length;
+  for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
+  list.splice(insertionIndex, 0, group);
+  return group;
+}
+
+/** Remove a mask group while restoring every source layer to the page stack. */
+export function releaseMaskGroup(document, groupId, pageId = document.activePageId) {
+  const entry = findNode(document, groupId, pageId);
+  if (!entry || entry.node.type !== 'group' || !entry.node.mask || entry.node.children.length < 2) throw new Error('Select a valid mask group to release.');
+  const group = entry.node;
+  const children = group.children;
+  const angle = (group.rotation || 0) * Math.PI / 180;
+  const centerX = group.x + group.width / 2;
+  const centerY = group.y + group.height / 2;
+  for (const child of children) {
+    const childCenterX = group.x + child.x + child.width / 2;
+    const childCenterY = group.y + child.y + child.height / 2;
+    const dx = childCenterX - centerX;
+    const dy = childCenterY - centerY;
+    child.x = centerX + dx * Math.cos(angle) - dy * Math.sin(angle) - child.width / 2;
+    child.y = centerY + dx * Math.sin(angle) + dy * Math.cos(angle) - child.height / 2;
+    child.rotation = (child.rotation || 0) + (group.rotation || 0);
+  }
+  const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
+  list.splice(entry.index, 1, ...children);
+  group.children = [];
+  return children;
 }
 
 /** Restore a Boolean group's source layers while keeping the visible group transform. */
@@ -970,6 +1041,8 @@ export function validateDocument(document) {
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
+      if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
+      if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout) {
         const layout = node.autoLayout;

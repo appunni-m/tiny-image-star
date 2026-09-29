@@ -339,6 +339,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .bulk-info strong { font-size: 10px; }
   .bulk-info span { font-size: 9px; }
   .bar-action { padding: 0 7px; }
+  .context-menu { max-width: calc(100vw - 16px); }
+  .context-menu button { min-height: 44px; font-size: 13px; }
 }
 @media (max-width: 420px) {
   .topbar { padding: 0 4px; }

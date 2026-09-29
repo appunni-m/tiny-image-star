@@ -199,10 +199,16 @@ export class SceneRenderer {
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     ctx.save();
-    if (!maskMode) ctx.globalAlpha *= opacity ?? 1;
+    ctx.globalAlpha *= opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
     if (node.type === 'boolean') {
       this.drawBooleanGroup(ctx, node, x, y, assets, maskMode);
+      if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
+      ctx.restore();
+      return;
+    }
+    if (node.type === 'group' && node.mask && !maskMode) {
+      this.drawMaskGroup(ctx, node, x, y, assets);
       if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
       ctx.restore();
       return;
@@ -235,6 +241,7 @@ export class SceneRenderer {
     }
 
     if (maskMode) {
+      ctx.globalAlpha *= node.fillOpacity ?? 1;
       ctx.fillStyle = '#fff';
       if (node.type !== 'line' && (node.type !== 'path' || node.closed)) ctx.fill();
       ctx.restore();
@@ -292,13 +299,34 @@ export class SceneRenderer {
     ctx.restore();
   }
 
+  drawMaskGroup(ctx, node, x, y, assets) {
+    if (!Array.isArray(node.children) || node.children.length < 2 || node.width <= 0 || node.height <= 0) return;
+    const transform = ctx.getTransform?.();
+    const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
+    const pixelBudget = 4_000_000;
+    const scale = Math.min(2, Math.max(.08, requestedScale), Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
+    const pixelWidth = Math.max(1, Math.ceil(node.width * scale));
+    const pixelHeight = Math.max(1, Math.ceil(node.height * scale));
+    const surface = typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(pixelWidth, pixelHeight)
+      : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+    const maskContext = surface.getContext('2d');
+    maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
+    const maskNode = node.children.find(child => child.id === node.maskSourceId) || node.children[0];
+    for (const child of node.children) if (child !== maskNode) this.drawNode(maskContext, child, 0, 0, assets);
+    maskContext.globalCompositeOperation = 'destination-in';
+    this.drawNode(maskContext, maskNode, 0, 0, assets, false, true);
+    maskContext.globalCompositeOperation = 'source-over';
+    ctx.drawImage(surface, x, y, node.width, node.height);
+  }
+
   drawBooleanGroup(ctx, node, x, y, assets, maskMode = false) {
     const state = this.getState();
     const transform = ctx.getTransform?.();
     const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
     const surface = this.getBooleanSurface(node, assets, maskMode, contextScale);
     ctx.save();
-    if (!maskMode) ctx.globalAlpha *= node.fillOpacity ?? 1;
+    ctx.globalAlpha *= node.fillOpacity ?? 1;
     ctx.drawImage(surface, x, y, node.width, node.height);
     ctx.restore();
   }

@@ -2,7 +2,7 @@ import {
   addNode, addVariableMode, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet,
   createDocument, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
-  separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
+  canCreateMaskGroup, createMaskGroup, releaseMaskGroup, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -167,7 +167,8 @@ function renderLayers() {
       row.style.paddingLeft = `${7 + depth * 13}px`;
       const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
-      const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : '';
+      const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
+      row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
       row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
       list.append(row);
       if (node.children?.length) addRows(node.children, depth + 1);
@@ -348,6 +349,10 @@ function renderInspector() {
   if (node.type === 'boolean') {
     const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
     body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><div class="image-properties-note">The source shapes stay editable inside this live Boolean group.</div>`);
+  }
+  if (node.type === 'group' && node.mask) {
+    const maskSource = node.children.find(child => child.id === node.maskSourceId);
+    body += section('Mask', `<div class="image-properties-note">${escapeHtml(maskSource?.name || 'Vector shape')} masks the editable layers inside this group.</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
   }
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node);
@@ -1378,8 +1383,10 @@ function showMenu(items, x, y) {
     menu.append(button);
   }
   const width = menu.offsetWidth; const height = menu.offsetHeight;
-  menu.style.left = `${Math.min(x, innerWidth - width - 8)}px`;
-  menu.style.top = `${Math.min(y, innerHeight - height - 8)}px`;
+  menu.style.maxHeight = `${Math.max(120, innerHeight - 16)}px`;
+  menu.style.overflowY = 'auto';
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - height - 8))}px`;
 }
 function closeMenu() { $('#context-menu').hidden = true; }
 
@@ -1399,6 +1406,8 @@ function openNodeMenu(nodeId, x, y) {
   const selectedMainComponents = selectedNodes().filter(item => item.isComponent);
   const canCombine = canCombineBoolean(state.document, state.selectedIds);
   const selectedBoolean = selectedNodes().length === 1 && selectedNodes()[0].type === 'boolean' ? selectedNodes()[0] : null;
+  if (canCreateMaskGroup(state.document, rootSelectedIds())) items.unshift({ label: 'Use as mask', action: maskSelectedLayers }, { separator: true });
+  if (node?.type === 'group' && node.mask) items.unshift({ label: 'Release mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
   if (canCombine) {
     items.unshift(
       { label: 'Combine as Union', action: () => combineSelectedBoolean('union') },
@@ -1446,6 +1455,25 @@ function combineSelectedBoolean(operation) {
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
     showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source shapes remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot be combined.'); }
+}
+
+function maskSelectedLayers() {
+  const ids = rootSelectedIds();
+  try {
+    checkpoint('Create mask group');
+    const group = createMaskGroup(state.document, ids);
+    setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
+    showToast(`Mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Vector shape'}”. Its source layers remain editable.`);
+  } catch (error) { showToast(error.message || 'These layers cannot form a mask.'); }
+}
+
+function releaseSelectedMask(groupId = selectedNodes()[0]?.id) {
+  try {
+    checkpoint('Release mask');
+    const children = releaseMaskGroup(state.document, groupId);
+    setSelection(children.map(child => child.id)); renderUI(); queueSave(); renderer.invalidate();
+    showToast('Mask released. The source layers remain editable.');
+  } catch (error) { showToast(error.message); }
 }
 
 function setBooleanOperation(nodeId, operation) {
@@ -1792,6 +1820,7 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
+  else if (action === 'release-mask' && node?.type === 'group' && node.mask) releaseSelectedMask(node.id);
   else if (action === 'insert-vector-point' && node?.type === 'path') insertPathPointOnLongestSegment(node.id);
   else if (action === 'delete-vector-point' && node?.type === 'path') deleteSelectedVectorPoint(node.id);
   else if (action === 'create-color-variable') createColorVariableFromSelection(details.kind || null);
@@ -1933,7 +1962,18 @@ function initEvents() {
   $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
   $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
   $('#layer-search').addEventListener('input', event => { state.layerSearch = event.currentTarget.value; renderLayers(); });
-  $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { setNodePropertyValue(node, 'visible', true); }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
+  $('#layer-options').addEventListener('click', event => {
+    const items = [
+      { label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { setNodePropertyValue(node, 'visible', true); }); renderUI(); queueSave(); } },
+      { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } },
+      { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }
+    ];
+    const ids = rootSelectedIds();
+    const node = selectedNodes()[0];
+    if (canCreateMaskGroup(state.document, ids)) items.unshift({ label: 'Use selected layers as mask', action: maskSelectedLayers }, { separator: true });
+    if (selectedNodes().length === 1 && node?.type === 'group' && node.mask) items.unshift({ label: 'Release selected mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
+    showMenu(items, event.clientX, event.clientY);
+  });
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
   $('#add-variable-collection').addEventListener('click', () => handleVariableAssetsAction('add-variable-collection'));
   $('#variable-collections-list').addEventListener('click', event => {
