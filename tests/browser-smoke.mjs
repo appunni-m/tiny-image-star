@@ -58,6 +58,15 @@ function readStore(storeName) {
   });
 }
 function flattenNodes(nodes, result = []) { for (const node of nodes || []) { result.push(node); flattenNodes(node.children, result); } return result; }
+function findNodeOrigin(nodes, id, parentX = 0, parentY = 0) {
+  for (const node of nodes || []) {
+    const x = parentX + node.x; const y = parentY + node.y;
+    if (node.id === id) return { node, x, y };
+    const nested = findNodeOrigin(node.children, id, x, y);
+    if (nested) return nested;
+  }
+  return null;
+}
 function buildPackage(documentData, assets) {
   const manifest = new TextEncoder().encode(JSON.stringify({ schema: documentData.schema, document: documentData, assets: assets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })) }));
   const headerLength = new Uint8Array(4); new DataView(headerLength.buffer).setUint32(0, manifest.byteLength, true);
@@ -273,7 +282,67 @@ try {
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true })}`;
+
+  const penButton = app.querySelector('.tool-button[data-tool="pen"]');
+  const vectorIdsBeforePen = new Set([...app.querySelectorAll('.layer-row[data-layer-id]')]
+    .filter(row => row.textContent.trim() === 'Vector').map(row => row.dataset.layerId));
+  dispatchClick(penButton);
+  const penScreenPoint = ({ x, y }) => ({ x: canvasRect.left + panCenter.x + x, y: canvasRect.top + panCenter.y + y });
+  const penDownUp = (world, pointerId) => {
+    const point = penScreenPoint(world);
+    dispatchCanvasPointer(app, designCanvas, 'pointerdown', point.x, point.y, pointerId);
+    dispatchCanvasPointer(app, designCanvas, 'pointerup', point.x, point.y, pointerId);
+  };
+  penDownUp({ x: -130, y: -140 }, 91);
+  const curveAnchor = penScreenPoint({ x: -30, y: -45 });
+  const curveControl = penScreenPoint({ x: -30, y: -95 });
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', curveAnchor.x, curveAnchor.y, 92);
+  dispatchCanvasPointer(app, designCanvas, 'pointermove', curveControl.x, curveControl.y, 92);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', curveControl.x, curveControl.y, 92);
+  penDownUp({ x: 100, y: -130 }, 93);
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
+  await waitFor(() => {
+    const row = app.querySelector('.layer-row.is-selected[data-layer-id]');
+    return row?.textContent.trim() === 'Vector' && !vectorIdsBeforePen.has(row.dataset.layerId);
+  }, 'multi-point Bézier pen path');
+  await new Promise(resolve => setTimeout(resolve, 450));
+  let vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let vectorDocument = vectorRecords[0]?.document;
+  let vectorNodes = flattenNodes(vectorDocument?.pages.flatMap(page => page.children));
+  const selectedVectorRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  const vectorNode = vectorNodes.find(node => node.id === selectedVectorRow?.dataset.layerId);
+  assert(vectorNode?.points.length === 3 && vectorNode.points[1].out?.y, 'pen tool did not create and preserve a cubic Bézier segment');
+  const newlyAddedPaths = vectorNodes.filter(node => node.type === 'path' && !vectorIdsBeforePen.has(node.id));
+  assert(newlyAddedPaths.filter(node => !node.componentSourceId).length === 1, 'one pen session must create one authored path; its linked component copies may add mirrored layers');
+
+  const vectorLayerRow = app.querySelector(`[data-layer-id="${vectorNode.id}"]`);
+  dispatchClick(vectorLayerRow);
+  const closePath = app.querySelector('[data-prop="closed"]');
+  assert(closePath, 'selected vector did not expose its closed-path control');
+  closePath.checked = true; closePath.dispatchEvent(new Event('input', { bubbles: true })); closePath.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  const savedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedVector?.closed === true, 'closed-path fill behavior was not saved');
+
+  const positionedVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
+  const editablePoint = positionedVector.node.points[1];
+  const handleWorld = {
+    x: positionedVector.x + (editablePoint.x + editablePoint.out.x) * positionedVector.node.width,
+    y: positionedVector.y + (editablePoint.y + editablePoint.out.y) * positionedVector.node.height
+  };
+  const handleScreen = penScreenPoint(handleWorld);
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', handleScreen.x, handleScreen.y, 94);
+  dispatchCanvasPointer(app, designCanvas, 'pointermove', handleScreen.x + 18, handleScreen.y - 12, 94);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', handleScreen.x + 18, handleScreen.y - 12, 94);
+  await new Promise(resolve => setTimeout(resolve, 450));
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  const editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(editedVector.points[1].out.y !== editablePoint.out.y, 'canvas Bézier handle editing did not update the path');
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

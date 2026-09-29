@@ -1,4 +1,5 @@
 import { getNodeColor } from './model.js';
+import { vectorNodePoint } from './vector-path.js';
 
 const BLUE = '#0d99ff';
 
@@ -48,6 +49,38 @@ function polygonPath(ctx, cx, cy, radiusX, radiusY, points) {
     if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.closePath();
+}
+
+function hasHandle(point, part) {
+  const handle = point?.[part];
+  return Boolean(handle && (Number(handle.x) !== 0 || Number(handle.y) !== 0));
+}
+
+function traceVectorPath(ctx, node, x, y) {
+  const points = node.points || [];
+  if (!points.length) return;
+  const position = (point, part) => vectorNodePoint(node, points.indexOf(point), part, { x, y });
+  const first = position(points[0], 'anchor');
+  ctx.moveTo(first.x, first.y);
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const end = position(current, 'anchor');
+    if (hasHandle(previous, 'out') || hasHandle(current, 'in')) {
+      const control1 = position(previous, 'out');
+      const control2 = position(current, 'in');
+      ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+    } else ctx.lineTo(end.x, end.y);
+  }
+  if (node.closed) {
+    const last = points.at(-1);
+    if (hasHandle(last, 'out') || hasHandle(points[0], 'in')) {
+      const control1 = position(last, 'out');
+      const control2 = position(points[0], 'in');
+      ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, first.x, first.y);
+    }
+    ctx.closePath();
+  }
 }
 
 function wrapText(ctx, text, maxWidth) {
@@ -108,6 +141,7 @@ export class SceneRenderer {
     this.drawSelection(ctx, page.children, state.selectedIds, 0, 0);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);
     if (state.draftNode) this.drawNode(ctx, state.draftNode, 0, 0, state.assets, true);
+    if (state.penDraft) this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom);
     if (state.marquee) {
       const x = Math.min(state.marquee.x1, state.marquee.x2);
       const y = Math.min(state.marquee.y1, state.marquee.y2);
@@ -149,11 +183,7 @@ export class SceneRenderer {
         polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);
         break;
       case 'path':
-        for (const [index, point] of (node.points || []).entries()) {
-          if (index === 0) ctx.moveTo(x + point.x * width, y + point.y * height);
-          else ctx.lineTo(x + point.x * width, y + point.y * height);
-        }
-        if (node.closed) ctx.closePath();
+        traceVectorPath(ctx, node, x, y);
         break;
       default:
         ctx.rect(x, y, width, height);
@@ -185,7 +215,7 @@ export class SceneRenderer {
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
-      if (fill && fill !== 'transparent' && node.type !== 'line' && node.type !== 'path') { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
+      if (fill && fill !== 'transparent' && node.type !== 'line' && (node.type !== 'path' || node.closed)) { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
       if (node.stroke && node.strokeWidth) { ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     }
 
@@ -196,6 +226,36 @@ export class SceneRenderer {
     }
     if (node.type === 'frame' && !node.children.length && !draft) {
       ctx.strokeStyle = 'rgba(30,30,30,.14)'; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.strokeRect(x, y, width, height);
+    }
+    ctx.restore();
+  }
+
+  drawPenDraft(ctx, draft, hover, zoom = 1) {
+    const points = draft.anchors || [];
+    if (!points.length) return;
+    const scale = 1 / Math.max(.08, zoom || 1);
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1]; const current = points[index];
+      if (previous.out.x !== previous.x || previous.out.y !== previous.y || current.in.x !== current.x || current.in.y !== current.y) ctx.bezierCurveTo(previous.out.x, previous.out.y, current.in.x, current.in.y, current.x, current.y);
+      else ctx.lineTo(current.x, current.y);
+    }
+    if (hover && points.length) {
+      const last = points.at(-1);
+      if (last.out.x !== last.x || last.out.y !== last.y) ctx.bezierCurveTo(last.out.x, last.out.y, hover.x, hover.y, hover.x, hover.y);
+      else ctx.lineTo(hover.x, hover.y);
+    }
+    ctx.setLineDash([6 * scale, 4 * scale]); ctx.lineWidth = 1.5 * scale; ctx.strokeStyle = BLUE; ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = BLUE; ctx.lineWidth = scale;
+    for (const point of points) {
+      for (const part of ['in', 'out']) {
+        const handle = point[part];
+        if (handle.x === point.x && handle.y === point.y) continue;
+        ctx.beginPath(); ctx.moveTo(point.x, point.y); ctx.lineTo(handle.x, handle.y); ctx.stroke();
+        ctx.beginPath(); ctx.arc(handle.x, handle.y, 3.5 * scale, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.rect(point.x - 4 * scale, point.y - 4 * scale, 8 * scale, 8 * scale); ctx.fill(); ctx.stroke();
     }
     ctx.restore();
   }
@@ -226,6 +286,18 @@ export class SceneRenderer {
       const size = 6 / (this.getState().zoom || 1);
       for (const [hx, hy] of [[x, y], [x + node.width / 2, y], [x + node.width, y], [x + node.width, y + node.height / 2], [x + node.width, y + node.height], [x + node.width / 2, y + node.height], [x, y + node.height], [x, y + node.height / 2]]) {
         ctx.beginPath(); ctx.rect(hx - size / 2, hy - size / 2, size, size); ctx.fill(); ctx.stroke();
+      }
+      if (node.type === 'path') {
+        for (const [index, point] of (node.points || []).entries()) {
+          const anchor = vectorNodePoint(node, index, 'anchor', { x, y });
+          for (const part of ['in', 'out']) {
+            const control = vectorNodePoint(node, index, part, { x, y });
+            if (Math.hypot(control.x - anchor.x, control.y - anchor.y) < size) continue;
+            ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
+            ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          }
+          ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
+        }
       }
     }
     ctx.restore();

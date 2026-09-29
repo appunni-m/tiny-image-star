@@ -13,6 +13,7 @@ import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
 import { addPrototypeInteraction, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
+import { setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -21,7 +22,7 @@ const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
   document: createDocument(), selectedIds: [], tool: 'select', zoom: 1, panX: 0, panY: 0,
   assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
-  draftNode: null, marquee: null, interaction: null, pointerMap: new Map(),
+  draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
   bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '',
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
@@ -117,6 +118,7 @@ function showToast(message, duration = 2500) {
   currentToastTimer = setTimeout(() => toast.remove(), duration);
 }
 function setTool(tool) {
+  if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   state.tool = tool;
   $$('.tool-button').forEach(button => button.classList.toggle('is-selected', button.dataset.tool === tool));
   canvas.className = `tool-${tool}`;
@@ -185,7 +187,8 @@ function appearanceSection(node) {
   const fill = colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100));
   const stroke = node.stroke ? colorField('Stroke', 'stroke', node.stroke, 100) : '';
   const radius = ['rectangle', 'frame', 'section'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', node.radius || 0)}</div>` : '';
-  const body = `${fill}${stroke}<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>${radius}`;
+  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>`;
+  const body = `${fill}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -281,8 +284,13 @@ function renderInspector() {
   let body = componentSection(node) + transformSection(node);
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node);
-  if (!['image', 'text', 'line', 'path'].includes(node.type)) body += appearanceSection(node);
-  else if (node.type === 'line' || node.type === 'path') body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  if (node.type === 'path') {
+    const pointCount = node.points?.length || 0;
+    body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · drag anchors and Bézier handles on the canvas.</div>`);
+    if (node.closed) body += appearanceSection(node);
+    else body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
+  else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
   if (node.type === 'frame') body += autoLayoutSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
@@ -370,6 +378,83 @@ function localizeToParent(node, worldX, worldY, parent) {
   if (parent?.node.autoLayout) applyAutoLayout(parent.node);
 }
 
+function startPenPath(world) {
+  const draft = state.penDraft;
+  if (draft) {
+    const first = draft.anchors[0];
+    if (draft.anchors.length >= 3 && checkPointDistance(world, first) <= 10 / state.zoom) {
+      finishPenPath(true);
+      return;
+    }
+    const point = { ...world, in: { ...world }, out: { ...world } };
+    draft.anchors.push(point);
+    const pointIndex = draft.anchors.length - 1;
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false };
+  } else {
+    state.penDraft = { anchors: [{ ...world, in: { ...world }, out: { ...world } }] };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false };
+    showToast('Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
+  }
+  state.penHover = world;
+  $('#selection-status').textContent = 'Pen · click points · drag curves · Enter finish · Esc cancel';
+  renderer.invalidate();
+}
+
+function finishPenPath(closed = false, { selectAfter = true } = {}) {
+  const draft = state.penDraft;
+  if (!draft || draft.anchors.length < 2) return false;
+  const geometry = vectorGeometryFromAnchors(draft.anchors, { closed });
+  const node = createNode('path', { ...geometry, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 });
+  state.penDraft = null; state.penHover = null; state.interaction = null;
+  checkpoint('Create vector path');
+  const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+  const parent = deepestContainerAt(center);
+  localizeToParent(node, node.x, node.y, parent);
+  if (selectAfter) setTool('select');
+  setSelection([node.id]); queueSave(); renderer.invalidate();
+  showToast(`${closed ? 'Closed' : 'Open'} vector path created · drag its anchors or handles to refine it.`);
+  return true;
+}
+
+function cancelPenPath() {
+  state.penDraft = null; state.penHover = null; state.interaction = null;
+  renderer.invalidate(); updateSelectionStatus();
+}
+
+function rotatePoint(point, center, degrees) {
+  if (!degrees) return point;
+  const angle = degrees * Math.PI / 180;
+  const dx = point.x - center.x; const dy = point.y - center.y;
+  return { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+}
+
+function vectorPathControlAt(world) {
+  const nodes = selectedNodes();
+  const node = nodes.length === 1 && nodes[0].type === 'path' && !nodes[0].locked ? nodes[0] : null;
+  if (!node || state.tool !== 'select') return null;
+  const origin = absolutePosition(node.id);
+  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+  const tolerance = 9 / state.zoom;
+  let best = null;
+  for (let index = 0; index < (node.points || []).length; index += 1) {
+    for (const part of ['in', 'out', 'anchor']) {
+      if (part !== 'anchor') {
+        const handle = node.points[index][part];
+        if (!handle || (Number(handle.x) === 0 && Number(handle.y) === 0)) continue;
+      }
+      const point = rotatePoint(vectorNodePoint(node, index, part, origin), center, node.rotation);
+      const distance = checkPointDistance(world, point);
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, index, part, distance };
+    }
+  }
+  return best;
+}
+
+function unrotateForPath(world, node, origin) {
+  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+  return rotatePoint(world, center, -(node.rotation || 0));
+}
+
 function checkPointDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 function resizeHandleAt(event) {
   const nodes = selectedNodes();
@@ -433,7 +518,14 @@ function onCanvasPointerDown(event) {
     } catch (error) { showToast(error.message); }
     event.preventDefault(); return;
   }
+  if (state.tool === 'pen') { startPenPath(world); event.preventDefault(); return; }
   if (state.tool === 'select') {
+    const vectorControl = vectorPathControlAt(world);
+    if (vectorControl) {
+      checkpoint('Edit vector path');
+      state.interaction = { kind: 'vector-control', ...vectorControl };
+      event.preventDefault(); return;
+    }
     const handle = resizeHandleAt(event);
     if (handle) {
       checkpoint('Resize layer');
@@ -458,7 +550,7 @@ function onCanvasPointerDown(event) {
   }
   if (state.tool === 'image') { $('#image-input').click(); return; }
   if (state.tool === 'text') { createTextAt(world); return; }
-  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', pen: 'path' };
+  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon' };
   const type = typeByTool[state.tool];
   if (!type) return;
   const node = createNode(type, { x: world.x, y: world.y, width: 1, height: 1 });
@@ -471,7 +563,10 @@ function onCanvasPointerDown(event) {
 function onCanvasPointerMove(event) {
   if (state.pointerMap.has(event.pointerId)) state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   const interaction = state.interaction;
-  if (!interaction) return;
+  if (!interaction) {
+    if (state.penDraft && state.tool === 'pen') { state.penHover = screenToWorld(event, canvas, state); renderer.invalidate(); }
+    return;
+  }
   if (interaction.kind === 'pinch' && state.pointerMap.size >= 2) {
     const points = [...state.pointerMap.values()];
     const distance = checkPointDistance(points[0], points[1]);
@@ -490,6 +585,22 @@ function onCanvasPointerMove(event) {
     renderer.invalidate(); return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'pen-anchor') {
+    const point = state.penDraft?.anchors[interaction.pointIndex];
+    if (!point) return;
+    interaction.moved ||= checkPointDistance(world, interaction.start) > 3 / state.zoom;
+    point.out = { ...world };
+    point.in = { x: point.x - (world.x - point.x), y: point.y - (world.y - point.y) };
+    state.penHover = world; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'vector-control') {
+    const local = unrotateForPath(world, interaction.node, interaction.origin);
+    setVectorNodePoint(interaction.node, interaction.index, interaction.part, local, {
+      origin: interaction.origin,
+      symmetric: interaction.part !== 'anchor' && !event.altKey
+    });
+    renderer.invalidate(); return;
+  }
   if (interaction.kind === 'move') {
     let dx = world.x - interaction.start.x; let dy = world.y - interaction.start.y;
     if (state.document.settings.snap && !event.altKey) { const grid = state.document.settings.grid || 8; dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
@@ -554,6 +665,15 @@ function onCanvasPointerUp(event) {
   if (!interaction) return;
   if (interaction.kind === 'pinch' && state.pointerMap.size < 2) { state.interaction = null; return; }
   if (interaction.kind === 'pan') { canvas.classList.remove('is-panning'); state.interaction = null; return; }
+  if (interaction.kind === 'pen-anchor') {
+    const point = state.penDraft?.anchors[interaction.pointIndex];
+    if (point && !interaction.moved) { point.in = { x: point.x, y: point.y }; point.out = { x: point.x, y: point.y }; }
+    state.interaction = null; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'vector-control') {
+    recordNodeComponentOverrides(interaction.node, ['points']);
+    state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
+  }
   if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') {
     const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()] : interaction.node ? [interaction.node.id] : [];
     if (interaction.kind === 'reorder') editedIds.push(interaction.parent?.id);
@@ -1289,7 +1409,8 @@ function initEvents() {
   });
   $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files));
   $('#open-file-input').addEventListener('change', async event => {
-    const file = event.currentTarget.files?.[0]; if (!file) return;
+    const input = event.currentTarget;
+    const file = input.files?.[0]; if (!file) return;
     try {
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
       const importedDocument = parseDocument(packageData.document);
@@ -1297,7 +1418,7 @@ function initEvents() {
       state.document = importedDocument; state.selectedIds = []; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
       history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); await restoreImageAssets(); showToast('Local design opened on this device.');
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
-    event.currentTarget.value = '';
+    input.value = '';
   });
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
@@ -1396,6 +1517,8 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
+  if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
   if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }
   if (mod && key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
   if (mod && key === 'y') { event.preventDefault(); redo(); return; }
