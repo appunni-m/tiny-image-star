@@ -104,6 +104,8 @@ export class SceneRenderer {
     this.context = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.getState = getState;
     this.frame = 0;
+    this.booleanCache = new Map();
+    this.booleanCachePixels = 0;
     this.resizeObserver = new ResizeObserver(() => this.invalidate());
     this.resizeObserver.observe(canvas.parentElement);
     this.invalidate();
@@ -153,15 +155,21 @@ export class SceneRenderer {
     if (!page.children.length) this.drawEmptyHint(cssWidth, cssHeight, dpr, state);
   }
 
-  drawNode(ctx, node, parentX, parentY, assets, draft = false) {
+  drawNode(ctx, node, parentX, parentY, assets, draft = false, maskMode = false) {
     if (!node.visible) return;
     const document = this.getState().document;
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     ctx.save();
-    ctx.globalAlpha *= node.opacity ?? 1;
+    if (!maskMode) ctx.globalAlpha *= node.opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
+    if (node.type === 'boolean') {
+      this.drawBooleanGroup(ctx, node, x, y, assets, maskMode);
+      if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
+      ctx.restore();
+      return;
+    }
     ctx.beginPath();
     switch (node.type) {
       case 'frame':
@@ -187,6 +195,13 @@ export class SceneRenderer {
         break;
       default:
         ctx.rect(x, y, width, height);
+    }
+
+    if (maskMode) {
+      ctx.fillStyle = '#fff';
+      if (node.type !== 'line' && (node.type !== 'path' || node.closed)) ctx.fill();
+      ctx.restore();
+      return;
     }
 
     if (node.type === 'image') {
@@ -228,6 +243,86 @@ export class SceneRenderer {
       ctx.strokeStyle = 'rgba(30,30,30,.14)'; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.strokeRect(x, y, width, height);
     }
     ctx.restore();
+  }
+
+  drawBooleanGroup(ctx, node, x, y, assets, maskMode = false) {
+    const state = this.getState();
+    const transform = ctx.getTransform?.();
+    const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+    const surface = this.getBooleanSurface(node, assets, maskMode, contextScale);
+    ctx.save();
+    if (!maskMode) ctx.globalAlpha *= node.fillOpacity ?? 1;
+    ctx.drawImage(surface, x, y, node.width, node.height);
+    ctx.restore();
+  }
+
+  getBooleanSurface(node, assets, maskMode = false, contextScale = null) {
+    const state = this.getState();
+    const fill = maskMode ? '#ffffff' : getNodeColor(state.document, node, 'fill');
+    const requestedScale = contextScale ?? (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+    const deviceScale = Math.min(2, Math.max(.08, requestedScale));
+    const pixelBudget = 4_000_000;
+    const scale = Math.min(deviceScale, Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
+    const width = Math.max(1, Math.ceil(node.width * scale));
+    const height = Math.max(1, Math.ceil(node.height * scale));
+    const key = `${JSON.stringify(node)}|${fill}|${width}x${height}`;
+    let entry = this.booleanCache.get(key);
+    if (entry) {
+      this.booleanCache.delete(key);
+      this.booleanCache.set(key, entry);
+    } else {
+      const surface = typeof OffscreenCanvas === 'function'
+        ? new OffscreenCanvas(width, height)
+        : Object.assign(document.createElement('canvas'), { width, height });
+      const mask = surface.getContext('2d');
+      mask.setTransform(width / Math.max(1, node.width), 0, 0, height / Math.max(1, node.height), 0, 0);
+      const operation = node.operation || 'union';
+      for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        if (!child.visible && operation !== 'intersect') continue;
+        mask.save();
+        if (index === 0 || operation === 'union') mask.globalCompositeOperation = 'source-over';
+        else if (operation === 'subtract') mask.globalCompositeOperation = 'destination-out';
+        else if (operation === 'intersect') mask.globalCompositeOperation = 'destination-in';
+        else if (operation === 'exclude') mask.globalCompositeOperation = 'xor';
+        this.drawNode(mask, child, 0, 0, assets, false, true);
+        mask.restore();
+        if (!child.visible && operation === 'intersect') {
+          mask.clearRect(0, 0, node.width, node.height);
+          break;
+        }
+      }
+      mask.save();
+      mask.globalCompositeOperation = 'source-in';
+      mask.fillStyle = fill;
+      mask.fillRect(0, 0, node.width, node.height);
+      mask.restore();
+      entry = { surface, pixels: width * height };
+      this.booleanCache.set(key, entry);
+      this.booleanCachePixels += entry.pixels;
+      while (this.booleanCache.size > 6 || this.booleanCachePixels > 8_000_000) {
+        const oldestKey = this.booleanCache.keys().next().value;
+        if (oldestKey === key && this.booleanCache.size === 1) break;
+        const oldest = this.booleanCache.get(oldestKey);
+        this.booleanCache.delete(oldestKey);
+        this.booleanCachePixels -= oldest.pixels;
+      }
+    }
+    return entry.surface;
+  }
+
+  hitTestBoolean(node, point, originX, originY) {
+    if (node.width <= 0 || node.height <= 0) return false;
+    const center = { x: originX + node.width / 2, y: originY + node.height / 2 };
+    const angle = -(node.rotation || 0) * Math.PI / 180;
+    const dx = point.x - center.x; const dy = point.y - center.y;
+    const localX = center.x + dx * Math.cos(angle) - dy * Math.sin(angle) - originX;
+    const localY = center.y + dx * Math.sin(angle) + dy * Math.cos(angle) - originY;
+    if (localX < 0 || localY < 0 || localX > node.width || localY > node.height) return false;
+    const surface = this.getBooleanSurface(node, this.getState().assets, true);
+    const pixelX = Math.min(surface.width - 1, Math.floor(localX / node.width * surface.width));
+    const pixelY = Math.min(surface.height - 1, Math.floor(localY / node.height * surface.height));
+    return surface.getContext('2d').getImageData(pixelX, pixelY, 1, 1).data[3] > 8;
   }
 
   drawPenDraft(ctx, draft, hover, zoom = 1) {
@@ -387,15 +482,15 @@ export function worldToScreen(point, canvas, state) {
   return { x: rect.left + state.panX + point.x * state.zoom, y: rect.top + state.panY + point.y * state.zoom };
 }
 
-export function hitTestPage(page, point) {
+export function hitTestPage(page, point, containsBoolean = null) {
   const hits = [];
   const visit = (nodes, parentX = 0, parentY = 0) => {
     for (const node of nodes) {
       if (!node.visible) continue;
       const x = parentX + node.x; const y = parentY + node.y;
       const inBounds = point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height;
-      if (inBounds) hits.push(node);
-      visit(node.children || [], x, y);
+      if (inBounds && (node.type !== 'boolean' || !containsBoolean || containsBoolean(node, point, x, y))) hits.push(node);
+      if (node.type !== 'boolean') visit(node.children || [], x, y);
     }
   };
   visit(page.children);

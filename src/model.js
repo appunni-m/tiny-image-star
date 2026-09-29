@@ -26,6 +26,7 @@ const defaults = {
   frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true },
   section: { name: 'Section', width: 480, height: 320, fill: '#e6e6e6', clip: false },
   group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false },
+  boolean: { name: 'Boolean group', width: 120, height: 80, fill: '#d9d9d9', operation: 'union', clip: false },
   rectangle: { name: 'Rectangle', width: 120, height: 80, fill: '#d9d9d9', radius: 0 },
   ellipse: { name: 'Ellipse', width: 100, height: 100, fill: '#d9d9d9' },
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
@@ -39,11 +40,13 @@ const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
 const prototypeTriggers = new Set(['on-click', 'while-hovering']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
+const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
+const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
-  'layoutSizingMain', 'layoutSizingCross', 'points', 'closed', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'points', 'closed', 'operation', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -101,7 +104,7 @@ export function addNode(document, node, { parentId = null, pageId = document.act
   if (!page) throw new Error('The target page no longer exists.');
   const parent = parentId ? findNode(document, parentId, pageId)?.node : null;
   if (parentId && !parent) throw new Error('The target parent layer no longer exists.');
-  if (parent && !['frame', 'group'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
+  if (parent && !['frame', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
   const list = parent ? parent.children : page.children;
   const insertAt = index == null ? list.length : Math.max(0, Math.min(index, list.length));
   list.splice(insertAt, 0, node);
@@ -156,6 +159,101 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
   list.splice(entry.index + 1, 0, duplicate);
   return duplicate;
+}
+
+function visualBounds(node) {
+  const centerX = node.x + node.width / 2;
+  const centerY = node.y + node.height / 2;
+  const angle = (node.rotation || 0) * Math.PI / 180;
+  const extentX = Math.abs(node.width * Math.cos(angle)) / 2 + Math.abs(node.height * Math.sin(angle)) / 2;
+  const extentY = Math.abs(node.width * Math.sin(angle)) / 2 + Math.abs(node.height * Math.cos(angle)) / 2;
+  return { left: centerX - extentX, top: centerY - extentY, right: centerX + extentX, bottom: centerY + extentY };
+}
+
+function isBooleanOperand(node) {
+  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true);
+}
+
+/** Return whether these layers can become one live, editable Boolean group. */
+export function canCombineBoolean(document, nodeIds, pageId = document.activePageId) {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => !entry || !isBooleanOperand(entry.node) || entry.node.locked)) return false;
+  const parent = entries[0].parent;
+  return entries.every(entry => entry.parent === parent);
+}
+
+/** Combine sibling vector shapes without flattening their editable source layers. */
+export function combineBoolean(document, nodeIds, operation = 'union', pageId = document.activePageId) {
+  if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
+  if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, closed vector shapes in the same container.');
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const page = document.pages.find(item => item.id === pageId);
+  const parent = entries[0].parent;
+  const list = parent ? parent.children : page.children;
+  const selectedIds = new Set(nodeIds);
+  const selectedEntries = entries.map(entry => ({ ...entry, index: list.indexOf(entry.node) })).sort((a, b) => a.index - b.index);
+  const bounds = selectedEntries.map(entry => visualBounds(entry.node));
+  const left = Math.min(...bounds.map(item => item.left));
+  const top = Math.min(...bounds.map(item => item.top));
+  const right = Math.max(...bounds.map(item => item.right));
+  const bottom = Math.max(...bounds.map(item => item.bottom));
+  const frontmost = selectedEntries.at(-1).node;
+  const styleSource = operation === 'subtract' ? selectedEntries[0].node : frontmost;
+  const operationNames = { union: 'Union', subtract: 'Subtract', intersect: 'Intersect', exclude: 'Exclude' };
+  const group = createNode('boolean', {
+    name: `${operationNames[operation]} group`, operation,
+    x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top),
+    fill: styleSource.fill || '#d9d9d9', fillOpacity: styleSource.fillOpacity ?? 1,
+    ...(styleSource.fillStyleId ? { fillStyleId: styleSource.fillStyleId } : {}),
+    children: selectedEntries.map(entry => {
+      entry.node.x -= left;
+      entry.node.y -= top;
+      return entry.node;
+    })
+  });
+  const frontmostIndex = selectedEntries.at(-1).index;
+  const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
+  for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
+  list.splice(insertionIndex, 0, group);
+  return group;
+}
+
+/** Restore a Boolean group's source layers while keeping the visible group transform. */
+export function separateBoolean(document, nodeId, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry || entry.node.type !== 'boolean') throw new Error('Select a Boolean group to separate.');
+  const group = entry.node;
+  const children = group.children || [];
+  if (children.length < 2) throw new Error('This Boolean group has no source shapes to separate.');
+  const bounds = children.map(visualBounds);
+  const sourceLeft = Math.min(...bounds.map(item => item.left));
+  const sourceTop = Math.min(...bounds.map(item => item.top));
+  const sourceWidth = Math.max(1, Math.max(...bounds.map(item => item.right)) - sourceLeft);
+  const sourceHeight = Math.max(1, Math.max(...bounds.map(item => item.bottom)) - sourceTop);
+  const scaleX = group.width / sourceWidth;
+  const scaleY = group.height / sourceHeight;
+  const rotation = (group.rotation || 0) * Math.PI / 180;
+  const parentCenter = { x: group.x + group.width / 2, y: group.y + group.height / 2 };
+  for (const child of children) {
+    const width = child.width * scaleX;
+    const height = child.height * scaleY;
+    const center = {
+      x: group.x + (child.x - sourceLeft + child.width / 2) * scaleX,
+      y: group.y + (child.y - sourceTop + child.height / 2) * scaleY
+    };
+    const dx = center.x - parentCenter.x;
+    const dy = center.y - parentCenter.y;
+    child.x = parentCenter.x + dx * Math.cos(rotation) - dy * Math.sin(rotation) - width / 2;
+    child.y = parentCenter.y + dx * Math.sin(rotation) + dy * Math.cos(rotation) - height / 2;
+    child.width = width;
+    child.height = height;
+    child.rotation = (child.rotation || 0) + (group.rotation || 0);
+  }
+  const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
+  list.splice(entry.index, 1, ...children);
+  group.children = [];
+  return children;
 }
 
 export function renameNode(document, nodeId, name, pageId = document.activePageId) {
@@ -510,6 +608,7 @@ export function validateDocument(document) {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout && (node.type !== 'frame' || !['horizontal', 'vertical'].includes(node.autoLayout.axis) || !Number.isFinite(Number(node.autoLayout.gap)))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);

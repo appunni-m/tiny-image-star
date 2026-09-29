@@ -1,8 +1,8 @@
 import {
-  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createComponent, createComponentInstance, createComponentSet,
+  addNode, applyColorStyle, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createComponent, createComponentInstance, createComponentSet,
   createDocument, createId, createImageRecipe, createNode, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, setComponentVariantProperty,
-  switchComponentInstanceVariant, syncAllComponentInstances,
+  separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -155,7 +155,7 @@ function renderLayers() {
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${node.visible ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
       row.setAttribute('role', 'treeitem'); row.dataset.layerId = node.id; row.tabIndex = 0;
       row.style.paddingLeft = `${7 + depth * 13}px`;
-      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' ? 'layerVector' : 'rectangleSmall';
+      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : '';
       row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
@@ -189,7 +189,7 @@ function appearanceSection(node) {
   const fill = colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100));
   const stroke = node.stroke ? colorField('Stroke', 'stroke', node.stroke, 100) : '';
   const radius = ['rectangle', 'frame', 'section'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', node.radius || 0)}</div>` : '';
-  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>`;
+  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>`;
   const body = `${fill}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
@@ -288,6 +288,10 @@ function renderInspector() {
   }
   const node = entries[0].node;
   let body = componentSection(node) + transformSection(node);
+  if (node.type === 'boolean') {
+    const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
+    body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><div class="image-properties-note">The source shapes stay editable inside this live Boolean group.</div>`);
+  }
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node);
   if (node.type === 'path') {
@@ -545,7 +549,7 @@ function onCanvasPointerDown(event) {
       if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
       event.preventDefault(); return;
     }
-    const hit = hitTestPage(activePage(), world);
+    const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true);
     if (hit) {
       if (event.shiftKey) {
         const ids = state.selectedIds.includes(hit.id) ? state.selectedIds.filter(id => id !== hit.id) : [...state.selectedIds, hit.id];
@@ -1065,6 +1069,28 @@ function openNodeMenu(nodeId, x, y) {
     { label: 'Delete', shortcut: '⌫', action: deleteSelected }
   ];
   const selectedMainComponents = selectedNodes().filter(item => item.isComponent);
+  const canCombine = canCombineBoolean(state.document, state.selectedIds);
+  const selectedBoolean = selectedNodes().length === 1 && selectedNodes()[0].type === 'boolean' ? selectedNodes()[0] : null;
+  if (canCombine) {
+    items.unshift(
+      { label: 'Combine as Union', action: () => combineSelectedBoolean('union') },
+      { label: 'Combine as Subtract', action: () => combineSelectedBoolean('subtract') },
+      { label: 'Combine as Intersect', action: () => combineSelectedBoolean('intersect') },
+      { label: 'Combine as Exclude', action: () => combineSelectedBoolean('exclude') },
+      { separator: true }
+    );
+  }
+  if (selectedBoolean) {
+    items.unshift(
+      { label: 'Separate Boolean', action: () => separateSelectedBoolean(selectedBoolean.id) },
+      { label: 'Boolean operation', labelOnly: true },
+      ...[['union','Union'],['subtract','Subtract'],['intersect','Intersect'],['exclude','Exclude']].map(([operation, label]) => ({
+        label: label === selectedBoolean.operation ? `✓ ${label}` : label,
+        action: () => setBooleanOperation(selectedBoolean.id, operation)
+      })),
+      { separator: true }
+    );
+  }
   if (selectedNodes().length > 1 && selectedMainComponents.length === selectedNodes().length) {
     items.unshift({ label: `Combine ${selectedMainComponents.length} as variants`, action: combineSelectedComponents }, { separator: true });
   }
@@ -1082,6 +1108,35 @@ function openNodeMenu(nodeId, x, y) {
   const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text' ? selectedNodes().some(item => item.type === 'text') : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type)));
   if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
   showMenu(items, x, y);
+}
+
+function combineSelectedBoolean(operation) {
+  const ids = rootSelectedIds();
+  try {
+    checkpoint(`Combine as ${operation}`);
+    const group = combineBoolean(state.document, ids, operation);
+    setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
+    showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source shapes remain editable.`);
+  } catch (error) { showToast(error.message || 'These layers cannot be combined.'); }
+}
+
+function setBooleanOperation(nodeId, operation) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (!node || node.type !== 'boolean' || node.operation === operation) return;
+  checkpoint(`Change Boolean operation to ${operation}`);
+  node.operation = operation;
+  const instanceRoot = componentInstanceRoot(node.id);
+  if (instanceRoot) recordComponentOverride(instanceRoot, node, 'operation');
+  renderUI(); queueSave(); renderer.invalidate();
+}
+
+function separateSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
+  try {
+    checkpoint('Separate Boolean');
+    const children = separateBoolean(state.document, nodeId);
+    setSelection(children.map(child => child.id)); renderUI(); queueSave(); renderer.invalidate();
+    showToast('Boolean source shapes separated.');
+  } catch (error) { showToast(error.message); }
 }
 
 function openFileMenu(x, y) {
@@ -1312,7 +1367,7 @@ function navigatePresentation(interaction) {
 function handlePresentationPointer(event, trigger) {
   if (!state.presenting || !presentRenderState?.document) return;
   const page = presentRenderState.document.pages[0];
-  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState));
+  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true);
   const topOverlayState = state.presenting.overlays.at(-1);
   if (trigger === 'on-click' && topOverlayState) {
     const overlayTarget = findNode(state.document, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(state.document, topOverlayState.frameId);
@@ -1405,6 +1460,7 @@ function applyInspectorAction(action, details = {}) {
     removePrototypeInteraction(state.document, node.id, interactionId);
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
+  else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
   else if (action === 'create-color-style') {
     if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }
     const current = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
@@ -1456,7 +1512,7 @@ function initEvents() {
   canvas.addEventListener('pointercancel', onCanvasPointerUp);
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
-    const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world);
+    const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true);
     if (hit) openNodeMenu(hit.id, event.clientX, event.clientY);
     else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY);
     else openFileMenu(event.clientX, event.clientY);

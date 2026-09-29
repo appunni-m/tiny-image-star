@@ -1,3 +1,5 @@
+import { addNode, createDocument, createNode } from '../src/model.js';
+
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
 
@@ -382,7 +384,68 @@ try {
   const editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(editedVector.points[1].out.y !== editablePoint.out.y, 'canvas Bézier handle editing did not update the path');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true })}`;
+  const booleanDocument = createDocument();
+  const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
+  const booleanBase = createNode('rectangle', { name: 'Boolean base', x: 0, y: 0, width: 160, height: 90, fill: '#0055ff' });
+  const booleanCutter = createNode('rectangle', { name: 'Boolean cutter', x: 70, y: 0, width: 120, height: 90, fill: '#ff0055' });
+  addNode(booleanDocument, booleanUnderlay); addNode(booleanDocument, booleanBase); addNode(booleanDocument, booleanCutter);
+  const booleanInput = app.querySelector('#open-file-input'); const booleanTransfer = new DataTransfer();
+  booleanTransfer.items.add(new File([buildPackage(booleanDocument, [])], 'boolean-smoke.flocal', { type: 'application/octet-stream' }));
+  Object.defineProperty(booleanInput, 'files', { configurable: true, value: booleanTransfer.files });
+  booleanInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'Boolean fixture document import');
+  let baseRow = app.querySelector(`[data-layer-id="${booleanBase.id}"]`);
+  dispatchClick(baseRow);
+  let cutterRow = app.querySelector(`[data-layer-id="${booleanCutter.id}"]`);
+  dispatchClick(cutterRow, { ctrlKey: true });
+  assert(app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 2, 'Boolean source shapes were not multi-selected');
+  cutterRow = app.querySelector(`[data-layer-id="${booleanCutter.id}"]`);
+  dispatchContextMenu(cutterRow);
+  for (const label of ['Combine as Union', 'Combine as Subtract', 'Combine as Intersect', 'Combine as Exclude']) {
+    assert([...app.querySelectorAll('#context-menu button')].some(button => button.textContent.trim() === label), `Boolean context menu omitted ${label}`);
+  }
+  const subtractMenuItem = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.trim() === 'Combine as Subtract');
+  dispatchClick(subtractMenuItem);
+  await waitFor(() => app.querySelector('.layer-row.is-selected[data-layer-id]')?.textContent.includes('Subtract group'), 'live subtract Boolean group');
+  assert(app.querySelectorAll('.layer-row[data-layer-id]').length === 4, 'Boolean combine flattened or discarded its editable source layers');
+  dispatchClick(app.querySelector('#zoom-fit'));
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const booleanGroupId = app.querySelector('.layer-row.is-selected[data-layer-id]')?.dataset.layerId;
+  const sampleBooleanPixel = world => {
+    const ratio = designCanvas.width / designCanvas.clientWidth;
+    const zoom = Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100;
+    const x = designCanvas.clientWidth / 2 + (world.x - 95) * zoom;
+    const y = designCanvas.clientHeight / 2 + (world.y - 45) * zoom;
+    return [...designCanvas.getContext('2d').getImageData(Math.floor(x * ratio), Math.floor(y * ratio), 1, 1).data];
+  };
+  const subtractHole = sampleBooleanPixel({ x: 120, y: 45 });
+  const subtractFill = sampleBooleanPixel({ x: 30, y: 45 });
+  assert(subtractHole[1] > 180 && subtractHole[0] < 80, `subtract did not reveal the underlay through its cutout (${subtractHole.join(',')})`);
+  assert(subtractFill[2] > 180 && subtractFill[0] < 80, `subtract did not render the retained shape (${subtractFill.join(',')})`);
+  const holeZoom = Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100;
+  const holeX = canvasRect.left + panCenter.x + (120 - 95) * holeZoom;
+  const holeY = canvasRect.top + panCenter.y;
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', holeX, holeY, 111);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', holeX, holeY, 111);
+  await waitFor(() => app.querySelector('.layer-row.is-selected[data-layer-id]')?.dataset.layerId === booleanUnderlay.id, 'selection through the Boolean cutout');
+  dispatchClick(app.querySelector(`[data-layer-id="${booleanGroupId}"]`));
+  const operationInput = app.querySelector('[data-prop="operation"]');
+  operationInput.value = 'union'; operationInput.dispatchEvent(new Event('input', { bubbles: true })); operationInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const unionFill = sampleBooleanPixel({ x: 120, y: 45 });
+  assert(unionFill[0] < 80 && unionFill[2] > 180, `changing the operation in the inspector did not update the preview (${unionFill.join(',')})`);
+  const booleanRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  dispatchContextMenu(booleanRow);
+  const separateItem = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.trim() === 'Separate Boolean');
+  assert(separateItem, 'Boolean context menu did not offer separation');
+  dispatchClick(separateItem);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 3 && !app.querySelector('[data-action="separate-boolean"]'), 'Boolean separation');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'separated Boolean autosave');
+  const separatedRecords = await readStore('documents'); separatedRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const separated = separatedRecords[0]?.document?.pages[0]?.children;
+  assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
