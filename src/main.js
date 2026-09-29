@@ -1,6 +1,6 @@
 import {
   addNode, addVariableMode, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet,
-  createDocument, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  createDocument, createExportSetting, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, releaseMaskGroup, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
@@ -234,6 +234,21 @@ function imageAdjustmentsSection(node) {
   const body = `${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
+function exportSettingsSection(node) {
+  const settings = node.exportSettings || [];
+  const formats = [['png', 'PNG'], ['jpeg', 'JPG'], ['webp', 'WebP']];
+  const scales = [0.5, 0.75, 1, 1.5, 2, 3, 4];
+  const rows = settings.map(setting => {
+    const options = formats.map(([value, label]) => `<option value="${value}"${setting.format === value ? ' selected' : ''}>${label}</option>`).join('');
+    const scaleOptions = scales.map(value => `<option value="${value}"${setting.scale === value ? ' selected' : ''}>${value}×</option>`).join('');
+    const size = exportDimensions(node.id, setting.scale);
+    const quality = setting.format === 'png' ? '' : `<label class="export-quality"><span>Quality</span><input type="range" min="1" max="100" step="1" value="${setting.quality}" data-export-field="quality" data-export-id="${escapeHtml(setting.id)}" aria-label="Export quality"/><output aria-live="polite">${setting.quality}%</output></label>`;
+    return `<div class="export-setting-row" data-export-row="${escapeHtml(setting.id)}"><div class="export-setting-controls"><label><span>Format</span><select class="select-field" data-export-field="format" data-export-id="${escapeHtml(setting.id)}" aria-label="Export format">${options}</select></label><label><span>Scale</span><select class="select-field" data-export-field="scale" data-export-id="${escapeHtml(setting.id)}" aria-label="Export scale">${scaleOptions}</select></label></div><label class="export-suffix"><span>Suffix</span><input type="text" maxlength="24" value="${escapeHtml(setting.suffix)}" placeholder="@2x" data-export-field="suffix" data-export-id="${escapeHtml(setting.id)}" aria-label="Export suffix"/></label>${quality}<div class="export-setting-actions"><span>${size.width} × ${size.height} px</span><button class="secondary-button" type="button" data-action="export-setting" data-export-id="${escapeHtml(setting.id)}">Export</button><button class="tiny-icon-button" type="button" data-action="remove-export-setting" data-export-id="${escapeHtml(setting.id)}" aria-label="Remove export setting">×</button></div></div>`;
+  }).join('');
+  const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
+  const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
+  return section('Export', `${rows}${message}${add}`);
+}
 function autoLayoutSection(node) {
   if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
   const layout = createAutoLayout(node.autoLayout);
@@ -376,6 +391,7 @@ function renderInspector() {
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
+  body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="fit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
 }
@@ -1764,27 +1780,161 @@ async function exportDesign() {
 }
 function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
 
-async function exportSelectionPng() {
-  const nodes = selectedNodes(); if (!nodes.length) { showToast('Select a layer to export.'); return; }
-  const boundsList = state.selectedIds.map(id => absoluteBoundsSafe(id)).filter(Boolean);
+function exportBoundsForNode(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry) return null;
+  const node = entry.node;
+  const stroke = node.stroke && node.strokeWidth ? node.strokeWidth / 2 : 0;
+  const corners = [[-stroke, -stroke], [node.width + stroke, -stroke], [node.width + stroke, node.height + stroke], [-stroke, node.height + stroke]];
+  const points = corners.map(([x, y]) => {
+    const rotated = rotatePoint({ x, y }, { x: node.width / 2, y: node.height / 2 }, node.rotation || 0);
+    let point = { x: rotated.x + node.x, y: rotated.y + node.y };
+    for (let index = entry.parents.length - 1; index >= 0; index -= 1) {
+      const parent = entry.parents[index];
+      point = rotatePoint(point, { x: parent.width / 2, y: parent.height / 2 }, parent.rotation || 0);
+      point.x += parent.x; point.y += parent.y;
+    }
+    return point;
+  });
+  const xs = points.map(point => point.x); const ys = points.map(point => point.y);
+  const left = Math.min(...xs); const top = Math.min(...ys); const right = Math.max(...xs); const bottom = Math.max(...ys);
+  return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+}
+
+function exportDimensions(nodeId, scale = 1) {
+  const bounds = exportBoundsForNode(nodeId);
+  return bounds ? { width: Math.ceil(bounds.width * scale), height: Math.ceil(bounds.height * scale) } : { width: 0, height: 0 };
+}
+
+function exportRenderTree(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry) return null;
+  let branch = structuredClone(entry.node);
+  for (let index = entry.parents.length - 1; index >= 0; index -= 1) {
+    const parent = entry.parents[index];
+    const wrapper = structuredClone(parent);
+    const maskSource = parent.mask ? parent.children.find(child => child.id === parent.maskSourceId) : null;
+    if (maskSource && maskSource.id !== branch.id) wrapper.children = [branch, structuredClone(maskSource)];
+    else wrapper.children = [branch];
+    wrapper.type = 'group'; wrapper.fill = 'transparent'; wrapper.stroke = null; wrapper.strokeWidth = 0;
+    wrapper.fillOpacity = 0;
+    delete wrapper.fillStyleId; delete wrapper.fillVariableId;
+    if (wrapper.variableBindings) delete wrapper.variableBindings.fill;
+    if (!maskSource || maskSource.id === branch.id) { wrapper.mask = false; delete wrapper.maskSourceId; }
+    branch = wrapper;
+  }
+  return branch;
+}
+
+function orderedRootSelection() {
+  const rows = pageLayerRows();
+  const index = new Map(rows.map((entry, position) => [entry.node.id, position]));
+  return rootSelectedIds().sort((left, right) => (index.get(left) ?? 0) - (index.get(right) ?? 0));
+}
+
+async function refreshImagesForExport(nodeIds) {
+  const images = new Map();
+  for (const id of nodeIds) {
+    const node = findNode(state.document, id)?.node;
+    if (node) walkNodes([node], ({ node: child }) => { if (child.type === 'image') images.set(child.id, child); });
+  }
+  await Promise.all([...images.values()].map(async node => {
+    const asset = state.assets.get(node.assetId);
+    if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
+    const status = state.imageStatus.get(node.id) || '';
+    const timer = previewTimers.get(node.id);
+    if (timer) { clearTimeout(timer); previewTimers.delete(node.id); }
+    if (timer || status === 'Updating preview…' || status === 'Processing locally…') await renderImagePreview(node.id, node.assetId, node.adjustments);
+    if (!state.previews.has(node.id) && node.adjustments && Object.values(node.adjustments).some(value => Number(value) !== 0)) await renderImagePreview(node.id, node.assetId, node.adjustments);
+  }));
+}
+
+function safeExportName(value) { return String(value || 'layer').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim() || 'layer'; }
+
+async function renderAndDownload(ids, setting, baseName) {
+  if (!ids.length) throw new Error('Select a layer to export.');
+  const boundsList = ids.map(exportBoundsForNode).filter(Boolean);
+  if (!boundsList.length) throw new Error('The selected layer is no longer available.');
   const left = Math.min(...boundsList.map(item => item.x)); const top = Math.min(...boundsList.map(item => item.y));
   const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
-  const scale = Math.min(1, 4096 / Math.max(right - left, bottom - top));
-  const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil((right - left) * scale)); output.height = Math.max(1, Math.ceil((bottom - top) * scale));
-  const ctx = output.getContext('2d'); ctx.scale(scale, scale); ctx.translate(-left, -top);
-  for (const id of state.selectedIds) {
-    const entry = findNode(state.document, id); if (!entry) continue;
-    const absolute = absolutePosition(id); renderer.drawNode(ctx, entry.node, absolute.x - entry.node.x, absolute.y - entry.node.y, state.assets);
+  const scale = Number(setting.scale) || 1;
+  const width = Math.max(1, Math.ceil((right - left) * scale)); const height = Math.max(1, Math.ceil((bottom - top) * scale));
+  if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
+  await refreshImagesForExport(ids);
+  await document.fonts?.ready;
+  const output = document.createElement('canvas'); output.width = width; output.height = height;
+  const context = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
+  if (!context) throw new Error('This browser could not create an export surface.');
+  context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
+  if (setting.format === 'jpeg') { context.fillStyle = '#fff'; context.fillRect(0, 0, width, height); }
+  context.scale(scale, scale); context.translate(-left, -top);
+  for (const id of ids) {
+    const tree = exportRenderTree(id);
+    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets);
   }
-  const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png'));
-  if (!blob) { showToast('Could not export this selection.'); return; }
-  const url = URL.createObjectURL(blob); const anchor = Object.assign(document.createElement('a'), { href: url, download: `${nodes[0].name || 'selection'}.png` }); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+  const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }[setting.format];
+  const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[setting.format];
+  const blob = await new Promise((resolve, reject) => {
+    try { output.toBlob(value => value ? resolve(value) : reject(new Error('The browser could not encode this export.')), mime, setting.format === 'png' ? undefined : setting.quality / 100); }
+    catch (error) { reject(error); }
+  });
+  if (blob.type !== mime) throw new Error(`${setting.format.toUpperCase()} export is not supported by this browser.`);
+  const suffix = String(setting.suffix || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim();
+  const scaleSuffix = !suffix && scale !== 1 ? `@${String(scale).replace('.', '_')}x` : suffix;
+  const filename = `${safeExportName(baseName)}${scaleSuffix}.${extension}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = Object.assign(document.createElement('a'), { href: url, download: filename });
+  anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return { blob, filename, width, height };
 }
-function absoluteBoundsSafe(id) { const entry = findNode(state.document, id); if (!entry) return null; const pos = absolutePosition(id); return { ...pos, width: entry.node.width, height: entry.node.height }; }
+
+async function exportLayerWithSetting(nodeId, settingId) {
+  const node = findNode(state.document, nodeId)?.node;
+  const setting = node?.exportSettings?.find(item => item.id === settingId);
+  if (!node || !setting) throw new Error('The export setting no longer exists.');
+  const result = await renderAndDownload([nodeId], setting, node.name);
+  showToast(`Downloaded ${result.filename} · ${result.width} × ${result.height} px.`);
+}
+
+async function exportSelectionPng() {
+  const ids = orderedRootSelection();
+  const names = ids.map(id => findNode(state.document, id)?.node.name).filter(Boolean);
+  try { await renderAndDownload(ids, { format: 'png', scale: 1, suffix: '', quality: 90 }, names.length === 1 ? names[0] : `selection-${names.length}`); }
+  catch (error) { showToast(error.message || 'Could not export this selection.'); }
+}
+
+function updateExportSetting(input) {
+  const node = selectedNodes()[0];
+  const setting = node?.exportSettings?.find(item => item.id === input.dataset.exportId);
+  if (!node || !setting) return;
+  const property = input.dataset.exportField;
+  const value = property === 'scale' || property === 'quality' ? Number(input.value) : input.value;
+  if (setting[property] === value) return;
+  checkpoint('Update export setting');
+  setting[property] = value;
+  const instanceRoot = componentInstanceRoot(node.id);
+  if (instanceRoot) recordComponentOverride(instanceRoot, node, 'exportSettings');
+  renderInspector(); queueSave();
+}
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
-  if (action === 'create-component') makeComponent(node?.id);
+  if (action === 'add-export-setting' && node) {
+    if ((node.exportSettings || []).length >= 8) { showToast('A layer can have up to 8 export settings.'); return; }
+    checkpoint('Add export setting');
+    node.exportSettings ||= [];
+    node.exportSettings.push(createExportSetting());
+    renderInspector(); queueSave();
+  } else if (action === 'remove-export-setting' && node) {
+    const settings = node.exportSettings || [];
+    if (!settings.some(setting => setting.id === details.exportId)) return;
+    checkpoint('Remove export setting');
+    node.exportSettings = settings.filter(setting => setting.id !== details.exportId);
+    if (!node.exportSettings.length) delete node.exportSettings;
+    renderInspector(); queueSave();
+  } else if (action === 'export-setting' && node) {
+    exportLayerWithSetting(node.id, details.exportId).catch(error => showToast(error.message || 'Could not export this layer.'));
+  } else if (action === 'create-component') makeComponent(node?.id);
   else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
   else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
@@ -1924,6 +2074,8 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    const quality = event.target.closest('[data-export-field="quality"]');
+    if (quality) { quality.parentElement.querySelector('output').value = `${quality.value}%`; return; }
     updateInspectorInput(event);
     if (event.target.id === 'prototype-duration') {
       state.prototypeDuration = Number(event.target.value);
@@ -1932,6 +2084,8 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    const exportField = event.target.closest('[data-export-field]');
+    if (exportField) { updateExportSetting(exportField); return; }
     if (event.target.matches('[data-prop]')) finishInspectorInput();
     if (event.target.matches('[data-variable-binding]')) applyColorVariableToSelection(event.target.value, event.target.dataset.variableBinding);
     if (event.target.matches('[data-variable-property-binding]')) applyVariablePropertyToSelection(event.target.dataset.variablePropertyBinding, event.target.value);

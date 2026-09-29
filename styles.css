@@ -208,6 +208,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .image-properties-note { margin: 10px 0 0; color: #888; font-size: 9px; line-height: 1.5; }
 .image-engine-status { display: inline-flex; align-items: center; gap: 5px; color: #16a16a; font-size: 9px; }
 .image-engine-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.export-setting-row { display: grid; gap: 8px; margin-top: 8px; padding: 9px; border: 1px solid #ededed; border-radius: 7px; background: #fcfcfc; }
+.export-setting-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.export-setting-row label { min-width: 0; display: grid; gap: 4px; color: #777; font-size: 9px; }
+.export-setting-row .select-field, .export-suffix input { width: 100%; min-width: 0; height: 28px; }
+.export-suffix input { padding: 0 7px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fff; font-size: 10px; }
+.export-quality { grid-template-columns: auto minmax(0, 1fr) 34px; align-items: center; }
+.export-quality input { width: 100%; accent-color: var(--blue); }
+.export-quality output { color: #777; text-align: right; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.export-setting-actions { display: flex; align-items: center; gap: 5px; }
+.export-setting-actions > span { min-width: 0; flex: 1; color: #888; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.export-setting-actions .secondary-button { min-height: 28px; padding: 0 10px; }
+.export-setting-actions .tiny-icon-button { width: 28px; height: 28px; border: 1px solid #e8e8e8; background: #fff; }
 .multi-selection-card { padding: 18px 15px; border-bottom: 1px solid var(--border); }
 .multi-selection-card strong { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 550; }
 .multi-selection-card span { color: #888; font-size: 10px; }
@@ -341,6 +353,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .bar-action { padding: 0 7px; }
   .context-menu { max-width: calc(100vw - 16px); }
   .context-menu button { min-height: 44px; font-size: 13px; }
+  .export-setting-row { gap: 10px; padding: 10px; }
+  .export-setting-row .select-field, .export-suffix input { height: 38px; font-size: 12px; }
+  .export-setting-actions .secondary-button, .export-setting-actions .tiny-icon-button { min-height: 40px; height: 40px; }
+  .export-setting-actions .tiny-icon-button { width: 40px; }
+  .export-setting-actions > span { font-size: 10px; }
+  .export-quality { grid-template-columns: 45px minmax(0, 1fr) 38px; }
+  .export-quality input { min-height: 28px; }
 }
 @media (max-width: 420px) {
   .topbar { padding: 0 4px; }

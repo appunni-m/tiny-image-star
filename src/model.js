@@ -78,6 +78,7 @@ const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
 const prototypeTriggers = new Set(['on-click', 'while-hovering']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
+const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
 const componentOverrideProperties = new Set([
@@ -86,7 +87,7 @@ const componentOverrideProperties = new Set([
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -108,6 +109,10 @@ export function createNode(type, overrides = {}) {
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
     children: overrides.children ? clone(overrides.children) : []
   };
+}
+
+export function createExportSetting(overrides = {}) {
+  return { id: createId('export'), format: 'png', scale: 1, suffix: '', quality: 90, ...overrides };
 }
 
 export function getActivePage(document) {
@@ -1043,6 +1048,16 @@ export function validateDocument(document) {
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
       if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
+      if (node.exportSettings != null) {
+        const settingIds = new Set();
+        if (!Array.isArray(node.exportSettings) || node.exportSettings.length > 8 || node.exportSettings.some(setting => {
+          if (!setting || typeof setting.id !== 'string' || !setting.id || settingIds.has(setting.id)
+            || !exportFormats.has(setting.format) || ![0.5, 0.75, 1, 1.5, 2, 3, 4].includes(setting.scale)
+            || typeof setting.suffix !== 'string' || setting.suffix.length > 24
+            || !Number.isInteger(setting.quality) || setting.quality < 1 || setting.quality > 100) return true;
+          settingIds.add(setting.id); return false;
+        })) throw new TypeError(`Invalid export settings on layer ${node.name || node.id}.`);
+      }
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout) {
         const layout = node.autoLayout;
