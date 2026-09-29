@@ -180,6 +180,60 @@ try {
   assert(styledDocument?.colorStyles.some(style => style.id === colorStyleId), 'the shared color style did not persist');
   assert(styledNodes.find(node => node.id === destinationFrame.id)?.fillStyleId === colorStyleId, 'the shared color style was not applied to the destination frame');
 
+  app.defaultView.prompt = () => 'Smoke button';
+  const mainFrameRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
+  dispatchClick(mainFrameRow);
+  dispatchClick(app.querySelector('[data-action="create-component"]'));
+  await waitFor(() => app.querySelector('#components-list [data-component-id]'), 'component creation and asset listing');
+  const componentId = app.querySelector('#components-list [data-component-id]').dataset.componentId;
+  const instanceButton = app.querySelector('[data-action="create-component-instance"]');
+  assert(instanceButton?.dataset.componentId === componentId, 'component inspector did not expose instance creation');
+  dispatchClick(instanceButton);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 6, 'component instance creation');
+  const instanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  const instanceId = instanceRow?.dataset.layerId;
+  assert(instanceId && instanceId !== destinationFrame.id, 'the component instance has no independent layer identity');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  const mainWidth = app.querySelector('[data-prop="width"]');
+  mainWidth.value = '320'; mainWidth.dispatchEvent(new Event('input', { bubbles: true })); mainWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  let componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let componentDocument = componentRecords[0]?.document;
+  let componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  assert(componentNodes.find(node => node.id === instanceId)?.width === 320, 'main component edit did not propagate to its instance');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${instanceId}"]`));
+  const overrideWidth = app.querySelector('[data-prop="width"]');
+  overrideWidth.value = '240'; overrideWidth.dispatchEvent(new Event('input', { bubbles: true })); overrideWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
+  componentDocument = componentRecords[0]?.document;
+  componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  assert(componentNodes.find(node => node.id === instanceId)?.width === 240, 'the local instance size override was not saved');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  const nextMainWidth = app.querySelector('[data-prop="width"]');
+  nextMainWidth.value = '360'; nextMainWidth.dispatchEvent(new Event('input', { bubbles: true })); nextMainWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
+  componentDocument = componentRecords[0]?.document;
+  componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  assert(componentNodes.find(node => node.id === instanceId)?.width === 240, 'a main edit replaced the local instance override');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${instanceId}"]`));
+  dispatchClick(app.querySelector('[data-action="detach-component-instance"]'));
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  const finalMainWidth = app.querySelector('[data-prop="width"]');
+  finalMainWidth.value = '400'; finalMainWidth.dispatchEvent(new Event('input', { bubbles: true })); finalMainWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
+  componentDocument = componentRecords[0]?.document;
+  componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  const detachedInstance = componentNodes.find(node => node.id === instanceId);
+  assert(detachedInstance?.width === 240 && !detachedInstance.isInstance, 'detached component instance changed with its former main component');
+  assert(componentDocument?.components?.some(component => component.id === componentId), 'component metadata was not saved locally');
+
   dispatchClick(app.querySelector('#present-button'));
   await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'local prototype presentation');
   const presentCanvas = app.querySelector('#present-canvas');
@@ -189,7 +243,7 @@ try {
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, presentNavigation: true, presentBack: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, presentNavigation: true, presentBack: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -34,6 +34,12 @@ const defaults = {
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] }
 };
+const componentOverrideProperties = new Set([
+  'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
+  'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
+  'layoutSizingMain', 'layoutSizingCross', '__childOrder'
+]);
 
 export function createNode(type, overrides = {}) {
   const preset = defaults[type];
@@ -206,7 +212,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
 export function createComponent(document, nodeId, name = null, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) throw new Error('Select a layer to create a component.');
-  if (entry.node.isInstance) throw new Error('Detach an instance before creating a new component.');
+  if (entry.node.isInstance || entry.parents.some(parent => parent.isInstance)) throw new Error('Detach an instance before creating a new component.');
   if (entry.node.isComponent) return (document.components || []).find(component => component.id === entry.node.componentId) || null;
   const component = { id: createId('component'), name: String(name || entry.node.name).trim() || entry.node.name, pageId, rootNodeId: entry.node.id };
   entry.node.isComponent = true;
@@ -216,58 +222,114 @@ export function createComponent(document, nodeId, name = null, pageId = document
   return component;
 }
 
-export function createComponentInstance(document, componentId) {
+export function createComponentInstance(document, componentId, { pageId = document.activePageId, parentId = null, x = null, y = null } = {}) {
   const component = document.components?.find(item => item.id === componentId);
   const master = component && findNodeAcrossPages(document, component.rootNodeId);
   if (!component || !master || !master.node.isComponent) throw new Error('The main component no longer exists.');
-  const instance = duplicateNode(document, master.node.id, master.page.id);
-  if (!instance) throw new Error('Could not create a component instance.');
-  const resetNested = node => {
-    if (node !== instance && node.isComponent) { node.isComponent = false; node.isInstance = true; }
-    for (const child of node.children || []) resetNested(child);
+  const targetPage = document.pages.find(page => page.id === pageId);
+  if (!targetPage) throw new Error('The target page no longer exists.');
+  const instance = clone(master.node);
+  const renew = (node, isRoot = false) => {
+    const sourceId = node.id;
+    node.id = createId(node.type);
+    node.componentSourceId = sourceId;
+    if (node.isComponent) {
+      node.isInstance = true;
+      delete node.isComponent;
+    }
+    for (const child of node.children || []) renew(child);
+    if (isRoot) {
+      node.isInstance = true;
+      node.componentId = componentId;
+      node.componentOverrides = {};
+      node.name = `${component.name} instance`;
+      node.x = x != null && Number.isFinite(Number(x)) ? Number(x) : node.x + 16;
+      node.y = y != null && Number.isFinite(Number(y)) ? Number(y) : node.y + 16;
+    }
   };
-  resetNested(instance);
-  instance.isComponent = false;
-  instance.isInstance = true;
-  instance.componentId = componentId;
-  instance.name = `${component.name} instance`;
+  renew(instance, true);
+  addNode(document, instance, { pageId, parentId });
   return instance;
 }
 
 export function detachComponentInstances(document, componentId) {
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
-    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; }
+    if (node.isInstance && node.componentId === componentId) clearComponentInstanceLink(node);
   });
+}
+
+function clearComponentInstanceLink(instance) {
+  const componentId = instance.componentId;
+  delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides;
+  walkNodes(instance.children || [], ({ node, parents }) => {
+    const belongsToNestedInstance = parents.some(parent => parent.isInstance && parent.componentId !== componentId);
+    if (!belongsToNestedInstance) delete node.componentSourceId;
+    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; delete node.componentOverrides; }
+  });
+  delete instance.componentSourceId;
 }
 
 export function detachComponentInstance(document, nodeId, pageId = document.activePageId) {
   const instance = findNode(document, nodeId, pageId)?.node;
   if (!instance?.isInstance) return false;
-  const componentId = instance.componentId;
-  delete instance.isInstance; delete instance.componentId;
-  for (const child of instance.children || []) walkNodes([child], ({ node }) => {
-    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; }
-  });
+  clearComponentInstanceLink(instance);
   return true;
 }
 
-function syncInstanceNode(instance, master, componentId, isRoot = false) {
+function syncInstanceNode(instance, master, componentId, overrides, isRoot = false) {
   const stableId = instance?.id || createId(master.type);
   const rootX = instance?.x ?? master.x;
   const rootY = instance?.y ?? master.y;
+  const rootName = instance?.name ?? `${master.name} instance`;
+  const componentOverrides = isRoot ? clone(instance?.componentOverrides || {}) : null;
   const oldChildren = instance?.children || [];
+  const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const copy = clone(master);
-  const children = (master.children || []).map((child, index) => syncInstanceNode(oldChildren[index], child, componentId));
-  Object.assign(instance || {}, copy, { id: stableId, children, x: isRoot ? rootX : copy.x, y: isRoot ? rootY : copy.y });
-  if (isRoot) {
-    instance.componentId = componentId;
-    instance.isInstance = true;
-    delete instance.isComponent;
-  } else if (instance !== null && copy.isComponent) {
-    instance.isComponent = false;
-    instance.isInstance = true;
+  let children = (master.children || []).map((child, index) => {
+    const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
+    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || legacyChild, child, componentId, overrides);
+  });
+  const nodeOverrides = overrides?.[master.id];
+  if (Array.isArray(nodeOverrides?.__childOrder)) {
+    const masterOrder = new Map((master.children || []).map((child, index) => [child.id, index]));
+    const requestedOrder = new Map(nodeOverrides.__childOrder.map((id, index) => [id, index]));
+    children = children.map((child, index) => ({ child, index })).sort((a, b) => {
+      const rank = item => requestedOrder.has(item.child.componentSourceId)
+        ? requestedOrder.get(item.child.componentSourceId)
+        : nodeOverrides.__childOrder.length + (masterOrder.get(item.child.componentSourceId) ?? item.index);
+      return rank(a) - rank(b) || a.index - b.index;
+    }).map(item => item.child);
   }
-  return instance || { ...copy, id: stableId, children };
+  const target = Object.assign(instance || {}, copy, {
+    id: stableId,
+    componentSourceId: master.id,
+    children,
+    x: isRoot ? rootX : copy.x,
+    y: isRoot ? rootY : copy.y,
+    name: isRoot ? rootName : copy.name
+  });
+  if (isRoot) {
+    target.componentId = componentId;
+    target.isInstance = true;
+    target.componentOverrides = componentOverrides;
+    delete target.isComponent;
+  } else if (copy.isComponent) {
+    target.componentId = copy.componentId;
+    target.isInstance = true;
+    delete target.isComponent;
+  } else if (copy.isInstance) {
+    target.componentId = copy.componentId;
+    target.isInstance = true;
+    delete target.isComponent;
+  } else {
+    delete target.componentId;
+    delete target.isComponent;
+    delete target.isInstance;
+  }
+  if (nodeOverrides && typeof nodeOverrides === 'object' && !Array.isArray(nodeOverrides)) {
+    for (const [key, value] of Object.entries(nodeOverrides)) if (key !== '__childOrder' && componentOverrideProperties.has(key)) target[key] = clone(value);
+  }
+  return target;
 }
 
 export function syncComponentInstances(document, componentId) {
@@ -279,8 +341,7 @@ export function syncComponentInstances(document, componentId) {
     if (node.isInstance && node.componentId === componentId) instances.push(node);
   });
   for (const instance of instances) {
-    syncInstanceNode(instance, master, componentId, true);
-    instance.name = `${component.name} instance`;
+    syncInstanceNode(instance, master, componentId, instance.componentOverrides || {}, true);
   }
   return instances.length;
 }
@@ -308,6 +369,13 @@ export function validateDocument(document) {
       if (node.autoLayout && (node.type !== 'frame' || !['horizontal', 'vertical'].includes(node.autoLayout.axis) || !Number.isFinite(Number(node.autoLayout.gap)))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);
       if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => !item || typeof item.id !== 'string' || item.action !== 'navigate' || typeof item.destinationId !== 'string'))) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
+      if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
+      if (node.componentOverrides != null) {
+        if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
+        for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
+          if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+        }
+      }
     });
   }
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');

@@ -1,6 +1,7 @@
 import {
-  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createDocument, createId, createImageRecipe, createNode,
-  duplicateNode, findNode, findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument,
+  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createComponent, createComponentInstance,
+  createDocument, createId, createImageRecipe, createNode, detachComponentInstance, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -41,6 +42,23 @@ let presentRenderState = null;
 function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
+function componentInstanceRoot(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry) return null;
+  return [...entry.parents, entry.node].reverse().find(node => node.isInstance) || null;
+}
+function recordComponentOverride(instanceRoot, node, property) {
+  if (!instanceRoot || !node.componentSourceId) return;
+  const key = property.split('.')[0];
+  if (node.id === instanceRoot.id && (key === 'x' || key === 'y')) return;
+  instanceRoot.componentOverrides ||= {};
+  instanceRoot.componentOverrides[node.componentSourceId] ||= {};
+  instanceRoot.componentOverrides[node.componentSourceId][key] = structuredClone(node[key]);
+}
+function recordNodeComponentOverrides(node, properties) {
+  const instanceRoot = componentInstanceRoot(node.id);
+  for (const property of properties) recordComponentOverride(instanceRoot, node, property);
+}
 function imageNodes(page = activePage()) {
   const nodes = [];
   if (page) walkNodes(page.children, ({ node }) => { if (node.type === 'image') nodes.push(node); });
@@ -58,6 +76,10 @@ function setSaveState(kind, text) {
 }
 function queueSave() {
   if (!state.ready) return;
+  if (syncAllComponentInstances(state.document)) {
+    renderLayers();
+    renderer?.invalidate();
+  }
   setSaveState('saving', 'Saving locally…');
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(async () => {
@@ -130,7 +152,8 @@ function renderLayers() {
       row.style.paddingLeft = `${7 + depth * 13}px`;
       const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
-      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
+      const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : '';
+      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
       list.append(row);
       if (node.children?.length) addRows(node.children, depth + 1);
     }
@@ -183,6 +206,23 @@ function constraintsSection(node) {
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="constraints.${prop}" aria-label="${prop} constraint">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   return section('Constraints', `<div class="property-grid"><span class="field-caption">Horizontal</span>${select('horizontal', constraints.horizontal, horizontalConstraints)}<span class="field-caption">Vertical</span>${select('vertical', constraints.vertical, verticalConstraints)}</div><div class="image-properties-note">Pins and scales this layer when its parent frame changes size.</div>`);
 }
+function componentSection(node) {
+  const linkedInstance = componentInstanceRoot(node.id);
+  if (linkedInstance) {
+    const component = state.document.components?.find(item => item.id === linkedInstance.componentId);
+    const label = node.id === linkedInstance.id ? 'Linked instance · local edits remain as overrides' : 'Layer inside a linked instance · local edits remain as overrides';
+    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || 'Missing component')}</strong><span>${label}</span></div><button class="add-fill" data-action="detach-component-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach instance</button>`);
+  }
+  if (node.isComponent) {
+    const component = state.document.components?.find(item => item.id === node.componentId);
+    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>Main component · changes update linked instances</span></div><button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
+  }
+  if (node.isInstance) {
+    const component = state.document.components?.find(item => item.id === node.componentId);
+    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || 'Missing component')}</strong><span>Linked instance · local edits remain as overrides</span></div><button class="add-fill" data-action="detach-component-instance">Detach instance</button>`);
+  }
+  return section('Component', '<button class="add-fill" data-action="create-component">◇ Create component</button><div class="image-properties-note">Create a reusable main component from this layer and its children.</div>');
+}
 function textSection(node) {
   const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}</div><button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button>`;
   return section('Typography', body);
@@ -228,7 +268,7 @@ function renderInspector() {
     return;
   }
   const node = entries[0].node;
-  let body = transformSection(node);
+  let body = componentSection(node) + transformSection(node);
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node);
   if (!['image', 'text', 'line', 'path'].includes(node.type)) body += appearanceSection(node);
@@ -248,6 +288,17 @@ function renderInspector() {
 
 function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
+  const components = $('#components-list'); components.replaceChildren();
+  const componentItems = state.document.components || [];
+  if (!componentItems.length) {
+    const empty = document.createElement('div'); empty.className = 'components-empty'; empty.textContent = 'Create a component from any layer.'; components.append(empty);
+  }
+  for (const component of componentItems) {
+    const card = document.createElement('button'); card.type = 'button'; card.className = 'component-card'; card.dataset.componentId = component.id; card.title = `Create an instance of ${component.name}`;
+    const mark = document.createElement('span'); mark.className = 'component-card-icon'; mark.textContent = '◇';
+    const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = component.name;
+    card.append(mark, name); components.append(card);
+  }
   const styles = $('#color-styles-list'); styles.replaceChildren();
   const colorStyles = state.document.colorStyles || [];
   if (!colorStyles.length) {
@@ -485,7 +536,27 @@ function onCanvasPointerUp(event) {
   if (!interaction) return;
   if (interaction.kind === 'pinch' && state.pointerMap.size < 2) { state.interaction = null; return; }
   if (interaction.kind === 'pan') { canvas.classList.remove('is-panning'); state.interaction = null; return; }
-  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') { state.interaction = null; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return; }
+  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') {
+    const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()] : interaction.node ? [interaction.node.id] : [];
+    if (interaction.kind === 'reorder') editedIds.push(interaction.parent?.id);
+    for (const id of editedIds.filter(Boolean)) {
+      const node = findNode(state.document, id)?.node;
+      if (!node) continue;
+      if (interaction.kind === 'reorder') {
+        const instanceRoot = componentInstanceRoot(id);
+        if (instanceRoot && node.componentSourceId) {
+          instanceRoot.componentOverrides ||= {};
+          instanceRoot.componentOverrides[node.componentSourceId] ||= {};
+          instanceRoot.componentOverrides[node.componentSourceId].__childOrder = node.children.map(child => child.componentSourceId);
+        }
+      } else recordNodeComponentOverrides(node, interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : ['x', 'y']);
+    }
+    if (interaction.kind === 'resize' && interaction.node?.type === 'frame') {
+      const instanceRoot = componentInstanceRoot(interaction.node.id);
+      if (instanceRoot) walkNodes(interaction.node.children || [], ({ node }) => recordNodeComponentOverrides(node, ['x', 'y', 'width', 'height']));
+    }
+    state.interaction = null; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return;
+  }
   if (interaction.kind === 'marquee') {
     const rect = { x: Math.min(state.marquee.x1, state.marquee.x2), y: Math.min(state.marquee.y1, state.marquee.y2), width: Math.abs(state.marquee.x2 - state.marquee.x1), height: Math.abs(state.marquee.y2 - state.marquee.y1) };
     const hits = pageLayerRows().filter(({ node, parents }) => {
@@ -556,7 +627,10 @@ function commitTextEdit() {
   const editor = $('#text-editor-overlay');
   if (!state.textNodeId) return;
   const node = findNode(state.document, state.textNodeId)?.node;
-  if (node) { node.text = editor.innerText.replace(/\n$/, ''); node.height = Math.max(36, node.text.split('\n').length * node.fontSize * node.lineHeight + 4); }
+  if (node) {
+    node.text = editor.innerText.replace(/\n$/, ''); node.height = Math.max(36, node.text.split('\n').length * node.fontSize * node.lineHeight + 4);
+    recordNodeComponentOverrides(node, ['text', 'height']);
+  }
   editor.hidden = true; state.textNodeId = null;
   renderInspector(); renderLayers(); queueSave(); renderer.invalidate();
 }
@@ -598,9 +672,12 @@ function updateInspectorInput(event) {
   const constraintSetting = prop.startsWith('constraints.');
   const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
   for (const node of selectedNodes()) {
+    const instanceRoot = componentInstanceRoot(node.id);
     const oldWidth = node.width; const oldHeight = node.height;
     if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
     else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
+    else if (prop === 'fill' && instanceRoot) { delete node.fillStyleId; node.fill = value; }
+    else if (prop === 'color' && instanceRoot) { delete node.textStyleId; node.color = value; }
     else if (prop === 'fill' && node.fillStyleId) {
       const style = state.document.colorStyles?.find(item => item.id === node.fillStyleId);
       if (style) style.value = value; else node.fill = value;
@@ -622,6 +699,7 @@ function updateInspectorInput(event) {
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, prop);
   }
   renderer.invalidate();
 }
@@ -797,7 +875,11 @@ function applyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text' : !['text', 'image', 'line', 'path'].includes(node.type));
   if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  for (const node of compatible) applyColorStyle(state.document, node.id, style.id);
+  for (const node of compatible) {
+    applyColorStyle(state.document, node.id, style.id);
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, style.kind === 'text' ? 'textStyleId' : 'fillStyleId');
+  }
   renderUI(); queueSave();
 }
 
@@ -821,6 +903,7 @@ function closeMenu() { $('#context-menu').hidden = true; }
 
 function openNodeMenu(nodeId, x, y) {
   const node = findNode(state.document, nodeId)?.node;
+  const linkedInstance = componentInstanceRoot(nodeId);
   if (!state.selectedIds.includes(nodeId)) setSelection([nodeId]);
   const images = selectedNodes().filter(item => item.type === 'image');
   const items = [
@@ -831,6 +914,9 @@ function openNodeMenu(nodeId, x, y) {
     { separator: true },
     { label: 'Delete', shortcut: '⌫', action: deleteSelected }
   ];
+  if (linkedInstance) items.splice(0, 0, { label: 'Detach component instance', action: () => detachInstance(linkedInstance.id) }, { separator: true });
+  else if (node?.isComponent) items.splice(0, 0, { label: 'Create component instance', action: () => createInstanceAt(node.componentId) }, { separator: true });
+  else if (node) items.splice(0, 0, { label: 'Create component', action: () => makeComponent(node.id) }, { separator: true });
   if (node?.type === 'image') {
     items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
   }
@@ -872,7 +958,44 @@ function duplicateSelected() {
 function renameSelected() {
   const node = selectedNodes()[0]; if (!node) return;
   const name = prompt('Rename layer', node.name); if (name == null) return;
-  checkpoint('Rename layer'); node.name = name.trim() || node.name; renderUI(); queueSave();
+  checkpoint('Rename layer'); node.name = name.trim() || node.name;
+  if (node.isComponent) {
+    const component = state.document.components?.find(item => item.id === node.componentId);
+    if (component) component.name = node.name;
+  }
+  renderUI(); queueSave();
+}
+function makeComponent(nodeId = selectedNodes()[0]?.id) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : null;
+  if (!node) { showToast('Select a layer to create a component.'); return; }
+  if (componentInstanceRoot(node.id)) { showToast('Detach this instance before creating a component.'); return; }
+  if (node.isComponent) { showToast('This layer is already a main component.'); return; }
+  const name = prompt('Component name', node.name);
+  if (name == null) return;
+  try {
+    checkpoint('Create component');
+    const component = createComponent(state.document, node.id, name);
+    renderUI(); queueSave(); showToast(`Component “${component.name}” created.`);
+  } catch (error) { showToast(error.message); }
+}
+function createInstanceAt(componentId, position = null) {
+  if (!componentId) return;
+  const x = position?.x ?? (canvas.clientWidth / 2 - state.panX) / state.zoom;
+  const y = position?.y ?? (canvas.clientHeight / 2 - state.panY) / state.zoom;
+  try {
+    checkpoint('Create component instance');
+    const instance = createComponentInstance(state.document, componentId, { pageId: activePage().id, x, y });
+    setSelection([instance.id]); renderUI(); queueSave();
+    showToast('Component instance added to this page.');
+  } catch (error) { showToast(error.message); }
+}
+function detachInstance(nodeId = selectedNodes()[0]?.id) {
+  const linkedRoot = nodeId ? componentInstanceRoot(nodeId) : null;
+  const rootId = linkedRoot?.id || nodeId;
+  if (!rootId || !findNode(state.document, rootId)?.node.isInstance) { showToast('Select a component instance to detach.'); return; }
+  checkpoint('Detach component instance');
+  detachComponentInstance(state.document, rootId);
+  renderUI(); queueSave(); showToast('Instance detached. It can now be edited independently.');
 }
 function reorderSelected(direction) {
   const ids = new Set(rootSelectedIds()); if (!ids.size) return;
@@ -1016,7 +1139,10 @@ function absoluteBoundsSafe(id) { const entry = findNode(state.document, id); if
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
-  if (action === 'prototype-start') {
+  if (action === 'create-component') makeComponent(node?.id);
+  else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
+  else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
+  else if (action === 'prototype-start') {
     const entry = node ? findNode(state.document, node.id) : null;
     const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
     if (!frame) { showToast('Select a frame to set the starting point.'); return; }
@@ -1150,6 +1276,7 @@ function initEvents() {
   $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { node.visible = true; }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
   $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
+  $('#components-list').addEventListener('click', event => { const card = event.target.closest('[data-component-id]'); if (card) createInstanceAt(card.dataset.componentId); });
   $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));
