@@ -1,6 +1,7 @@
 import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { SceneRenderer } from '../src/renderer.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
+import { createImageFill } from '../src/image-fills.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -141,17 +142,63 @@ try {
   assert(app.querySelector('#bulk-title').textContent === 'Recipe applied', 'bulk recipe did not finish successfully');
   assert(app.querySelectorAll('.layer-row').length === 3, 'bulk processing replaced the selected image layers');
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'last batch autosave');
+
+  const fillCanvas = app.querySelector('#scene-canvas');
+  const fillCanvasRect = fillCanvas.getBoundingClientRect();
+  const fillStart = { x: fillCanvasRect.left + fillCanvasRect.width * .72, y: fillCanvasRect.top + fillCanvasRect.height * .68 };
+  const fillEnd = { x: fillStart.x + 84, y: fillStart.y + 64 };
+  app.querySelector('.tool-button[data-tool="rectangle"]').click();
+  dispatchCanvasPointer(app, fillCanvas, 'pointerdown', fillStart.x, fillStart.y, 93);
+  dispatchCanvasPointer(app, fillCanvas, 'pointermove', fillEnd.x, fillEnd.y, 93);
+  dispatchCanvasPointer(app, fillCanvas, 'pointerup', fillEnd.x, fillEnd.y, 93);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 4, 'image-fill test shape');
+  const fillType = app.querySelector('[data-prop="fillType"]');
+  assert(fillType?.querySelector('option[value="image"]'), 'shape appearance did not offer image fills');
+  fillType.value = 'image';
+  fillType.dispatchEvent(new Event('input', { bubbles: true }));
+  fillType.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'image-fill source controls');
+  const fillBrightness = app.querySelector('[data-image-fill-field="adjustments.brightness"]');
+  assert(fillBrightness, 'image fills did not expose local WASM adjustments');
+  const desktopFrameSize = { width: frame.style.width, height: frame.style.height };
+  frame.style.width = '390px'; frame.style.height = '844px';
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
+  const mobileFillSource = app.querySelector('.image-fill-source');
+  const mobileFillSourceStyle = app.defaultView.getComputedStyle(mobileFillSource);
+  assert(mobileFillSourceStyle.gridTemplateColumns.startsWith('78px') && mobileFillSource.querySelector('select').getBoundingClientRect().height >= 38,
+    'image-fill Inspector controls did not fit phone width with a touch-sized source selector');
+  frame.style.width = desktopFrameSize.width; frame.style.height = desktopFrameSize.height;
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
+  fillBrightness.value = '-18';
+  fillBrightness.dispatchEvent(new Event('input', { bubbles: true }));
+  fillBrightness.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill WASM preview');
+  await waitForSaveCycle(app, 'image-fill save');
+
   const documentRecords = await readStore('documents'); documentRecords.sort((a, b) => b.savedAt - a.savedAt);
   const current = documentRecords[0]?.document;
   assert(current?.recipes.some(item => item.name === 'Local red recipe'), 'the saved recipe was not persisted with the design');
+  const imageFillNode = current.pages.flatMap(page => flattenNodes(page.children)).find(node => node.imageFill);
+  assert(imageFillNode?.imageFill.adjustments.brightness === -18, 'the image fill and its edit recipe were not saved with the layer');
   const assetRecords = await readStore('assets');
+  assert(assetRecords.some(asset => asset.id === imageFillNode.imageFill.assetId), 'the portable package did not retain the image-fill source bytes');
   const packaged = buildPackage(current, assetRecords);
   const openInput = app.querySelector('#open-file-input'); const fileTransfer = new DataTransfer();
   fileTransfer.items.add(new File([packaged], 'local-design-roundtrip.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(openInput, 'files', { configurable: true, value: fileTransfer.files });
   openInput.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'portable design import');
-  await waitFor(() => app.querySelectorAll('.layer-row').length === 3 && app.querySelectorAll('#assets-list .asset-card').length === 3, 'portable image-layer restore');
+  await waitFor(() => app.querySelectorAll('.layer-row').length === 4 && app.querySelectorAll('#assets-list .asset-card').length === 3, 'portable image-layer restore');
+  const restoredFillRow = app.querySelector(`[data-layer-id="${imageFillNode.id}"]`);
+  assert(restoredFillRow, 'the portable design did not restore its image-filled layer');
+  dispatchClick(restoredFillRow);
+  await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'reopened image-fill controls');
+  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'reopened image-fill preview');
+  dispatchContextMenu(app.querySelector(`[data-layer-id="${imageFillNode.id}"]`));
+  const deleteFillItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.trim().startsWith('Delete'));
+  assert(deleteFillItem, 'the restored image-fill layer could not be selected for cleanup');
+  dispatchClick(deleteFillItem);
+  await waitFor(() => app.querySelectorAll('.layer-row').length === 3, 'image-fill fixture cleanup');
 
   const designCanvas = app.querySelector('#scene-canvas');
   const canvasRect = designCanvas.getBoundingClientRect();
@@ -840,7 +887,30 @@ try {
   const radialEdge = [...effectContext.getImageData(9, 18, 1, 1).data];
   assert(radialCenter[0] > radialCenter[2] && radialEdge[2] > radialEdge[0], `radial gradient should radiate from the center (${radialCenter.join(',')} / ${radialEdge.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  const fillBitmap = await createImageBitmap(new Blob([source], { type: 'image/bmp' }));
+  const fillAssetId = 'asset-image-fill-test';
+  const imageFillDocument = createDocument();
+  const imageFilledEllipse = createNode('ellipse', { x: 8, y: 8, width: 32, height: 24, fill: '#d9d9d9', imageFill: createImageFill(fillAssetId) });
+  addNode(imageFillDocument, imageFilledEllipse);
+  const imageFillAssets = new Map([[fillAssetId, { bitmap: fillBitmap }]]);
+  effectRenderer.getState = () => ({ document: imageFillDocument, assets: imageFillAssets, previews: new Map(), zoom: 1, outlineMode: false, presenting: false });
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, imageFilledEllipse, 0, 0, imageFillAssets);
+  const imageFillLeft = [...effectContext.getImageData(12, 20, 1, 1).data];
+  const imageFillRight = [...effectContext.getImageData(36, 20, 1, 1).data];
+  const imageFillCorner = [...effectContext.getImageData(8, 8, 1, 1).data];
+  assert(imageFillLeft[0] > imageFillLeft[2] && imageFillRight[2] > imageFillRight[0], `image fill did not map source pixels into the vector shape (${imageFillLeft.join(',')} / ${imageFillRight.join(',')})`);
+  assert(imageFillCorner[3] === 0, 'image fill escaped the ellipse path');
+  const containedFill = createNode('rectangle', { x: 4, y: 4, width: 40, height: 40, imageFill: createImageFill(fillAssetId, { fit: 'contain' }) });
+  imageFillDocument.pages[0].children = [containedFill];
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, containedFill, 0, 0, imageFillAssets);
+  const containBar = effectContext.getImageData(24, 6, 1, 1).data[3];
+  const containImage = effectContext.getImageData(24, 24, 1, 1).data[3];
+  assert(containBar === 0 && containImage > 0, `contain mode did not preserve transparent letterbox space (${containBar} / ${containImage})`);
+  fillBitmap.close?.();
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

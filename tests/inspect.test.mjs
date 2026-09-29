@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, bindColorVariable, createDocument, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, findNode } from '../src/model.js';
+import { createImageFill } from '../src/image-fills.js';
 import { buildInspectOutput } from '../src/inspect.js';
 
 test('Inspect output reports page-space geometry, resolved styles, text metrics and exact layer JSON', () => {
@@ -98,4 +99,15 @@ test('Inspect output includes editable gradient fills in CSS and structured laye
   const output = buildInspectOutput(document, [findNode(document, shape.id)]);
   assert.match(output.css, /background: linear-gradient\(135deg, rgba\(255, 0, 0, 0\.5\) 0%, rgba\(0, 0, 255, 0\.5\) 100%\);/);
   assert.deepEqual(output.layers[0].fillGradient, gradient);
+});
+
+test('Inspect output preserves image-fill source and edit settings in layer data', () => {
+  const document = createDocument();
+  const imageFill = createImageFill('local-image-a', { fit: 'contain', adjustments: { brightness: -10, contrast: 8, saturation: 4, blur: 1 } });
+  const node = createNode('ellipse', { imageFill });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.deepEqual(output.layers[0].imageFill, imageFill);
+  assert.match(output.css, /Local image fill source and adjustments are retained in layer JSON/);
+  assert.doesNotMatch(output.css, /background-color:/);
 });

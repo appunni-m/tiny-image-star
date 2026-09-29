@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, absoluteBounds, applyImageRecipe, createDocument, createImageRecipe, createNode, duplicateNode, findNode, parseDocument, removeNode, serializeDocument, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
+import { createImageFill } from '../src/image-fills.js';
 
 test('new file has an active page and a valid empty layer tree', () => {
   const document = createDocument();
@@ -53,6 +54,24 @@ test('serialized design validates after reload and rejects duplicate layer ident
   const duplicate = createNode('rectangle');
   reopened.pages[0].children.push(duplicate, structuredClone(duplicate));
   assert.throws(() => validateDocument(reopened), /duplicate layer/);
+});
+
+test('image fills validate and survive a portable design round trip', () => {
+  const document = createDocument();
+  const fill = createImageFill('asset-local-photo', { fit: 'contain', adjustments: { brightness: -18, contrast: 12, saturation: 8, blur: 2 } });
+  const rectangle = createNode('rectangle', { imageFill: fill });
+  addNode(document, rectangle);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reopened), true);
+  assert.deepEqual(reopened.pages[0].children[0].imageFill, fill);
+
+  reopened.pages[0].children[0].imageFill.fit = 'stretch';
+  assert.throws(() => validateDocument(reopened), /Invalid image fill/);
+  reopened.pages[0].children[0].imageFill = fill;
+  reopened.pages[0].children[0].imageFill.adjustments.blur = 25;
+  assert.throws(() => validateDocument(reopened), /Invalid image fill/);
+  reopened.pages[0].children[0] = createNode('text', { imageFill: fill });
+  assert.throws(() => validateDocument(reopened), /Image fill is not supported/);
 });
 
 test('history restores both document direction and redo state', () => {

@@ -16,6 +16,24 @@ function rgba(hex, alpha = 1) {
   return `rgba(${number >> 16}, ${(number >> 8) & 255}, ${number & 255}, ${alpha})`;
 }
 
+function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
+  if (!image || width <= 0 || height <= 0 || !image.width || !image.height) return false;
+  const scale = fit === 'contain'
+    ? Math.min(width / image.width, height / image.height)
+    : Math.max(width / image.width, height / image.height);
+  const drawWidth = image.width * scale;
+  const drawHeight = image.height * scale;
+  ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
+  return true;
+}
+
+function imageForNode(node, assets, state, assetId = node.assetId) {
+  const cachedAssetId = state.previewAssetIds?.get(node.id);
+  const preview = state.previews?.get(node.id);
+  if (preview && (cachedAssetId == null || cachedAssetId === assetId)) return preview;
+  return assets.get(assetId)?.bitmap ?? null;
+}
+
 function roundedRect(ctx, x, y, width, height, radius) {
   const r = Math.min(Math.max(0, radius), Math.abs(width) / 2, Math.abs(height) / 2);
   if (!r) { ctx.rect(x, y, width, height); return; }
@@ -306,15 +324,11 @@ export class SceneRenderer {
 
     if (node.type === 'image') {
       const asset = assets.get(node.assetId);
-      const image = this.getState().previews.get(node.id) ?? asset?.bitmap;
+      const image = imageForNode(node, assets, this.getState());
       if (image) {
         ctx.save();
         ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
-        if (node.fit === 'contain') {
-          const ratio = Math.min(width / image.width, height / image.height);
-          const drawWidth = image.width * ratio; const drawHeight = image.height * ratio;
-          ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
-        } else ctx.drawImage(image, x, y, width, height);
+        drawFittedImage(ctx, image, x, y, width, height, node.fit);
         ctx.restore();
       } else {
         ctx.fillStyle = '#d9d9d9'; ctx.fill();
@@ -340,25 +354,31 @@ export class SceneRenderer {
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'network') {
       const fill = getNodeColor(document, node, 'fill');
+      const fillImage = node.imageFill ? imageForNode(node, assets, this.getState(), node.imageFill.assetId) : null;
       for (const face of node.faces || []) {
         const faceFill = face.fill ?? fill;
-        if ((!faceFill || faceFill === 'transparent') && !node.fillGradient) continue;
+        if ((!faceFill || faceFill === 'transparent') && !node.fillGradient && !node.imageFill) continue;
         ctx.beginPath();
         if (traceVectorNetworkFace(ctx, node, face, x, y)) {
           const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
           ctx.save();
           ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
-          ctx.fillStyle = gradient || rgba(faceFill || fill || '#000000', 1);
-          ctx.fill();
+          if (node.imageFill && fillImage) { ctx.clip(); drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit); }
+          else { ctx.fillStyle = gradient || rgba(faceFill || fill || '#000000', 1); ctx.fill(); }
           ctx.restore();
         }
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
-      if ((fill && fill !== 'transparent' || node.fillGradient) && node.type !== 'line' && (node.type !== 'path' || node.closed)) {
-        const gradient = createGradientPaint(ctx, node.fillGradient, x, y, width, height);
-        if (gradient) {
+      if ((fill && fill !== 'transparent' || node.fillGradient || node.imageFill) && node.type !== 'line' && (node.type !== 'path' || node.closed)) {
+        const fillImage = node.imageFill ? imageForNode(node, assets, this.getState(), node.imageFill.assetId) : null;
+        const gradient = node.imageFill ? null : createGradientPaint(ctx, node.fillGradient, x, y, width, height);
+        if (node.imageFill && fillImage) {
+          ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.clip();
+          drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit);
+          ctx.restore();
+        } else if (gradient) {
           ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.fillStyle = gradient; ctx.fill(); ctx.restore();
         } else { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
       }
@@ -534,7 +554,7 @@ export class SceneRenderer {
     const scale = Math.min(deviceScale, Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
     const width = Math.max(1, Math.ceil(node.width * scale));
     const height = Math.max(1, Math.ceil(node.height * scale));
-    const key = `${JSON.stringify(node)}|${fill}|${width}x${height}`;
+    const key = `${JSON.stringify(node)}|${fill}|${state.previewVersions?.get(node.id) || 0}|${width}x${height}`;
     let entry = this.booleanCache.get(key);
     if (entry) {
       this.booleanCache.delete(key);
@@ -563,8 +583,12 @@ export class SceneRenderer {
       }
       mask.save();
       mask.globalCompositeOperation = 'source-in';
-      mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
-      mask.fillRect(0, 0, node.width, node.height);
+      const fillImage = !maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
+      if (fillImage) drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
+      else {
+        mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
+        mask.fillRect(0, 0, node.width, node.height);
+      }
       mask.restore();
       entry = { surface, pixels: width * height };
       this.booleanCache.set(key, entry);

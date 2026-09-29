@@ -5,6 +5,7 @@ import {
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
 } from './model.js';
+import { createImageFill } from './image-fills.js';
 import { History } from './history.js';
 import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
 import { calculateTextBox } from './text-layout.js';
@@ -29,7 +30,7 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
-  assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
+  assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
   bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
@@ -244,6 +245,24 @@ function gradientFillControls(node) {
   const angle = gradient.type === 'linear' ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle" value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
   return `${angle}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Drag stop positions by changing percentages. Gradients stay editable in the design.</div>`;
 }
+function imageFillSources() {
+  const sources = new Map();
+  for (const reference of imageAssetReferencesAcrossPages()) {
+    if (sources.has(reference.assetId)) continue;
+    const asset = state.assets.get(reference.assetId);
+    sources.set(reference.assetId, { assetId: reference.assetId, name: asset?.name || reference.name || 'Image' });
+  }
+  return [...sources.values()];
+}
+function imageFillControls(node) {
+  const imageFill = node.imageFill;
+  if (!imageFill) return '';
+  const sources = imageFillSources();
+  const options = sources.map(source => `<option value="${escapeHtml(source.assetId)}"${imageFill.assetId === source.assetId ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('');
+  const adjustments = imageFill.adjustments;
+  const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}" aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
+}
 function transformSection(node) {
   const opacity = getNodePropertyValue(state.document, node, 'opacity');
   const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
@@ -251,17 +270,20 @@ function transformSection(node) {
 }
 function appearanceSection(node) {
   const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
-  const fillType = node.fillGradient?.type || 'solid';
-  const fillTypeControl = hasFill ? `<label class="fill-type-row"><span>Fill type</span><select class="select-field" data-prop="fillType" aria-label="Fill type"><option value="solid"${fillType === 'solid' ? ' selected' : ''}>Solid</option><option value="linear"${fillType === 'linear' ? ' selected' : ''}>Linear gradient</option><option value="radial"${fillType === 'radial' ? ' selected' : ''}>Radial gradient</option></select></label>` : '';
-  const fill = hasFill && !node.fillGradient ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
-  const fillVariable = hasFill && !node.fillGradient ? variableBindingControl(node, 'fill') : '';
+  const fillType = node.imageFill ? 'image' : node.fillGradient?.type || 'solid';
+  const sources = imageFillSources();
+  const imageOption = sources.length || node.imageFill ? `<option value="image"${fillType === 'image' ? ' selected' : ''}>Image</option>` : '<option value="image" disabled>Image · place an image first</option>';
+  const fillTypeControl = hasFill ? `<label class="fill-type-row"><span>Fill type</span><select class="select-field" data-prop="fillType" aria-label="Fill type"${node.locked ? ' disabled' : ''}><option value="solid"${fillType === 'solid' ? ' selected' : ''}>Solid</option><option value="linear"${fillType === 'linear' ? ' selected' : ''}>Linear gradient</option><option value="radial"${fillType === 'radial' ? ' selected' : ''}>Radial gradient</option>${imageOption}</select></label>` : '';
+  const fill = hasFill && !node.fillGradient && !node.imageFill ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
+  const fillVariable = hasFill && !node.fillGradient && !node.imageFill ? variableBindingControl(node, 'fill') : '';
   const gradient = gradientFillControls(node);
-  const gradientOpacity = hasFill && node.fillGradient ? `<div class="property-grid">${numberField('Opacity %', 'fillOpacity', Math.round((node.fillOpacity ?? 1) * 100), 1, 0, 100)}</div>` : '';
+  const image = imageFillControls(node);
+  const gradientOpacity = hasFill && (node.fillGradient || node.imageFill) ? `<div class="property-grid">${numberField('Opacity %', 'fillOpacity', Math.round((node.fillOpacity ?? 1) * 100), 1, 0, 100)}</div>` : '';
   const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>` : '';
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
-  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.fillGradient ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
-  const body = `${fillTypeControl}${fill}${fillVariable}${gradient}${gradientOpacity}${stroke}${styleActions}${radius}`;
+  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) || node.fillGradient || node.imageFill ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button></div>`;
+  const body = `${fillTypeControl}${fill}${fillVariable}${gradient}${image}${gradientOpacity}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -604,7 +626,7 @@ function renderInspector() {
   } else if (node.type === 'network') {
     const selectedVertex = state.selectedVectorPoint?.nodeId === node.id && state.selectedVectorPoint.vertexId;
     body += section('Vector network', `<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point, then use Pen to branch from it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
-    if (node.faces.length) body += section('Region fills', networkFaceControls(node));
+    if (node.faces.length && !node.imageFill) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
@@ -1431,6 +1453,27 @@ function updateLayerEffectInput(input) {
   renderer.invalidate();
 }
 
+function updateImageFillInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  if (!node?.imageFill || node.locked) return;
+  if (!state.controlEdit) { checkpoint('Edit image fill'); state.controlEdit = true; }
+  const field = input.dataset.imageFillField;
+  if (field === 'assetId') {
+    if (!imageFillSources().some(source => source.assetId === input.value)) return;
+    node.imageFill.assetId = input.value;
+    schedulePreview(node, true);
+  } else if (field === 'fit') node.imageFill.fit = input.value;
+  else if (field.startsWith('adjustments.')) {
+    const key = field.slice('adjustments.'.length);
+    if (!Object.hasOwn(node.imageFill.adjustments, key)) return;
+    node.imageFill.adjustments[key] = Number(input.value);
+    if (input.nextElementSibling) input.nextElementSibling.value = input.value;
+    schedulePreview(node);
+  } else return;
+  recordNodeComponentOverrides(node, ['imageFill']);
+  renderer.invalidate();
+}
+
 function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
   if (!input || !selectedNodes().length) return;
@@ -1452,10 +1495,19 @@ function updateInspectorInput(event) {
     const boundVariableId = node.variableBindings?.[prop];
     if (prop === 'fillType') {
       if (value === 'solid') {
-        if (instanceRoot) node.fillGradient = null;
-        else delete node.fillGradient;
+        if (instanceRoot) { node.fillGradient = null; node.imageFill = null; }
+        else { delete node.fillGradient; delete node.imageFill; }
+      } else if (value === 'image') {
+        const source = imageFillSources()[0];
+        if (!source) { showToast('Place an image on the canvas before using it as a fill.'); input.value = node.fillGradient?.type || 'solid'; return; }
+        node.imageFill = createImageFill(source.assetId);
+        if (instanceRoot) node.fillGradient = null; else delete node.fillGradient;
+        if (instanceRoot) { node.fillVariableId = null; node.fillStyleId = null; }
+        else { delete node.fillVariableId; delete node.fillStyleId; }
+        schedulePreview(node, true);
       } else {
         const baseColor = getNodeColor(state.document, node, 'fill');
+        if (instanceRoot) node.imageFill = null; else delete node.imageFill;
         if (!node.fillGradient) node.fillGradient = createGradientFill(value, /^#[0-9a-f]{6}$/i.test(baseColor || '') ? baseColor : '#d9d9d9');
         else node.fillGradient.type = value;
         if (instanceRoot) { node.fillVariableId = null; node.fillStyleId = null; }
@@ -1522,6 +1574,7 @@ function updateInspectorInput(event) {
         recordComponentOverride(instanceRoot, node, 'fillVariableId');
         recordComponentOverride(instanceRoot, node, 'fillStyleId');
       }
+      if (prop === 'fillType') recordComponentOverride(instanceRoot, node, 'imageFill');
       if (node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
       if (node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
       if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
@@ -1553,11 +1606,13 @@ function schedulePreview(node, immediate = false) {
   const previous = previewTimers.get(node.id);
   if (previous) clearTimeout(previous);
   state.imageStatus.set(node.id, 'Updating preview…');
-  const run = () => renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
+  const assetId = node.imageFill?.assetId || node.assetId;
+  const adjustments = node.imageFill?.adjustments || node.adjustments;
+  const run = () => renderImagePreview(node.id, assetId, adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
   const timer = setTimeout(run, immediate ? 0 : 110);
   previewTimers.set(node.id, timer);
   if (state.selectedIds.includes(node.id)) {
-    const status = $('#image-engine-status'); if (status) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
+    for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
   }
 }
 async function renderImagePreview(nodeId, assetId, adjustments) {
@@ -1573,9 +1628,11 @@ async function renderImagePreview(nodeId, assetId, adjustments) {
   const previousUrl = state.previewUrls.get(nodeId); if (previousUrl) URL.revokeObjectURL(previousUrl);
   state.previewUrls.set(nodeId, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
   state.previews.set(nodeId, bitmap);
+  state.previewAssetIds.set(nodeId, assetId);
+  state.previewVersions.set(nodeId, (state.previewVersions.get(nodeId) || 0) + 1);
   state.imageStatus.set(nodeId, 'Updated · Pillow-RS WASM');
   renderer.invalidate(); renderAssetsTab();
-  if (state.selectedIds.includes(nodeId)) { const status = $('#image-engine-status'); if (status) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); } }
+  if (state.selectedIds.includes(nodeId)) for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); }
   return true;
 }
 
@@ -1620,18 +1677,19 @@ async function importImageFiles(files, point = null) {
 }
 
 async function restoreImageAssets() {
-  const nodes = imageNodesAcrossPages();
-  for (const node of nodes) {
+  const references = imageAssetReferencesAcrossPages();
+  for (const reference of references) {
+    const { node, assetId, name, adjustments } = reference;
     try {
-      const existing = state.assets.get(node.assetId);
-      if (existing) { renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => showToast(error.message)); continue; }
-      const saved = await loadImageAsset(node.assetId);
+      const existing = state.assets.get(assetId);
+      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments).catch(error => showToast(error.message)); continue; }
+      const saved = await loadImageAsset(assetId);
       if (!saved) { state.imageStatus.set(node.id, 'Original image missing'); continue; }
       const sourceBytes = new Uint8Array(saved.bytes);
       const bitmap = await createImageBitmap(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
-      state.assets.set(node.assetId, { id: node.assetId, name: saved.name || node.name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
+      state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
       state.imageStatus.set(node.id, 'Restoring local preview…');
-      renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
+      renderImagePreview(node.id, assetId, adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
     } catch (error) { state.imageStatus.set(node.id, 'Could not restore image'); showToast(error.message); }
   }
   renderAssetsTab();
@@ -2342,9 +2400,9 @@ function backPresentation() {
 async function exportDesign() {
   try {
     const assets = [];
-    for (const node of imageNodesAcrossPages()) {
-      if (assets.some(asset => asset.id === node.assetId)) continue;
-      const saved = await loadImageAsset(node.assetId);
+    for (const reference of imageAssetReferencesAcrossPages()) {
+      if (assets.some(asset => asset.id === reference.assetId)) continue;
+      const saved = await loadImageAsset(reference.assetId);
       if (saved) assets.push({ id: saved.id, name: saved.name, type: saved.type, bytes: saved.bytes });
     }
     await downloadLocalPackage(JSON.parse(serializeDocument(state.document)), assets);
@@ -2352,6 +2410,14 @@ async function exportDesign() {
   } catch (error) { showToast(error.message || 'Could not export this local design.'); }
 }
 function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
+function imageAssetReferencesAcrossPages() {
+  const result = [];
+  for (const page of state.document.pages) walkNodes(page.children, ({ node }) => {
+    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments });
+    if (node.imageFill?.assetId) result.push({ node, assetId: node.imageFill.assetId, name: node.name, adjustments: node.imageFill.adjustments });
+  });
+  return result;
+}
 
 function exportBoundsForNode(nodeId) {
   const entry = findNode(state.document, nodeId);
@@ -2762,6 +2828,8 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    const imageFillField = event.target.closest('[data-image-fill-field]');
+    if (imageFillField) { updateImageFillInput(imageFillField); return; }
     const gradientField = event.target.closest('[data-gradient-field]');
     if (gradientField) { updateGradientInput(gradientField); return; }
     const effectField = event.target.closest('[data-effect-field]');
@@ -2784,6 +2852,7 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-network-face-fill], [data-network-face-opacity]')) { finishInspectorInput(); return; }

@@ -117,7 +117,8 @@ function cssForEntry(document, entry) {
     const fill = getNodeColor(document, node, 'fill');
     const background = cssColor(fill, node.fillOpacity ?? 1);
     const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1);
-    if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background: ${gradientBackground};`);
+    if (node.imageFill && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push('/* Local image fill source and adjustments are retained in layer JSON. */');
+    else if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background: ${gradientBackground};`);
     else if (background && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background-color: ${background};`);
     if (node.type === 'line') {
       const stroke = cssColor(getNodeColor(document, node, 'stroke'));
@@ -154,6 +155,7 @@ function summaryForEntry(document, entry) {
   };
   if (fill) summary.color = fill;
   if (node.fillGradient) summary.fillGradient = node.fillGradient;
+  if (node.imageFill) summary.imageFill = node.imageFill;
   if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = { color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth };
   if (node.type === 'text') {
     summary.text = getNodePropertyValue(document, node, 'text');
