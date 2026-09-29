@@ -93,6 +93,8 @@ canvas, selection tools, and contextual inspector. It edits image, text, shape,
 and nested frame layers in a local project with undo/redo and browser recovery.
 Single- and multi-selection geometry is edited in page pixels; group changes
 preserve relative placement and are one previewable, undoable history entry.
+Focused canvas selections move with arrow keys in one-pixel increments or
+ten-pixel increments with Shift, with each nudge recorded in local history.
 Image layers now support on-canvas source cropping: users can create, move, and
 resize a normalized crop window over the retained original, then undo, redo, or
 reset it while the same page layer is re-rendered through Pillow-RS WASM.
@@ -149,7 +151,7 @@ open; do not describe the project as a production-ready Figma copy.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | Pixel-based geometry and opacity can be edited across a selection; legacy image, batch, and story workspaces are not one shared editor. |
+| Pages, layer tree, selection, canvas pan/zoom, inspector | Partial | Pixel-based geometry and opacity can be edited across a selection; canvas keyboard controls include undo/redo, delete, select-all, zoom, and 1/10-pixel nudging. Legacy image, batch, and story workspaces are not one shared editor. |
 | Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
 | Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gaps, space-between/around/evenly distribution, per-axis Fixed/Fill/Hug, Grid auto rows, fixed-pixel/Fractional Fill/content Hug tracks, cell placement, row/column spans, per-child horizontal/vertical alignment overrides, inspector track add/reorder/delete, direct touch/mouse canvas track resizing and drag-to-reorder, and absolute children that leave flow while keeping their output geometry and saved grid cell work. Min/max, aspect-ratio, and advanced wrap alignment remain pending. |

@@ -1656,6 +1656,24 @@ export function attachDesignWorkspace() {
     catch (error) { setStatus(error.message); }
   }
 
+  function nudgeSelectionBy(dx, dy) {
+    const size = pageSize();
+    if (!history || !size) return;
+    const commands = [];
+    for (const id of topLevelSelection()) {
+      const world = worldLayer(id);
+      if (!world?.frame || world.visible === false || world.locked || world.layoutManaged) continue;
+      const stored = storeWorldGeometry(id, { ...world, frame: { ...world.frame,
+        x: world.frame.x + dx / size.width, y: world.frame.y + dy / size.height } });
+      if (stored) commands.push({ type: "node", id, value: stored });
+    }
+    if (!commands.length) { setStatus("Auto Layout controls the selected layers' position, or the selection is locked."); return; }
+    try {
+      history.apply({ type: "group", commands }, "Nudge layers");
+      edited(`Moved selection ${dx}px horizontally and ${dy}px vertically.`);
+    } catch (error) { setStatus(error.message); }
+  }
+
   async function importImages(files) {
     if (importing || !files.length) return;
     const incoming = [...files], pendingBytes = incoming.reduce((sum, file) => sum + file.size, 0);
@@ -1825,6 +1843,13 @@ export function attachDesignWorkspace() {
     else if ((event.metaKey || event.ctrlKey) && (event.key === "+" || event.key === "=")) { event.preventDefault(); setCanvasZoom(zoom * 1.25); }
     else if ((event.metaKey || event.ctrlKey) && event.key === "-") { event.preventDefault(); setCanvasZoom(zoom / 1.25); }
     else if (event.key === "0") { event.preventDefault(); fitCanvas(); }
+    else if (!event.metaKey && !event.ctrlKey && !event.altKey && !vectorEditId
+      && ({ ArrowLeft: true, ArrowRight: true, ArrowUp: true, ArrowDown: true })[event.key]) {
+      event.preventDefault();
+      const amount = event.shiftKey ? 10 : 1;
+      nudgeSelectionBy(event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0,
+        event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0);
+    }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") { event.preventDefault(); selection = { ids: currentPage()?.nodeIds.filter((id) => layer(id)?.visible !== false) ?? [], anchorId: currentPage()?.nodeIds[0] ?? null }; selectionChanged(); }
     else if (["Delete", "Backspace"].includes(event.key) && vectorEditId && vectorPointSelection != null) { event.preventDefault(); removeSelectedVectorPoint(); }
     else if (["Delete", "Backspace"].includes(event.key)) { event.preventDefault(); deleteSelected(); }

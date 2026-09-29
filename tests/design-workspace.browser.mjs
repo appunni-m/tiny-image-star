@@ -50,6 +50,32 @@ export async function assertDesignWorkspace(browser, address) {
     const selectedId = initial.pages[0].nodeIds.at(-1), sourceId = initial.nodes[selectedId].assetId;
     assert.equal(initial.retainedSourceBytes, image.byteLength * 2, "original encoded sources stay retained in the workspace");
 
+    const initialFrame = initial.resolvedFrames[selectedId].frame, initialX = initialFrame.x, initialY = initialFrame.y;
+    await page.locator("#design-canvas").press("ArrowRight");
+    await page.waitForFunction(({ id, start }) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.x > start,
+      { id: selectedId, start: initialX }, { timeout: 5000 });
+    const nudgedRight = await page.evaluate((ids) => {
+      const snapshot = window.tinyImageStarDesign.getSnapshot();
+      return Object.fromEntries(ids.map((id) => [id, snapshot.resolvedFrames[id].frame.x]));
+    }, initial.selection);
+    for (const id of initial.selection) {
+      assert.ok(Math.abs(nudgedRight[id] - initial.resolvedFrames[id].frame.x - 1 / initial.variant.width) < 1e-8,
+        "Arrow moves every selected image by one page pixel");
+    }
+    await page.keyboard.press("Shift+ArrowDown");
+    await page.waitForFunction(({ id, start }) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.y > start,
+      { id: selectedId, start: initialY }, { timeout: 5000 });
+    assert.ok(Math.abs((await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.y, selectedId))
+      - initialY - 10 / initial.variant.height) < 1e-8, "Shift+Arrow moves the selected images by ten page pixels");
+    await page.keyboard.press("Control+z");
+    await page.waitForFunction(({ id, start }) => Math.abs(window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.y - start) < 1e-9,
+      { id: selectedId, start: initialY }, { timeout: 5000 });
+    assert.ok(Math.abs((await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.x, selectedId))
+      - initialX - 1 / initial.variant.width) < 1e-8, "undo first restores only the preceding nudge");
+    await page.keyboard.press("Control+z");
+    await page.waitForFunction(({ id, start }) => Math.abs(window.tinyImageStarDesign.getSnapshot().resolvedFrames[id].frame.x - start) < 1e-9,
+      { id: selectedId, start: initialX }, { timeout: 5000 });
+
     await page.locator("#design-layer-list .design-layer-select").first().click();
     await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().selection.length === 1);
     const before = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
