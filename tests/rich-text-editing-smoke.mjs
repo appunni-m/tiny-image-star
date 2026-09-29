@@ -147,7 +147,8 @@ try {
   editor.dispatchEvent(new app.defaultView.InputEvent('input', { bubbles: true, inputType: 'insertText', data: originalText }));
   await waitFor(() => app.querySelector('#text-format-toolbar')?.hidden === false, 'rich text toolbar');
   let toolbar = app.querySelector('#text-format-toolbar');
-  const actions = [...toolbar.querySelectorAll('.text-format-button, #text-format-size, #text-format-color, .text-format-done')];
+  const controls = '.text-format-button, #text-format-family, #text-format-weight, #text-format-size, #text-format-spacing, #text-format-decoration, #text-format-color, .text-format-done';
+  const actions = [...toolbar.querySelectorAll(controls)];
   for (const control of actions) assertTouchReachable(app, control, control.getAttribute('aria-label') || control.textContent.trim() || control.id);
 
   const editorRange = (needle, offset = 0) => {
@@ -157,6 +158,14 @@ try {
   };
   editorRange('images');
   tap(app, toolbar.querySelector('[data-text-format="bold"]'));
+  editorRange('images');
+  const fontWeight = toolbar.querySelector('#text-format-weight'); fontWeight.value = '800'; fontWeight.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  editorRange('images');
+  const decoration = toolbar.querySelector('#text-format-decoration'); decoration.value = 'underline'; decoration.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  editorRange('images');
+  const fontFamily = toolbar.querySelector('#text-format-family'); fontFamily.value = 'Georgia, serif'; fontFamily.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  editorRange('images');
+  const letterSpacing = toolbar.querySelector('#text-format-spacing'); letterSpacing.value = '1.2'; letterSpacing.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   editorRange('feel');
   tap(app, toolbar.querySelector('[data-text-format="italic"]'));
   editorRange('yours');
@@ -164,7 +173,7 @@ try {
   editorRange('yours');
   const color = toolbar.querySelector('#text-format-color'); color.value = '#f0123c'; color.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   const editSpans = [...editor.querySelectorAll('[data-text-run="true"]')];
-  assert(editSpans.some(span => span.textContent === 'images' && span.getAttribute('data-run-font-weight') === '700'), 'the editor did not wrap the selected word in bold formatting.');
+  assert(editSpans.some(span => span.textContent === 'images' && span.getAttribute('data-run-font-weight') === '800' && span.dataset.runTextDecoration === 'underline' && span.dataset.runFontFamily === 'Georgia, serif' && span.dataset.runLetterSpacing === '1.2'), 'the editor did not apply the selected word weight, decoration, family, and spacing.');
   assert(editSpans.some(span => span.textContent === 'feel' && span.getAttribute('data-run-font-style') === 'italic'), 'the editor did not wrap the selected word in italic formatting.');
   assert(editSpans.some(span => span.textContent === 'yours' && span.getAttribute('data-run-font-size') === '36' && span.getAttribute('data-run-color') === '#f0123c'),
     'font size and color were not applied to the same selected range.');
@@ -176,7 +185,7 @@ try {
   const boldRun = richNode.textRuns.find(run => run.text === 'images');
   const italicRun = richNode.textRuns.find(run => run.text === 'feel');
   const coloredRun = richNode.textRuns.find(run => run.text === 'yours');
-  assert(boldRun?.fontWeight === 700 && italicRun?.fontStyle === 'italic', 'saved bold/italic styles did not match the selection.');
+  assert(boldRun?.fontWeight === 800 && boldRun.textDecoration === 'underline' && boldRun.fontFamily === 'Georgia, serif' && boldRun.letterSpacing === 1.2 && italicRun?.fontStyle === 'italic', 'saved weight, decoration, family, spacing, or italic styles did not match the selection.');
   assert(coloredRun?.fontSize === 36 && coloredRun?.color === '#f0123c', 'saved range size/color did not match the selected text.');
 
   const beforeFirstReload = app;
@@ -188,7 +197,7 @@ try {
   assert(app.querySelector('#document-name').value === smokeDocumentName, 'reload opened a different local document during the rich text smoke.');
   const reloaded = await documentById(app, smokeDocumentId);
   richNode = textNode(reloaded, originalText);
-  assert(richNode?.textRuns?.some(run => run.fontWeight === 700 && run.text === 'images'), 'reload lost the bold range.');
+  assert(richNode?.textRuns?.some(run => run.fontWeight === 800 && run.textDecoration === 'underline' && run.fontFamily === 'Georgia, serif' && run.letterSpacing === 1.2 && run.text === 'images'), 'reload lost the formatted range.');
   assert(richNode?.textRuns?.some(run => run.fontStyle === 'italic' && run.text === 'feel'), 'reload lost the italic range.');
   assert(richNode?.textRuns?.some(run => run.fontSize === 36 && run.color === '#f0123c' && run.text === 'yours'), 'reload lost the size/color range.');
 
@@ -201,13 +210,14 @@ try {
   await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'reopened rich text editor');
   editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
   assert(editor.textContent === originalText, 'reopened text did not match the saved content.');
-  assert(editor.querySelector('[data-run-font-weight="700"]')?.textContent === 'images', 'reopening the editor did not render saved bold spans.');
+  const reopenedFormatted = editor.querySelector('[data-run-font-weight="800"][data-run-text-decoration="underline"][data-run-font-family="Georgia, serif"][data-run-letter-spacing="1.2"]');
+  assert(reopenedFormatted?.textContent === 'images', 'reopening the editor did not render saved weight, decoration, family, and spacing spans.');
   assert(editor.querySelector('[data-run-font-style="italic"]')?.textContent === 'feel', 'reopening the editor did not render saved italic spans.');
   const reopenedColor = editor.querySelector('[data-run-color="#f0123c"]');
   assert(reopenedColor?.dataset.runFontSize === '36' && reopenedColor.textContent === 'yours', 'reopening did not render saved color and size together.');
   const actualSize = Number.parseFloat(getComputedStyle(reopenedColor).fontSize);
   assert(Math.abs(actualSize - 36) <= 1, `run font size rendered at ${actualSize}px instead of the 36px model size at 100% zoom.`);
-  for (const control of [...toolbar.querySelectorAll('.text-format-button, #text-format-size, #text-format-color, .text-format-done')]) {
+  for (const control of [...toolbar.querySelectorAll(controls)]) {
     assertTouchReachable(app, control, control.getAttribute('aria-label') || control.textContent.trim() || control.id);
   }
 
@@ -242,11 +252,11 @@ try {
   await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'reopened appended rich text editor');
   editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
   assert(editor.textContent === `${originalText}!`, 'reload lost the appended character or changed the run text.');
-  assert(editor.querySelector('[data-run-font-weight="700"]')?.textContent === 'images', 'reload after appending lost the bold run.');
+  assert(editor.querySelector('[data-run-font-weight="800"][data-run-text-decoration="underline"]')?.textContent === 'images', 'reload after appending lost the formatted run.');
   assert(editor.querySelector('[data-run-font-style="italic"]')?.textContent === 'feel', 'reload after appending lost the italic run.');
   const reloadedFinalRun = editor.querySelector('[data-run-color="#f0123c"]');
   assert(reloadedFinalRun?.dataset.runFontSize === '36' && reloadedFinalRun.textContent === 'yours!', 'reload after appending lost the final run style.');
-  for (const control of [...toolbar.querySelectorAll('.text-format-button, #text-format-size, #text-format-color, .text-format-done')]) {
+  for (const control of [...toolbar.querySelectorAll(controls)]) {
     assertTouchReachable(app, control, control.getAttribute('aria-label') || control.textContent.trim() || control.id);
   }
   tap(app, toolbar.querySelector('[data-text-format-done]'));
@@ -262,7 +272,7 @@ try {
   const plainNode = textNode(saved, 'Ordinary plain text');
   assert(plainNode && !Object.hasOwn(plainNode, 'textRuns'), 'ordinary plain text edits should remain plain when no range style was applied.');
 
-  result.textContent = `PASS\n${JSON.stringify({ mobileViewport: '390x844', boldRange: true, italicRange: true, selectedFontSize: 36,
+  result.textContent = `PASS\n${JSON.stringify({ mobileViewport: '390x844', boldRange: true, italicRange: true, selectedFontSize: 36, selectedWeight: 800, selectedDecoration: 'underline', selectedFamily: 'Georgia, serif', selectedLetterSpacing: 1.2,
     selectedColor: '#f0123c', savedRuns: true, reloadPreservesRuns: true, reopenedRunRendering: true,
     editAfterReloadPreservesRuns: true, appendedTextSurvivesReload: true, touchSizedControls: true, plainTextUnchanged: true })}`;
 } catch (error) {

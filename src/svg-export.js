@@ -1,6 +1,7 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutTextRuns, transformTextCase, wrapTextWithMeasure } from './text-layout.js';
 import { isValidGradientFill } from './fills.js';
+import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 
@@ -16,9 +17,28 @@ export class SvgExportError extends TypeError {
   }
 }
 
-const supportedTypes = new Set(['frame', 'section', 'group', 'rectangle', 'ellipse', 'line', 'text', 'star', 'polygon', 'path']);
+const supportedTypes = new Set(['frame', 'section', 'group', 'rectangle', 'ellipse', 'line', 'text', 'star', 'polygon', 'path', 'image']);
 const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
+const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
+
+function resolveLocalImage(node, assets, assetId) {
+  const asset = assets?.get?.(assetId) ?? assets?.[assetId];
+  const type = String(asset?.type || asset?.mimeType || '').toLowerCase().split(';')[0].trim();
+  if (!asset || !safeRasterTypes.has(type)) return { error: node.type === 'image' ? 'image layers' : 'image fills' };
+  const bytes = asset.sourceBytes ?? asset.bytes;
+  if (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes)) return { error: node.type === 'image' ? 'image layers' : 'image fills' };
+  const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (!view.length) return { error: node.type === 'image' ? 'image layers' : 'image fills' };
+  let binary = '';
+  for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
+  const encoded = typeof btoa === 'function' ? btoa(binary) : Buffer.from(view).toString('base64');
+  return { href: `data:${type};base64,${encoded}`, width: Number(asset.bitmap?.width || asset.width), height: Number(asset.bitmap?.height || asset.height) };
+}
+
+function imageFit(node) {
+  return node.type === 'image' ? (node.fit ?? 'cover') : node.imageFill.fit;
+}
 
 function escapeXml(value) {
   const text = String(value ?? '');
@@ -129,10 +149,22 @@ function radius(document, node) {
   return Math.min(value, Number(node.width) / 2, Number(node.height) / 2);
 }
 
-function unsupportedFeature(node) {
+function unsupportedFeature(node, assets) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
   if (node.mask) return 'mask groups';
-  if (node.imageFill) return 'image fills';
+  if (node.type === 'image' || node.imageFill) {
+    if (node.imageFill && (!isImageFillSupported(node) || !isValidImageFill(node.imageFill))) return 'image fills';
+    const image = resolveLocalImage(node, assets, node.type === 'image' ? node.assetId : node.imageFill?.assetId);
+    if (image.error) return image.error;
+    const adjustments = node.type === 'image' ? node.adjustments : node.imageFill.adjustments;
+    if (adjustments && Object.values(adjustments).some(value => Number(value) !== 0)) return 'raster image adjustments';
+    const fit = imageFit(node);
+    if (!['cover', 'contain'].includes(fit)) return node.type === 'image' ? 'image layer fit mode' : 'image fill fit mode';
+    if (!(image.width > 0) || !(image.height > 0)) return node.type === 'image' ? 'image layers' : 'image fills';
+    if (node.imageFill && (!Number.isFinite(Number(node.fillOpacity ?? 1)) || Number(node.fillOpacity ?? 1) < 0 || Number(node.fillOpacity ?? 1) > 1)) {
+      throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
+    }
+  }
   if (node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
     && !(node.type === 'path' && node.closed)) return 'gradient fills';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
@@ -146,15 +178,15 @@ function isNodeVisible(document, node) {
   return getNodePropertyValue(document, node, 'visible') !== false;
 }
 
-function validateTree(nodes, document) {
+function validateTree(nodes, document, assets) {
   for (const node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
     if (!isNodeVisible(document, node)) continue;
-    const unsupported = unsupportedFeature(node);
+    const unsupported = unsupportedFeature(node, assets);
     if (unsupported) throw new SvgExportError(unsupported, node);
     dimensions({ ...node, ...getNodeGeometry(document, node) });
     if (!Array.isArray(node.children || [])) throw new TypeError(`SVG export requires a child layer list on ${node.name || node.id || '(unnamed)'}.`);
-    validateTree(node.children || [], document);
+    validateTree(node.children || [], document, assets);
   }
 }
 
@@ -368,6 +400,24 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const gradient = gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
     let ownShape = shapeMarkup(node, document, measureText, gradient?.id || null);
+    if (node.type === 'image' || node.imageFill) {
+      const isLayer = node.type === 'image';
+      const asset = resolveLocalImage(node, context.assets, isLayer ? node.assetId : node.imageFill.assetId);
+      const fit = imageFit(node);
+      const clipId = `tis-image-clip-${index}`;
+      if (isLayer) {
+        context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(radius(document, node))}" ry="${number(radius(document, node))}"/></clipPath>`);
+        ownShape = `<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}" href="${asset.href}" clip-path="url(#${clipId})"/>`;
+        if (node.stroke && Number(node.strokeWidth) > 0) ownShape += `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(radius(document, node))}" ry="${number(radius(document, node))}" fill="none"${strokeAttributes(document, node)}/>`;
+      } else {
+        const clipNode = { ...node, fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0, variableBindings: {} };
+        context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${shapeMarkup(clipNode, emptyDocument, measureText)}</clipPath>`);
+        ownShape = `<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}" href="${asset.href}" opacity="${number(node.fillOpacity ?? 1)}" clip-path="url(#${clipId})"/>`;
+        const outlineNode = { ...node, fill: '#000000', fillOpacity: 0, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, variableBindings: {} };
+        const outline = shapeMarkup(outlineNode, document, measureText).replace(/ fill="[^"]*" fill-opacity="[^"]*"/, ' fill="none"');
+        ownShape += outline;
+      }
+    }
     if (node.type === 'line' && !node.stroke) ownShape = ownShape.replace(/ stroke="none" stroke-width="[^"]*"\/>$/, ' stroke="none"/>');
     const childClipId = node.clip ? `tis-clip-${index}` : null;
     if (childClipId) context.defs.push(clipDefinition(document, childClipId, node));
@@ -488,12 +538,12 @@ function svgDocument(markup, defs, bounds, { width, height } = {}) {
  * Export one editor layer as a self-contained, editable SVG, with its origin at the layer's bounds.
  * Text layers require a canvas-based `measureText` callback so SVG line breaks match the editor.
  */
-export function exportNodeToSvg(node, { document = null, width, height, measureText } = {}) {
+export function exportNodeToSvg(node, { document = null, assets = null, width, height, measureText } = {}) {
   if (!node || typeof node !== 'object') throw new TypeError('SVG export requires a layer.');
   document ||= emptyDocument;
-  validateTree([node], document);
+  validateTree([node], document, assets);
   const bounds = getBounds([node], { document, includePosition: false, measureText });
-  const context = { defs: [], nextIndex: 0 };
+  const context = { defs: [], nextIndex: 0, assets };
   const markup = renderTree([node], document, context, false, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }
@@ -502,12 +552,12 @@ export function exportNodeToSvg(node, { document = null, width, height, measureT
  * Export a page's layers as a self-contained, editable SVG, fitting the viewBox to visible content.
  * Pages with text layers require a canvas-based `measureText` callback.
  */
-export function exportPageToSvg(page, { document = null, width, height, measureText } = {}) {
+export function exportPageToSvg(page, { document = null, assets = null, width, height, measureText } = {}) {
   if (!page || !Array.isArray(page.children)) throw new TypeError('SVG export requires a page with child layers.');
   document ||= emptyDocument;
-  validateTree(page.children, document);
+  validateTree(page.children, document, assets);
   const bounds = getBounds(page.children, { document, measureText });
-  const context = { defs: [], nextIndex: 0 };
+  const context = { defs: [], nextIndex: 0, assets };
   const markup = renderTree(page.children, document, context, true, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }

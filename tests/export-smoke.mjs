@@ -15,10 +15,14 @@ function waitFor(test, label, timeout = 10000) {
   });
 }
 function click(element) { assert(element, 'Expected an interactive editor control.'); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); }
-function packageFile(documentData) {
-  const manifest = new TextEncoder().encode(JSON.stringify({ schema: documentData.schema, document: documentData, assets: [] }));
+function packageFile(documentData, assets = []) {
+  const manifest = new TextEncoder().encode(JSON.stringify({
+    schema: documentData.schema,
+    document: documentData,
+    assets: assets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength }))
+  }));
   const length = new Uint8Array(4); new DataView(length.buffer).setUint32(0, manifest.byteLength, true);
-  const parts = [new Uint8Array([70, 76, 79, 67, 65, 76, 1]), length, manifest];
+  const parts = [new Uint8Array([70, 76, 79, 67, 65, 76, 1]), length, manifest, ...assets.map(asset => new Uint8Array(asset.bytes))];
   const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
   let offset = 0; for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
   return bytes;
@@ -53,10 +57,21 @@ try {
   const group = createNode('group', { name: 'Red parent', x: 100, y: 80, width: 200, height: 160, rotation: 30, fill: '#ff0000' });
   const artwork = createNode('rectangle', { name: 'Artwork', x: 35, y: 42, width: 40, height: 20, rotation: 45, fill: '#0066ff' });
   const caption = createNode('text', { name: 'Vector caption', x: 16, y: 108, width: 150, height: 30, text: 'editable vector text', textCase: 'uppercase', textDecoration: 'underline', fontSize: 16, color: '#224466' });
+  const imageCanvas = document.createElement('canvas'); imageCanvas.width = 4; imageCanvas.height = 2;
+  const imageContext = imageCanvas.getContext('2d'); imageContext.fillStyle = '#e22'; imageContext.fillRect(0, 0, 2, 2); imageContext.fillStyle = '#26c'; imageContext.fillRect(2, 0, 2, 2);
+  const imageBlob = await new Promise((resolve, reject) => imageCanvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create the local SVG image fixture.')), 'image/png'));
+  const imageBytes = new Uint8Array(await imageBlob.arrayBuffer());
+  const imageAssetId = 'export-smoke-local-image';
+  const localImage = createNode('image', {
+    name: 'Local photo', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    x: 112, y: 20, width: 40, height: 28, rotation: -8, opacity: 0.8, fit: 'cover'
+  });
   addNode(design, group); addNode(design, artwork, { parentId: group.id });
   addNode(design, caption, { parentId: group.id });
+  addNode(design, localImage, { parentId: group.id });
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
-  transfer.items.add(new File([packageFile(design)], 'export-smoke.flocal', { type: 'application/octet-stream' }));
+  const imageAssets = [{ id: imageAssetId, name: 'local-photo.png', type: 'image/png', bytes: imageBytes }];
+  transfer.items.add(new File([packageFile(design, imageAssets)], 'export-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(input, 'files', { configurable: true, value: transfer.files });
   input.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('Local design opened')), 'design import');
@@ -151,7 +166,17 @@ try {
     && (captionMarkup.match(/<tspan\b/g) || []).length > 1,
   'Page SVG should preserve nested vector geometry, case-transformed text, and canvas word wrapping.');
   assert(pageSvg.includes('textLength=') && pageSvg.includes('stroke="#224466"'), 'Page SVG should preserve measured text widths and explicit underline geometry.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, rasterExportUnaffectedByOutlineView: true })}`;
+  assert(pageSvg.includes('href="data:image/png;base64,') && pageSvg.includes('data-tiny-image-star-type="image"'), 'Page SVG should embed local image bytes without network references.');
+
+  click(app.querySelector(`[data-layer-id="${localImage.id}"]`));
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'locally restored image preview');
+  click(app.querySelector('[data-action="export-svg"]'));
+  await waitFor(() => downloads.length === 7, 'selected local-image SVG download');
+  assert(downloads[6].filename === 'Local photo.svg', 'Selected local image SVG should use the image layer name.');
+  const localImageSvg = await downloads[6].blob.text();
+  assert(localImageSvg.includes('href="data:image/png;base64,') && !localImageSvg.includes('blob:') && !localImageSvg.includes('href="http'),
+    'Selected local image SVG should embed the source bytes and contain no temporary or network URL.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

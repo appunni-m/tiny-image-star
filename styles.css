@@ -472,9 +472,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .text-format-toolbar[hidden] { display: none; }
 .text-format-button, .text-format-done { min-width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid #e5e5e5; border-radius: 6px; background: #fff; color: #333; font-size: 13px; }
 .text-format-button[aria-pressed="true"] { border-color: #9bcfff; background: #eaf5ff; color: #087dcc; }
-.text-format-size-label, .text-format-color-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
+.text-format-size-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
 .text-format-size-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-color-label input { width: 25px; height: 25px; padding: 1px; border: 0; background: transparent; }
+.text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-decoration-label select { min-width: 0; width: 100%; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-done { min-width: 44px; padding: 0 7px; background: #1e1e1e; color: #fff; font-size: 10px; }
 .presentation-dialog { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; overflow: hidden; border: 0; background: #333; color: #222; }
 .presentation-dialog::backdrop { background: #222; }
@@ -556,10 +557,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(72px, .8fr) 38px; gap: 8px; }
   .gradient-stop-row label { font-size: 10px; }
   .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
-  .text-format-toolbar { display: grid; grid-template-columns: 40px 40px minmax(60px, 1fr) 74px 52px; gap: 4px; padding: 5px; }
+  .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; overflow-y: auto; max-height: min(230px, 36dvh); }
   .text-format-button, .text-format-done { min-width: 40px; height: 44px; font-size: 14px; }
-  .text-format-size-label, .text-format-color-label { min-width: 0; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
-  .text-format-size-label input { width: 42px; height: 40px; font-size: 13px; }
+  .text-format-size-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
+  .text-format-family-label { grid-column: span 4; }
+  .text-format-size-label input, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-decoration-label select { box-sizing: border-box; width: min(100%, 58px); min-width: 40px; height: 40px; font-size: 13px; }
+  .text-format-family-label input { width: 100%; }
   .text-format-color-label input { width: 40px; min-width: 40px; height: 40px; flex: 0 0 40px; }
   .text-format-done { min-width: 52px; padding: 0 5px; font-size: 11px; }
   .export-setting-row .select-field, .export-suffix input { height: 38px; font-size: 12px; }

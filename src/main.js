@@ -367,7 +367,7 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG keeps vector shapes and text editable, including linear and radial fills, shadows, blur, and blend modes. Raster images, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes, text, and local raster images, including linear and radial fills, shadows, blur, and blend modes. Image adjustments, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${svgExport}`);
 }
 function autoLayoutSection(node) {
@@ -1612,7 +1612,8 @@ function textBaseStyle(node) {
     fontStyle: node.fontStyle || 'normal',
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight') || 1.25,
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
-    color: getNodeColor(state.document, node, 'text') || '#1e1e1e'
+    color: getNodeColor(state.document, node, 'text') || '#1e1e1e',
+    textDecoration: ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'
   };
 }
 function effectiveTextRunValue(run, property, node) {
@@ -1657,7 +1658,9 @@ function updateTextFormatToolbar() {
   bold.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontWeight', node, value => Number(value) >= 600)));
   italic.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontStyle', node, value => value === 'italic')));
   const size = $('#text-format-size'); const color = $('#text-format-color');
-  size.disabled = !selected; color.disabled = !selected;
+  const family = $('#text-format-family'); const weight = $('#text-format-weight');
+  const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration');
+  for (const control of [size, color, family, weight, spacing, decoration]) control.disabled = !selected;
   let firstRun = {};
   if (selected) {
     let cursor = 0;
@@ -1668,7 +1671,11 @@ function updateTextFormatToolbar() {
     }) || {};
   }
   const base = textBaseStyle(node);
+  family.value = String(effectiveTextRunValue(firstRun, 'fontFamily', node) || base.fontFamily);
+  weight.value = String(effectiveTextRunValue(firstRun, 'fontWeight', node) || base.fontWeight);
   size.value = String(Math.max(1, Math.min(512, Math.round(effectiveTextRunValue(firstRun, 'fontSize', node) || base.fontSize))));
+  spacing.value = String(effectiveTextRunValue(firstRun, 'letterSpacing', node) ?? base.letterSpacing);
+  decoration.value = effectiveTextRunValue(firstRun, 'textDecoration', node) || base.textDecoration;
   color.value = parseTextRunColor(effectiveTextRunValue(firstRun, 'color', node)) || '#1e1e1e';
   positionTextFormatToolbar();
 }
@@ -1835,7 +1842,20 @@ function initRichTextEditorEvents() {
     else if (event.target.closest('[data-text-format-done]')) commitTextEdit();
   });
   toolbar.addEventListener('change', event => {
-    if (event.target.id === 'text-format-size') {
+    if (event.target.id === 'text-format-family') {
+      const value = event.target.value.trim();
+      if (value && value.length <= 160) applyTextFormat('fontFamily', value);
+      else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-weight') {
+      const value = Number(event.target.value);
+      if (Number.isInteger(value) && value >= 1 && value <= 1000) applyTextFormat('fontWeight', value);
+    } else if (event.target.id === 'text-format-spacing') {
+      const value = Number(event.target.value);
+      if (Number.isFinite(value) && Math.abs(value) <= 10_000) applyTextFormat('letterSpacing', value);
+      else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-decoration') {
+      if (['none', 'underline', 'line-through'].includes(event.target.value)) applyTextFormat('textDecoration', event.target.value);
+    } else if (event.target.id === 'text-format-size') {
       const value = Number(event.target.value);
       if (Number.isFinite(value) && value > 0 && value <= 512) applyTextFormat('fontSize', value);
       else updateTextFormatToolbar();
@@ -3180,7 +3200,7 @@ function createSvgTextMeasurer() {
 function exportSelectedNodeSvg(nodeId) {
   const node = findNode(state.document, nodeId)?.node;
   if (!node) throw new Error('The selected layer is no longer available.');
-  const markup = exportNodeToSvg(node, { document: state.document, measureText: createSvgTextMeasurer() });
+  const markup = exportNodeToSvg(node, { document: state.document, assets: state.assets, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(node.name)}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable SVG · ${filename}.`);
@@ -3189,7 +3209,7 @@ function exportSelectedNodeSvg(nodeId) {
 function exportActivePageSvg() {
   const page = activePage();
   if (!page) throw new Error('There is no active page to export.');
-  const markup = exportPageToSvg(page, { document: state.document, measureText: createSvgTextMeasurer() });
+  const markup = exportPageToSvg(page, { document: state.document, assets: state.assets, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(page.name || 'Page')}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable page SVG · ${filename}.`);

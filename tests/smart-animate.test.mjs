@@ -23,6 +23,57 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
 });
 
+test('smart animation interpolates numeric font weight and snaps categorical text and paint at the midpoint', () => {
+  const from = createNode('frame', { fill: '#000000', fillVariableId: 'surface-light', children: [
+    createNode('text', {
+      name: 'Title', text: 'Hello', fontFamily: 'Inter', fontWeight: '400', fontStyle: 'normal',
+      textDecoration: 'none', align: 'left',
+      textRuns: [{ text: 'Hello', fontFamily: 'Inter', fontWeight: 400, textDecoration: 'none' }]
+    }),
+    createNode('rectangle', { name: 'Surface', fill: '#000000', fillVariableId: 'surface-light', blendMode: 'normal', effects: [] })
+  ] });
+  const to = createNode('frame', { fill: '#ffffff', fillVariableId: 'surface-dark', children: [
+    createNode('text', {
+      name: 'Title', text: 'Hello', fontFamily: 'Arial', fontWeight: 700, fontStyle: 'italic',
+      textDecoration: 'underline', align: 'center',
+      textRuns: [{ text: 'Hello', fontFamily: 'Arial', fontWeight: 700, textDecoration: 'underline' }]
+    }),
+    createNode('rectangle', { name: 'Surface', fill: '#ffffff', fillVariableId: 'surface-dark', blendMode: 'multiply', effects: [{ id: 'shadow', type: 'drop-shadow' }] })
+  ] });
+
+  const start = interpolateSmartFrame(from, to, 0);
+  const quarter = interpolateSmartFrame(from, to, 0.25);
+  const middle = interpolateSmartFrame(from, to, 0.5);
+  const end = interpolateSmartFrame(from, to, 1);
+  const startTitle = start.children[0];
+  const quarterTitle = quarter.children[0];
+  const middleTitle = middle.children[0];
+  const endTitle = end.children[0];
+
+  assert.equal(startTitle.fontFamily, 'Inter');
+  assert.equal(startTitle.fontWeight, '400', 'endpoints preserve the original weight representation');
+  assert.equal(quarterTitle.fontWeight, 475);
+  assert.equal(quarterTitle.fontFamily, 'Inter');
+  assert.equal(quarterTitle.textDecoration, 'none');
+  assert.equal(middleTitle.fontWeight, 550);
+  assert.equal(middleTitle.fontFamily, 'Arial', 'categorical typography switches at the halfway point');
+  assert.equal(middleTitle.fontStyle, 'italic');
+  assert.equal(middleTitle.textDecoration, 'underline');
+  assert.equal(middleTitle.align, 'center');
+  assert.equal(endTitle.fontWeight, 700);
+  assert.equal(endTitle.fontFamily, 'Arial');
+
+  assert.equal(quarter.fill, '#000000');
+  assert.equal(quarter.fillVariableId, 'surface-light');
+  assert.equal(quarter.children[1].blendMode, 'normal');
+  assert.equal(middle.fill, '#ffffff');
+  assert.equal(middle.fillVariableId, 'surface-dark');
+  assert.equal(middle.children[1].blendMode, 'multiply');
+  assert.deepEqual(middle.children[1].effects, [{ id: 'shadow', type: 'drop-shadow' }]);
+  assert.equal(from.children[0].fontWeight, '400', 'interpolation leaves the source unchanged');
+  assert.equal(to.children[0].fontWeight, 700, 'interpolation leaves the destination unchanged');
+});
+
 test('smart animation matches by layer name and parent hierarchy and fades unmatched layers', () => {
   const from = createNode('frame', { children: [
     createNode('group', { name: 'Card', children: [
@@ -117,6 +168,8 @@ test('smart animation snaps rich-text styles when unchanged text has incompatibl
   const middle = interpolateSmartFrame(from, to, 0.5).children;
   assert.equal(middle.length, 1, 'unchanged text remains a matched layer');
   assert.deepEqual(middle[0].textRuns, to.children[0].textRuns, 'unaligned run boundaries keep the existing destination-style snap');
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].textRuns, from.children[0].textRuns, 'the start endpoint keeps the source run segmentation');
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].textRuns, to.children[0].textRuns, 'the end endpoint keeps the destination run segmentation');
 });
 
 test('smart animation rejects non-frame endpoints and clamps its progress', () => {

@@ -1,6 +1,11 @@
-const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'lineHeight', 'letterSpacing'];
+const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const midpointProperties = [
+  ...colorProperties,
+  'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
+  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'align', 'textFit', 'textStyleId'
+];
 
 function interpolateColor(from, to, progress) {
   const fromMatch = /^#([0-9a-f]{6})$/i.exec(String(from || ''));
@@ -40,6 +45,16 @@ function layerOpacity(node) {
   return Number.isFinite(node.opacity) ? Math.max(0, Math.min(1, node.opacity)) : 1;
 }
 
+function snapProperty(copy, from, to, property, progress) {
+  const source = progress < 0.5 ? from : to;
+  if (Object.prototype.hasOwnProperty.call(source, property)) copy[property] = structuredClone(source[property]);
+  else delete copy[property];
+}
+
+function snapProperties(copy, from, to, progress) {
+  for (const property of midpointProperties) snapProperty(copy, from, to, property, progress);
+}
+
 function fadeLayer(node, progress, entering) {
   const copy = structuredClone(node);
   if (copy.visible !== false) {
@@ -51,8 +66,14 @@ function fadeLayer(node, progress, entering) {
 
 function interpolateLayer(from, to, progress) {
   const copy = structuredClone(to);
+  snapProperties(copy, from, to, progress);
   for (const property of numericProperties) {
-    if (Number.isFinite(from[property]) && Number.isFinite(to[property])) copy[property] = from[property] + (to[property] - from[property]) * progress;
+    const start = finiteStyleNumber(from[property]);
+    const end = finiteStyleNumber(to[property]);
+    if (start === null || end === null) continue;
+    copy[property] = progress === 0 ? from[property]
+      : progress === 1 ? to[property]
+        : start + (end - start) * progress;
   }
   for (const property of colorProperties) {
     const variable = property === 'fill' ? 'fillVariableId' : property === 'stroke' ? 'strokeVariableId' : 'textVariableId';
@@ -70,6 +91,7 @@ function interpolateLayer(from, to, progress) {
   if (from.type === 'text' && to.type === 'text') {
     const textRuns = interpolateTextRuns(from.textRuns, to.textRuns, progress);
     if (textRuns) copy.textRuns = textRuns;
+    else snapProperty(copy, from, to, 'textRuns', progress);
   }
   copy.children = blendChildren(from.children || [], to.children || [], progress);
   return copy;
@@ -127,6 +149,7 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress) {
   if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
   const amount = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
   const frame = structuredClone(toFrame);
+  snapProperties(frame, fromFrame, toFrame, amount);
   for (const property of ['width', 'height', 'opacity']) {
     if (Number.isFinite(fromFrame[property]) && Number.isFinite(toFrame[property])) frame[property] = fromFrame[property] + (toFrame[property] - fromFrame[property]) * amount;
   }

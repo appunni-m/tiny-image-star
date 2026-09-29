@@ -73,7 +73,11 @@
             <div class="text-format-toolbar" id="text-format-toolbar" role="toolbar" aria-label="Format selected text" hidden>
               <button class="text-format-button" type="button" data-text-format="bold" aria-label="Bold" aria-pressed="false" title="Bold"><strong>B</strong></button>
               <button class="text-format-button" type="button" data-text-format="italic" aria-label="Italic" aria-pressed="false" title="Italic"><em>I</em></button>
+              <label class="text-format-family-label" for="text-format-family">Font<input id="text-format-family" type="text" maxlength="160" value="Arial, sans-serif" aria-label="Selected text font family"></label>
+              <label class="text-format-weight-label" for="text-format-weight">Weight<select id="text-format-weight" aria-label="Selected text font weight"><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="600">600</option><option value="700">700</option><option value="800">800</option><option value="900">900</option></select></label>
               <label class="text-format-size-label" for="text-format-size">Size<input id="text-format-size" type="number" min="1" max="512" step="1" value="24" aria-label="Selected text font size"></label>
+              <label class="text-format-spacing-label" for="text-format-spacing">Spacing<input id="text-format-spacing" type="number" min="-10000" max="10000" step="0.1" value="0" aria-label="Selected text letter spacing"></label>
+              <label class="text-format-decoration-label" for="text-format-decoration">Decoration<select id="text-format-decoration" aria-label="Selected text decoration"><option value="none">None</option><option value="underline">Underline</option><option value="line-through">Strikethrough</option></select></label>
               <label class="text-format-color-label" for="text-format-color">Color<input id="text-format-color" type="color" value="#1e1e1e" aria-label="Selected text color"></label>
               <button class="text-format-done" type="button" data-text-format-done>Done</button>
             </div>

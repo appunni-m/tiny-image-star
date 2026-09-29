@@ -134,6 +134,52 @@ test('rejects unsupported content explicitly instead of dropping design features
   }
 });
 
+test('embeds local raster layers and image fills as data URIs with fit, clipping, transforms, and opacity', () => {
+  const assets = new Map([['local-photo', {
+    id: 'local-photo', type: 'image/png', width: 400, height: 200,
+    sourceBytes: new Uint8Array([0, 1, 2, 255])
+  }]]);
+  const image = createNode('image', {
+    assetId: 'local-photo', x: 12, y: 20, width: 80, height: 50, fit: 'cover',
+    radius: 8, rotation: 15, opacity: 0.7, stroke: '#123456', strokeWidth: 2
+  });
+  const imageSvg = exportNodeToSvg(image, { assets });
+  assert.match(imageSvg, /href="data:image\/png;base64,AAEC\/w=="/);
+  assert.match(imageSvg, /preserveAspectRatio="xMidYMid slice"/);
+  assert.match(imageSvg, /clip-path="url\(#tis-image-clip-0\)"/);
+  assert.match(imageSvg, /opacity="0\.7" data-tiny-image-star-type="image"/);
+  assert.match(imageSvg, /<clipPath id="tis-image-clip-0"/);
+  assert.match(imageSvg, /stroke="#123456" stroke-width="2"/);
+
+  const fill = createNode('ellipse', {
+    width: 100, height: 60, fillOpacity: 0.35,
+    imageFill: { assetId: 'local-photo', fit: 'contain', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 } }
+  });
+  const fillSvg = exportNodeToSvg(fill, { assets });
+  assert.match(fillSvg, /href="data:image\/png;base64,AAEC\/w=="/);
+  assert.match(fillSvg, /preserveAspectRatio="xMidYMid meet"/);
+  assert.match(fillSvg, /opacity="0\.35" clip-path="url\(#tis-image-clip-0\)"/);
+  assert.match(fillSvg, /<clipPath id="tis-image-clip-0"[^>]*><ellipse/);
+  assert.throws(() => exportNodeToSvg({ ...fill, fillOpacity: 1.1 }, { assets }), /requires valid fill opacity/);
+  assert.throws(() => exportNodeToSvg({ ...fill, fillOpacity: -0.1 }, { assets }), /requires valid fill opacity/);
+});
+
+test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () => {
+  const missing = createNode('image', { assetId: 'not-local' });
+  assert.throws(() => exportNodeToSvg(missing, { assets: new Map() }), error => error instanceof SvgExportError && error.feature === 'image layers');
+
+  const svgSource = new Map([['unsafe', { type: 'image/svg+xml', sourceBytes: new TextEncoder().encode('<svg/>'), width: 1, height: 1 }]]);
+  assert.throws(() => exportNodeToSvg(createNode('rectangle', {
+    imageFill: { assetId: 'unsafe', fit: 'cover', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 } }
+  }), { assets: svgSource }), error => error instanceof SvgExportError && error.feature === 'image fills');
+
+  const adjusted = createNode('image', {
+    assetId: 'local', adjustments: { brightness: 12, contrast: 0, saturation: 0, blur: 0 }
+  });
+  const assets = new Map([['local', { type: 'image/png', sourceBytes: new Uint8Array([1]), width: 1, height: 1 }]]);
+  assert.throws(() => exportNodeToSvg(adjusted, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image adjustments');
+});
+
 test('does not reject hidden unsupported layers because they are absent from the rendered page', () => {
   const page = { children: [createNode('image', { visible: false }), createNode('rectangle', { fill: '#2468ac' })] };
   const svg = exportPageToSvg(page);
