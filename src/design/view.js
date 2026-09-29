@@ -76,7 +76,12 @@ export function createDesignView() {
           </fieldset>
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
-          <div id="design-vector-actions" class="design-layer-actions" hidden><button id="design-edit-vector" class="button secondary" type="button" aria-pressed="false">Edit path points</button></div>
+          <div id="design-vector-actions" class="design-layer-actions design-vector-actions" hidden>
+            <button id="design-edit-vector" class="button secondary" type="button" aria-pressed="false">Edit points</button>
+            <button id="design-vector-add-point" class="button secondary" type="button" aria-pressed="false" hidden>Add point</button>
+            <button id="design-vector-delete-point" class="button secondary" type="button" disabled hidden>Delete point</button>
+            <span id="design-vector-point-status" class="design-vector-point-status" role="status" aria-live="polite"></span>
+          </div>
           <fieldset id="design-vector-primitive" class="design-fieldset" hidden><legend>Shape geometry</legend>
             <label class="design-field"><span id="design-vector-count-label">Sides</span><input id="design-vector-count" type="number" min="3" max="24" step="1" inputmode="numeric" /></label>
             <label id="design-vector-inner-radius-field" class="design-range-field"><span>Inner radius <output id="design-vector-inner-radius-value">46%</output></span><input id="design-vector-inner-radius" type="range" min="0.12" max="0.85" step="0.01" /></label>

@@ -13,6 +13,7 @@ import { openContextMenu } from "../context-menu.js";
 import { designRecipePatch, designRecipeProblem } from "./recipes.js";
 import { resizeSelection, rotateSelection, selectionBounds, zoomAtPoint } from "./geometry.js";
 import { createVectorShape, updateVectorPrimitive } from "./vector-shapes.js";
+import { deleteVectorPoint, insertVectorPoint, vectorSegmentPoint } from "./vector-path.js";
 
 const DESIGN_IMPORT_LIMIT = 128 * 1024 * 1024;
 
@@ -22,7 +23,7 @@ export function attachDesignWorkspace() {
   let saveTimer = null, openSequence = 0;
   let previewTask = null, previewTimer = null, previewEpoch = 0, previewBitmap = null, exportBusy = false, importing = false, recipeJob = null;
   let geometry = null, zoom = 1, panX = 0, panY = 0, drag = null, marquee = null, spaceDown = false, pinch = null, cropModeId = null;
-  let penActive = false, pathDraft = null, vectorEditId = null;
+  let penActive = false, pathDraft = null, vectorEditId = null, vectorPointSelection = null, vectorInsertMode = false;
   const touchPoints = new Map();
   let frameMapProject = null, frameMapPage = null, frameMap = null;
   let gridGeometryProject = null, gridGeometryPage = null, gridGeometryCache = new Map();
@@ -124,7 +125,9 @@ export function attachDesignWorkspace() {
     selection.ids = currentPage()?.nodeIds.filter((id) => selection.ids.includes(id)) ?? [];
     const exitedCropMode = Boolean(cropModeId && !selection.ids.includes(cropModeId));
     if (exitedCropMode) cropModeId = null;
-    if (vectorEditId && !selection.ids.includes(vectorEditId)) vectorEditId = null;
+    if (vectorEditId && (selection.ids.length !== 1 || !selection.ids.includes(vectorEditId))) {
+      vectorEditId = null; vectorPointSelection = null; vectorInsertMode = false;
+    }
     get("frame-selection").disabled = selection.ids.length < 2;
     renderLayers(); renderInspector(); drawCanvas();
     if (exitedCropMode) schedulePreview(0);
@@ -223,9 +226,27 @@ export function attachDesignWorkspace() {
     });
   }
 
+  function syncVectorPointControls(node) {
+    const path = node?.style?.path, editing = Boolean(path && vectorEditId === node.id);
+    if (!editing || vectorPointSelection == null || vectorPointSelection >= (path?.points.length ?? 0)) vectorPointSelection = null;
+    if (!editing) vectorInsertMode = false;
+    const locked = !node || Boolean(worldLayer(node.id)?.locked), minimum = path?.closed ? 3 : 2;
+    const add = get("vector-add-point"), remove = get("vector-delete-point");
+    add.hidden = !editing; remove.hidden = !editing;
+    add.disabled = locked || (path?.points.length ?? 0) >= 512;
+    add.setAttribute("aria-pressed", String(vectorInsertMode));
+    add.textContent = vectorInsertMode ? "Tap a segment…" : "Add point";
+    remove.disabled = locked || vectorPointSelection == null || (path?.points.length ?? 0) <= minimum;
+    get("vector-point-status").textContent = !editing ? "" : vectorInsertMode ? "Tap close to a path segment to split it." : vectorPointSelection == null
+      ? "Drag anchors or handles; select an anchor to remove it." : `Point ${vectorPointSelection + 1} selected.`;
+  }
+
   function renderInspector() {
     const ids = currentSelection(), project = renderProject(), node = ids.length === 1 ? layer(ids[0]) : null;
     const multi = ids.length > 1;
+    const vectorNode = node?.kind === "shape" && node.style?.shape === "path" ? node : null;
+    get("vector-actions").hidden = !vectorNode;
+    syncVectorPointControls(vectorNode);
     get("selection-count").textContent = `${ids.length} selected`;
     get("selection-summary").textContent = ids.length ? ids.length === 1 ? layer(ids[0])?.name ?? "1 layer selected" : `${ids.length} layers selected` : "Nothing selected";
     get("inspector-empty").hidden = Boolean(ids.length);
@@ -268,7 +289,6 @@ export function attachDesignWorkspace() {
     }
     const textField = get("text-field"), colorField = get("color-field"), fitField = get("fit-field"), adjustments = get("image-adjustments");
     textField.hidden = node.kind !== "text"; colorField.hidden = !["shape", "text", "frame"].includes(node.kind);
-    get("vector-actions").hidden = node.kind !== "shape" || node.style?.shape !== "path";
     get("edit-vector").textContent = vectorEditId === node.id ? "Done editing path" : "Edit path points";
     get("edit-vector").setAttribute("aria-pressed", String(vectorEditId === node.id));
     get("edit-vector").disabled = Boolean(world.locked);
@@ -435,6 +455,7 @@ export function attachDesignWorkspace() {
 
   function runHistory(direction) {
     if (!history || !history[direction]()) return;
+    vectorPointSelection = null; vectorInsertMode = false;
     if (!renderProject().slides.some((page) => page.id === pageId)) pageId = renderProject().slides[0]?.id ?? null;
     selectionChanged(); edited(direction === "undo" ? "Undid edit." : "Redid edit.");
   }
@@ -715,7 +736,7 @@ export function attachDesignWorkspace() {
     const node = vectorEditId && layer(vectorEditId), path = node?.style?.path;
     if (!node || !path || node.visible === false) return;
     ctx.save(); ctx.lineWidth = 1.25;
-    for (const point of path.points) {
+    for (const [index, point] of path.points.entries()) {
       const anchor = vectorPointOnCanvas(node, point);
       if (!anchor) continue;
       for (const key of ["handleIn", "handleOut"]) if (point[key]) {
@@ -723,8 +744,10 @@ export function attachDesignWorkspace() {
         ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(handle.x, handle.y); ctx.strokeStyle = "#3182ce"; ctx.stroke();
         ctx.beginPath(); ctx.arc(handle.x, handle.y, 3.5, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.stroke();
       }
-      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 5, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill();
-      ctx.strokeStyle = "#e04f5f"; ctx.stroke();
+      ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 5.5, 0, Math.PI * 2);
+      const selected = vectorEditId === node.id && vectorPointSelection === index;
+      ctx.fillStyle = selected ? "#ffd36b" : "#fff"; ctx.fill();
+      ctx.strokeStyle = selected ? "#7a4b00" : "#e04f5f"; ctx.stroke();
     }
     ctx.restore();
   }
@@ -866,15 +889,71 @@ export function attachDesignWorkspace() {
   function vectorEditTarget(point) {
     const node = vectorEditId && layer(vectorEditId), path = node?.style?.path;
     if (!node || !path) return null;
+    let nearest = null;
+    const consider = (index, key, position) => {
+      if (!position) return;
+      const distance = Math.hypot(position.x - point.x, position.y - point.y);
+      const radius = key === "anchor" ? 14 : 12;
+      if (distance > radius) return;
+      if (!nearest || distance < nearest.distance - .01
+        || Math.abs(distance - nearest.distance) <= .01 && key === "anchor" && nearest.key !== "anchor") nearest = { index, key, distance };
+    };
     for (const [index, entry] of path.points.entries()) {
       for (const key of ["handleIn", "handleOut"]) if (entry[key]) {
-        const handle = vectorPointOnCanvas(node, entry[key]);
-        if (handle && Math.hypot(handle.x - point.x, handle.y - point.y) <= 9) return { index, key };
+        consider(index, key, vectorPointOnCanvas(node, entry[key]));
       }
-      const anchor = vectorPointOnCanvas(node, entry);
-      if (anchor && Math.hypot(anchor.x - point.x, anchor.y - point.y) <= 9) return { index, key: "anchor" };
+      consider(index, "anchor", vectorPointOnCanvas(node, entry));
     }
-    return null;
+    return nearest && { index: nearest.index, key: nearest.key };
+  }
+
+  function vectorSegmentTarget(node, point) {
+    const path = node?.style?.path;
+    if (!path || path.points.length < 2) return null;
+    const segmentCount = path.closed ? path.points.length : path.points.length - 1;
+    let nearest = null;
+    for (let index = 0; index < segmentCount; index++) {
+      const distanceAt = (t) => {
+        const screen = vectorPointOnCanvas(node, vectorSegmentPoint(path, index, t));
+        return screen ? (screen.x - point.x) ** 2 + (screen.y - point.y) ** 2 : Infinity;
+      };
+      const samples = 40;
+      let bestT = 0, bestDistance = distanceAt(0);
+      for (let sample = 1; sample <= samples; sample++) {
+        const t = sample / samples, distance = distanceAt(t);
+        if (distance < bestDistance) { bestT = t; bestDistance = distance; }
+      }
+      let left = Math.max(0, bestT - 1 / samples), right = Math.min(1, bestT + 1 / samples);
+      for (let iteration = 0; iteration < 12; iteration++) {
+        const first = left + (right - left) / 3, second = right - (right - left) / 3;
+        if (distanceAt(first) <= distanceAt(second)) right = second; else left = first;
+      }
+      const t = (left + right) / 2, distance = Math.min(bestDistance, distanceAt(t));
+      if (!nearest || distance < nearest.distance) nearest = { index, t, distance };
+    }
+    return nearest && nearest.distance <= 26 ** 2
+      ? { index: nearest.index, t: Math.max(.02, Math.min(.98, nearest.t)) } : null;
+  }
+
+  function addVectorPoint(node, segment) {
+    if (!node || !segment || worldLayer(node.id)?.locked) return false;
+    try {
+      const style = clone(node.style); style.path = insertVectorPoint(style.path, segment.index, segment.t); delete style.primitive;
+      history.apply({ type: "node", id: node.id, value: { ...clone(node), style } }, "Insert vector point");
+      vectorPointSelection = segment.index + 1; vectorInsertMode = false;
+      edited("Vector point added."); return true;
+    } catch (error) { setStatus(error.message); return false; }
+  }
+
+  function removeSelectedVectorPoint() {
+    const node = vectorEditId && layer(vectorEditId), index = vectorPointSelection;
+    if (!node?.style?.path || index == null || worldLayer(node.id)?.locked) return false;
+    try {
+      const style = clone(node.style); style.path = deleteVectorPoint(style.path, index); delete style.primitive;
+      history.apply({ type: "node", id: node.id, value: { ...clone(node), style } }, "Delete vector point");
+      vectorPointSelection = Math.min(index, style.path.points.length - 1); vectorInsertMode = false;
+      edited("Vector point deleted."); return true;
+    } catch (error) { setStatus(error.message); return false; }
   }
 
   function updateVectorPoint(point) {
@@ -1179,9 +1258,17 @@ export function attachDesignWorkspace() {
     if (vectorEditId) {
       const target = vectorEditTarget(point), node = layer(vectorEditId);
       if (target && node && !worldLayer(node.id)?.locked) {
+        vectorPointSelection = target.key === "anchor" ? target.index : null;
+        vectorInsertMode = false; syncVectorPointControls(node); drawCanvas();
         drag = { kind: "vector-point", pointerId: event.pointerId, id: node.id, index: target.index, key: target.key,
           path: clone(node.style.path), startScreen: point, moved: false };
         captureCanvasPointer(event); event.preventDefault(); return;
+      }
+      if (vectorInsertMode && node && !worldLayer(node.id)?.locked) {
+        const segment = vectorSegmentTarget(node, point);
+        if (segment) addVectorPoint(node, segment);
+        else setStatus("Tap close to a path segment to add a point.");
+        event.preventDefault(); return;
       }
     }
     if (penActive) {
@@ -1591,7 +1678,7 @@ export function attachDesignWorkspace() {
 
   function activateProject(project, { key = null, kind = "design", revision = null, sources: nextSources = new Map() } = {}) {
     cancelDesignRecipeJob("The document changed.");
-    cropModeId = null; penActive = false; pathDraft = null; vectorEditId = null;
+    cropModeId = null; penActive = false; pathDraft = null; vectorEditId = null; vectorPointSelection = null; vectorInsertMode = false;
     clearTimeout(saveTimer); previewTask?.cancel(); previewTask = null; previewEpoch += 1;
     previewBitmap?.close(); previewBitmap = null;
     history = new ProjectHistory(project); pageId = project.slides[0]?.id ?? null;
@@ -1681,6 +1768,10 @@ export function attachDesignWorkspace() {
   get("canvas").addEventListener("pointercancel", canvasPointerCancel);
   get("canvas").addEventListener("dblclick", (event) => {
     if (penActive && pathDraft?.points.length >= 2) { event.preventDefault(); finishPathDraft(false); }
+    else if (vectorEditId && !vectorInsertMode) {
+      const node = layer(vectorEditId), point = pointerPoint(event);
+      if (node && !vectorEditTarget(point) && addVectorPoint(node, vectorSegmentTarget(node, point))) event.preventDefault();
+    }
   });
   get("canvas").addEventListener("contextmenu", (event) => {
     if (penActive && pathDraft) { event.preventDefault(); return; }
@@ -1703,13 +1794,15 @@ export function attachDesignWorkspace() {
   get("canvas").addEventListener("keydown", (event) => {
     if (penActive && event.key === "Escape") { event.preventDefault(); pathDraft = null; drag = null; drawCanvas(); setStatus("Path discarded."); }
     else if (penActive && event.key === "Enter") { event.preventDefault(); finishPathDraft(false); }
-    else if (event.key === "Escape" && vectorEditId) { vectorEditId = null; renderWorkspace(); setStatus("Path point editing closed."); }
+    else if (event.key === "Escape" && vectorEditId && vectorInsertMode) { event.preventDefault(); vectorInsertMode = false; renderWorkspace(); setStatus("Point insertion cancelled."); }
+    else if (event.key === "Escape" && vectorEditId) { vectorEditId = null; vectorPointSelection = null; vectorInsertMode = false; renderWorkspace(); setStatus("Path point editing closed."); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); runHistory(event.shiftKey ? "redo" : "undo"); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") { event.preventDefault(); runHistory("redo"); }
     else if ((event.metaKey || event.ctrlKey) && (event.key === "+" || event.key === "=")) { event.preventDefault(); setCanvasZoom(zoom * 1.25); }
     else if ((event.metaKey || event.ctrlKey) && event.key === "-") { event.preventDefault(); setCanvasZoom(zoom / 1.25); }
     else if (event.key === "0") { event.preventDefault(); fitCanvas(); }
     else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") { event.preventDefault(); selection = { ids: currentPage()?.nodeIds.filter((id) => layer(id)?.visible !== false) ?? [], anchorId: currentPage()?.nodeIds[0] ?? null }; selectionChanged(); }
+    else if (["Delete", "Backspace"].includes(event.key) && vectorEditId && vectorPointSelection != null) { event.preventDefault(); removeSelectedVectorPoint(); }
     else if (["Delete", "Backspace"].includes(event.key)) { event.preventDefault(); deleteSelected(); }
     else if (event.key === "Escape" && cropModeId) {
       if (history?.base) history.cancel(); drag = null; marquee = null; cropModeId = null;
@@ -1739,9 +1832,18 @@ export function attachDesignWorkspace() {
   get("edit-vector").addEventListener("click", () => {
     const id = currentSelection()[0], node = id && layer(id);
     if (node?.kind !== "shape" || node.style?.shape !== "path") return;
-    vectorEditId = vectorEditId === id ? null : id;
-    renderWorkspace(); setStatus(vectorEditId ? "Edit path points · drag anchors or Bézier handles." : "Path point editing closed.");
+    vectorEditId = vectorEditId === id ? null : id; vectorPointSelection = null; vectorInsertMode = false;
+    renderWorkspace(); setStatus(vectorEditId ? "Path points · drag anchors or handles, add a point on a segment, or select one to delete." : "Path point editing closed.");
   });
+  get("vector-add-point").addEventListener("click", () => {
+    const node = vectorEditId && layer(vectorEditId);
+    if (!node || worldLayer(node.id)?.locked || node.style.path.points.length >= 512) return;
+    vectorInsertMode = !vectorInsertMode; vectorPointSelection = null;
+    syncVectorPointControls(node); drawCanvas();
+    if (vectorInsertMode) { get("canvas").focus(); setStatus("Add point · tap close to a path segment."); }
+    else setStatus("Point insertion cancelled.");
+  });
+  get("vector-delete-point").addEventListener("click", removeSelectedVectorPoint);
   get("vector-count").addEventListener("input", () => {
     const sides = Number(get("vector-count").value);
     if (Number.isInteger(sides) && sides >= 3 && sides <= 24) previewVectorPrimitive({ sides });
@@ -2026,6 +2128,8 @@ export function attachDesignWorkspace() {
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
         resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
         canvas: { zoom, panX, panY, geometry: clone(geometry) }, cropModeId,
+        vectorEditing: vectorEditId ? { layerId: vectorEditId, selectedPoint: vectorPointSelection, insertMode: vectorInsertMode,
+          points: (layer(vectorEditId)?.style?.path?.points ?? []).map((point) => vectorPointOnCanvas(layer(vectorEditId), point)) } : null,
         gridTracks: selectedGridFrameId() ? clone(gridGeometryFor()) : null,
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },

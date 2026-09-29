@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resizeSelection, rotateSelection, selectionBounds, zoomAtPoint } from "../src/design/geometry.js";
+import { deleteVectorPoint, insertVectorPoint, vectorSegmentPoint } from "../src/design/vector-path.js";
 
 const size = { width: 1920, height: 1080 };
 const nodes = [
@@ -41,4 +42,40 @@ test("zooming at a pointer keeps the same page point under that pointer", () => 
     y: (geometry.viewportHeight - geometry.height * geometry.scale * 2) / 2 + next.panY, scale: geometry.scale * 2 };
   assert.equal((pointer.x - moved.x) / moved.scale, before.x);
   assert.equal((pointer.y - moved.y) / moved.scale, before.y);
+});
+
+test("inserting an anchor splits a cubic exactly and deleting respects open and closed path minima", () => {
+  const path = { closed: false, points: [
+    { x: .08, y: .18, handleOut: { x: .12, y: .94 } },
+    { x: .91, y: .82, handleIn: { x: .78, y: .04 } },
+    { x: .96, y: .92 },
+  ] }, split = .37;
+  const inserted = insertVectorPoint(path, 0, split);
+  assert.equal(inserted.points.length, 4);
+  assert.equal(path.points.length, 3, "splitting is immutable");
+  for (const t of [.05, .2, .36, .6, .9]) {
+    const originalT = split + (1 - split) * t;
+    const original = vectorSegmentPoint(path, 0, originalT), next = vectorSegmentPoint(inserted, 1, t);
+    assert.ok(Math.abs(original.x - next.x) < 1e-12 && Math.abs(original.y - next.y) < 1e-12,
+      `the second half of the split retains the original curve at ${originalT}`);
+  }
+  for (const t of [.1, .5, .9]) {
+    const original = vectorSegmentPoint(path, 0, split * t), next = vectorSegmentPoint(inserted, 0, t);
+    assert.ok(Math.abs(original.x - next.x) < 1e-12 && Math.abs(original.y - next.y) < 1e-12,
+      `the first half of the split retains the original curve at ${split * t}`);
+  }
+  assert.equal(deleteVectorPoint(inserted, 1).points.length, 3);
+  assert.throws(() => deleteVectorPoint({ closed: false, points: path.points.slice(0, 2) }, 0), /at least 2 points/);
+  assert.throws(() => deleteVectorPoint({ closed: true, points: path.points }, 0), /at least 3 points/);
+  assert.throws(() => insertVectorPoint(path, 0, 1), /valid segment/);
+});
+
+test("vector anchor insertion handles a closing segment and straight geometry", () => {
+  const path = { closed: true, points: [{ x: .15, y: .2 }, { x: .85, y: .2 }, { x: .5, y: .85 }] };
+  const inserted = insertVectorPoint(path, 2, .5);
+  assert.equal(inserted.points.length, 4);
+  const before = vectorSegmentPoint(path, 2, .5), after = inserted.points[3];
+  assert.ok(Math.abs(after.x - .325) < 1e-12 && Math.abs(after.y - .525) < 1e-12, "a straight closing edge inserts its midpoint");
+  assert.deepEqual(after, before);
+  assert.deepEqual(deleteVectorPoint(inserted, 3).points, path.points);
 });

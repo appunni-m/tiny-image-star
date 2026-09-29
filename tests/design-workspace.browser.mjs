@@ -382,6 +382,60 @@ export async function assertDesignWorkspace(browser, address) {
       "undo restores the vector path points");
     await page.locator("#design-redo").click();
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const beforePointInsert = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path, vectorId);
+    const previousViewport = page.viewportSize();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const addPointBox = await page.locator("#design-vector-add-point").boundingBox();
+    assert.ok(addPointBox?.height >= 43 && addPointBox.x >= 0 && addPointBox.x + addPointBox.width <= 390,
+      `mobile anchor editing exposes a touch-sized Add point action: ${JSON.stringify(addPointBox)}`);
+    await page.locator("#design-vector-add-point").click();
+    assert.equal(await page.locator("#design-vector-add-point").getAttribute("aria-pressed"), "true", "Add point enters an explicit segment insertion mode");
+    const curveMidpoint = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), path = state.nodes[id].style.path, frame = state.resolvedFrames[id].frame;
+      const start = path.points[1], end = path.points[2], p0 = { x: start.x, y: start.y }, p1 = start.handleOut ?? p0;
+      const p3 = { x: end.x, y: end.y }, p2 = end.handleIn ?? p3, t = .5;
+      const mix = (a, b) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      const a = mix(p0, p1), b = mix(p1, p2), c = mix(p2, p3), d = mix(a, b), e = mix(b, c), point = mix(d, e);
+      const canvas = document.querySelector("#design-canvas"), bounds = canvas.getBoundingClientRect(), view = state.canvas.geometry;
+      const size = state.variant, angle = (state.resolvedFrames[id].rotation ?? 0) * Math.PI / 180;
+      const center = { x: (frame.x + frame.width / 2) * size.width, y: (frame.y + frame.height / 2) * size.height };
+      const local = { x: (point.x - .5) * frame.width * size.width, y: (point.y - .5) * frame.height * size.height };
+      const pagePoint = { x: center.x + local.x * Math.cos(angle) - local.y * Math.sin(angle), y: center.y + local.x * Math.sin(angle) + local.y * Math.cos(angle) };
+      return { x: bounds.left + view.x + pagePoint.x * view.scale, y: bounds.top + view.y + pagePoint.y * view.scale };
+    }, vectorId);
+    await page.mouse.click(curveMidpoint.x, curveMidpoint.y);
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points.length === 4, vectorId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const insertedPath = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path, vectorId);
+    assert.equal(insertedPath.points.length, 4, "tapping a curved segment splits it in place");
+    const insertedPointIndex = insertedPath.points.findIndex((point) => !beforePointInsert.points.some((old) => old.x === point.x && old.y === point.y));
+    assert.ok(insertedPointIndex >= 0, "the split inserts a distinct node between the original anchors");
+    await page.locator("#design-undo").click();
+    assert.deepEqual(await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path, vectorId), beforePointInsert,
+      "undo removes the inserted anchor and restores the unsplit handles");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points.length === 4, vectorId);
+    assert.equal(await page.locator("#design-edit-vector").getAttribute("aria-pressed"), "true", "history leaves the active path editor open");
+    const insertedAnchor = await page.evaluate((index) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), point = state.vectorEditing.points[index];
+      const bounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: bounds.left + point.x, y: bounds.top + point.y };
+    }, insertedPointIndex);
+    assert.equal((await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().vectorEditing?.layerId)), vectorId,
+      "path node editing remains active after anchor insertion and history replay");
+    await page.mouse.click(insertedAnchor.x, insertedAnchor.y);
+    assert.equal(await page.locator("#design-vector-delete-point").isEnabled(), true,
+      `selecting anchor ${insertedPointIndex} at ${JSON.stringify(insertedAnchor)} enables its deletion control (state: ${JSON.stringify(await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().vectorEditing))}; status: ${await page.locator("#design-vector-point-status").textContent()})`);
+    const deletePointBox = await page.locator("#design-vector-delete-point").boundingBox();
+    assert.ok(deletePointBox?.height >= 43 && deletePointBox.x >= 0 && deletePointBox.x + deletePointBox.width <= 390,
+      `mobile anchor editing exposes a touch-sized Delete point action: ${JSON.stringify(deletePointBox)}`);
+    await page.locator("#design-vector-delete-point").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points.length === 3, vectorId);
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points.length === 4, vectorId);
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points.length === 3, vectorId);
+    await page.setViewportSize(previousViewport);
     await page.locator("#design-add-pen").click();
     assert.equal(await page.locator("#design-add-pen").getAttribute("aria-pressed"), "false", "Pen mode can be exited before selecting layers");
     const withObjects = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());

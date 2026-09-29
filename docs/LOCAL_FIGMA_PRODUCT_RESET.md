@@ -104,7 +104,11 @@ The Pen tool now creates closed filled or open stroked vector paths directly on
 the page. Dragging while placing an anchor creates paired Bézier handles, and
 path points/handles can be moved in place with one undoable edit; paths remain
 ordinary saved shape layers and render through the same local Pillow-RS scene
-preview.
+preview. In path editing mode, anchors can be inserted by tapping a segment or
+double-clicking it; cubic segments are split with De Casteljau so insertion
+preserves the curve. Selecting an anchor exposes a touch-sized delete action,
+with open/closed path minimums enforced. Insertions, deletions, and point moves
+all participate in local undo/redo.
 The responsive shape picker now adds rectangles, rounded rectangles, ellipses,
 lines, arrows, regular polygons, and stars. Line, arrow, polygon, and star
 geometry is stored as editable path data on the same page model. Polygon side
@@ -147,7 +151,7 @@ open; do not describe the project as a production-ready Figma copy.
 | Images and Pillow-RS editing | Partial | Local WASM previews and exports support retained-source image layers, fit/crop, arbitrary canvas rotation, horizontal/vertical flips, color adjustments, direct source-crop creation/move/resize/reset with undo/redo, and opacity. More adjustment controls and remaining legacy operations are pending. |
 | Frames, nesting, constraints, clipping | Partial | Nested frames and common constraints work; full frame behavior and section objects are not implemented. |
 | Auto Layout | Partial | Horizontal/vertical flow, wrap, padding, gaps, space-between/around/evenly distribution, per-axis Fixed/Fill/Hug, Grid auto rows, fixed-pixel/Fractional Fill/content Hug tracks, cell placement, row/column spans, per-child horizontal/vertical alignment overrides, inspector track add/reorder/delete, and direct touch/mouse canvas track resizing and drag-to-reorder work. Absolute positioning, min/max, aspect-ratio, and advanced wrap alignment remain pending. |
-| Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, editable polygon/star geometry, Pen paths, and cubic Bézier handles work. Vector-network joins, boolean operations, and SVG import/export remain pending. |
+| Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, editable polygon/star geometry, Pen paths, cubic Bézier handles, and undoable anchor insertion/deletion work. Vector-network joins, boolean operations, and SVG import/export remain pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
 | Components and design systems | Pending | Components, instances, variants, properties, libraries, and variables/tokens are not implemented. |
