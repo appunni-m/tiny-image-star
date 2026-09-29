@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
-  addGridTrackCommand, deleteGridTrackCommand, moveGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
+  addGridTrackCommand, deleteGridTrackCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
   setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
@@ -387,6 +387,8 @@ test("grid track add, reorder and delete are reversible and preserve spanning ce
         style: { shape: "rectangle" } },
     } });
   const history = new ProjectHistory(project);
+  assert.deepEqual(gridTrackGroupBounds(history.document, "grid-page", "frame", "columns", 1), { first: 0, last: 1 },
+    "a spanning cell joins its columns into one draggable track group");
   history.apply(moveGridTrackCommand(history.document, "grid-page", "frame", "columns", 0, 1), "Move spanning track group");
   assert.deepEqual(history.document.nodes.frame.style.layout.columnTracks, [
     { mode: "fixed", value: 300 }, { mode: "fixed", value: 100 }, { mode: "fixed", value: 200 },
@@ -395,6 +397,25 @@ test("grid track add, reorder and delete are reversible and preserve spanning ce
   assert.deepEqual(history.document.nodes.single.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 1 });
   history.undo();
   assert.deepEqual(history.document.nodes.frame.style.layout.columnTracks[0], { mode: "fixed", value: 100 });
+
+  const fourTracks = structuredClone(project);
+  fourTracks.nodes.frame.style.layout.columns = 4;
+  fourTracks.nodes.frame.style.layout.columnTracks.push({ mode: "fixed", value: 400 });
+  fourTracks.nodes.single.gridPlacement = { row: 1, column: 3, rowSpan: 1, columnSpan: 1 };
+  const reorderHistory = new ProjectHistory(validateProject(fourTracks));
+  reorderHistory.apply(reorderGridTrackCommand(reorderHistory.document, "grid-page", "frame", "columns", 0, 4), "Move span to end");
+  assert.deepEqual(reorderHistory.document.nodes.frame.style.layout.columnTracks.map((track) => track.value), [300, 400, 100, 200]);
+  assert.deepEqual(reorderHistory.document.nodes.wide.gridPlacement, { row: 1, column: 3, rowSpan: 1, columnSpan: 2 });
+  assert.deepEqual(reorderHistory.document.nodes.single.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 1 });
+  reorderHistory.undo();
+  assert.deepEqual(reorderHistory.document.nodes.frame.style.layout.columnTracks.map((track) => track.value), [100, 200, 300, 400]);
+  reorderHistory.redo();
+  assert.deepEqual(reorderHistory.document.nodes.frame.style.layout.columnTracks.map((track) => track.value), [300, 400, 100, 200]);
+
+  const wouldSplitSpan = structuredClone(fourTracks);
+  wouldSplitSpan.nodes.single.gridPlacement = { row: 1, column: 3, rowSpan: 1, columnSpan: 2 };
+  assert.throws(() => reorderGridTrackCommand(validateProject(wouldSplitSpan), "grid-page", "frame", "columns", 0, 3),
+    /split a spanning grid object/, "a drag cannot pull apart another cell's spanning tracks");
 
   history.apply(deleteGridTrackCommand(history.document, "grid-page", "frame", "columns", 0), "Delete first column");
   assert.equal(history.document.nodes.frame.style.layout.columns, 2);

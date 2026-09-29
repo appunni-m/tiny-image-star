@@ -740,6 +740,48 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-redo").click();
     await page.waitForFunction((expected) => window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks[0].value === expected.value,
       { id: gridFrameId, value: gridTrackDrag.after.value });
+    const gridTrackReorder = await page.evaluate((id) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), metrics = state.gridTracks;
+      const canvas = document.querySelector("#design-canvas"), rect = canvas.getBoundingClientRect(), view = state.canvas.geometry;
+      const frame = state.resolvedFrames[id].frame, center = { x: (frame.x + frame.width / 2) * state.variant.width,
+        y: (frame.y + frame.height / 2) * state.variant.height };
+      const angle = metrics.rotation * Math.PI / 180;
+      const screenForLocal = (local) => {
+        const dx = local.x - metrics.width / 2, dy = local.y - metrics.height / 2;
+        const pagePoint = { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+        return { x: rect.left + view.x + pagePoint.x * view.scale, y: rect.top + view.y + pagePoint.y * view.scale };
+      };
+      const gripY = Math.min(metrics.height / 2, Math.max(8, metrics.padding.top / 2));
+      const start = screenForLocal({ x: metrics.columns[0].start + metrics.columns[0].size / 2, y: gripY });
+      const target = screenForLocal({ x: metrics.columns[1].start + metrics.columns[1].size * .75, y: gripY });
+      const fire = (type, pointerId, x, y, buttons = 1) => canvas.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+        pointerId, pointerType: "touch", isPrimary: true, button: 0, buttons, clientX: x, clientY: y }));
+      const childIds = state.pages[1].nodeIds.filter((childId) => state.nodes[childId].parentId === id);
+      const childColumns = (snapshot) => childIds.map((childId, index) => snapshot.nodes[childId].gridPlacement?.column ?? index + 1);
+      const before = state.nodes[id].style.layout.columnTracks.map((track) => ({ ...track }));
+      const beforeColumns = childColumns(state);
+      fire("pointerdown", 87, start.x, start.y); fire("pointermove", 87, target.x, target.y);
+      const during = window.tinyImageStarDesign.getSnapshot(), duringTracks = during.nodes[id].style.layout.columnTracks;
+      const duringColumns = childColumns(during);
+      fire("pointerup", 87, target.x, target.y, 0);
+      const after = window.tinyImageStarDesign.getSnapshot();
+      return { before, beforeColumns, duringTracks, duringColumns, expectedColumns: [...beforeColumns].reverse(),
+        after: after.nodes[id].style.layout.columnTracks };
+    }, gridFrameId);
+    assert.deepEqual(gridTrackReorder.beforeColumns, [2, 1], "track grips begin from the current rendered grid cell order");
+    assert.deepEqual(gridTrackReorder.duringTracks, [...gridTrackReorder.before].reverse(), "dragging a canvas grip previews track order in place");
+    assert.deepEqual(gridTrackReorder.duringColumns, gridTrackReorder.expectedColumns, "objects attached to the moved tracks retain their cell relationship");
+    assert.deepEqual(gridTrackReorder.after, gridTrackReorder.duringTracks, "the drop commits the canvas track order");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((expected) => JSON.stringify(window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks)
+      === JSON.stringify(expected.tracks), { id: gridFrameId, tracks: gridTrackReorder.before });
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((expected) => window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks[0].value
+      === expected.value, { id: gridFrameId, value: gridTrackReorder.after[0].value });
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((expected) => JSON.stringify(window.tinyImageStarDesign.getSnapshot().nodes[expected.id].style.layout.columnTracks)
+      === JSON.stringify(expected.tracks), { id: gridFrameId, tracks: gridTrackReorder.before });
     const gridChildId = await page.evaluate((id) => {
       const snapshot = window.tinyImageStarDesign.getSnapshot();
       return snapshot.pages[1].nodeIds.find((childId) => snapshot.nodes[childId].parentId === id);

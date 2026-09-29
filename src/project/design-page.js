@@ -339,6 +339,11 @@ function gridTrackEditCommand(project, frameId, context, layout, placements, del
   return { type: "group", commands };
 }
 
+function gridTrackRestoreCommand(project, frameId, context) {
+  return { type: "group", commands: [...context.childIds.map((id) => ({ type: "node", id, value: clone(project.nodes[id]) })),
+    { type: "node", id: frameId, value: clone(context.frame) }] };
+}
+
 /** Append one default Fill track; converting auto rows to a numbered grid keeps the new row available. */
 export function addGridTrackCommand(project, pageId, frameId, axis) {
   const context = gridTrackContext(project, pageId, frameId, axis), layout = clone(context.layout);
@@ -418,11 +423,9 @@ export function resizeGridTrackCountCommand(project, pageId, frameId, axis, coun
   return gridTrackEditCommand(project, frameId, context, layout, remapped);
 }
 
-/** Reorder a track one slot; any track connected by a spanning cell moves with it. */
-export function moveGridTrackCommand(project, pageId, frameId, axis, index, delta) {
-  const context = gridTrackContext(project, pageId, frameId, axis), { count } = context;
-  if (!Number.isInteger(index) || index < 0 || index >= count || ![-1, 1].includes(delta)) throw new Error("Invalid grid track move.");
-  const positionKey = axis === "columns" ? "column" : "row", spanKey = axis === "columns" ? "columnSpan" : "rowSpan";
+function gridTrackGroup(context, axis, index) {
+  const count = context.count, positionKey = axis === "columns" ? "column" : "row", spanKey = axis === "columns" ? "columnSpan" : "rowSpan";
+  if (!Number.isInteger(index) || index < 0 || index >= count) throw new Error("Invalid grid track move.");
   const moving = new Set([index]); let changed = true;
   while (changed) {
     changed = false;
@@ -432,15 +435,28 @@ export function moveGridTrackCommand(project, pageId, frameId, axis, index, delt
       for (let track = start; track <= end; track++) if (!moving.has(track)) { moving.add(track); changed = true; }
     }
   }
-  const first = Math.min(...moving), last = Math.max(...moving);
-  if (delta < 0 && first === 0 || delta > 0 && last === count - 1) throw new Error("The selected track group is already at that edge.");
-  const order = Array.from({ length: count }, (_, track) => track);
-  const nextOrder = delta < 0
-    ? [...order.slice(0, first - 1), ...order.slice(first, last + 1), first - 1, ...order.slice(last + 1)]
-    : [...order.slice(0, first), last + 1, ...order.slice(first, last + 1), ...order.slice(last + 2)];
+  return { first: Math.min(...moving), last: Math.max(...moving), positionKey, spanKey };
+}
+
+/** Return the zero-based range of tracks that must move together for one selected track. */
+export function gridTrackGroupBounds(project, pageId, frameId, axis, index) {
+  const { first, last } = gridTrackGroup(gridTrackContext(project, pageId, frameId, axis), axis, index);
+  return { first, last };
+}
+
+/** Reorder one track group to an insertion boundary; spanning cells keep their tracks together. */
+export function reorderGridTrackCommand(project, pageId, frameId, axis, index, insertionIndex) {
+  const context = gridTrackContext(project, pageId, frameId, axis), { count } = context;
+  const { first, last, positionKey, spanKey } = gridTrackGroup(context, axis, index);
+  if (!Number.isInteger(insertionIndex) || insertionIndex < 0 || insertionIndex > count) throw new Error("Invalid grid track destination.");
+  const layout = clone(context.layout), tracks = gridTrackDefinitions(context.layout, axis, count);
+  const originalOrder = Array.from({ length: count }, (_, track) => track);
+  const movedTracks = originalOrder.slice(first, last + 1), remaining = originalOrder.filter((track) => track < first || track > last);
+  if (insertionIndex >= first && insertionIndex <= last + 1)
+    return gridTrackRestoreCommand(project, frameId, context);
+  const destination = insertionIndex < first ? insertionIndex : insertionIndex - movedTracks.length;
+  const nextOrder = [...remaining.slice(0, destination), ...movedTracks, ...remaining.slice(destination)];
   const position = new Map(nextOrder.map((track, at) => [track, at]));
-  const tracks = gridTrackDefinitions(context.layout, axis, count);
-  const layout = clone(context.layout);
   layout[axis === "columns" ? "columnTracks" : "rowTracks"] = nextOrder.map((track) => tracks[track]);
   const placements = new Map();
   for (const [id, placement] of context.allPlacements) {
@@ -451,6 +467,16 @@ export function moveGridTrackCommand(project, pageId, frameId, axis, index, delt
     placements.set(id, { ...clone(placement), [positionKey]: mapped[0] + 1 });
   }
   return gridTrackEditCommand(project, frameId, context, layout, placements);
+}
+
+/** Reorder a track group one slot; any track connected by a spanning cell moves with it. */
+export function moveGridTrackCommand(project, pageId, frameId, axis, index, delta) {
+  const context = gridTrackContext(project, pageId, frameId, axis), { count } = context;
+  const { first, last } = gridTrackGroup(context, axis, index);
+  if (![-1, 1].includes(delta)) throw new Error("Invalid grid track move.");
+  if (delta < 0 && first === 0 || delta > 0 && last === count - 1) throw new Error("The selected track group is already at that edge.");
+  const insertionIndex = delta < 0 ? first - 1 : last + 2;
+  return reorderGridTrackCommand(project, pageId, frameId, axis, index, insertionIndex);
 }
 
 /** Delete one track and its single-track contents; spanning contents shrink into the nearest remaining cells. */

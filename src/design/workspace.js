@@ -1,6 +1,6 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
-  addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, moveGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
+  addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
@@ -553,6 +553,37 @@ export function attachDesignWorkspace() {
     return nearest;
   }
 
+  function gridTrackGripPosition(metrics, axis, track) {
+    return axis === "columns"
+      ? { x: track.start + track.size / 2, y: Math.min(metrics.height / 2, Math.max(8, metrics.padding.top / 2)) }
+      : { x: Math.min(metrics.width / 2, Math.max(8, metrics.padding.left / 2)), y: track.start + track.size / 2 };
+  }
+
+  function gridTrackReorderHit(point) {
+    const frameId = selectedGridFrameId(), metrics = gridGeometryFor(frameId), node = frameId && worldLayer(frameId);
+    if (!metrics || node?.locked || !geometry) return null;
+    const local = gridLocalPoint(frameId, point);
+    if (!local) return null;
+    let nearest = null;
+    for (const [axis, tracks] of [["columns", metrics.columns], ["rows", metrics.rows]]) {
+      if (tracks.length < 2) continue;
+      for (const track of tracks) {
+        const grip = gridTrackGripPosition(metrics, axis, track);
+        const dx = Math.abs(local.x - grip.x) * geometry.scale, dy = Math.abs(local.y - grip.y) * geometry.scale;
+        if (dx > 20 || dy > 18) continue;
+        const distance = Math.hypot(dx, dy);
+        if (!nearest || distance < nearest.distance) nearest = { frameId, axis, index: track.index, distance };
+      }
+    }
+    return nearest;
+  }
+
+  function gridTrackInsertionIndex(metrics, axis, coordinate) {
+    const tracks = metrics[axis];
+    for (const track of tracks) if (coordinate < track.start + track.size / 2) return track.index;
+    return tracks.length;
+  }
+
   function drawGridTrackOverlay(ctx) {
     const frameId = selectedGridFrameId(), metrics = gridGeometryFor(frameId);
     if (!frameId || !metrics) return;
@@ -573,6 +604,22 @@ export function attachDesignWorkspace() {
         const width = axis === "columns" ? 8 : 28, height = axis === "columns" ? 28 : 8;
         ctx.beginPath(); ctx.roundRect(-width / 2, -height / 2, width, height, 4); ctx.fill(); ctx.stroke(); ctx.restore();
       }
+      if (tracks.length > 1) for (const track of tracks) {
+        const point = gridTrackGripPosition(metrics, axis, track), screen = framePointOnCanvas(frameId, point.x, point.y);
+        if (!screen) continue;
+        ctx.save(); ctx.translate(screen.x, screen.y); ctx.rotate(angle);
+        const width = axis === "columns" ? 28 : 12, height = axis === "columns" ? 12 : 28;
+        ctx.fillStyle = "#fff"; ctx.strokeStyle = "#2d7ef7"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.roundRect(-width / 2, -height / 2, width, height, 5); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#2d7ef7";
+        for (const offset of [-3, 0, 3]) {
+          ctx.beginPath();
+          if (axis === "columns") ctx.arc(offset, 0, 1, 0, Math.PI * 2);
+          else ctx.arc(0, offset, 1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
@@ -583,6 +630,45 @@ export function attachDesignWorkspace() {
     drag = { kind: "grid-track", pointerId, frameId: hit.frameId, axis: hit.axis, index: hit.index,
       node: clone(node), metrics, track: clone(track), start: gridLocalPoint(hit.frameId, point), moved: false };
     return true;
+  }
+
+  function beginGridTrackReorder(hit, point, pointerId) {
+    const project = renderProject(), page = currentPage(), metrics = hit && gridGeometryFor(hit.frameId);
+    if (!project || !page || !metrics || worldLayer(hit.frameId)?.locked) return false;
+    const group = gridTrackGroupBounds(project, page.id, hit.frameId, hit.axis, hit.index), start = gridLocalPoint(hit.frameId, point);
+    if (!start) return false;
+    drag = { kind: "grid-reorder", pointerId, frameId: hit.frameId, axis: hit.axis, index: hit.index, group,
+      project, metrics, start, moved: false, previewActive: false };
+    return true;
+  }
+
+  function cancelGridTrackReorder(current, message) {
+    history.cancel(); current.previewActive = false; current.moved = false;
+    renderWorkspace(); schedulePreview(0); setStatus(message);
+  }
+
+  function previewGridTrackReorder(current, point) {
+    const local = gridLocalPoint(current.frameId, point);
+    if (!local || !current.start) return;
+    const coordinate = current.axis === "columns" ? local.x : local.y;
+    const startCoordinate = current.axis === "columns" ? current.start.x : current.start.y;
+    if (Math.abs(coordinate - startCoordinate) * geometry.scale < 8) return;
+    const insertionIndex = gridTrackInsertionIndex(current.metrics, current.axis, coordinate);
+    if (insertionIndex >= current.group.first && insertionIndex <= current.group.last + 1) {
+      if (current.previewActive) cancelGridTrackReorder(current, "Grid track order restored.");
+      return;
+    }
+    try {
+      const command = reorderGridTrackCommand(current.project, currentPage().id, current.frameId, current.axis, current.index, insertionIndex);
+      const before = history.document;
+      history.preview(command);
+      if (history.document !== before) {
+        current.previewActive = true; current.moved = true;
+        edited(`Reordering ${current.axis === "columns" ? "column" : "row"} track…`, { previewOnly: true });
+      }
+    } catch (error) {
+      cancelGridTrackReorder(current, error.message);
+    }
   }
 
   function previewGridTrackResize(current, point) {
@@ -1029,9 +1115,9 @@ export function attachDesignWorkspace() {
   function startPinch() {
     const points = [...touchPoints.values()];
     if (points.length < 2) return;
-    if (drag?.moved && ["layers", "resize", "rotate", "crop", "grid-track"].includes(drag.kind)) {
+    if (drag?.moved && ["layers", "resize", "rotate", "crop", "grid-track", "grid-reorder"].includes(drag.kind)) {
       commitEdit(drag.kind === "layers" ? "Move layers" : drag.kind === "resize" ? "Resize selection" : drag.kind === "rotate" ? "Rotate selection"
-        : drag.kind === "grid-track" ? "Resize grid track" : "Crop image");
+        : drag.kind === "grid-track" ? "Resize grid track" : drag.kind === "grid-reorder" ? "Reorder grid track" : "Crop image");
     }
     drag = null; marquee = null;
     const first = points[0], second = points[1], center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
@@ -1083,6 +1169,10 @@ export function attachDesignWorkspace() {
       }
       return;
     }
+    const gridReorder = gridTrackReorderHit(point);
+    if (gridReorder && beginGridTrackReorder(gridReorder, point, event.pointerId)) {
+      captureCanvasPointer(event); event.preventDefault(); return;
+    }
     const gridTrack = gridTrackHit(point);
     if (gridTrack && beginGridTrackResize(gridTrack, point, event.pointerId)) {
       captureCanvasPointer(event); event.preventDefault(); return;
@@ -1114,8 +1204,9 @@ export function attachDesignWorkspace() {
     if (!drag || drag.pointerId !== event.pointerId) {
       if (penActive && pathDraft) { pathDraft.cursor = pagePoint(point); drawCanvas(); }
       if (event.pointerType !== "touch" && event.buttons === 0) {
-        const gridHandle = !cropModeId && gridTrackHit(point), handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
-        canvas.style.cursor = gridHandle ? gridHandle.axis === "columns" ? "col-resize" : "row-resize" : penActive ? "crosshair" : cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+        const reorderHandle = !cropModeId && gridTrackReorderHit(point), gridHandle = !cropModeId && gridTrackHit(point);
+        const handle = cropModeId ? cropHandleAt(point, cropGeometryFor(cropModeId)) : transformHandleAt(point), canvas = get("canvas");
+        canvas.style.cursor = reorderHandle ? "grab" : gridHandle ? gridHandle.axis === "columns" ? "col-resize" : "row-resize" : penActive ? "crosshair" : cropModeId ? handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : "crosshair" : handle === "rotate" ? "grab" : handle ? ({ n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
           ne: "nesw-resize", sw: "nesw-resize", nw: "nwse-resize", se: "nwse-resize" })[handle] : hitTest(point) ? "move" : "default";
       }
@@ -1151,6 +1242,8 @@ export function attachDesignWorkspace() {
       drag.moved = true; previewCanvasTransform(drag, point, event);
     } else if (drag.kind === "grid-track") {
       previewGridTrackResize(drag, point);
+    } else if (drag.kind === "grid-reorder") {
+      previewGridTrackReorder(drag, point);
     } else if (drag.kind === "pan") {
       const dx = point.x - drag.start.x, dy = point.y - drag.start.y;
       if (Math.hypot(dx, dy) < 1) return;
@@ -1172,6 +1265,7 @@ export function attachDesignWorkspace() {
     if (drag.kind === "path-anchor") { drag = null; drawCanvas(); return; }
     if (drag.kind === "crop" && drag.moved) commitEdit("Crop image");
     if (drag.kind === "grid-track" && drag.moved) commitEdit("Resize grid track");
+    if (drag.kind === "grid-reorder" && drag.moved) commitEdit("Reorder grid track");
     if (drag.kind === "layers" && drag.moved) commitEdit("Move layers");
     if (drag.kind === "resize" && drag.moved) commitEdit("Resize selection");
     if (drag.kind === "rotate" && drag.moved) commitEdit("Rotate selection");
@@ -1193,7 +1287,7 @@ export function attachDesignWorkspace() {
       touchPoints.delete(event.pointerId);
       pathDraft?.points.splice(drag.index, 1); drag = null; drawCanvas(); setStatus("Pen point cancelled."); return;
     }
-    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop", "grid-track", "vector-point"].includes(drag.kind) && drag.moved) {
+    if (drag?.pointerId === event.pointerId && ["layers", "resize", "rotate", "crop", "grid-track", "grid-reorder", "vector-point"].includes(drag.kind) && drag.moved) {
       touchPoints.delete(event.pointerId);
       if (touchPoints.size < 2) pinch = null;
       history.cancel(); drag = null; marquee = null; selectionChanged(); edited("Edit cancelled."); return;
