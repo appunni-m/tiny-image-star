@@ -1,4 +1,5 @@
 import { getNodeColor, getNodePropertyValue } from './model.js';
+import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNodePoint } from './vector-path.js';
 
 const BLUE = '#0d99ff';
@@ -190,8 +191,9 @@ export class SceneRenderer {
     if (!page.children.length) this.drawEmptyHint(cssWidth, cssHeight, dpr, state);
   }
 
-  drawNode(ctx, node, parentX, parentY, assets, draft = false, maskMode = false) {
-    const document = this.getState().document;
+  drawNode(ctx, node, parentX, parentY, assets, draft = false, maskMode = false, renderOptions = {}) {
+    const state = this.getState();
+    const document = state.document;
     if (!getNodePropertyValue(document, node, 'visible')) return;
     const opacity = getNodePropertyValue(document, node, 'opacity');
     const radius = getNodePropertyValue(document, node, 'radius');
@@ -202,13 +204,13 @@ export class SceneRenderer {
     ctx.globalAlpha *= opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
     if (node.type === 'boolean') {
-      this.drawBooleanGroup(ctx, node, x, y, assets, maskMode);
+      this.drawBooleanGroup(ctx, node, x, y, assets, maskMode, renderOptions);
       if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
       ctx.restore();
       return;
     }
     if (node.type === 'group' && node.mask && !maskMode) {
-      this.drawMaskGroup(ctx, node, x, y, assets);
+      this.drawMaskGroup(ctx, node, x, y, assets, renderOptions);
       if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
       ctx.restore();
       return;
@@ -291,15 +293,40 @@ export class SceneRenderer {
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
     if (node.children?.length) {
       if (node.clip) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip(); }
-      for (const child of node.children) this.drawNode(ctx, child, x, y, assets, draft);
+      for (const child of node.children) this.drawNode(ctx, child, x, y, assets, draft, false, renderOptions);
     }
     if (node.type === 'frame' && !node.children.length && !draft) {
       ctx.strokeStyle = 'rgba(30,30,30,.14)'; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.strokeRect(x, y, width, height);
     }
+    if (node.type === 'frame' && !draft && !state.presenting && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
     ctx.restore();
   }
 
-  drawMaskGroup(ctx, node, x, y, assets) {
+  drawLayoutGuides(ctx, frame, x, y, state = this.getState()) {
+    if (!state.showLayoutGuides || frame.rotation || !Array.isArray(frame.layoutGuides) || frame.width <= 0 || frame.height <= 0) return;
+    const guides = frame.layoutGuides.filter(guide => guide.visible);
+    if (!guides.length) return;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x, y, frame.width, frame.height); ctx.clip();
+    for (const guide of guides) {
+      ctx.fillStyle = rgba(guide.color, guide.opacity);
+      if (guide.type === 'grid') {
+        const lines = layoutGuideGridLines(guide, frame.width, frame.height);
+        if (!lines.verticals.length && !lines.horizontals.length) continue;
+        ctx.beginPath();
+        for (const position of lines.verticals) { ctx.moveTo(x + position, y); ctx.lineTo(x + position, y + frame.height); }
+        for (const position of lines.horizontals) { ctx.moveTo(x, y + position); ctx.lineTo(x + frame.width, y + position); }
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = 1 / (state.zoom || 1);
+        ctx.stroke();
+      } else {
+        for (const region of layoutGuideRegions(guide, frame.width, frame.height)) ctx.fillRect(x + region.x, y + region.y, region.width, region.height);
+      }
+    }
+    ctx.restore();
+  }
+
+  drawMaskGroup(ctx, node, x, y, assets, renderOptions = {}) {
     if (!Array.isArray(node.children) || node.children.length < 2 || node.width <= 0 || node.height <= 0) return;
     const transform = ctx.getTransform?.();
     const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
@@ -313,25 +340,25 @@ export class SceneRenderer {
     const maskContext = surface.getContext('2d');
     maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
     const maskNode = node.children.find(child => child.id === node.maskSourceId) || node.children[0];
-    for (const child of node.children) if (child !== maskNode) this.drawNode(maskContext, child, 0, 0, assets);
+    for (const child of node.children) if (child !== maskNode) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
     maskContext.globalCompositeOperation = 'destination-in';
-    this.drawNode(maskContext, maskNode, 0, 0, assets, false, true);
+    this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
     maskContext.globalCompositeOperation = 'source-over';
     ctx.drawImage(surface, x, y, node.width, node.height);
   }
 
-  drawBooleanGroup(ctx, node, x, y, assets, maskMode = false) {
+  drawBooleanGroup(ctx, node, x, y, assets, maskMode = false, renderOptions = {}) {
     const state = this.getState();
     const transform = ctx.getTransform?.();
     const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
-    const surface = this.getBooleanSurface(node, assets, maskMode, contextScale);
+    const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
     ctx.save();
     ctx.globalAlpha *= node.fillOpacity ?? 1;
     ctx.drawImage(surface, x, y, node.width, node.height);
     ctx.restore();
   }
 
-  getBooleanSurface(node, assets, maskMode = false, contextScale = null) {
+  getBooleanSurface(node, assets, maskMode = false, contextScale = null, renderOptions = {}) {
     const state = this.getState();
     const fill = maskMode ? '#ffffff' : getNodeColor(state.document, node, 'fill');
     const requestedScale = contextScale ?? (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
@@ -360,7 +387,7 @@ export class SceneRenderer {
         else if (operation === 'subtract') mask.globalCompositeOperation = 'destination-out';
         else if (operation === 'intersect') mask.globalCompositeOperation = 'destination-in';
         else if (operation === 'exclude') mask.globalCompositeOperation = 'xor';
-        this.drawNode(mask, child, 0, 0, assets, false, true);
+        this.drawNode(mask, child, 0, 0, assets, false, true, renderOptions);
         mask.restore();
         if (!child.visible && operation === 'intersect') {
           mask.clearRect(0, 0, node.width, node.height);

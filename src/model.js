@@ -79,6 +79,7 @@ const prototypeTriggers = new Set(['on-click', 'while-hovering']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
+const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
 const componentOverrideProperties = new Set([
@@ -87,7 +88,7 @@ const componentOverrideProperties = new Set([
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -113,6 +114,15 @@ export function createNode(type, overrides = {}) {
 
 export function createExportSetting(overrides = {}) {
   return { id: createId('export'), format: 'png', scale: 1, suffix: '', quality: 90, ...overrides };
+}
+
+export function createLayoutGuide(type = 'grid', overrides = {}) {
+  if (!layoutGuideTypes.has(type)) throw new TypeError(`Unsupported layout guide type: ${type}`);
+  return {
+    id: createId('guide'), type, visible: true, color: '#ff0000', opacity: 0.1,
+    size: 10, count: 4, alignment: 'stretch', gutter: 20, margin: 20, bandSize: 80, offset: 0,
+    ...overrides
+  };
 }
 
 export function getActivePage(document) {
@@ -1057,6 +1067,25 @@ export function validateDocument(document) {
             || !Number.isInteger(setting.quality) || setting.quality < 1 || setting.quality > 100) return true;
           settingIds.add(setting.id); return false;
         })) throw new TypeError(`Invalid export settings on layer ${node.name || node.id}.`);
+      }
+      if (node.layoutGuides != null) {
+        const guideIds = new Set();
+        if (node.type !== 'frame' || !Array.isArray(node.layoutGuides) || node.layoutGuides.length > 32 || node.layoutGuides.some(guide => {
+          const validMeasurement = value => Number.isFinite(value) && value >= 0 && value <= 10_000;
+          if (!guide || typeof guide.id !== 'string' || !guide.id || guideIds.has(guide.id)
+            || !layoutGuideTypes.has(guide.type) || typeof guide.visible !== 'boolean'
+            || !/^#[0-9a-f]{6}$/i.test(guide.color) || !Number.isFinite(guide.opacity) || guide.opacity < 0 || guide.opacity > 1) return true;
+          if (guide.type === 'grid') {
+            if (!Number.isFinite(guide.size) || guide.size < 1 || guide.size > 500) return true;
+          } else {
+            const alignments = guide.type === 'columns' ? ['stretch', 'left', 'center', 'right'] : ['stretch', 'top', 'center', 'bottom'];
+            if (!Number.isInteger(guide.count) || guide.count < 1 || guide.count > 64 || !alignments.includes(guide.alignment)
+              || !validMeasurement(guide.gutter) || !validMeasurement(guide.margin)
+              || !Number.isFinite(guide.bandSize) || guide.bandSize < 1 || guide.bandSize > 10_000
+              || !validMeasurement(guide.offset)) return true;
+          }
+          guideIds.add(guide.id); return false;
+        })) throw new TypeError(`Invalid layout guides on layer ${node.name || node.id}.`);
       }
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout) {

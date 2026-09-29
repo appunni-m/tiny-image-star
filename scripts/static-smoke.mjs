@@ -10,7 +10,7 @@ assert.match(index, /src="\.\/src\/main\.js"/, 'the deployed page must load its 
 assert.doesNotMatch(index, /(?:src|href)="\/(?!\/)/, 'the deployed page must not use root-absolute assets');
 
 for (const path of [
-  'styles.css', 'src/main.js', 'src/image-worker.js', 'wasm/pillow_rs_js.js',
+  'styles.css', 'src/main.js', 'src/layout-guides.js', 'src/image-worker.js', 'wasm/pillow_rs_js.js',
   'wasm/pillow_rs_js_bg.wasm', 'wasm/runtime.json', 'wasm/PILLOW_RS_LICENSE.txt'
 ]) await access(resolve(root, path));
 

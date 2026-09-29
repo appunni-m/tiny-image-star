@@ -1,6 +1,6 @@
 import {
   addNode, addVariableMode, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet,
-  createDocument, createExportSetting, createId, createImageRecipe, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, releaseMaskGroup, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
@@ -24,9 +24,10 @@ const state = {
   assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
-  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '',
+  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true,
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
   pendingVariableDialog: null,
+  layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
@@ -260,6 +261,30 @@ function autoLayoutSection(node) {
     : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
+function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 1) {
+  return `<label class="layout-guide-field"><span>${label}</span><input type="number" min="${min}" max="${max}" step="${step}" value="${value}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="${property}" aria-label="${label}"/></label>`;
+}
+function layoutGuidesSection(node) {
+  const guides = node.layoutGuides || [];
+  const types = [['grid','Grid'],['columns','Columns'],['rows','Rows']];
+  const rows = guides.map(guide => {
+    const typeOptions = types.map(([value, label]) => `<option value="${value}"${guide.type === value ? ' selected' : ''}>${label}</option>`).join('');
+    const alignmentOptions = guide.type === 'columns'
+      ? [['stretch','Stretch'],['left','Left'],['center','Center'],['right','Right']]
+      : [['stretch','Stretch'],['top','Top'],['center','Center'],['bottom','Bottom']];
+    const alignment = guide.type === 'grid' ? '' : `<label class="layout-guide-field"><span>Type</span><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="alignment" aria-label="Guide placement">${alignmentOptions.map(([value, label]) => `<option value="${value}"${guide.alignment === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
+    const geometry = guide.type === 'grid'
+      ? guideNumberField(guide, 'Size', 'size', guide.size, 1, 500)
+      : `<div class="layout-guide-fields">${guideNumberField(guide, 'Count', 'count', guide.count, 1, 64)}${alignment}${guide.alignment === 'stretch' ? `${guideNumberField(guide, 'Margin', 'margin', guide.margin)}${guideNumberField(guide, 'Gutter', 'gutter', guide.gutter)}` : `${guideNumberField(guide, guide.type === 'columns' ? 'Width' : 'Height', 'bandSize', guide.bandSize, 1)}${['left','right','top','bottom'].includes(guide.alignment) ? guideNumberField(guide, 'Offset', 'offset', guide.offset) : ''}`}</div>`;
+    return `<div class="layout-guide-card" data-layout-guide="${escapeHtml(guide.id)}"><div class="layout-guide-heading"><button class="tiny-icon-button layout-guide-visibility" type="button" data-action="toggle-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="${guide.visible ? 'Hide' : 'Show'} this guide" aria-pressed="${guide.visible}">${guide.visible ? '◉' : '○'}</button><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="type" aria-label="Layout guide type">${typeOptions}</select><button class="tiny-icon-button layout-guide-remove" type="button" data-action="remove-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="Remove layout guide">×</button></div>${geometry}<div class="layout-guide-appearance"><label><span>Color</span><input type="color" value="${escapeHtml(guide.color)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="color" aria-label="Guide color"/></label><label class="layout-guide-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(guide.opacity * 100)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="opacity" aria-label="Guide opacity"/><output>${Math.round(guide.opacity * 100)}%</output></label></div></div>`;
+  }).join('');
+  const add = guides.length >= 32
+    ? '<div class="image-properties-note">This frame has reached the 32-guide limit.</div>'
+    : `<div class="layout-guide-adds">${types.map(([type, label]) => `<button type="button" data-action="add-layout-guide" data-guide-type="${type}">＋ ${label}</button>`).join('')}</div>`;
+  const empty = guides.length ? '' : '<div class="image-properties-note">Add grid, row, or column guides. Combine them to build a precise frame layout.</div>';
+  const rotationHint = guides.length ? '<div class="image-properties-note">Guides are shown while this frame is unrotated.</div>' : '';
+  return section('Layout guides', `${rows}${empty}${rotationHint}${add}`);
+}
 function gridPlacementSection(node, parent) {
   const cell = { row: 1, column: 1, rowSpan: 1, columnSpan: 1, alignX: 'start', alignY: 'start', ...(node.gridCell || {}) };
   const automatic = parent.autoLayout.autoPositioning !== false;
@@ -379,7 +404,7 @@ function renderInspector() {
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
-  if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node);
+  if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
     if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
@@ -1519,10 +1544,13 @@ function openFileMenu(x, y) {
     { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
     { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
     { separator: true },
+    { label: `${state.showLayoutGuides ? '✓' : '○'} Layout guides`, shortcut: '⇧G', action: toggleLayoutGuides },
+    { separator: true },
     { label: 'Undo', shortcut: '⌘Z', action: undo, disabled: !history.canUndo },
     { label: 'Redo', shortcut: '⌘⇧Z', action: redo, disabled: !history.canRedo }
   ], x, y);
 }
+function toggleLayoutGuides() { state.showLayoutGuides = !state.showLayoutGuides; renderer.invalidate(); }
 
 function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
@@ -1870,7 +1898,7 @@ async function renderAndDownload(ids, setting, baseName) {
   context.scale(scale, scale); context.translate(-left, -top);
   for (const id of ids) {
     const tree = exportRenderTree(id);
-    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets);
+    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, { showLayoutGuides: false });
   }
   const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }[setting.format];
   const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[setting.format];
@@ -1903,6 +1931,42 @@ async function exportSelectionPng() {
   catch (error) { showToast(error.message || 'Could not export this selection.'); }
 }
 
+function updateLayoutGuide(input, finalize = false) {
+  const node = selectedNodes()[0];
+  const guide = node?.layoutGuides?.find(item => item.id === input.dataset.guideId);
+  if (node?.type !== 'frame' || !guide) return;
+  const property = input.dataset.guideField;
+  let value = input.value;
+  if (property === 'opacity') value = Number(value) / 100;
+  else if (input.type === 'number') {
+    value = Number(value);
+    if (!Number.isFinite(value) || value < Number(input.min) || value > Number(input.max) || (property === 'count' && !Number.isInteger(value))) {
+      if (finalize) {
+        const hadEdit = state.layoutGuideControlEdit;
+        state.layoutGuideControlEdit = false; renderInspector();
+        if (hadEdit) queueSave();
+      }
+      return;
+    }
+  }
+  if (property === 'color' && !/^#[0-9a-f]{6}$/i.test(value)) return;
+  if (guide[property] !== value) {
+    if (!state.layoutGuideControlEdit) { checkpoint('Edit layout guide'); state.layoutGuideControlEdit = true; }
+    guide[property] = value;
+    if (property === 'type') {
+      const valid = value === 'columns' ? ['stretch', 'left', 'center', 'right'] : value === 'rows' ? ['stretch', 'top', 'center', 'bottom'] : [];
+      if (value !== 'grid' && !valid.includes(guide.alignment)) guide.alignment = 'stretch';
+    }
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    renderer.invalidate();
+  }
+  if (finalize && state.layoutGuideControlEdit) {
+    state.layoutGuideControlEdit = false;
+    renderInspector(); queueSave();
+  }
+}
+
 function updateExportSetting(input) {
   const node = selectedNodes()[0];
   const setting = node?.exportSettings?.find(item => item.id === input.dataset.exportId);
@@ -1919,7 +1983,32 @@ function updateExportSetting(input) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
-  if (action === 'add-export-setting' && node) {
+  if (action === 'add-layout-guide' && node?.type === 'frame') {
+    node.layoutGuides ||= [];
+    if (node.layoutGuides.length >= 32) { showToast('A frame can have up to 32 layout guides.'); return; }
+    checkpoint('Add layout guide'); node.layoutGuides.push(createLayoutGuide(details.guideType || 'grid'));
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'remove-layout-guide' && node?.type === 'frame') {
+    const guides = node.layoutGuides || [];
+    if (!guides.some(guide => guide.id === details.guideId)) return;
+    checkpoint('Remove layout guide'); node.layoutGuides = guides.filter(guide => guide.id !== details.guideId);
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (!node.layoutGuides.length) {
+      if (instanceRoot) node.layoutGuides = [];
+      else delete node.layoutGuides;
+    }
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'toggle-layout-guide' && node?.type === 'frame') {
+    const guide = node.layoutGuides?.find(item => item.id === details.guideId);
+    if (!guide) return;
+    checkpoint('Toggle layout guide'); guide.visible = !guide.visible;
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'layoutGuides');
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'add-export-setting' && node) {
     if ((node.exportSettings || []).length >= 8) { showToast('A layer can have up to 8 export settings.'); return; }
     checkpoint('Add export setting');
     node.exportSettings ||= [];
@@ -2076,6 +2165,12 @@ function initEvents() {
   $('#inspector-content').addEventListener('input', event => {
     const quality = event.target.closest('[data-export-field="quality"]');
     if (quality) { quality.parentElement.querySelector('output').value = `${quality.value}%`; return; }
+    const guideField = event.target.closest('[data-guide-field]');
+    if (guideField) {
+      if (guideField.dataset.guideField === 'opacity') guideField.parentElement.querySelector('output').value = `${guideField.value}%`;
+      updateLayoutGuide(guideField);
+      return;
+    }
     updateInspectorInput(event);
     if (event.target.id === 'prototype-duration') {
       state.prototypeDuration = Number(event.target.value);
@@ -2084,6 +2179,8 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    const guideField = event.target.closest('[data-guide-field]');
+    if (guideField) { updateLayoutGuide(guideField, true); return; }
     const exportField = event.target.closest('[data-export-field]');
     if (exportField) { updateExportSetting(exportField); return; }
     if (event.target.matches('[data-prop]')) finishInspectorInput();
@@ -2222,6 +2319,7 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (event.shiftKey && key === 'g') { event.preventDefault(); toggleLayoutGuides(); return; }
   if (key === 'escape' && state.presenting?.overlays.length) { event.preventDefault(); backPresentation(); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
