@@ -1,5 +1,6 @@
 import { getNodeColor, getNodePropertyValue } from './model.js';
 import { buildLayerEffectFilter } from './layer-effects.js';
+import { gradientFillToCSS } from './fills.js';
 
 function number(value) {
   const parsed = Number(value);
@@ -115,7 +116,9 @@ function cssForEntry(document, entry) {
   } else {
     const fill = getNodeColor(document, node, 'fill');
     const background = cssColor(fill, node.fillOpacity ?? 1);
-    if (background && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background-color: ${background};`);
+    const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1);
+    if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background: ${gradientBackground};`);
+    else if (background && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background-color: ${background};`);
     if (node.type === 'line') {
       const stroke = cssColor(getNodeColor(document, node, 'stroke'));
       if (stroke && Number(node.strokeWidth) > 0) declarations.push(`border-top: ${number(node.strokeWidth)}px solid ${stroke};`);
@@ -150,6 +153,7 @@ function summaryForEntry(document, entry) {
     opacity: getNodePropertyValue(document, node, 'opacity') ?? 1
   };
   if (fill) summary.color = fill;
+  if (node.fillGradient) summary.fillGradient = node.fillGradient;
   if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = { color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth };
   if (node.type === 'text') {
     summary.text = getNodePropertyValue(document, node, 'text');

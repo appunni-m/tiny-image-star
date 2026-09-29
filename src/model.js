@@ -1,4 +1,5 @@
 import { isValidLayerEffects } from './layer-effects.js';
+import { isValidGradientFill } from './fills.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -94,6 +95,7 @@ const componentOverrideProperties = new Set([
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
+  'fillGradient',
   'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
 
@@ -135,6 +137,18 @@ export function createLayerEffect(type, overrides = {}) {
   if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
   if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, radius: 4, ...overrides };
   throw new TypeError(`Unsupported layer effect: ${type}`);
+}
+
+export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
+  if (!['linear', 'radial'].includes(type)) throw new TypeError(`Unsupported gradient fill: ${type}`);
+  if (!/^#[0-9a-f]{6}$/i.test(firstColor)) throw new TypeError('Gradient stops require six-digit hex colors.');
+  return {
+    type, angle: 0,
+    stops: [
+      { id: createId('stop'), color: firstColor, position: 0 },
+      { id: createId('stop'), color: '#ffffff', position: 1 }
+    ]
+  };
 }
 
 function normalizeCommentText(text) {
@@ -1302,6 +1316,9 @@ export function validateDocument(document) {
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
+      if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
+        && !(node.type === 'path' && node.closed) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
+      if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
@@ -1381,6 +1398,8 @@ export function validateDocument(document) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
+          if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
         }
       }
     });

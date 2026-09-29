@@ -214,6 +214,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .property-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; color: #444; font-size: 11px; font-weight: 550; }
 .property-heading .tiny-icon-button { margin: -5px -5px -5px 0; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.fill-type-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; margin: 2px 0 8px; color: #777; font-size: 10px; }
+.fill-type-row .select-field { width: 100%; min-width: 0; height: 29px; }
+.gradient-stops { display: grid; gap: 6px; margin: 8px 0; }
+.gradient-stop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 30px; align-items: end; gap: 6px; }
+.gradient-stop-row label { min-width: 0; display: grid; gap: 3px; color: #888; font-size: 9px; }
+.gradient-stop-row input[type=color] { width: 100%; min-width: 0; height: 29px; padding: 2px; border: 1px solid #dedede; border-radius: 5px; background: #fff; }
+.gradient-stop-row input[type=number] { width: 100%; min-width: 0; height: 29px; padding: 0 5px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fff; color: #444; font-size: 11px; }
 .property-field { min-width: 0; height: 29px; display: flex; align-items: center; border: 1px solid transparent; border-radius: 5px; background: #f6f6f6; }
 .property-field:focus-within { border-color: #93cef6; background: #fff; }
 .property-field label { width: 25px; flex: 0 0 25px; color: #929292; text-align: center; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -471,6 +478,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layer-effect-heading label, .effect-color-row label { font-size: 11px; }
   .effect-color-row input[type=color] { width: 36px; height: 34px; }
   .effect-opacity output { min-width: 36px; }
+  .fill-type-row { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
+  .fill-type-row .select-field { height: 38px; font-size: 12px; }
+  .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(72px, .8fr) 38px; gap: 8px; }
+  .gradient-stop-row label { font-size: 10px; }
+  .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
   .export-setting-row .select-field, .export-suffix input { height: 38px; font-size: 12px; }
   .export-setting-actions .secondary-button, .export-setting-actions .tiny-icon-button { min-height: 40px; height: 40px; }
   .export-setting-actions .tiny-icon-button { width: 40px; }

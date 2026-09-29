@@ -3,6 +3,7 @@ import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
 import { measureTrackedText, textGraphemes, wrapText } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
+import { createGradientPaint } from './fills.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -341,17 +342,26 @@ export class SceneRenderer {
       const fill = getNodeColor(document, node, 'fill');
       for (const face of node.faces || []) {
         const faceFill = face.fill ?? fill;
-        if (!faceFill || faceFill === 'transparent') continue;
+        if ((!faceFill || faceFill === 'transparent') && !node.fillGradient) continue;
         ctx.beginPath();
         if (traceVectorNetworkFace(ctx, node, face, x, y)) {
-          ctx.fillStyle = rgba(faceFill, (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1));
+          const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
+          ctx.save();
+          ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
+          ctx.fillStyle = gradient || rgba(faceFill || fill || '#000000', 1);
           ctx.fill();
+          ctx.restore();
         }
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
-      if (fill && fill !== 'transparent' && node.type !== 'line' && (node.type !== 'path' || node.closed)) { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
+      if ((fill && fill !== 'transparent' || node.fillGradient) && node.type !== 'line' && (node.type !== 'path' || node.closed)) {
+        const gradient = createGradientPaint(ctx, node.fillGradient, x, y, width, height);
+        if (gradient) {
+          ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.fillStyle = gradient; ctx.fill(); ctx.restore();
+        } else { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
+      }
       if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     }
 
@@ -553,7 +563,7 @@ export class SceneRenderer {
       }
       mask.save();
       mask.globalCompositeOperation = 'source-in';
-      mask.fillStyle = fill;
+      mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
       mask.fillRect(0, 0, node.width, node.height);
       mask.restore();
       entry = { surface, pixels: width * height };

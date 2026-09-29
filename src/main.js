@@ -1,6 +1,6 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
@@ -237,6 +237,13 @@ function variablePropertyBindingControl(node, property, label) {
   }).join('');
   return `<label class="variable-binding-row"><span>${escapeHtml(label)}</span><select class="select-field" data-variable-property-binding="${property}" aria-label="${escapeHtml(label)} variable"><option value="">No variable</option>${options}</select></label>`;
 }
+function gradientFillControls(node) {
+  const gradient = node.fillGradient;
+  if (!gradient) return '';
+  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color" data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position" data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
+  const angle = gradient.type === 'linear' ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle" value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
+  return `${angle}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Drag stop positions by changing percentages. Gradients stay editable in the design.</div>`;
+}
 function transformSection(node) {
   const opacity = getNodePropertyValue(state.document, node, 'opacity');
   const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
@@ -244,13 +251,17 @@ function transformSection(node) {
 }
 function appearanceSection(node) {
   const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
-  const fill = hasFill ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
-  const fillVariable = hasFill ? variableBindingControl(node, 'fill') : '';
+  const fillType = node.fillGradient?.type || 'solid';
+  const fillTypeControl = hasFill ? `<label class="fill-type-row"><span>Fill type</span><select class="select-field" data-prop="fillType" aria-label="Fill type"><option value="solid"${fillType === 'solid' ? ' selected' : ''}>Solid</option><option value="linear"${fillType === 'linear' ? ' selected' : ''}>Linear gradient</option><option value="radial"${fillType === 'radial' ? ' selected' : ''}>Radial gradient</option></select></label>` : '';
+  const fill = hasFill && !node.fillGradient ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
+  const fillVariable = hasFill && !node.fillGradient ? variableBindingControl(node, 'fill') : '';
+  const gradient = gradientFillControls(node);
+  const gradientOpacity = hasFill && node.fillGradient ? `<div class="property-grid">${numberField('Opacity %', 'fillOpacity', Math.round((node.fillOpacity ?? 1) * 100), 1, 0, 100)}</div>` : '';
   const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>` : '';
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
-  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
-  const body = `${fill}${fillVariable}${stroke}${styleActions}${radius}`;
+  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.fillGradient ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
+  const body = `${fillTypeControl}${fill}${fillVariable}${gradient}${gradientOpacity}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -1384,6 +1395,25 @@ function zoomToSelection() {
   updateZoomUI(); renderer.invalidate();
 }
 
+function updateGradientInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  const gradient = node?.fillGradient;
+  if (!gradient || node.locked) return;
+  if (!state.controlEdit) { checkpoint('Edit gradient fill'); state.controlEdit = true; }
+  if (input.dataset.gradientField === 'angle' && Number.isFinite(Number(input.value))) gradient.angle = Math.max(0, Math.min(359, Number(input.value)));
+  else {
+    const stop = gradient.stops.find(item => item.id === input.dataset.gradientStopId);
+    if (!stop) return;
+    if (input.dataset.gradientField === 'color') stop.color = input.value;
+    else if (input.dataset.gradientField === 'position' && Number.isFinite(Number(input.value))) {
+      stop.position = Math.max(0, Math.min(1, Number(input.value) / 100));
+      gradient.stops.sort((a, b) => a.position - b.position);
+    } else return;
+  }
+  recordNodeComponentOverrides(node, ['fillGradient']);
+  renderer.invalidate();
+}
+
 function updateLayerEffectInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
   const effect = node?.effects?.find(item => item.id === input.dataset.effectId);
@@ -1420,7 +1450,19 @@ function updateInspectorInput(event) {
     let adjustedSizeLimit = null;
     const variableProperty = prop === 'fill' ? 'fillVariableId' : prop === 'color' ? 'textVariableId' : prop === 'stroke' ? 'strokeVariableId' : null;
     const boundVariableId = node.variableBindings?.[prop];
-    if (boundVariableId) setNodePropertyValue(node, prop, propertyValue);
+    if (prop === 'fillType') {
+      if (value === 'solid') {
+        if (instanceRoot) node.fillGradient = null;
+        else delete node.fillGradient;
+      } else {
+        const baseColor = getNodeColor(state.document, node, 'fill');
+        if (!node.fillGradient) node.fillGradient = createGradientFill(value, /^#[0-9a-f]{6}$/i.test(baseColor || '') ? baseColor : '#d9d9d9');
+        else node.fillGradient.type = value;
+        if (instanceRoot) { node.fillVariableId = null; node.fillStyleId = null; }
+        else { delete node.fillVariableId; delete node.fillStyleId; }
+      }
+    }
+    else if (boundVariableId) setNodePropertyValue(node, prop, propertyValue);
     else if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
     else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
     else if (variableProperty && instanceRoot) { delete node[variableProperty]; if (prop === 'fill') delete node.fillStyleId; if (prop === 'color') delete node.textStyleId; node[prop] = value; }
@@ -1475,7 +1517,11 @@ function updateInspectorInput(event) {
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
     if (instanceRoot) {
-      recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop);
+      recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : prop);
+      if (prop === 'fillType' && value !== 'solid') {
+        recordComponentOverride(instanceRoot, node, 'fillVariableId');
+        recordComponentOverride(instanceRoot, node, 'fillStyleId');
+      }
       if (node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
       if (node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
       if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
@@ -2501,6 +2547,25 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'align-selection') alignSelectedLayers(details.alignMode);
+  else if (action === 'add-gradient-stop' && node?.fillGradient && !node.locked) {
+    const stops = [...node.fillGradient.stops].sort((a, b) => a.position - b.position);
+    if (stops.length >= 8) { showToast('A gradient can have up to 8 color stops.'); return; }
+    let left = stops[0]; let right = stops[1];
+    for (let index = 1; index < stops.length - 1; index += 1) {
+      if (stops[index + 1].position - stops[index].position > right.position - left.position) { left = stops[index]; right = stops[index + 1]; }
+    }
+    checkpoint('Add gradient stop');
+    node.fillGradient.stops.push({ id: createId('stop'), color: left.color, position: (left.position + right.position) / 2 });
+    node.fillGradient.stops.sort((a, b) => a.position - b.position);
+    recordNodeComponentOverrides(node, ['fillGradient']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'remove-gradient-stop' && node?.fillGradient && !node.locked) {
+    if (node.fillGradient.stops.length <= 2 || !node.fillGradient.stops.some(stop => stop.id === details.stopId)) return;
+    checkpoint('Remove gradient stop');
+    node.fillGradient.stops = node.fillGradient.stops.filter(stop => stop.id !== details.stopId);
+    recordNodeComponentOverrides(node, ['fillGradient']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  }
   else if (action === 'add-layer-effect' && node && !node.locked) {
     if ((node.effects || []).length >= 8) { showToast('A layer can have up to 8 effects.'); return; }
     try {
@@ -2697,6 +2762,8 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    const gradientField = event.target.closest('[data-gradient-field]');
+    if (gradientField) { updateGradientInput(gradientField); return; }
     const effectField = event.target.closest('[data-effect-field]');
     if (effectField) { updateLayerEffectInput(effectField); return; }
     const networkFace = event.target.closest('[data-network-face-fill], [data-network-face-opacity]');
@@ -2717,6 +2784,7 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-network-face-fill], [data-network-face-opacity]')) { finishInspectorInput(); return; }
     const guideField = event.target.closest('[data-guide-field]');

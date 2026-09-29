@@ -1,4 +1,4 @@
-import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createLayerEffect, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { SceneRenderer } from '../src/renderer.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 
@@ -821,7 +821,26 @@ try {
   const blurPixel = effectContext.getImageData(9, 15, 1, 1).data[3];
   assert(blurPixel > 0, 'layer blur should spread color beyond the original shape edge');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true })}`;
+  const gradientDocument = createDocument();
+  const linearFill = createGradientFill('linear', '#ff0000');
+  linearFill.stops[1].color = '#0000ff';
+  const gradientNode = createNode('rectangle', { x: 8, y: 8, width: 40, height: 20, fillGradient: linearFill });
+  addNode(gradientDocument, gradientNode);
+  effectRenderer.getState = () => ({ document: gradientDocument, assets: new Map(), previews: new Map(), zoom: 1, outlineMode: false, presenting: false });
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, gradientNode, 0, 0, new Map());
+  const gradientLeft = [...effectContext.getImageData(12, 18, 1, 1).data];
+  const gradientRight = [...effectContext.getImageData(44, 18, 1, 1).data];
+  assert(gradientLeft[0] > gradientLeft[2] && gradientRight[2] > gradientRight[0], `linear gradient should interpolate across the filled shape (${gradientLeft.join(',')} / ${gradientRight.join(',')})`);
+  gradientNode.fillGradient = createGradientFill('radial', '#ff0000');
+  gradientNode.fillGradient.stops[1].color = '#0000ff';
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, gradientNode, 0, 0, new Map());
+  const radialCenter = [...effectContext.getImageData(28, 18, 1, 1).data];
+  const radialEdge = [...effectContext.getImageData(9, 18, 1, 1).data];
+  assert(radialCenter[0] > radialCenter[2] && radialEdge[2] > radialEdge[0], `radial gradient should radiate from the center (${radialCenter.join(',')} / ${radialEdge.join(',')})`);
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

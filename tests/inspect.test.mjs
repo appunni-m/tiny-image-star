@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, bindColorVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, findNode } from '../src/model.js';
+import { addNode, bindColorVariable, createDocument, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, findNode } from '../src/model.js';
 import { buildInspectOutput } from '../src/inspect.js';
 
 test('Inspect output reports page-space geometry, resolved styles, text metrics and exact layer JSON', () => {
@@ -86,4 +86,16 @@ test('Inspect output hands off enabled layer effects as CSS filters and structur
   const output = buildInspectOutput(document, [findNode(document, shape.id)]);
   assert.match(output.css, /filter: drop-shadow\(4px 8px 6px rgba\(0, 0, 0, 0\.3\)\);/);
   assert.deepEqual(output.layers[0].effects, shape.effects);
+});
+
+test('Inspect output includes editable gradient fills in CSS and structured layer data', () => {
+  const document = createDocument();
+  const gradient = createGradientFill('linear', '#ff0000');
+  gradient.stops[1].color = '#0000ff';
+  gradient.angle = 45;
+  const shape = createNode('rectangle', { fillGradient: gradient, fillOpacity: 0.5 });
+  addNode(document, shape);
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.match(output.css, /background: linear-gradient\(135deg, rgba\(255, 0, 0, 0\.5\) 0%, rgba\(0, 0, 255, 0\.5\) 100%\);/);
+  assert.deepEqual(output.layers[0].fillGradient, gradient);
 });
