@@ -239,6 +239,5 @@ revisions, and the page job panel exposes progress, scheduler mode,
 pause/resume, and cancel; the older batch gallery also has format-aware recipe
 jobs and a global processing bar. These paths still have separate document and
 job state, so unification remains required. The next major Figma gaps are
-vector editing: parametric shape controls,
-vector-network joins, boolean operations, and SVG import/export remain pending,
-followed by layout guides, components/variables, and prototypes.
+vector-network joins, boolean operations, and SVG import/export, followed by
+layout guides, components/variables, and prototypes.
