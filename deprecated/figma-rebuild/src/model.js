@@ -14,6 +14,7 @@ export function createDocument() {
     activePageId: pageId,
     pages: [{ id: pageId, name: 'Page 1', children: [] }],
     components: [],
+    componentSets: [],
     recipes: [],
     colorStyles: [],
     prototypeStartPoint: null,
@@ -35,7 +36,7 @@ const defaults = {
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] }
 };
 const componentOverrideProperties = new Set([
-  'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
+  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'layoutSizingMain', 'layoutSizingCross', '__childOrder'
@@ -113,6 +114,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   for (const componentId of removedComponents) {
     document.components = (document.components || []).filter(component => component.id !== componentId);
     detachComponentInstances(document, componentId);
+    removeComponentFromSets(document, componentId);
   }
   return removed;
 }
@@ -222,6 +224,133 @@ export function createComponent(document, nodeId, name = null, pageId = document
   return component;
 }
 
+function assignVariantNodeKeys(root, key = 'root') {
+  root.variantNodeKey = key;
+  for (let index = 0; index < (root.children || []).length; index += 1) assignVariantNodeKeys(root.children[index], `${key}/${index}`);
+}
+
+function componentVariantValues(component, setProperties) {
+  const segments = String(component.name).split('/').map(value => value.trim());
+  const suffix = segments.slice(1).join('/');
+  if (suffix.includes('=')) {
+    const parsed = Object.fromEntries(suffix.split(',').map(part => {
+      const [name, ...values] = part.split('=');
+      return [name.trim(), values.join('=').trim()];
+    }).filter(([name, value]) => name && value));
+    if (Object.keys(parsed).length) return parsed;
+  }
+  const key = setProperties[0]?.name || 'Variant';
+  return { [key]: suffix || component.name };
+}
+
+export function createComponentSet(document, componentIds, name = null) {
+  const uniqueIds = [...new Set(componentIds || [])];
+  if (uniqueIds.length < 2) throw new TypeError('Select at least two main components to combine as variants.');
+  const components = uniqueIds.map(id => document.components?.find(component => component.id === id));
+  if (components.some(component => !component)) throw new Error('One or more selected main components no longer exist.');
+  if (components.some(component => component.componentSetId)) throw new Error('A component is already part of a variant set.');
+  const roots = components.map(component => findNodeAcrossPages(document, component.rootNodeId)?.node);
+  if (roots.some(root => !root?.isComponent)) throw new Error('Every variant must have a valid main component.');
+  const commonPrefix = components.map(component => String(component.name).split('/')[0].trim()).every(value => value === String(components[0].name).split('/')[0].trim())
+    ? String(components[0].name).split('/')[0].trim()
+    : components[0].name;
+  const set = { id: createId('component-set'), name: String(name || commonPrefix).trim() || commonPrefix, componentIds: uniqueIds, properties: [] };
+  const rawValues = components.map(component => componentVariantValues(component, set.properties));
+  const propertyNames = [...new Set(rawValues.flatMap(properties => Object.keys(properties)))];
+  const combinations = rawValues.map(properties => JSON.stringify(propertyNames.map(propertyName => String(properties[propertyName] || 'Default'))));
+  if (new Set(combinations).size !== combinations.length) throw new Error('Each variant needs a unique combination of property values. Rename layers with distinct variant names before combining.');
+  set.properties = propertyNames.map(propertyName => ({
+    name: propertyName,
+    values: [...new Set(rawValues.map(properties => String(properties[propertyName] || 'Default')))]
+  }));
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index];
+    component.componentSetId = set.id;
+    component.variantProperties = Object.fromEntries(set.properties.map(property => [property.name, String(rawValues[index][property.name] || 'Default')]));
+    assignVariantNodeKeys(roots[index]);
+  }
+  document.componentSets ||= [];
+  document.componentSets.push(set);
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    if (!node.isInstance || !uniqueIds.includes(node.componentId)) return;
+    walkNodes([node], ({ node: instanceNode }) => {
+      const source = instanceNode.componentSourceId && findNodeAcrossPages(document, instanceNode.componentSourceId)?.node;
+      if (source?.variantNodeKey) instanceNode.componentSourceKey = source.variantNodeKey;
+    });
+  });
+  return set;
+}
+
+export function setComponentVariantProperty(document, componentId, propertyName, value) {
+  const component = document.components?.find(item => item.id === componentId);
+  const set = component && document.componentSets?.find(item => item.id === component.componentSetId);
+  const name = String(propertyName || '').trim(); const nextValue = String(value ?? '').trim();
+  if (!component || !set || !name || !nextValue) throw new Error('Choose a component variant property and value.');
+  if (!set.properties.some(property => property.name === name)) throw new Error(`Variant property “${name}” does not exist.`);
+  const proposed = { ...(component.variantProperties || {}), [name]: nextValue };
+  const duplicate = set.componentIds.filter(id => id !== componentId).some(id => {
+    const other = document.components.find(item => item.id === id);
+    return set.properties.every(property => (other.variantProperties?.[property.name] || '') === (proposed[property.name] || ''));
+  });
+  if (duplicate) throw new Error('That combination already exists in this component set.');
+  component.variantProperties = proposed;
+  const property = set.properties.find(item => item.name === name);
+  property.values = [...new Set(set.componentIds.map(id => {
+    const item = document.components.find(componentItem => componentItem.id === id);
+    return item?.variantProperties?.[name];
+  }).filter(Boolean))];
+  return component.variantProperties;
+}
+
+export function switchComponentInstanceVariant(document, instanceId, targetComponentId, pageId = document.activePageId) {
+  const instance = findNode(document, instanceId, pageId)?.node;
+  const currentComponent = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
+  const targetComponent = document.components?.find(item => item.id === targetComponentId);
+  if (!currentComponent || !targetComponent || !currentComponent.componentSetId || currentComponent.componentSetId !== targetComponent.componentSetId) throw new Error('Choose a variant from this component set.');
+  if (currentComponent.id === targetComponent.id) return false;
+  const targetMaster = findNodeAcrossPages(document, targetComponent.rootNodeId)?.node;
+  if (!targetMaster?.isComponent) throw new Error('The selected variant no longer exists.');
+  const overridesByKey = new Map();
+  for (const [sourceId, overrides] of Object.entries(instance.componentOverrides || {})) {
+    const source = findNodeAcrossPages(document, sourceId)?.node;
+    if (source?.variantNodeKey) overridesByKey.set(source.variantNodeKey, overrides);
+  }
+  const targetNodesByKey = new Map();
+  walkNodes([targetMaster], ({ node }) => { if (node.variantNodeKey) targetNodesByKey.set(node.variantNodeKey, node); });
+  const nextOverrides = {};
+  for (const [key, overrides] of overridesByKey) {
+    const targetNode = targetNodesByKey.get(key);
+    if (!targetNode) continue;
+    const migrated = clone(overrides);
+    if (Array.isArray(migrated.__childOrder)) migrated.__childOrder = migrated.__childOrder.map(id => {
+      const source = findNodeAcrossPages(document, id)?.node;
+      return source?.variantNodeKey ? targetNodesByKey.get(source.variantNodeKey)?.id : null;
+    }).filter(Boolean);
+    nextOverrides[targetNode.id] = migrated;
+  }
+  instance.componentId = targetComponent.id;
+  instance.componentOverrides = nextOverrides;
+  if (instance.componentNameIsInherited !== false) instance.name = `${targetComponent.name} instance`;
+  syncInstanceNode(instance, targetMaster, targetComponent.id, nextOverrides, true);
+  return true;
+}
+
+function removeComponentFromSets(document, componentId) {
+  document.componentSets ||= [];
+  for (const set of [...document.componentSets]) {
+    if (!set.componentIds.includes(componentId)) continue;
+    set.componentIds = set.componentIds.filter(id => id !== componentId);
+    const remaining = set.componentIds.map(id => document.components.find(component => component.id === id)).filter(Boolean);
+    const hasVariantDifferences = set.properties.some(property => new Set(remaining.map(component => component.variantProperties?.[property.name]).filter(Boolean)).size > 1);
+    if (remaining.length < 2 || !hasVariantDifferences) {
+      for (const component of remaining) { delete component.componentSetId; delete component.variantProperties; }
+      document.componentSets = document.componentSets.filter(item => item.id !== set.id);
+    } else {
+      set.properties = set.properties.map(property => ({ ...property, values: [...new Set(remaining.map(component => component.variantProperties?.[property.name]).filter(Boolean))] }));
+    }
+  }
+}
+
 export function createComponentInstance(document, componentId, { pageId = document.activePageId, parentId = null, x = null, y = null } = {}) {
   const component = document.components?.find(item => item.id === componentId);
   const master = component && findNodeAcrossPages(document, component.rootNodeId);
@@ -233,6 +362,8 @@ export function createComponentInstance(document, componentId, { pageId = docume
     const sourceId = node.id;
     node.id = createId(node.type);
     node.componentSourceId = sourceId;
+    if (node.variantNodeKey) node.componentSourceKey = node.variantNodeKey;
+    else delete node.componentSourceKey;
     if (node.isComponent) {
       node.isInstance = true;
       delete node.isComponent;
@@ -242,6 +373,7 @@ export function createComponentInstance(document, componentId, { pageId = docume
       node.isInstance = true;
       node.componentId = componentId;
       node.componentOverrides = {};
+      node.componentNameIsInherited = true;
       node.name = `${component.name} instance`;
       node.x = x != null && Number.isFinite(Number(x)) ? Number(x) : node.x + 16;
       node.y = y != null && Number.isFinite(Number(y)) ? Number(y) : node.y + 16;
@@ -260,13 +392,13 @@ export function detachComponentInstances(document, componentId) {
 
 function clearComponentInstanceLink(instance) {
   const componentId = instance.componentId;
-  delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides;
+  delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides; delete instance.componentNameIsInherited;
   walkNodes(instance.children || [], ({ node, parents }) => {
     const belongsToNestedInstance = parents.some(parent => parent.isInstance && parent.componentId !== componentId);
-    if (!belongsToNestedInstance) delete node.componentSourceId;
+    if (!belongsToNestedInstance) { delete node.componentSourceId; delete node.componentSourceKey; }
     if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; delete node.componentOverrides; }
   });
-  delete instance.componentSourceId;
+  delete instance.componentSourceId; delete instance.componentSourceKey;
 }
 
 export function detachComponentInstance(document, nodeId, pageId = document.activePageId) {
@@ -284,10 +416,11 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const componentOverrides = isRoot ? clone(instance?.componentOverrides || {}) : null;
   const oldChildren = instance?.children || [];
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
+  const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
   const copy = clone(master);
   let children = (master.children || []).map((child, index) => {
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
-    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || legacyChild, child, componentId, overrides);
+    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, overrides);
   });
   const nodeOverrides = overrides?.[master.id];
   if (Array.isArray(nodeOverrides?.__childOrder)) {
@@ -326,6 +459,8 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     delete target.isComponent;
     delete target.isInstance;
   }
+  if (master.variantNodeKey) target.componentSourceKey = master.variantNodeKey;
+  else delete target.componentSourceKey;
   if (nodeOverrides && typeof nodeOverrides === 'object' && !Array.isArray(nodeOverrides)) {
     for (const [key, value] of Object.entries(nodeOverrides)) if (key !== '__childOrder' && componentOverrideProperties.has(key)) target[key] = clone(value);
   }
@@ -342,11 +477,17 @@ export function syncComponentInstances(document, componentId) {
   });
   for (const instance of instances) {
     syncInstanceNode(instance, master, componentId, instance.componentOverrides || {}, true);
+    if (instance.componentNameIsInherited !== false) instance.name = `${component.name} instance`;
   }
   return instances.length;
 }
 
 export function syncAllComponentInstances(document) {
+  for (const set of document.componentSets || []) for (const componentId of set.componentIds) {
+    const component = document.components?.find(item => item.id === componentId);
+    const master = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+    if (master) assignVariantNodeKeys(master);
+  }
   let updated = 0;
   for (const component of document.components || []) updated += syncComponentInstances(document, component.id);
   return updated;
@@ -370,6 +511,9 @@ export function validateDocument(document) {
       if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => !item || typeof item.id !== 'string' || item.action !== 'navigate' || typeof item.destinationId !== 'string'))) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
       if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
+      if (node.componentSourceKey != null && typeof node.componentSourceKey !== 'string') throw new TypeError(`Invalid component source key on ${node.name || node.id}.`);
+      if (node.variantNodeKey != null && typeof node.variantNodeKey !== 'string') throw new TypeError(`Invalid variant node key on ${node.name || node.id}.`);
+      if (node.componentNameIsInherited != null && (typeof node.componentNameIsInherited !== 'boolean' || !node.isInstance)) throw new TypeError(`Invalid inherited component name on ${node.name || node.id}.`);
       if (node.componentOverrides != null) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
@@ -385,12 +529,37 @@ export function validateDocument(document) {
     for (const component of document.components) {
       const root = findNodeAcrossPages(document, component.rootNodeId);
       if (!component.id || componentIds.has(component.id) || !root?.node.isComponent || root.node.componentId !== component.id) throw new TypeError('Invalid or duplicate component.');
+      if (component.componentSetId != null && typeof component.componentSetId !== 'string') throw new TypeError('Invalid component set reference.');
+      if (component.variantProperties != null && (!component.variantProperties || typeof component.variantProperties !== 'object' || Array.isArray(component.variantProperties) || Object.values(component.variantProperties).some(value => typeof value !== 'string' || !value))) throw new TypeError('Invalid component variant properties.');
       componentIds.add(component.id);
     }
     for (const page of document.pages) walkNodes(page.children, ({ node }) => {
       if (node.isComponent && !componentIds.has(node.componentId)) throw new TypeError(`Missing component definition on layer ${node.name || node.id}.`);
       if (node.isInstance && !componentIds.has(node.componentId)) throw new TypeError(`Missing component source on layer ${node.name || node.id}.`);
     });
+  }
+  if (document.componentSets != null) {
+    if (!Array.isArray(document.componentSets)) throw new TypeError('Component sets must be a list.');
+    const setIds = new Set(); const memberIds = new Set(); const components = document.components || [];
+    for (const set of document.componentSets) {
+      if (!set.id || setIds.has(set.id) || typeof set.name !== 'string' || !set.name.trim() || !Array.isArray(set.componentIds) || set.componentIds.length < 2 || new Set(set.componentIds).size !== set.componentIds.length || !Array.isArray(set.properties) || !set.properties.length) throw new TypeError('Invalid or duplicate component set.');
+      setIds.add(set.id);
+      const members = set.componentIds.map(id => components.find(component => component.id === id));
+      if (members.some(component => !component || component.componentSetId !== set.id)) throw new TypeError('Component set members are missing or mismatched.');
+      const propertyNames = new Set();
+      for (const property of set.properties) {
+        if (!property || typeof property.name !== 'string' || !property.name.trim() || propertyNames.has(property.name) || !Array.isArray(property.values) || !property.values.length || new Set(property.values).size !== property.values.length || property.values.some(value => typeof value !== 'string' || !value)) throw new TypeError('Invalid component variant property.');
+        propertyNames.add(property.name);
+        if (members.some(component => !property.values.includes(component.variantProperties?.[property.name]))) throw new TypeError(`Variant values are missing for property ${property.name}.`);
+      }
+      for (const component of members) memberIds.add(component.id);
+      const combinations = members.map(component => JSON.stringify(set.properties.map(property => component.variantProperties[property.name])));
+      if (new Set(combinations).size !== combinations.length) throw new TypeError('Component set contains duplicate variant combinations.');
+    }
+    for (const component of components) {
+      if (component.componentSetId && (!setIds.has(component.componentSetId) || !memberIds.has(component.id))) throw new TypeError('Component points to a missing variant set.');
+      if (!component.componentSetId && component.variantProperties != null) throw new TypeError('Variant properties require a component set.');
+    }
   }
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
   if (document.colorStyles != null) {

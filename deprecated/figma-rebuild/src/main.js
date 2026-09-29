@@ -1,7 +1,8 @@
 import {
-  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createComponent, createComponentInstance,
+  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createComponent, createComponentInstance, createComponentSet,
   createDocument, createId, createImageRecipe, createNode, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, syncAllComponentInstances,
+  findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument, setComponentVariantProperty,
+  switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -210,12 +211,21 @@ function componentSection(node) {
   const linkedInstance = componentInstanceRoot(node.id);
   if (linkedInstance) {
     const component = state.document.components?.find(item => item.id === linkedInstance.componentId);
+    const set = state.document.componentSets?.find(item => item.id === component?.componentSetId);
     const label = node.id === linkedInstance.id ? 'Linked instance · local edits remain as overrides' : 'Layer inside a linked instance · local edits remain as overrides';
-    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || 'Missing component')}</strong><span>${label}</span></div><button class="add-fill" data-action="detach-component-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach instance</button>`);
+    const selectors = set ? set.properties.map(property => {
+      const selected = component.variantProperties?.[property.name] || '';
+      const options = property.values.map(value => `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(value)}</option>`).join('');
+      return `<label class="variant-control"><span>${escapeHtml(property.name)}</span><select class="prop-input select-field" data-variant-property="${escapeHtml(property.name)}" data-instance-id="${escapeHtml(linkedInstance.id)}" aria-label="${escapeHtml(property.name)} variant">${options}</select></label>`;
+    }).join('') : '';
+    return section('Instance', `<div class="component-link-copy"><strong>${escapeHtml(set?.name || component?.name || 'Missing component')}</strong><span>${label}</span></div>${selectors ? `<div class="variant-controls">${selectors}</div>` : ''}<button class="add-fill" data-action="detach-component-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach instance</button>`);
   }
   if (node.isComponent) {
     const component = state.document.components?.find(item => item.id === node.componentId);
-    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>Main component · changes update linked instances</span></div><button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
+    const set = state.document.componentSets?.find(item => item.id === component?.componentSetId);
+    const variantFields = set ? set.properties.map(property => `<label class="variant-control"><span>${escapeHtml(property.name)}</span><input class="prop-input" data-variant-master-property="${escapeHtml(property.name)}" data-component-id="${escapeHtml(component.id)}" value="${escapeHtml(component.variantProperties?.[property.name] || '')}" aria-label="${escapeHtml(property.name)} variant value"/></label>`).join('') : '';
+    const variantLabel = set ? `Variant in ${set.name} · changes update linked instances` : 'Main component · changes update linked instances';
+    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>${escapeHtml(variantLabel)}</span></div>${variantFields ? `<div class="variant-controls">${variantFields}</div>` : ''}<button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
   }
   if (node.isInstance) {
     const component = state.document.components?.find(item => item.id === node.componentId);
@@ -290,10 +300,18 @@ function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
   const components = $('#components-list'); components.replaceChildren();
   const componentItems = state.document.components || [];
+  const componentSetItems = state.document.componentSets || [];
+  const groupedComponentIds = new Set(componentSetItems.flatMap(set => set.componentIds));
   if (!componentItems.length) {
     const empty = document.createElement('div'); empty.className = 'components-empty'; empty.textContent = 'Create a component from any layer.'; components.append(empty);
   }
-  for (const component of componentItems) {
+  for (const set of componentSetItems) {
+    const card = document.createElement('button'); card.type = 'button'; card.className = 'component-card'; card.dataset.componentSetId = set.id; card.title = `${set.name} · ${set.componentIds.length} variants`;
+    const mark = document.createElement('span'); mark.className = 'component-card-icon'; mark.textContent = '◇';
+    const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = `${set.name} · ${set.componentIds.length}`;
+    card.append(mark, name); components.append(card);
+  }
+  for (const component of componentItems.filter(item => !groupedComponentIds.has(item.id))) {
     const card = document.createElement('button'); card.type = 'button'; card.className = 'component-card'; card.dataset.componentId = component.id; card.title = `Create an instance of ${component.name}`;
     const mark = document.createElement('span'); mark.className = 'component-card-icon'; mark.textContent = '◇';
     const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = component.name;
@@ -914,6 +932,10 @@ function openNodeMenu(nodeId, x, y) {
     { separator: true },
     { label: 'Delete', shortcut: '⌫', action: deleteSelected }
   ];
+  const selectedMainComponents = selectedNodes().filter(item => item.isComponent);
+  if (selectedNodes().length > 1 && selectedMainComponents.length === selectedNodes().length) {
+    items.unshift({ label: `Combine ${selectedMainComponents.length} as variants`, action: combineSelectedComponents }, { separator: true });
+  }
   if (linkedInstance) items.splice(0, 0, { label: 'Detach component instance', action: () => detachInstance(linkedInstance.id) }, { separator: true });
   else if (node?.isComponent) items.splice(0, 0, { label: 'Create component instance', action: () => createInstanceAt(node.componentId) }, { separator: true });
   else if (node) items.splice(0, 0, { label: 'Create component', action: () => makeComponent(node.id) }, { separator: true });
@@ -959,11 +981,51 @@ function renameSelected() {
   const node = selectedNodes()[0]; if (!node) return;
   const name = prompt('Rename layer', node.name); if (name == null) return;
   checkpoint('Rename layer'); node.name = name.trim() || node.name;
+  const instanceRoot = componentInstanceRoot(node.id);
+  if (instanceRoot) {
+    if (instanceRoot.id === node.id) instanceRoot.componentNameIsInherited = false;
+    recordComponentOverride(instanceRoot, node, 'name');
+  }
   if (node.isComponent) {
     const component = state.document.components?.find(item => item.id === node.componentId);
     if (component) component.name = node.name;
   }
   renderUI(); queueSave();
+}
+function combineSelectedComponents() {
+  const selected = selectedNodes();
+  if (selected.length < 2 || selected.some(node => !node.isComponent)) { showToast('Select at least two main components to combine as variants.'); return; }
+  const commonName = selected.map(node => state.document.components.find(item => item.id === node.componentId)?.name || node.name);
+  const prefix = commonName[0].split('/')[0].trim();
+  const name = prompt('Component set name', commonName.every(value => value.split('/')[0].trim() === prefix) ? prefix : 'Component set');
+  if (name == null) return;
+  try {
+    checkpoint('Combine components as variants');
+    const set = createComponentSet(state.document, selected.map(node => node.componentId), name);
+    renderUI(); queueSave(); showToast(`Component set “${set.name}” created with ${set.componentIds.length} variants.`);
+  } catch (error) { showToast(error.message); }
+}
+function changeInstanceVariant(instanceId, propertyName, value) {
+  const instance = findNode(state.document, instanceId)?.node;
+  const component = instance?.isInstance && state.document.components.find(item => item.id === instance.componentId);
+  const set = component && state.document.componentSets?.find(item => item.id === component.componentSetId);
+  if (!instance || !component || !set) return;
+  const candidate = set.componentIds.map(id => state.document.components.find(item => item.id === id)).find(item =>
+    item.variantProperties?.[propertyName] === value && set.properties.every(property => property.name === propertyName || item.variantProperties?.[property.name] === component.variantProperties?.[property.name])
+  );
+  if (!candidate) { showToast('That variant combination is not available.'); renderInspector(); return; }
+  try {
+    checkpoint(`Change ${set.name} ${propertyName}`);
+    switchComponentInstanceVariant(state.document, instanceId, candidate.id);
+    renderUI(); queueSave(); showToast(`${set.name} switched to ${value}.`);
+  } catch (error) { showToast(error.message); renderInspector(); }
+}
+function changeMainVariantProperty(componentId, propertyName, value) {
+  try {
+    checkpoint(`Rename ${propertyName} variant`);
+    setComponentVariantProperty(state.document, componentId, propertyName, value);
+    renderUI(); queueSave(); showToast(`${propertyName} variant updated.`);
+  } catch (error) { showToast(error.message); renderInspector(); }
 }
 function makeComponent(nodeId = selectedNodes()[0]?.id) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
@@ -1140,6 +1202,7 @@ function absoluteBoundsSafe(id) { const entry = findNode(state.document, id); if
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'create-component') makeComponent(node?.id);
+  else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
   else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
   else if (action === 'prototype-start') {
@@ -1264,6 +1327,8 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (event.target.matches('[data-prop]')) finishInspectorInput();
+    if (event.target.matches('[data-variant-property]')) changeInstanceVariant(event.target.dataset.instanceId, event.target.dataset.variantProperty, event.target.value);
+    if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
     if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
     if (event.target.id === 'prototype-transition') state.prototypeTransition = event.target.value;
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
@@ -1276,7 +1341,11 @@ function initEvents() {
   $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { node.visible = true; }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
   $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
-  $('#components-list').addEventListener('click', event => { const card = event.target.closest('[data-component-id]'); if (card) createInstanceAt(card.dataset.componentId); });
+  $('#components-list').addEventListener('click', event => {
+    const setCard = event.target.closest('[data-component-set-id]');
+    if (setCard) { const set = state.document.componentSets?.find(item => item.id === setCard.dataset.componentSetId); if (set) createInstanceAt(set.componentIds[0]); return; }
+    const card = event.target.closest('[data-component-id]'); if (card) createInstanceAt(card.dataset.componentId);
+  });
   $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));

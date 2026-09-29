@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, createComponent, createComponentInstance, createDocument, createNode, detachComponentInstance,
-  findNode, removeNode, serializeDocument, parseDocument, syncComponentInstances, validateDocument
+  addNode, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, detachComponentInstance,
+  findNode, removeNode, serializeDocument, parseDocument, setComponentVariantProperty, switchComponentInstanceVariant,
+  syncComponentInstances, validateDocument
 } from '../src/model.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
@@ -152,4 +153,49 @@ test('components cannot be declared from an instance subtree', () => {
   const component = createComponent(document, main.id);
   const instance = createComponentInstance(document, component.id);
   assert.throws(() => createComponent(document, instance.children[0].id), /Detach an instance/);
+});
+
+test('variant sets capture property values and switch instances without losing compatible overrides', () => {
+  const document = createDocument();
+  const small = createNode('frame', { name: 'Small button', width: 120, height: 40 });
+  const smallLabel = createNode('text', { name: 'Label', text: 'Continue' });
+  const large = createNode('frame', { name: 'Large button', width: 220, height: 64 });
+  const largeLabel = createNode('text', { name: 'Label', text: 'Continue' });
+  addNode(document, small); addNode(document, smallLabel, { parentId: small.id });
+  addNode(document, large); addNode(document, largeLabel, { parentId: large.id });
+  const smallComponent = createComponent(document, small.id, 'Button / Size=Small');
+  const largeComponent = createComponent(document, large.id, 'Button / Size=Large');
+  const instance = createComponentInstance(document, smallComponent.id, { x: 180, y: 90 });
+  instance.children[0].fill = '#12abef';
+  instance.componentOverrides[smallLabel.id] = { fill: '#12abef' };
+
+  const set = createComponentSet(document, [smallComponent.id, largeComponent.id], 'Button');
+  assert.deepEqual(set.properties, [{ name: 'Size', values: ['Small', 'Large'] }]);
+  assert.equal(instance.children[0].componentSourceKey, 'root/0');
+  assert.equal(switchComponentInstanceVariant(document, instance.id, largeComponent.id), true);
+  assert.equal(instance.componentId, largeComponent.id);
+  assert.equal(instance.x, 180);
+  assert.equal(instance.y, 90);
+  assert.equal(instance.width, 220);
+  assert.equal(instance.children[0].text, 'Continue');
+  assert.equal(instance.children[0].fill, '#12abef');
+  assert.equal(instance.children[0].componentSourceId, largeLabel.id);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('variant value changes reject duplicate combinations and deleting a variant dissolves a degenerate set', () => {
+  const document = createDocument();
+  const first = createNode('rectangle'); const second = createNode('rectangle');
+  addNode(document, first); addNode(document, second);
+  const a = createComponent(document, first.id, 'Chip / Tone=Blue');
+  const b = createComponent(document, second.id, 'Chip / Tone=Green');
+  const set = createComponentSet(document, [a.id, b.id], 'Chip');
+  assert.throws(() => setComponentVariantProperty(document, b.id, 'Tone', 'Blue'), /combination already exists/);
+  setComponentVariantProperty(document, b.id, 'Tone', 'Mint');
+  assert.deepEqual(set.properties[0].values, ['Blue', 'Mint']);
+  removeNode(document, second.id);
+  assert.deepEqual(document.componentSets, []);
+  assert.equal(a.componentSetId, undefined);
+  assert.equal(a.variantProperties, undefined);
+  assert.equal(validateDocument(document), true);
 });

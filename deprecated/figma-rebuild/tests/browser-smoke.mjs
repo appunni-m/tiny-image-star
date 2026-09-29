@@ -180,7 +180,10 @@ try {
   assert(styledDocument?.colorStyles.some(style => style.id === colorStyleId), 'the shared color style did not persist');
   assert(styledNodes.find(node => node.id === destinationFrame.id)?.fillStyleId === colorStyleId, 'the shared color style was not applied to the destination frame');
 
-  app.defaultView.prompt = () => 'Smoke button';
+  let componentPrompt = 0;
+  app.defaultView.prompt = (message, initial = '') => message === 'Component name'
+    ? ['Smoke button / State=Default', 'Smoke button / State=Hover'][componentPrompt++] || initial
+    : initial;
   const mainFrameRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
   dispatchClick(mainFrameRow);
   dispatchClick(app.querySelector('[data-action="create-component"]'));
@@ -234,6 +237,33 @@ try {
   assert(detachedInstance?.width === 240 && !detachedInstance.isInstance, 'detached component instance changed with its former main component');
   assert(componentDocument?.components?.some(component => component.id === componentId), 'component metadata was not saved locally');
 
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  dispatchClick(app.querySelector('[data-action="create-component"]'));
+  await waitFor(() => [...app.querySelectorAll('#components-list [data-component-id]')].some(card => card.title.includes('State=Hover')), 'second variant creation');
+  const hoverComponentCard = [...app.querySelectorAll('#components-list [data-component-id]')].find(card => card.title.includes('State=Hover'));
+  const hoverComponentId = hoverComponentCard.dataset.componentId;
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`), { ctrlKey: true });
+  dispatchContextMenu(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const combineVariants = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Combine 2 as variants'));
+  assert(combineVariants, 'the context menu did not offer to combine selected main components as variants');
+  dispatchClick(combineVariants);
+  await waitFor(() => app.querySelector('#components-list [data-component-set-id]'), 'component set creation');
+  const componentSetCard = app.querySelector('#components-list [data-component-set-id]');
+  dispatchClick(componentSetCard);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 7, 'variant set instance creation');
+  const variantInstanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  const variantInstanceId = variantInstanceRow?.dataset.layerId;
+  const variantSelect = app.querySelector('[data-variant-property="State"]');
+  assert(variantInstanceId && variantSelect, 'component instance inspector did not expose variant properties');
+  variantSelect.value = 'Hover'; variantSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 600));
+  componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
+  componentDocument = componentRecords[0]?.document;
+  componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  assert(componentDocument?.componentSets?.some(set => set.componentIds.includes(hoverComponentId)), 'variant set metadata was not stored');
+  assert(componentNodes.find(node => node.id === variantInstanceId)?.componentId === hoverComponentId, 'changing the instance variant did not switch its main component');
+
   dispatchClick(app.querySelector('#present-button'));
   await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'local prototype presentation');
   const presentCanvas = app.querySelector('#present-canvas');
@@ -243,7 +273,7 @@ try {
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, presentNavigation: true, presentBack: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
