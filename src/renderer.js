@@ -1,7 +1,8 @@
-import { getNodeColor } from './model.js';
+import { getNodeColor, getNodePropertyValue } from './model.js';
 import { vectorNodePoint } from './vector-path.js';
 
 const BLUE = '#0d99ff';
+const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 
 function rgba(hex, alpha = 1) {
   if (!hex || hex === 'transparent') return `rgba(0,0,0,0)`;
@@ -83,19 +84,53 @@ function traceVectorPath(ctx, node, x, y) {
   }
 }
 
-function wrapText(ctx, text, maxWidth) {
+function textGraphemes(text) {
+  const value = String(text ?? '');
+  if (graphemeSegmenter) return [...graphemeSegmenter.segment(value)].map(part => part.segment);
+  return Array.from(value);
+}
+
+export function measureTrackedText(ctx, text, letterSpacing = 0) {
+  const value = String(text ?? '');
+  const count = textGraphemes(value).length;
+  return ctx.measureText(value).width + Math.max(0, count - 1) * (Number(letterSpacing) || 0);
+}
+
+export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
   const lines = [];
   for (const paragraph of String(text ?? '').split('\n')) {
     const words = paragraph.split(/\s+/);
     let line = '';
     for (const word of words) {
       const candidate = line ? `${line} ${word}` : word;
-      if (line && ctx.measureText(candidate).width > maxWidth) { lines.push(line); line = word; }
+      if (line && measureTrackedText(ctx, candidate, letterSpacing) > maxWidth) { lines.push(line); line = word; }
       else line = candidate;
     }
     lines.push(line);
   }
   return lines;
+}
+
+export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = undefined) {
+  const value = String(text ?? '');
+  const spacing = Number(letterSpacing) || 0;
+  if (!spacing) { ctx.fillText(value, x, y, maxWidth); return; }
+  if (typeof ctx.letterSpacing === 'string') {
+    const previous = ctx.letterSpacing;
+    try {
+      ctx.letterSpacing = `${spacing}px`;
+      ctx.fillText(value, x, y, maxWidth);
+      return;
+    } finally { ctx.letterSpacing = previous; }
+  }
+  const glyphs = textGraphemes(value);
+  let prefix = '';
+  for (let index = 0; index < glyphs.length; index += 1) {
+    const glyph = glyphs[index];
+    const position = ctx.measureText(prefix + glyph).width - ctx.measureText(glyph).width + index * spacing;
+    ctx.fillText(glyph, x + position, y);
+    prefix += glyph;
+  }
 }
 
 export class SceneRenderer {
@@ -156,13 +191,15 @@ export class SceneRenderer {
   }
 
   drawNode(ctx, node, parentX, parentY, assets, draft = false, maskMode = false) {
-    if (!node.visible) return;
     const document = this.getState().document;
+    if (!getNodePropertyValue(document, node, 'visible')) return;
+    const opacity = getNodePropertyValue(document, node, 'opacity');
+    const radius = getNodePropertyValue(document, node, 'radius');
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     ctx.save();
-    if (!maskMode) ctx.globalAlpha *= node.opacity ?? 1;
+    if (!maskMode) ctx.globalAlpha *= opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
     if (node.type === 'boolean') {
       this.drawBooleanGroup(ctx, node, x, y, assets, maskMode);
@@ -176,7 +213,7 @@ export class SceneRenderer {
       case 'section':
       case 'group':
       case 'rectangle':
-        roundedRect(ctx, x, y, width, height, node.radius || 0);
+        roundedRect(ctx, x, y, width, height, radius || 0);
         break;
       case 'ellipse':
         ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
@@ -208,25 +245,35 @@ export class SceneRenderer {
       const asset = assets.get(node.assetId);
       const image = this.getState().previews.get(node.id) ?? asset?.bitmap;
       if (image) {
+        ctx.save();
+        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
         if (node.fit === 'contain') {
           const ratio = Math.min(width / image.width, height / image.height);
           const drawWidth = image.width * ratio; const drawHeight = image.height * ratio;
           ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
         } else ctx.drawImage(image, x, y, width, height);
+        ctx.restore();
       } else {
         ctx.fillStyle = '#d9d9d9'; ctx.fill();
         ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('Loading image…', cx, cy);
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, node.radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'text') {
       ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
-      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${node.fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
-      ctx.textAlign = node.align || 'left'; ctx.textBaseline = 'top';
-      const lines = wrapText(ctx, node.text, Math.max(1, width));
-      const lineHeight = (node.fontSize || 24) * (node.lineHeight || 1.25);
-      const offsetX = node.align === 'center' ? width / 2 : node.align === 'right' ? width : 0;
-      lines.forEach((line, index) => ctx.fillText(line, x + offsetX, y + index * lineHeight, width));
+      const text = getNodePropertyValue(document, node, 'text');
+      const fontSize = getNodePropertyValue(document, node, 'fontSize');
+      const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
+      const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
+      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      const lines = wrapText(ctx, text, Math.max(1, width), letterSpacing);
+      const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
+      lines.forEach((line, index) => {
+        const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
+        const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
+        drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
+      });
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
@@ -236,7 +283,7 @@ export class SceneRenderer {
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
     if (node.children?.length) {
-      if (node.clip) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, node.radius || 0); ctx.clip(); }
+      if (node.clip) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip(); }
       for (const child of node.children) this.drawNode(ctx, child, x, y, assets, draft);
     }
     if (node.type === 'frame' && !node.children.length && !draft) {
@@ -485,11 +532,11 @@ export function worldToScreen(point, canvas, state) {
   return { x: rect.left + state.panX + point.x * state.zoom, y: rect.top + state.panY + point.y * state.zoom };
 }
 
-export function hitTestPage(page, point, containsBoolean = null) {
+export function hitTestPage(page, point, containsBoolean = null, document = null) {
   const hits = [];
   const visit = (nodes, parentX = 0, parentY = 0) => {
     for (const node of nodes) {
-      if (!node.visible) continue;
+      if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
       const x = parentX + node.x; const y = parentY + node.y;
       const inBounds = point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height;
       if (inBounds && (node.type !== 'boolean' || !containsBoolean || containsBoolean(node, point, x, y))) hits.push(node);

@@ -1,5 +1,14 @@
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
+const variableBindingSpecs = {
+  visible: { type: 'boolean' },
+  opacity: { type: 'number' },
+  radius: { type: 'number', nodeTypes: ['rectangle', 'frame', 'section', 'image'] },
+  text: { type: 'string', nodeTypes: ['text'] },
+  fontSize: { type: 'number', nodeTypes: ['text'] },
+  lineHeight: { type: 'number', nodeTypes: ['text'] },
+  letterSpacing: { type: 'number', nodeTypes: ['text'] }
+};
 
 function isVariableValue(type, value) {
   if (type === 'color') return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
@@ -11,6 +20,20 @@ function isVariableValue(type, value) {
 
 function defaultVariableValue(type) {
   return type === 'color' ? '#1e1e1e' : type === 'number' ? 0 : type === 'string' ? '' : false;
+}
+
+function canBindVariableToNode(node, property) {
+  const spec = variableBindingSpecs[property];
+  return Boolean(spec && (!spec.nodeTypes || spec.nodeTypes.includes(node?.type)));
+}
+
+function isVariableBindingValue(property, value) {
+  const spec = variableBindingSpecs[property];
+  if (!spec || !isVariableValue(spec.type, value)) return false;
+  if (property === 'opacity') return value >= 0 && value <= 1;
+  if (property === 'radius') return value >= 0;
+  if (property === 'fontSize' || property === 'lineHeight') return value > 0;
+  return true;
 }
 
 export function createId(prefix = 'id') {
@@ -62,6 +85,7 @@ const componentOverrideProperties = new Set([
   'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
+  'variableBindings',
   'layoutSizingMain', 'layoutSizingCross', 'points', 'closed', 'operation', '__childOrder'
 ]);
 
@@ -351,10 +375,17 @@ export function setVariableValue(document, variableId, value, modeId = null) {
   if (!variable || !collection || !isVariableValue(variable.type, value)) return false;
   const targetModeId = modeId || collection.defaultModeId;
   if (!collection.modes.some(mode => mode.id === targetModeId)) return false;
+  const previousValue = variable.valuesByMode[targetModeId];
+  const previousAliasId = variable.aliasesByMode?.[targetModeId];
   variable.valuesByMode[targetModeId] = value;
   if (variable.aliasesByMode) {
     delete variable.aliasesByMode[targetModeId];
     if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
+  }
+  if (!variableBindingsAreValid(document)) {
+    variable.valuesByMode[targetModeId] = previousValue;
+    if (previousAliasId) { variable.aliasesByMode ||= {}; variable.aliasesByMode[targetModeId] = previousAliasId; }
+    return false;
   }
   return true;
 }
@@ -387,6 +418,22 @@ function variableAliasesHaveCycle(variables) {
   return visited !== variables.length;
 }
 
+function variableBindingsAreValid(document) {
+  let valid = true;
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node }) => {
+    for (const [property, variableId] of Object.entries(node.variableBindings || {})) {
+      const variable = document.variables?.find(item => item.id === variableId);
+      const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+      if (!variable || !collection || !canBindVariableToNode(node, property) || variable.type !== variableBindingSpecs[property]?.type) { valid = false; return; }
+      for (const mode of collection.modes) {
+        const value = resolveVariableValueInternal(document, variable.id, node, new Map([[collection.id, mode.id]]), new Set());
+        if (!isVariableBindingValue(property, value)) { valid = false; return; }
+      }
+    }
+  });
+  return valid;
+}
+
 export function setVariableAlias(document, variableId, targetVariableId, modeId = null) {
   const variable = document.variables?.find(item => item.id === variableId);
   const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
@@ -398,7 +445,7 @@ export function setVariableAlias(document, variableId, targetVariableId, modeId 
   const previousTargetId = variable.aliasesByMode[targetModeId];
   if (targetVariableId) variable.aliasesByMode[targetModeId] = targetVariableId;
   else delete variable.aliasesByMode[targetModeId];
-  if (variableAliasesHaveCycle(document.variables || [])) {
+  if (variableAliasesHaveCycle(document.variables || []) || !variableBindingsAreValid(document)) {
     if (previousTargetId) variable.aliasesByMode[targetModeId] = previousTargetId;
     else delete variable.aliasesByMode[targetModeId];
     if (!Object.keys(variable.aliasesByMode).length) delete variable.aliasesByMode;
@@ -430,6 +477,60 @@ export function resolveVariableValue(document, variableId, node = null) {
   return resolveVariableValueInternal(document, variableId, node, new Map(), new Set());
 }
 
+export function getNodePropertyValue(document, node, property) {
+  if (!node) return undefined;
+  const variableId = node.variableBindings?.[property];
+  if (!variableId || !canBindVariableToNode(node, property)) return node[property];
+  const variable = document.variables?.find(item => item.id === variableId);
+  if (!variable || variable.type !== variableBindingSpecs[property].type) return node[property];
+  const value = resolveVariableValue(document, variableId, node);
+  return isVariableBindingValue(property, value) ? value : node[property];
+}
+
+export function canBindVariable(document, nodeId, variableId, property, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!node || !canBindVariableToNode(node, property)) return false;
+  if (!variableId) return true;
+  const variable = document.variables?.find(item => item.id === variableId);
+  const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+  const spec = variableBindingSpecs[property];
+  if (!variable || !collection || variable.type !== spec.type) return false;
+  for (const mode of collection.modes) {
+    const value = resolveVariableValueInternal(document, variable.id, node, new Map([[collection.id, mode.id]]), new Set());
+    if (!isVariableBindingValue(property, value)) return false;
+  }
+  return true;
+}
+
+export function bindVariable(document, nodeId, variableId, property, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!canBindVariable(document, nodeId, variableId, property, pageId)) return false;
+  if (!variableId) {
+    const value = getNodePropertyValue(document, node, property);
+    if (isVariableBindingValue(property, value)) node[property] = value;
+    if (node.variableBindings) {
+      delete node.variableBindings[property];
+      if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
+    }
+    return true;
+  }
+  node.variableBindings ||= {};
+  node.variableBindings[property] = variableId;
+  return true;
+}
+
+function materializeVariableBindingsToRemovedVariables(document, removedIds) {
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const [property, variableId] of Object.entries(node.variableBindings || {})) {
+      if (!removedIds.has(variableId)) continue;
+      const value = getNodePropertyValue(document, node, property);
+      if (isVariableBindingValue(property, value)) node[property] = value;
+      delete node.variableBindings[property];
+    }
+    if (!Object.keys(node.variableBindings || {}).length) delete node.variableBindings;
+  });
+}
+
 function materializeAliasesToRemovedVariables(document, removedIds) {
   for (const variable of document.variables || []) {
     if (removedIds.has(variable.id)) continue;
@@ -449,6 +550,8 @@ function clearVariableReferencesFromComponentOverrides(document, variableIds, co
     if (!node.componentOverrides) return;
     for (const overrides of Object.values(node.componentOverrides)) {
       for (const property of ['fillVariableId', 'textVariableId', 'strokeVariableId']) if (variableIds.has(overrides[property])) delete overrides[property];
+      for (const [property, variableId] of Object.entries(overrides.variableBindings || {})) if (variableIds.has(variableId)) delete overrides.variableBindings[property];
+      if (!Object.keys(overrides.variableBindings || {}).length) delete overrides.variableBindings;
       if (collectionId && overrides.variableModes) {
         delete overrides.variableModes[collectionId];
         if (!Object.keys(overrides.variableModes).length) delete overrides.variableModes;
@@ -463,6 +566,7 @@ export function deleteVariable(document, variableId) {
   const index = (document.variables || []).findIndex(variable => variable.id === variableId);
   if (index < 0) return false;
   materializeAliasesToRemovedVariables(document, new Set([variableId]));
+  materializeVariableBindingsToRemovedVariables(document, new Set([variableId]));
   document.variables.splice(index, 1);
   const properties = ['fillVariableId', 'textVariableId', 'strokeVariableId'];
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
@@ -477,6 +581,7 @@ export function deleteVariableCollection(document, collectionId) {
   if (index < 0) return false;
   const variableIds = new Set((document.variables || []).filter(variable => variable.collectionId === collectionId).map(variable => variable.id));
   materializeAliasesToRemovedVariables(document, variableIds);
+  materializeVariableBindingsToRemovedVariables(document, variableIds);
   document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
   document.variableCollections.splice(index, 1);
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
@@ -985,6 +1090,29 @@ export function validateDocument(document) {
     if (node.variableModes != null) {
       if (node.type !== 'frame' || !node.variableModes || typeof node.variableModes !== 'object' || Array.isArray(node.variableModes)) throw new TypeError(`Invalid variable mode overrides on layer ${node.name || node.id}.`);
       for (const [collectionId, modeId] of Object.entries(node.variableModes)) if (!modesByCollection.get(collectionId)?.has(modeId)) throw new TypeError(`Missing variable mode on layer ${node.name || node.id}.`);
+    }
+    if (node.variableBindings != null) {
+      if (!node.variableBindings || typeof node.variableBindings !== 'object' || Array.isArray(node.variableBindings)) throw new TypeError(`Invalid variable bindings on layer ${node.name || node.id}.`);
+      for (const [property, variableId] of Object.entries(node.variableBindings)) {
+        const spec = variableBindingSpecs[property];
+        const variable = variableById.get(variableId);
+        const collection = variable && document.variableCollections.find(item => item.id === variable.collectionId);
+        if (!spec || !canBindVariableToNode(node, property) || !variable || variable.type !== spec.type || !collection) throw new TypeError(`Invalid ${property} variable binding on layer ${node.name || node.id}.`);
+        for (const mode of collection.modes) {
+          const value = resolveVariableValueInternal(document, variable.id, node, new Map([[collection.id, mode.id]]), new Set());
+          if (!isVariableBindingValue(property, value)) throw new TypeError(`Invalid ${property} value for variable binding on layer ${node.name || node.id}.`);
+        }
+      }
+    }
+    for (const [sourceId, overrides] of Object.entries(node.componentOverrides || {})) {
+      const bindings = overrides.variableBindings;
+      if (bindings == null) continue;
+      if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) throw new TypeError(`Invalid component variable bindings on layer ${node.name || node.id}.`);
+      const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+      for (const [property, variableId] of Object.entries(bindings)) {
+        const variable = variableById.get(variableId);
+        if (!variable || !variableBindingSpecs[property] || variable.type !== variableBindingSpecs[property].type || (sourceNode && !canBindVariableToNode(sourceNode, property))) throw new TypeError(`Invalid component variable binding on layer ${node.name || node.id}.`);
+      }
     }
   });
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');

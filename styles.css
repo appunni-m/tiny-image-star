@@ -188,7 +188,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .lock-ratio.is-locked { color: #0b8bdc; background: #e7f4ff; }
 .select-field { min-width: 0; height: 29px; padding: 0 7px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fff; font-size: 10px; }
 .field-caption { align-self: center; overflow: hidden; color: #777; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.variable-binding-row, .frame-variable-mode { min-width: 0; display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 7px; color: #777; font-size: 10px; }
+.variable-binding-row, .frame-variable-mode { min-width: 0; display: grid; grid-template-columns: minmax(58px, 38%) minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 7px; color: #777; font-size: 10px; }
+.variable-binding-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .variable-binding-row .select-field, .frame-variable-mode .select-field { min-width: 0; width: 100%; }
 .fill-row { display: flex; align-items: center; gap: 7px; height: 29px; }
 .color-swatch { position: relative; width: 24px; height: 24px; overflow: hidden; border: 1px solid #d9d9d9; border-radius: 5px; background: conic-gradient(#fff 25%, #ddd 0 50%, #fff 0 75%, #ddd 0) 0 0/8px 8px; }

@@ -1,4 +1,4 @@
-import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, resolveVariableValue, setColorVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, createColorVariable, createDocument, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
@@ -533,6 +533,59 @@ try {
     assert(resolveVariableValue(savedVariables, variable.id) === expected, `${type} variable did not retain its typed value`);
   }
 
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  const savedSpacingComponent = savedVariables.variables.find(variable => variable.name === 'Spacing component');
+  const savedSpacingBase = savedVariables.variables.find(variable => variable.name === 'Spacing base');
+  const actionText = savedVariables.variables.find(variable => variable.name === 'Action text');
+  const actionEnabled = savedVariables.variables.find(variable => variable.name === 'Action enabled');
+  dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  const radiusBinding = app.querySelector('[data-variable-property-binding="radius"]');
+  radiusBinding.value = savedSpacingComponent.id; radiusBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'numeric layer binding autosave');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  let sourceSpacingValue = app.querySelector(`[data-variable-value="${savedSpacingBase.id}"][data-mode-id="${darkMode.id}"]`);
+  sourceSpacingValue.value = '31'; sourceSpacingValue.dispatchEvent(new Event('input', { bubbles: true })); sourceSpacingValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'bound alias source update autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  assert(getNodePropertyValue(savedVariables, savedVariableSurface, 'radius') === 31, 'a numeric alias did not drive the bound layer radius');
+  sourceSpacingValue = app.querySelector(`[data-variable-value="${savedSpacingBase.id}"][data-mode-id="${darkMode.id}"]`);
+  sourceSpacingValue.value = '2'; sourceSpacingValue.dispatchEvent(new Event('input', { bubbles: true })); sourceSpacingValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'text tracking value autosave');
+
+  dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  dispatchClick(app.querySelector(`[data-layer-id="${variableHeading.id}"]`));
+  const textBinding = app.querySelector('[data-variable-property-binding="text"]');
+  textBinding.value = actionText.id; textBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'text variable binding autosave');
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const textPixelsBeforeTracking = new Uint8ClampedArray(app.querySelector('#scene-canvas').getContext('2d').getImageData(0, 0, app.querySelector('#scene-canvas').width, app.querySelector('#scene-canvas').height).data);
+  const trackingBinding = app.querySelector('[data-variable-property-binding="letterSpacing"]');
+  assert(trackingBinding, 'the text inspector did not offer a letter-spacing variable');
+  trackingBinding.value = savedSpacingBase.id; trackingBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'letter-spacing variable binding autosave');
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const textPixelsAfterTracking = app.querySelector('#scene-canvas').getContext('2d').getImageData(0, 0, app.querySelector('#scene-canvas').width, app.querySelector('#scene-canvas').height).data;
+  assert(textPixelsBeforeTracking.some((pixel, index) => pixel !== textPixelsAfterTracking[index]), 'the bound letter-spacing variable did not change the rendered text');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  dispatchClick(app.querySelector(`[data-sidebar-tab="layers"]`));
+  dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  const visibilityBinding = app.querySelector('[data-variable-property-binding="visible"]');
+  visibilityBinding.value = actionEnabled.id; visibilityBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'visibility variable binding autosave');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  const enabledValue = app.querySelector(`[data-variable-value="${actionEnabled.id}"][data-mode-id="${darkMode.id}"]`);
+  enabledValue.checked = false; enabledValue.dispatchEvent(new Event('input', { bubbles: true })); enabledValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'bound Boolean value autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  savedVariableHeading = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
+  assert(getNodePropertyValue(savedVariables, savedVariableSurface, 'visible') === false, 'the Boolean variable did not update layer visibility');
+  assert(getNodePropertyValue(savedVariables, savedVariableHeading, 'text') === 'Save changes', 'the string variable did not replace bound text content');
+  dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  await waitFor(() => app.querySelector(`[data-layer-id="${variableSurface.id}"]`)?.classList.contains('layer-hidden'), 'variable-controlled layer visibility');
+
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
   const booleanBase = createNode('rectangle', { name: 'Boolean base', x: 0, y: 0, width: 160, height: 90, fill: '#0055ff' });
@@ -594,7 +647,7 @@ try {
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

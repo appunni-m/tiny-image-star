@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, addVariableMode, bindColorVariable, createColorStyle, createColorVariable,
+  addNode, addVariableMode, bindColorVariable, bindVariable, canBindVariable, createColorStyle, createColorVariable,
   createComponent, createComponentInstance, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, deleteVariableCollection,
-  getNodeColor, parseDocument, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue,
+  getNodeColor, getNodePropertyValue, parseDocument, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue,
   setFrameVariableMode, syncComponentInstances, validateDocument, variableModeForNode
 } from '../src/model.js';
 
@@ -152,4 +152,106 @@ test('variable validation rejects wrong primitive values, missing alias targets,
   const invalid = structuredClone(document);
   invalid.variables.find(item => item.id === first.id).valuesByMode[collection.defaultModeId] = 5;
   assert.throws(() => validateDocument(invalid), /Invalid mode values/);
+});
+
+test('typed variables bind to compatible layer properties, follow frame modes, and preserve values when unlinked', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Controls');
+  const light = collection.defaultModeId;
+  const dark = addVariableMode(document, collection.id, 'Dark');
+  const opacity = createVariable(document, collection.id, 'Opacity', 'number', 0.8);
+  const radius = createVariable(document, collection.id, 'Radius', 'number', 8);
+  const visible = createVariable(document, collection.id, 'Visible', 'boolean', true);
+  const copy = createVariable(document, collection.id, 'Copy', 'string', 'Light copy');
+  const size = createVariable(document, collection.id, 'Text size', 'number', 16);
+  const line = createVariable(document, collection.id, 'Line height', 'number', 1.2);
+  setVariableValue(document, opacity.id, 0.45, dark.id);
+  setVariableValue(document, radius.id, 20, dark.id);
+  setVariableValue(document, visible.id, false, dark.id);
+  setVariableValue(document, copy.id, 'Dark copy', dark.id);
+  setVariableValue(document, size.id, 24, dark.id);
+  setVariableValue(document, line.id, 1.4, dark.id);
+
+  const frame = createNode('frame', { variableModes: { [collection.id]: dark.id } });
+  const shape = createNode('rectangle', { opacity: 0.6, radius: 3 });
+  const text = createNode('text', { text: 'Base copy', fontSize: 12, lineHeight: 1 });
+  addNode(document, frame); addNode(document, shape, { parentId: frame.id }); addNode(document, text, { parentId: frame.id });
+  assert.equal(bindVariable(document, shape.id, opacity.id, 'opacity'), true);
+  assert.equal(bindVariable(document, shape.id, radius.id, 'radius'), true);
+  assert.equal(bindVariable(document, shape.id, visible.id, 'visible'), true);
+  assert.equal(bindVariable(document, text.id, copy.id, 'text'), true);
+  assert.equal(bindVariable(document, text.id, size.id, 'fontSize'), true);
+  assert.equal(bindVariable(document, text.id, line.id, 'lineHeight'), true);
+  assert.equal(getNodePropertyValue(document, shape, 'opacity'), 0.45);
+  assert.equal(getNodePropertyValue(document, shape, 'radius'), 20);
+  assert.equal(getNodePropertyValue(document, shape, 'visible'), false);
+  assert.equal(getNodePropertyValue(document, text, 'text'), 'Dark copy');
+  assert.equal(getNodePropertyValue(document, text, 'fontSize'), 24);
+  assert.equal(getNodePropertyValue(document, text, 'lineHeight'), 1.4);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, light.id), true);
+  assert.equal(getNodePropertyValue(document, shape, 'radius'), 8);
+  assert.equal(getNodePropertyValue(document, text, 'text'), 'Light copy');
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, dark.id), true);
+  assert.equal(bindVariable(document, shape.id, null, 'radius'), true);
+  assert.equal(shape.radius, 20);
+  assert.equal(deleteVariable(document, copy.id), true);
+  assert.equal(text.text, 'Dark copy');
+  assert.equal(text.variableBindings?.text, undefined);
+  assert.equal(deleteVariableCollection(document, collection.id), true);
+  assert.equal(shape.opacity, 0.45);
+  assert.equal(shape.visible, false);
+  assert.equal(text.fontSize, 24);
+  assert.equal(text.lineHeight, 1.4);
+  assert.equal(validateDocument(document), true);
+});
+
+test('typed variable bindings reject incompatible properties and values that violate property ranges', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Constraints');
+  const opacity = createVariable(document, collection.id, 'Opacity', 'number', 0.5);
+  const badOpacity = createVariable(document, collection.id, 'Bad opacity', 'number', 1.2);
+  const badRadius = createVariable(document, collection.id, 'Bad radius', 'number', -1);
+  const textValue = createVariable(document, collection.id, 'Label', 'string', 'Hello');
+  const shape = createNode('rectangle');
+  const text = createNode('text');
+  addNode(document, shape); addNode(document, text);
+
+  assert.equal(canBindVariable(document, shape.id, opacity.id, 'opacity'), true);
+  assert.equal(canBindVariable(document, shape.id, badOpacity.id, 'opacity'), false);
+  assert.equal(canBindVariable(document, text.id, opacity.id, 'opacity'), true);
+  assert.equal(bindVariable(document, shape.id, opacity.id, 'opacity'), true);
+  assert.equal(bindVariable(document, shape.id, badOpacity.id, 'opacity'), false);
+  assert.equal(bindVariable(document, shape.id, badRadius.id, 'radius'), false);
+  assert.equal(bindVariable(document, shape.id, textValue.id, 'opacity'), false);
+  assert.equal(bindVariable(document, text.id, opacity.id, 'fontSize'), true);
+  assert.equal(setVariableValue(document, opacity.id, 1.4), false);
+  assert.equal(opacity.valuesByMode[collection.defaultModeId], 0.5);
+  assert.equal(validateDocument(document), true);
+});
+
+test('typed variable property overrides survive component synchronization and deletion cleanup', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Copy');
+  const variable = createVariable(document, collection.id, 'Button label', 'string', 'Continue');
+  const master = createNode('frame', { name: 'Button' });
+  const masterText = createNode('text', { text: 'Default' });
+  addNode(document, master); addNode(document, masterText, { parentId: master.id });
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceText = instance.children[0];
+  assert.equal(bindVariable(document, instanceText.id, variable.id, 'text'), true);
+  instance.componentOverrides[instanceText.componentSourceId] = { variableBindings: structuredClone(instanceText.variableBindings) };
+  assert.equal(validateDocument(document), true);
+
+  masterText.text = 'Updated default';
+  syncComponentInstances(document, component.id);
+  assert.equal(instance.children[0].variableBindings.text, variable.id);
+  assert.equal(getNodePropertyValue(document, instance.children[0], 'text'), 'Continue');
+  assert.equal(deleteVariable(document, variable.id), true);
+  syncComponentInstances(document, component.id);
+  assert.equal(instance.children[0].variableBindings, undefined);
+  assert.equal(instance.componentOverrides[instanceText.componentSourceId], undefined);
+  assert.equal(validateDocument(document), true);
 });
