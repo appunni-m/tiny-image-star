@@ -289,6 +289,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .multi-selection-card { padding: 18px 15px; border-bottom: 1px solid var(--border); }
 .multi-selection-card strong { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 550; }
 .multi-selection-card span { color: #888; font-size: 10px; }
+.multi-align-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+.multi-align-button { min-width: 0; height: 29px; overflow: hidden; padding: 0 3px; border: 1px solid #e8e8e8; border-radius: 5px; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.multi-align-button:hover:not(:disabled) { border-color: #b8dfff; background: #f3f9ff; color: #087ecc; }
+.multi-align-button:disabled { color: #b8b8b8; cursor: default; }
 .prototype-placeholder { padding: 20px 16px; color: #777; font-size: 11px; line-height: 1.5; }
 .inspect-panel { display: grid; gap: 9px; padding: 10px; }
 .inspect-intro { display: grid; gap: 4px; padding: 4px 2px 7px; }

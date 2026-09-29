@@ -1,5 +1,5 @@
 import {
-  addNode, addVariableMode, addCommentReply, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
+  addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
@@ -543,7 +543,10 @@ function renderInspector() {
   }
   if (entries.length > 1) {
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Right-click to apply a saved image recipe.` : 'Use the Layers panel to change their order.'}</span></div>${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
+    const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
+    const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
+    const layoutNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Right-click to apply a saved image recipe.` : 'Use the Layers panel to change their order.'}</span></div>${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${layoutNote}</div>`)}${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
     return;
   }
   const node = entries[0].node;
@@ -1829,6 +1832,23 @@ function groupSelectedLayers() {
   } catch (error) { showToast(error.message || 'These layers cannot be grouped.'); }
 }
 
+function alignSelectedLayers(mode) {
+  const ids = state.selectedIds;
+  if (!canAlignLayers(state.document, ids, mode)) { showToast('Select unlocked sibling layers outside auto layout to align them.'); return; }
+  const labels = { left: 'left', 'center-x': 'horizontal centers', right: 'right', top: 'top', 'center-y': 'vertical centers', bottom: 'bottom', 'distribute-horizontal': 'horizontally', 'distribute-vertical': 'vertically' };
+  checkpoint(mode.startsWith('distribute-') ? `Distribute layers ${labels[mode]}` : `Align layers ${labels[mode]}`);
+  const changed = alignLayers(state.document, ids, mode);
+  for (const node of changed) {
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) {
+      recordComponentOverride(instanceRoot, node, 'x');
+      recordComponentOverride(instanceRoot, node, 'y');
+    }
+  }
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(mode.startsWith('distribute-') ? `Layers distributed ${labels[mode]}.` : `Layers aligned by ${labels[mode]}.`);
+}
+
 function ungroupSelectedLayers(groupId = selectedNodes()[0]?.id) {
   try {
     checkpoint('Ungroup layers');
@@ -2396,7 +2416,8 @@ async function copyInspectText(kind) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
-  if (action === 'add-layout-guide' && node?.type === 'frame') {
+  if (action === 'align-selection') alignSelectedLayers(details.alignMode);
+  else if (action === 'add-layout-guide' && node?.type === 'frame') {
     node.layoutGuides ||= [];
     if (node.layoutGuides.length >= 32) { showToast('A frame can have up to 32 layout guides.'); return; }
     checkpoint('Add layout guide'); node.layoutGuides.push(createLayoutGuide(details.guideType || 'grid'));

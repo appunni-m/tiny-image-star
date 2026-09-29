@@ -349,6 +349,61 @@ export function ungroupLayers(document, groupId, pageId = document.activePageId)
   return children;
 }
 
+const layerAlignmentModes = new Set(['left', 'center-x', 'right', 'top', 'center-y', 'bottom', 'distribute-horizontal', 'distribute-vertical']);
+
+/** Return whether sibling layers can be aligned without fighting a layout container. */
+export function canAlignLayers(document, nodeIds, mode, pageId = document.activePageId) {
+  if (!layerAlignmentModes.has(mode) || !Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
+  if (mode.startsWith('distribute-') && nodeIds.length < 3) return false;
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => !entry || entry.node.locked || entry.parents.some(parent => parent.isInstance))) return false;
+  const parent = entries[0].parent;
+  if (parent?.locked || parent?.type === 'boolean' || parent?.autoLayout) return false;
+  return entries.every(entry => entry.parent === parent);
+}
+
+/** Align bounding edges or distribute sibling layers evenly along one axis. */
+export function alignLayers(document, nodeIds, mode, pageId = document.activePageId) {
+  if (!canAlignLayers(document, nodeIds, mode, pageId)) throw new Error('Select unlocked sibling layers outside an auto layout container.');
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const bounds = entries.map(entry => visualBounds(entry.node));
+  if (mode.startsWith('distribute-')) {
+    const horizontal = mode === 'distribute-horizontal';
+    const start = horizontal ? 'left' : 'top';
+    const end = horizontal ? 'right' : 'bottom';
+    const size = horizontal ? 'width' : 'height';
+    const ordered = entries.map((entry, index) => ({ entry, bounds: bounds[index] })).sort((a, b) => a.bounds[start] - b.bounds[start] || a.entry.index - b.entry.index);
+    const first = ordered[0].bounds[start];
+    const last = ordered.at(-1).bounds[end];
+    const totalSize = ordered.reduce((sum, item) => sum + item.bounds[end] - item.bounds[start], 0);
+    const gap = (last - first - totalSize) / (ordered.length - 1);
+    let cursor = first;
+    for (const item of ordered) {
+      const delta = cursor - item.bounds[start];
+      if (horizontal) item.entry.node.x += delta; else item.entry.node.y += delta;
+      cursor += item.bounds[end] - item.bounds[start] + gap;
+    }
+    return ordered.map(item => item.entry.node);
+  }
+
+  const left = Math.min(...bounds.map(item => item.left));
+  const right = Math.max(...bounds.map(item => item.right));
+  const top = Math.min(...bounds.map(item => item.top));
+  const bottom = Math.max(...bounds.map(item => item.bottom));
+  const targetX = mode === 'left' ? left : mode === 'right' ? right : (left + right) / 2;
+  const targetY = mode === 'top' ? top : mode === 'bottom' ? bottom : (top + bottom) / 2;
+  for (const [index, entry] of entries.entries()) {
+    if (['left', 'center-x', 'right'].includes(mode)) {
+      const current = mode === 'left' ? bounds[index].left : mode === 'right' ? bounds[index].right : (bounds[index].left + bounds[index].right) / 2;
+      entry.node.x += targetX - current;
+    } else {
+      const current = mode === 'top' ? bounds[index].top : mode === 'bottom' ? bounds[index].bottom : (bounds[index].top + bounds[index].bottom) / 2;
+      entry.node.y += targetY - current;
+    }
+  }
+  return entries.map(entry => entry.node);
+}
+
 function isBooleanOperand(node) {
   return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0);
 }

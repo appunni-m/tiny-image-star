@@ -765,6 +765,14 @@ try {
     const ungroupedChild = ungroupedChildren.find(node => node.id === id);
     assert(ungroupedChild.x === preGroupGeometry.get(id).x && ungroupedChild.y === preGroupGeometry.get(id).y, 'ungrouping changed a child page-space position');
   }
+  const alignLeftButton = app.querySelector('[data-action="align-selection"][data-align-mode="left"]');
+  assert(alignLeftButton && !alignLeftButton.disabled, 'multi-selection inspector did not expose sibling alignment controls');
+  dispatchClick(alignLeftButton);
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'aligned sibling autosave');
+  const alignedRecords = await readStore('documents'); alignedRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const alignedChildren = alignedRecords[0]?.document?.pages[0]?.children;
+  assert(alignedChildren.find(node => node.id === booleanBase.id)?.x === alignedChildren.find(node => node.id === booleanCutter.id)?.x,
+    'Align left did not move selected siblings to the same visual edge');
   const maskDocument = createDocument();
   const maskedContent = createNode('rectangle', { name: 'Masked content', x: 0, y: 0, width: 100, height: 100, fill: '#00cc44' });
   const maskShape = createNode('ellipse', { name: 'Circle mask', x: 25, y: 25, width: 50, height: 50 });
@@ -788,7 +796,7 @@ try {
   const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
   assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
