@@ -6,6 +6,7 @@ import {
   getNodeColor, getNodePropertyValue, parseDocument, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue,
   getNodeGeometry, setFrameVariableMode, syncComponentInstances, validateDocument, variableModeForNode
 } from '../src/model.js';
+import { addPrototypeInteraction } from '../src/prototype.js';
 
 test('color variables resolve through nested frame modes and survive a local round trip', () => {
   const document = createDocument();
@@ -347,4 +348,30 @@ test('auto layout variables resolve by mode and preserve their resolved value wh
   assert.equal(frame.autoLayout.padding.left, 28, 'unbinding stores the active mode’s resolved padding');
   assert.equal(getNodePropertyValue(document, frame, 'autoLayout.padding.left'), 28);
   assert.equal(validateDocument(document), true);
+});
+
+test('deleting a variable or its collection removes prototype routes that depend on the deleted condition', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Prototype state');
+  const variable = createVariable(document, collection.id, 'Route', 'string', 'home');
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Destination', x: 500 });
+  const source = createNode('rectangle', { name: 'Conditional route' });
+  home.children.push(source);
+  addNode(document, home); addNode(document, destination);
+  addPrototypeInteraction(document, source.id, destination.id, {
+    condition: { variableId: variable.id, type: 'string', operator: 'equals', value: 'home' }
+  });
+
+  assert.equal(deleteVariable(document, variable.id), true);
+  assert.equal(source.interactions, undefined, 'a route with an unavailable condition variable must not become unconditional');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const collectionVariable = createVariable(document, collection.id, 'Second route', 'boolean', true);
+  addPrototypeInteraction(document, source.id, destination.id, {
+    condition: { variableId: collectionVariable.id, type: 'boolean', operator: 'equals', value: true }
+  });
+  assert.equal(deleteVariableCollection(document, collection.id), true);
+  assert.equal(source.interactions, undefined, 'deleting a collection must remove routes that depend on its variables');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
 });

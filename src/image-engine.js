@@ -201,6 +201,7 @@ export class LocalImageEngine {
     this.concurrency = Math.min(2, maxWorkers);
     this.workers = [];
     this.queue = [];
+    this.queuedByKey = new Map();
     this.pending = new Map();
     this.nextRequestId = 1;
     this.onChange = onChange;
@@ -302,13 +303,16 @@ export class LocalImageEngine {
     this.#notify();
   }
 
-  render(assetId, sourceBytes, adjustments, transforms = {}) {
+  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey } = {}) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
     }
+    if (replaceKey !== undefined && (typeof replaceKey !== 'string' || !replaceKey)) {
+      return Promise.reject(new TypeError('A queued render replacement key must be a nonempty string.'));
+    }
     return new Promise((resolve, reject) => {
-      this.queue.push({
+      const job = {
         assetId,
         sourceBytes,
         activeRenderBytes: estimateImageWorkingSetBytes(sourceBytes),
@@ -319,11 +323,37 @@ export class LocalImageEngine {
         },
         resolve,
         reject,
-      });
+        replaceKey,
+      };
+      if (replaceKey !== undefined) {
+        const previous = this.queuedByKey.get(replaceKey);
+        if (previous) this.#removeQueuedJob(previous, new DOMException('A newer image preview replaced this queued render.', 'AbortError'));
+        this.queuedByKey.set(replaceKey, job);
+      }
+      this.queue.push(job);
       if (!this.workers.length) this.setConcurrency(this.concurrency);
       this.#dispatch();
       this.#notify();
     });
+  }
+
+  #removeQueuedJob(job, error) {
+    const index = this.queue.indexOf(job);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
+    job.reject(error);
+    return true;
+  }
+
+  /** Remove one not-yet-started render, for example after its layer is deleted. */
+  cancelQueuedByKey(replaceKey, error = new DOMException('The image render was cancelled.', 'AbortError')) {
+    const job = this.queuedByKey.get(replaceKey);
+    if (!job) return false;
+    const removed = this.#removeQueuedJob(job, error);
+    if (!removed && this.queuedByKey.get(replaceKey) === job) this.queuedByKey.delete(replaceKey);
+    if (removed) { this.#dispatch(); this.#notify(); }
+    return removed;
   }
 
   #dispatch() {
@@ -343,6 +373,7 @@ export class LocalImageEngine {
     const slot = idle.find(item => item.loaded.has(job.assetId)) || idle[0];
     if (!slot) return;
     this.queue.shift();
+    if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
     const requestId = this.nextRequestId++;
     const firstLoad = !slot.loaded.has(job.assetId);
     const bytes = firstLoad ? job.sourceBytes.slice() : null;
@@ -414,6 +445,7 @@ export class LocalImageEngine {
 
   cancelQueued(error = new DOMException('The image operation was cancelled.', 'AbortError')) {
     for (const job of this.queue.splice(0)) job.reject(error);
+    this.queuedByKey.clear();
     this.#notify();
   }
 

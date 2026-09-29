@@ -15,7 +15,7 @@
           <button class="icon-button brand-button" id="main-menu-button" aria-label="Main menu" title="Main menu"><span class="brand-mark">✦</span></button>
           <button class="topbar-button file-menu-button" id="file-menu-button"><span class="file-glyph">◩</span><span>File</span><span class="chevron">⌄</span></button>
           <div class="topbar-divider"></div>
-          <button class="mobile-panel-toggle icon-button" id="sidebar-toggle" aria-label="Toggle layers" title="Layers">▤</button>
+          <button class="mobile-panel-toggle icon-button" id="sidebar-toggle" aria-label="Open layers" aria-controls="left-panel" aria-expanded="false" title="Open layers">▤</button>
         </div>
         <div class="document-title-wrap">
           <input id="document-name" class="document-name" aria-label="File name" value="Untitled" maxlength="120" />
@@ -26,12 +26,12 @@
           <button class="topbar-button present-button" id="present-button" title="Present prototype">▶ <span>Present</span></button>
           <button class="topbar-button quiet-button" id="share-button" title="Share is local-only">Share</button>
           <button class="avatar-button" aria-label="Local user">L</button>
-          <button class="mobile-panel-toggle icon-button" id="inspector-toggle" aria-label="Toggle properties" title="Properties">☷</button>
+          <button class="mobile-panel-toggle icon-button" id="inspector-toggle" aria-label="Open properties" aria-controls="right-panel" aria-expanded="false" title="Open properties">☷</button>
         </div>
       </header>
 
       <div class="workspace">
-        <aside class="left-panel" id="left-panel" aria-label="Pages and layers">
+        <aside class="left-panel" id="left-panel" aria-label="Pages and layers" aria-hidden="true" inert>
           <div class="sidebar-tabs" role="tablist" aria-label="Left sidebar">
             <button class="sidebar-tab is-active" data-sidebar-tab="layers" role="tab" aria-selected="true">Layers</button>
             <button class="sidebar-tab" data-sidebar-tab="assets" role="tab" aria-selected="false">Assets</button>
@@ -113,7 +113,7 @@
           <div class="canvas-status"><span id="selection-status">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
         </main>
 
-        <aside class="right-panel" id="right-panel" aria-label="Design properties">
+        <aside class="right-panel" id="right-panel" aria-label="Design properties" aria-hidden="true" inert>
           <div class="inspector-tabs" role="tablist" aria-label="Properties">
             <button class="inspector-tab is-active" data-inspector-tab="design" role="tab" aria-selected="true">Design</button>
             <button class="inspector-tab" data-inspector-tab="prototype" role="tab" aria-selected="false">Prototype</button>

@@ -22,6 +22,7 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
+import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect } from './transform-geometry.js';
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
@@ -46,6 +47,7 @@ const state = {
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null,
+  prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   componentSlotDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
@@ -209,21 +211,24 @@ function renderLayers() {
   latestPageLayerIds = [];
   const search = state.layerSearch.trim().toLowerCase();
   const matchingNode = node => !search || node.name.toLowerCase().includes(search) || (node.children || []).some(matchingNode);
-  const addRows = (nodes, depth = 0) => {
-    for (const node of [...nodes].reverse()) {
+  const addRows = (nodes, depth = 0, lockedParent = false) => {
+    for (const { node, index } of nodes.map((node, index) => ({ node, index })).reverse()) {
       if (!matchingNode(node)) continue;
       latestPageLayerIds.push(node.id);
       const row = document.createElement('div');
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${getNodePropertyValue(state.document, node, 'visible') ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
-      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id))); row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = 0;
+      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id))); row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = 0; row.draggable = true;
       row.style.paddingLeft = `${7 + depth * 13}px`;
+      const siblings = nodes;
+      const lockedInChain = node.locked || lockedParent;
+      const upNeighbor = siblings[index + 1]; const downNeighbor = siblings[index - 1];
       const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
-      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
+      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button type="button" class="layer-order-control" data-action="layer-move-up" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
       list.append(row);
-      if (node.children?.length) addRows(node.children, depth + 1);
+      if (node.children?.length) addRows(node.children, depth + 1, lockedInChain);
     }
   };
   if (page) addRows(page.children);
@@ -639,6 +644,20 @@ function inspectPanel() {
   const json = output.json || '[]';
   return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
 }
+function buildPrototypeInteractionCondition() {
+  const variable = state.document.variables?.find(item => item.id === state.prototypeConditionVariableId);
+  if (!variable) return null;
+  const rawValue = state.prototypeConditionValue ?? String(resolveVariableValue(state.document, variable.id));
+  let value = String(rawValue);
+  if (variable.type === 'number') {
+    if (!value.trim()) throw new TypeError('Enter a valid number for the prototype condition.');
+    value = Number(rawValue);
+    if (!Number.isFinite(value)) throw new TypeError('Enter a valid number for the prototype condition.');
+  } else if (variable.type === 'boolean') value = rawValue === 'true';
+  if (variable.type === 'color' && !/^#[0-9a-f]{6}$/i.test(value)) throw new TypeError('Choose a valid color for the prototype condition.');
+  return { variableId: variable.id, type: variable.type, operator: state.prototypeConditionOperator, value };
+}
+
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const entry = node ? findNode(state.document, node.id) : null;
@@ -655,7 +674,9 @@ function prototypeInspector() {
     const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : 'Navigate to';
     const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap';
     const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
-    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
+    const conditionLabel = conditionVariable ? ` · If ${conditionVariable.name} ${interaction.condition.operator === 'equals' ? 'is' : 'is not'} ${String(interaction.condition.value)}` : '';
+    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
   const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
   const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : state.prototypeAction === 'swap-overlay' ? 'Click the frame to swap into the overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
@@ -666,6 +687,21 @@ function prototypeInspector() {
     .map(([value, label]) => `<option value="${value}"${state.prototypeEasing === value ? ' selected' : ''}>${label}</option>`).join('');
   const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
   const variableCollections = state.document.variableCollections || [];
+  const conditionVariables = state.document.variables || [];
+  const conditionVariable = conditionVariables.find(variable => variable.id === state.prototypeConditionVariableId) || null;
+  const rawConditionValue = conditionVariable
+    ? state.prototypeConditionValue ?? String(resolveVariableValue(state.document, conditionVariable.id))
+    : '';
+  const conditionValueControl = conditionVariable?.type === 'boolean'
+    ? `<select id="prototype-condition-value" class="select-field" aria-label="Condition value"><option value="true"${rawConditionValue === 'true' ? ' selected' : ''}>True</option><option value="false"${rawConditionValue === 'false' ? ' selected' : ''}>False</option></select>`
+    : conditionVariable?.type === 'color'
+      ? `<input id="prototype-condition-value" type="color" value="${/^#[0-9a-f]{6}$/i.test(rawConditionValue) ? escapeHtml(rawConditionValue) : '#000000'}" aria-label="Condition color"/>`
+      : conditionVariable?.type === 'number'
+        ? `<input id="prototype-condition-value" class="text-input" type="number" step="any" value="${escapeHtml(rawConditionValue)}" aria-label="Condition number"/>`
+        : conditionVariable
+          ? `<input id="prototype-condition-value" class="text-input" type="text" value="${escapeHtml(rawConditionValue)}" aria-label="Condition text"/>`
+          : '';
+  const conditionControls = `<label>Only if variable<select id="prototype-condition-variable" class="select-field"><option value=""${conditionVariable ? '' : ' selected'}>Always</option>${conditionVariables.map(variable => `<option value="${escapeHtml(variable.id)}"${variable.id === conditionVariable?.id ? ' selected' : ''}>${escapeHtml(variable.name)} · ${escapeHtml(variable.type)}</option>`).join('')}</select></label>${conditionVariable ? `<label>Condition<select id="prototype-condition-operator" class="select-field"><option value="equals"${state.prototypeConditionOperator === 'equals' ? ' selected' : ''}>Equals</option><option value="not-equals"${state.prototypeConditionOperator === 'not-equals' ? ' selected' : ''}>Does not equal</option></select></label><label>Value${conditionValueControl}</label>` : ''}`;
   const prototypeCollection = variableCollections.find(collection => collection.id === state.prototypeVariableCollectionId) || variableCollections[0] || null;
   const prototypeModes = prototypeCollection?.modes || [];
   const selectedPrototypeMode = prototypeModes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(prototypeCollection);
@@ -674,7 +710,7 @@ function prototypeInspector() {
       ? `<label>Collection<select id="prototype-variable-collection" class="select-field">${variableCollections.map(collection => `<option value="${escapeHtml(collection.id)}"${collection.id === prototypeCollection.id ? ' selected' : ''}>${escapeHtml(collection.name)}</option>`).join('')}</select></label><label>Mode<select id="prototype-variable-mode" class="select-field">${prototypeModes.map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === selectedPrototypeMode?.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('')}</select></label>`
       : '<p class="prototype-hint">Create a variable collection and modes before adding this action.</p>'
     : '';
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${conditionControls}${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow. Variable mode actions update the active flow without changing the saved frame settings.</span></section></div>`;
 }
@@ -1327,6 +1363,7 @@ function onCanvasPointerDown(event) {
     if (!target) { showToast('Choose a frame as the interaction destination.'); return; }
     if (target.id === state.prototypeSourceId) { showToast('Choose a different destination frame.'); return; }
     try {
+      const condition = buildPrototypeInteractionCondition();
       checkpoint('Add prototype interaction');
       addPrototypeInteraction(state.document, state.prototypeSourceId, target.id, {
         action: state.prototypeAction,
@@ -1334,6 +1371,7 @@ function onCanvasPointerDown(event) {
         transition: state.prototypeTransition,
         easing: state.prototypeEasing,
         duration: state.prototypeDuration,
+        condition,
         overlayPosition: state.prototypeOverlayPosition,
         overlayOutsideClick: state.prototypeOverlayOutsideClick,
         overlayBackground: state.prototypeOverlayBackground,
@@ -2351,6 +2389,9 @@ function finishInspectorInput() {
 function schedulePreview(node, immediate = false) {
   const previous = previewTimers.get(node.id);
   if (previous) clearTimeout(previous);
+  const replacementKey = `preview:${node.id}`;
+  state.renderVersion.set(node.id, ++nextImageRenderVersion);
+  imageEngine.cancelQueuedByKey(replacementKey);
   state.imageStatus.set(node.id, 'Updating preview…');
   const assetId = node.imageFill?.assetId || node.assetId;
   const adjustments = node.imageFill?.adjustments || node.adjustments;
@@ -2375,7 +2416,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {})
   state.renderVersion.set(nodeId, version);
   state.imageStatus.set(nodeId, 'Processing locally…');
   try {
-    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms);
+    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, { replaceKey: `preview:${nodeId}` });
     if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) return false;
     const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
     if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
@@ -2396,8 +2437,12 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {})
 }
 
 function reconcileImagePreviewRuntime() {
+  const liveNodeIds = collectLiveImagePreviewNodeIds(state.document);
+  for (const nodeId of state.renderVersion.keys()) {
+    if (!liveNodeIds.has(nodeId)) imageEngine.cancelQueuedByKey(`preview:${nodeId}`);
+  }
   return pruneImagePreviewRuntime({
-    liveNodeIds: collectLiveImagePreviewNodeIds(state.document),
+    liveNodeIds,
     timers: previewTimers,
     previews: state.previews,
     previewUrls: state.previewUrls,
@@ -2568,8 +2613,9 @@ function scheduleBulk() {
     applyImageRecipe(state.document, id, bulk.recipe);
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
-    renderImagePreview(id, node.assetId, node.adjustments, node.transforms).then(() => {
+    renderImagePreview(id, node.assetId, node.adjustments, node.transforms).then(rendered => {
       if (state.bulk !== bulk) return;
+      if (!rendered) throw new DOMException('A newer image edit replaced this recipe preview before it could be displayed.', 'AbortError');
       bulk.completed += 1;
     }).catch(error => {
       if (state.bulk !== bulk) return;
@@ -3536,7 +3582,7 @@ function handlePresentationPointer(event, trigger) {
     }
   }
   if (!hit) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
-  const found = findClickableInteraction(state.document, state.presenting.pageId, hit.id, trigger);
+  const found = findClickableInteraction(state.document, state.presenting.pageId, hit.id, trigger, state.presenting);
   if (!found) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
   if (trigger === 'while-hovering' && state.presenting.lastHoverInteractionId === found.interaction.id) return;
   navigatePresentation(found.interaction);
@@ -3589,6 +3635,7 @@ async function persistCurrentDocumentNow() {
 function releaseImageRuntimeForDocumentSwitch() {
   for (const timer of previewTimers.values()) clearTimeout(timer);
   previewTimers.clear();
+  for (const nodeId of state.renderVersion.keys()) imageEngine.cancelQueuedByKey(`preview:${nodeId}`);
   for (const assetId of state.assets.keys()) imageEngine.dispose(assetId);
   for (const asset of state.assets.values()) {
     asset.bitmap?.close?.();
@@ -3616,6 +3663,9 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     const generation = ++state.documentGeneration;
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
+    state.prototypeConditionVariableId = null;
+    state.prototypeConditionOperator = 'equals';
+    state.prototypeConditionValue = null;
     state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null;
     state.draftNode = null; state.penDraft = null; state.penHover = null; state.marquee = null; state.interaction = null;
     state.pointerMap.clear(); state.prototypeSourceId = null; state.textNodeId = null; state.textSelection = null;
@@ -4100,10 +4150,12 @@ function applyInspectorAction(action, details = {}) {
       try {
         const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
         const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
+        const condition = buildPrototypeInteractionCondition();
         checkpoint(`Add ${state.prototypeAction} prototype interaction`);
         addPrototypeInteraction(state.document, node.id, null, {
           action: state.prototypeAction, trigger: state.prototypeTrigger,
           transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
+          condition,
           url: state.prototypeUrl,
           collectionId: selectedCollection?.id,
           modeId: selectedMode?.id
@@ -4175,16 +4227,51 @@ function updateImageEngineState(metrics) {
 }
 
 function toggleMobilePanel(panel) {
-  const left = $('#left-panel'); const right = $('#right-panel'); const scrim = $('#mobile-scrim');
-  if (panel === 'left') { right.classList.remove('is-open'); left.classList.toggle('is-open'); }
-  else { left.classList.remove('is-open'); right.classList.toggle('is-open'); }
-  scrim.classList.toggle('is-visible', left.classList.contains('is-open') || right.classList.contains('is-open'));
-}
-function closeMobilePanels() {
   if (innerWidth > 820) return;
-  $('#left-panel').classList.remove('is-open');
-  $('#right-panel').classList.remove('is-open');
-  $('#mobile-scrim').classList.remove('is-visible');
+  const left = $('#left-panel'); const right = $('#right-panel');
+  const target = panel === 'left' ? left : right;
+  const other = panel === 'left' ? right : left;
+  const wasOpen = target.classList.contains('is-open');
+  target.classList.toggle('is-open', !wasOpen);
+  other.classList.remove('is-open');
+  syncMobilePanelAccessibility();
+  if (wasOpen) {
+    (panel === 'left' ? $('#sidebar-toggle') : $('#inspector-toggle')).focus({ preventScroll: true });
+    return;
+  }
+  const firstControl = target.querySelector('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])');
+  firstControl?.focus({ preventScroll: true });
+}
+function syncMobilePanelAccessibility() {
+  const mobile = innerWidth <= 820;
+  const scrim = $('#mobile-scrim');
+  const panels = [
+    { panel: $('#left-panel'), toggle: $('#sidebar-toggle'), name: 'layers' },
+    { panel: $('#right-panel'), toggle: $('#inspector-toggle'), name: 'properties' }
+  ];
+  let anyOpen = false;
+  for (const { panel, toggle, name } of panels) {
+    const open = mobile && panel.classList.contains('is-open');
+    const closed = mobile && !open;
+    anyOpen ||= open;
+    panel.inert = closed;
+    panel.setAttribute('aria-hidden', String(closed));
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', `${open ? 'Close' : 'Open'} ${name}`);
+    toggle.title = `${open ? 'Close' : 'Open'} ${name}`;
+  }
+  scrim.classList.toggle('is-visible', anyOpen);
+}
+function closeMobilePanels({ restoreFocus = true } = {}) {
+  if (innerWidth > 820) return;
+  const left = $('#left-panel'); const right = $('#right-panel');
+  const wasLeftOpen = left.classList.contains('is-open');
+  const wasRightOpen = right.classList.contains('is-open');
+  left.classList.remove('is-open');
+  right.classList.remove('is-open');
+  syncMobilePanelAccessibility();
+  if (restoreFocus && wasLeftOpen) $('#sidebar-toggle').focus({ preventScroll: true });
+  else if (restoreFocus && wasRightOpen) $('#inspector-toggle').focus({ preventScroll: true });
 }
 
 function initEvents() {
@@ -4241,6 +4328,16 @@ function initEvents() {
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
     const node = findNode(state.document, row.dataset.layerId)?.node; if (!node) return;
+    const moveControl = event.target.closest('[data-action="layer-move-up"], [data-action="layer-move-down"]');
+    if (moveControl) {
+      if (moveControl.disabled || state.layerSelectionMode) return;
+      const direction = moveControl.dataset.action === 'layer-move-up' ? 'up' : 'down';
+      checkpoint(`Move layer ${direction}`);
+      if (moveLayerOneVisualRow(state.document, node.id, direction)) {
+        setSelection([node.id]); renderUI(); queueSave(); renderer.invalidate();
+      }
+      return;
+    }
     if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); setNodePropertyValue(node, 'visible', !getNodePropertyValue(state.document, node, 'visible')); renderUI(); queueSave(); return; }
     if (state.layerSelectionMode) {
       if (node.type !== 'image') { showToast('Image selection mode only selects image layers.'); return; }
@@ -4284,10 +4381,20 @@ function initEvents() {
       state.prototypeDuration = Number(event.target.value);
       $('#prototype-duration-value').textContent = `${(state.prototypeDuration / 1000).toFixed(1)} s`;
     }
+    if (event.target.id === 'prototype-condition-value') state.prototypeConditionValue = event.target.value;
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.id === 'prototype-condition-value') { state.prototypeConditionValue = event.target.value; return; }
+    if (event.target.id === 'prototype-condition-operator') { state.prototypeConditionOperator = event.target.value; return; }
+    if (event.target.id === 'prototype-condition-variable') {
+      state.prototypeConditionVariableId = event.target.value || null;
+      const variable = state.document.variables?.find(item => item.id === state.prototypeConditionVariableId);
+      state.prototypeConditionValue = variable ? String(resolveVariableValue(state.document, variable.id)) : null;
+      renderInspector();
+      return;
+    }
     if (event.target.matches('[data-image-transform-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
@@ -4517,14 +4624,28 @@ function initEvents() {
   $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
   $('#sidebar-toggle').addEventListener('click', () => toggleMobilePanel('left'));
   $('#inspector-toggle').addEventListener('click', () => toggleMobilePanel('right'));
-  $('#mobile-scrim').addEventListener('click', () => { $('#left-panel').classList.remove('is-open'); $('#right-panel').classList.remove('is-open'); $('#mobile-scrim').classList.remove('is-visible'); });
+  $('#mobile-scrim').addEventListener('click', () => closeMobilePanels());
   document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu') && !event.target.closest('#file-menu-button') && !event.target.closest('#main-menu-button')) closeMenu(); });
   document.addEventListener('keydown', onKeyDown);
   initRichTextEditorEvents();
+  installLayerReorder($('#layers-list'), {
+    getDocument: () => state.document,
+    getPageId: () => state.document.activePageId,
+    canStart: () => !state.layerSelectionMode && !state.layerSearch.trim(),
+    beforeChange: () => checkpoint('Reorder layers'),
+    onChange: () => { renderUI(); queueSave(); renderer.invalidate(); }
+  });
 }
 
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
+  if (event.key.toLowerCase() === 'escape' && innerWidth <= 820
+    && ($('#left-panel').classList.contains('is-open') || $('#right-panel').classList.contains('is-open'))
+    && !document.querySelector('dialog[open]')) {
+    closeMobilePanels();
+    event.preventDefault();
+    return;
+  }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
   if (event.code === 'Space' && !editing) { state.spaceDown = true; event.preventDefault(); }
   if (editing) return;
@@ -4584,8 +4705,9 @@ async function boot() {
   else setSaveState('saved', 'Saved locally');
   document.documentElement.dataset.appReady = 'true';
   document.addEventListener('keyup', onKeyUp);
-  window.addEventListener('resize', () => renderer.invalidate());
+  window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
   window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); });
 }
 
+syncMobilePanelAccessibility();
 boot();

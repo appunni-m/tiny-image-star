@@ -1,4 +1,4 @@
-import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, walkNodes } from './model.js';
+import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, walkNodes } from './model.js';
 
 const triggers = new Set(['on-click', 'while-hovering']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
@@ -8,6 +8,50 @@ const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
   'bottom-left', 'bottom-center', 'bottom-right'
 ]);
+const conditionOperators = new Set(['equals', 'not-equals']);
+
+function normalizePrototypeCondition(document, condition) {
+  if (condition == null) return null;
+  const fields = ['variableId', 'type', 'operator', 'value'];
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)
+    || Object.keys(condition).some(key => !fields.includes(key))) {
+    throw new TypeError('Invalid prototype interaction condition.');
+  }
+  const variable = document.variables?.find(item => item.id === condition.variableId);
+  if (typeof condition.variableId !== 'string' || !condition.variableId
+    || !variable || condition.type !== variable.type
+    || !conditionOperators.has(condition.operator)
+    || !isVariableValue(condition.type, condition.value)) {
+    throw new TypeError('Invalid prototype interaction condition.');
+  }
+  return {
+    variableId: condition.variableId,
+    type: condition.type,
+    operator: condition.operator,
+    value: condition.value
+  };
+}
+
+function conditionIdentity(condition) {
+  if (!condition) return null;
+  const value = condition.type === 'color' && typeof condition.value === 'string'
+    ? condition.value.toLowerCase()
+    : condition.value;
+  return JSON.stringify([condition.variableId, condition.type, condition.operator, value]);
+}
+
+function prototypeConditionMatches(document, condition, session, node) {
+  if (condition == null) return true;
+  const variable = document.variables?.find(item => item.id === condition.variableId);
+  if (!variable || variable.type !== condition.type || !conditionOperators.has(condition.operator)
+    || !isVariableValue(condition.type, condition.value)) return false;
+  const value = resolveVariableValueWithModeOverrides(document, variable.id, session?.variableModes, node);
+  if (!isVariableValue(variable.type, value)) return false;
+  const matches = variable.type === 'color'
+    ? value.toLowerCase() === condition.value.toLowerCase()
+    : value === condition.value;
+  return condition.operator === 'equals' ? matches : !matches;
+}
 
 export function listPrototypeFrames(document) {
   const frames = [];
@@ -84,7 +128,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   overlayBackgroundOpacity = 0.32,
   url,
   collectionId,
-  modeId
+  modeId,
+  condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
@@ -96,6 +141,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   const candidateDestination = needsDestination ? findNodeAcrossPages(document, destinationId) : null;
   const destination = candidateDestination && (!destinationPageId || candidateDestination.page.id === destinationPageId) ? candidateDestination : null;
   const linkUrl = action === 'open-link' ? normalizePrototypeLinkUrl(url) : null;
+  const normalizedCondition = normalizePrototypeCondition(document, condition);
   const collection = action === 'set-variable-mode'
     ? document.variableCollections?.find(item => item.id === collectionId)
     : null;
@@ -109,6 +155,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (action === 'open-overlay' && !overlayPositions.has(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
   const interactions = source.node.interactions ||= [];
   const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null)
+    && conditionIdentity(item.condition) === conditionIdentity(normalizedCondition)
     && (action !== 'open-link' || normalizePrototypeLinkUrl(item.url) === linkUrl)
     && (action !== 'set-variable-mode' || item.collectionId === collectionId));
   if (existing) {
@@ -123,6 +170,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
       existing.overlayBackgroundOpacity = Math.max(0, Math.min(1, Number(overlayBackgroundOpacity) || 0));
     }
     if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
+    if (normalizedCondition) existing.condition = normalizedCondition;
+    else delete existing.condition;
     return existing;
   }
   const interaction = {
@@ -137,6 +186,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   };
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
+  if (normalizedCondition) interaction.condition = normalizedCondition;
   if (action === 'open-overlay') Object.assign(interaction, {
     overlayPosition,
     overlayOutsideClick: Boolean(overlayOutsideClick),
@@ -255,12 +305,17 @@ export function findFrameAtPoint(page, point, document = null) {
   return matches.sort((a, b) => b.depth - a.depth || a.area - b.area)[0]?.node ?? null;
 }
 
-export function findClickableInteraction(document, pageId, hitId, trigger = 'on-click') {
+export function findClickableInteraction(document, pageId, hitId, trigger = 'on-click', session = null) {
   const hit = findNode(document, hitId, pageId) || findNodeAcrossPages(document, hitId);
   if (!hit) return null;
   const chain = [hit.node, ...[...hit.parents].reverse()];
   for (const node of chain) {
-    const interaction = node.interactions?.find(item => item.trigger === trigger && actions.has(item.action));
+    const candidates = node.interactions?.filter(item => item.trigger === trigger && actions.has(item.action)) || [];
+    // Treat unconditional interactions as the fallback route so adding one
+    // before a conditional route does not make the condition unreachable.
+    const interaction = candidates.find(item => item.condition != null
+      && prototypeConditionMatches(document, item.condition, session, hit.node))
+      || candidates.find(item => item.condition == null);
     if (interaction) return { source: node, interaction };
   }
   return null;

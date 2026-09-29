@@ -93,6 +93,14 @@ try {
   const app = frame.contentDocument;
   assert(app.defaultView.innerWidth === 390 && app.defaultView.innerHeight === 844, 'the workflow should run at a 390×844 phone viewport.');
   assert(app.title === 'Tiny Image Star', 'the editor should use the Tiny Image Star product name.');
+  for (const [toggleSelector, panelSelector] of [['#sidebar-toggle', '#left-panel'], ['#inspector-toggle', '#right-panel']]) {
+    const toggle = app.querySelector(toggleSelector); const panel = app.querySelector(panelSelector);
+    assert(toggle.getAttribute('aria-controls') === panel.id && toggle.getAttribute('aria-expanded') === 'false', `${toggleSelector} should identify its closed panel accessibly.`);
+    assert(panel.inert && panel.getAttribute('aria-hidden') === 'true', `${panelSelector} should be removed from keyboard and screen-reader navigation while closed.`);
+    const firstControl = panel.querySelector('button:not(:disabled)');
+    firstControl.focus();
+    assert(app.activeElement !== firstControl, `${panelSelector} controls should not accept focus while the panel is closed.`);
+  }
 
   tap(app, app.querySelector('#main-menu-button'));
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('New design'));
@@ -102,6 +110,28 @@ try {
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');
 
   tap(app, app.querySelector('#sidebar-toggle'));
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  const leftPanel = app.querySelector('#left-panel'); const leftToggle = app.querySelector('#sidebar-toggle');
+  assert(!leftPanel.inert && leftPanel.getAttribute('aria-hidden') === 'false' && leftToggle.getAttribute('aria-expanded') === 'true', 'opening Layers should expose the panel and synchronize its toggle state.');
+  assert(leftPanel.contains(app.activeElement), 'opening a mobile panel should move focus inside it.');
+  const escape = new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  app.activeElement.dispatchEvent(escape);
+  assert(escape.defaultPrevented, 'Escape should dismiss an open phone panel.');
+  assert(leftPanel.inert && leftPanel.getAttribute('aria-hidden') === 'true' && leftToggle.getAttribute('aria-expanded') === 'false', 'Escape should hide the panel from navigation and reset its expanded state.');
+  assert(app.activeElement === leftToggle, 'closing with Escape should restore focus to the panel toggle.');
+
+  tap(app, leftToggle);
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitForPhonePanel(app, '#right-panel', 'right');
+  const rightPanel = app.querySelector('#right-panel'); const rightToggle = app.querySelector('#inspector-toggle');
+  assert(leftPanel.inert && leftToggle.getAttribute('aria-expanded') === 'false', 'opening Properties should close and disable the Layers panel.');
+  assert(!rightPanel.inert && rightToggle.getAttribute('aria-expanded') === 'true' && rightPanel.contains(app.activeElement), 'opening Properties should expose it and move focus inside.');
+  app.querySelector('#mobile-scrim').click();
+  assert(rightPanel.inert && rightPanel.getAttribute('aria-hidden') === 'true' && rightToggle.getAttribute('aria-expanded') === 'false', 'the scrim should close Properties and remove it from navigation.');
+  assert(app.activeElement === rightToggle, 'closing with the scrim should restore focus to the Properties toggle.');
+
+  tap(app, leftToggle);
   await waitForPhonePanel(app, '#left-panel', 'left');
   tap(app, app.querySelector('[data-sidebar-tab="assets"]'));
   tap(app, app.querySelector('#add-variable-collection'));

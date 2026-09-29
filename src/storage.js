@@ -6,19 +6,54 @@ let dbPromise;
 
 function openDatabase() {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    if (!globalThis.indexedDB) { reject(new Error('Local file storage is not available in this browser.')); return; }
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+  let resolveOpen;
+  let rejectOpen;
+  let settled = false;
+  const pending = new Promise((resolve, reject) => { resolveOpen = resolve; rejectOpen = reject; });
+  dbPromise = pending;
+
+  const fail = error => {
+    if (settled) return;
+    settled = true;
+    rejectOpen(error);
+  };
+  const requestOpen = () => {
+    if (!globalThis.indexedDB) {
+      fail(new Error('Local file storage is not available in this browser.'));
+      return;
+    }
+
+    let request;
+    try { request = indexedDB.open(DB_NAME, DB_VERSION); }
+    catch (error) { fail(error); return; }
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains('documents')) db.createObjectStore('documents', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets', { keyPath: 'id' });
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Could not open local design storage.'));
-    request.onblocked = () => reject(new Error('Close other design tabs before upgrading local storage.'));
+    request.onsuccess = () => {
+      const db = request.result;
+      // An open request can succeed after an earlier `blocked` event has
+      // already rejected it. Do not leak a connection that nobody can use.
+      if (settled) { db.close?.(); return; }
+      settled = true;
+      db.onversionchange = () => {
+        // Let another tab perform its schema upgrade instead of keeping this
+        // connection alive. Future operations will lazily open the new DB.
+        db.close();
+        if (dbPromise === pending) dbPromise = null;
+      };
+      resolveOpen(db);
+    };
+    request.onerror = () => fail(request.error || new Error('Could not open local design storage.'));
+    request.onblocked = () => fail(new Error('Close other design tabs before upgrading local storage.'));
+  };
+
+  pending.then(() => {}, () => {
+    if (dbPromise === pending) dbPromise = null;
   });
-  return dbPromise;
+  requestOpen();
+  return pending;
 }
 
 function requestResult(request) {

@@ -79,12 +79,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layer-search-wrap { padding: 4px 5px 6px; }
 .layer-search-wrap input { width: 100%; height: 27px; padding: 0 8px; border: 1px solid #e1e1e1; border-radius: 5px; background: #fff; outline-color: #80caff; }
 .layers-list { min-height: 0; overflow: auto; padding-top: 5px; }
-.layer-row { height: 29px; min-width: 0; display: flex; align-items: center; gap: 6px; padding-right: 5px; border-radius: 5px; color: #454545; white-space: nowrap; cursor: default; }
+.layer-row { height: 29px; min-width: 0; display: flex; align-items: center; gap: 6px; padding-right: 5px; border-radius: 5px; color: #454545; white-space: nowrap; cursor: grab; }
+.layer-row.is-dragging { opacity: .38; }
+.layer-row.is-drop-before { box-shadow: inset 0 2px #0d99ff; }
+.layer-row.is-drop-after { box-shadow: inset 0 -2px #0d99ff; }
 .layer-row:hover { background: #f4f4f4; }
 .layer-row.is-selected { color: #137ed0; background: #e5f3ff; }
 .layer-chevron { width: 13px; flex: 0 0 13px; text-align: center; color: #888; font-size: 10px; }
 .layer-icon { display: grid; place-items: center; width: 14px; height: 16px; flex: 0 0 14px; color: #777; }
 .layer-name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; font-size: 11px; }
+.layer-order-control { display: none; width: 21px; height: 21px; flex: 0 0 21px; padding: 0; border-radius: 4px; color: #777; font-size: 12px; line-height: 1; touch-action: manipulation; }
+.layer-row:hover .layer-order-control, .layer-row.is-selected .layer-order-control, .layer-row:focus-within .layer-order-control { display: grid; place-items: center; }
+.layer-order-control:hover:not(:disabled) { background: #e8e8e8; color: #333; }
+.layer-order-control:disabled { opacity: .35; cursor: default; }
 .layer-visibility { display: none; width: 21px; height: 21px; flex: 0 0 21px; color: #777; }
 .layer-row:hover .layer-visibility, .layer-row.is-selected .layer-visibility { display: grid; place-items: center; }
 .layer-hidden { opacity: .45; }
@@ -551,14 +558,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .mobile-panel-toggle { display: inline-grid; }
   .workspace { position: relative; display: block; }
   .canvas-region { position: absolute; inset: 0; }
-  .left-panel, .right-panel { z-index: 10; position: absolute; top: 0; bottom: 0; width: min(290px, 86vw); box-shadow: 0 5px 22px rgba(0,0,0,.16); transition: transform .2s ease; }
+  .left-panel, .right-panel { z-index: 10; position: absolute; top: 0; bottom: 0; width: min(290px, 86vw); box-shadow: 0 5px 22px rgba(0,0,0,.16); visibility: hidden; transition: transform .2s ease, visibility 0s linear .2s; }
   .left-panel { left: 0; transform: translateX(-105%); }
   .right-panel { right: 0; transform: translateX(105%); }
-  .left-panel.is-open, .right-panel.is-open { transform: translateX(0); }
+  .left-panel.is-open, .right-panel.is-open { transform: translateX(0); visibility: visible; transition-delay: 0s, 0s; }
   .mobile-scrim.is-visible { z-index: 8; display: block; position: absolute; inset: 45px 0 0; background: rgba(0,0,0,.14); }
   .layer-row { height: auto; min-height: 40px; max-width: 100%; overflow: hidden; }
   .layer-chevron { width: 18px; height: 40px; flex: 0 0 18px; display: grid; place-items: center; }
   .layer-icon { width: 18px; height: 40px; flex-basis: 18px; }
+  .layer-order-control { width: 40px; height: 40px; flex-basis: 40px; }
   .layer-visibility { width: 40px; height: 40px; flex-basis: 40px; }
   .layers-heading { min-height: 44px; }
   .layers-heading .heading-actions { align-items: center; gap: 3px; }

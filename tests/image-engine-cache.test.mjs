@@ -42,6 +42,7 @@ class CacheWorkerMock {
     this.renderRequests.push({
       assetId: message.assetId,
       hasSourceBytes: message.sourceBytes instanceof ArrayBuffer,
+      adjustments: message.adjustments,
       transforms: message.transforms,
     });
     this.pendingRenderMessages.push(message);
@@ -166,6 +167,36 @@ test('LocalImageEngine snapshots crop and rotation metadata into worker render r
       rotation: 270,
     });
   });
+});
+
+test('queued renders with the same replacement key keep only the latest preview', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const worker = engine.workers[0].worker;
+    const active = engine.render('asset', bytesFor(1), { brightness: 0 }, {}, { replaceKey: 'preview:layer-1' });
+    assert.equal(engine.metrics().active, 1);
+
+    const stale = engine.render('asset', bytesFor(1), { brightness: 10 }, {}, { replaceKey: 'preview:layer-1' });
+    const staleRejected = assert.rejects(stale, { name: 'AbortError' });
+    const latest = engine.render('asset', bytesFor(1), { brightness: 25 }, {}, { replaceKey: 'preview:layer-1' });
+    await staleRejected;
+
+    assert.equal(engine.metrics().queued, 1);
+    assert.equal(engine.cancelQueuedByKey('preview:missing'), false);
+    worker.completeNextRender();
+    await active;
+    assert.equal(worker.renderRequests.length, 2, 'the superseded queued render never reaches Pillow-RS');
+    assert.equal(worker.renderRequests[1].adjustments.brightness, 25);
+    const removedLayer = engine.render('other-asset', bytesFor(1), {}, {}, { replaceKey: 'preview:removed-layer' });
+    const removedLayerRejected = assert.rejects(removedLayer, { name: 'AbortError' });
+    assert.equal(engine.cancelQueuedByKey('preview:removed-layer'), true);
+    await removedLayerRejected;
+    assert.equal(engine.metrics().active, 1, 'canceling a queued preview leaves the active render alone');
+    worker.completeNextRender();
+    await latest;
+    assert.equal(engine.metrics().queued, 0);
+  }, { deferRenders: true });
 });
 
 test('LocalImageEngine forgets an unconfirmed cache entry after a missing-source error', async () => {

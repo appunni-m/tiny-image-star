@@ -11,6 +11,7 @@ function createIndexedDbMock() {
   const clone = value => structuredClone(value);
   const database = {
     objectStoreNames: { contains: name => stores.has(name) },
+    close() { this.closed = true; },
     createObjectStore(name, { keyPath }) { stores.set(name, { keyPath, records: new Map() }); },
     transaction(names) {
       const transaction = {};
@@ -53,6 +54,7 @@ function createIndexedDbMock() {
     }
   };
   return {
+    database,
     open(_name, _version) {
       const request = {};
       queueMicrotask(() => {
@@ -64,6 +66,44 @@ function createIndexedDbMock() {
     }
   };
 }
+
+test('a failed IndexedDB open can be retried instead of poisoning storage for the life of the tab', async () => {
+  const successful = createIndexedDbMock();
+  let opens = 0;
+  globalThis.indexedDB = {
+    open(...args) {
+      opens += 1;
+      if (opens > 1) return successful.open(...args);
+      const request = {};
+      queueMicrotask(() => {
+        request.error = new Error('Temporary storage startup failure.');
+        request.onerror?.();
+      });
+      return request;
+    }
+  };
+  const { loadLatestDocument } = await import('../src/storage.js?retry-open-test');
+
+  await assert.rejects(loadLatestDocument(), /Temporary storage startup failure/);
+  assert.equal(await loadLatestDocument(), null);
+  assert.equal(opens, 2, 'the retry should make a fresh IndexedDB open request');
+});
+
+test('a versionchange closes the cached connection and lets the next operation reopen storage', async () => {
+  const indexedDb = createIndexedDbMock();
+  let opens = 0;
+  globalThis.indexedDB = { open(...args) { opens += 1; return indexedDb.open(...args); } };
+  const { loadLatestDocument } = await import('../src/storage.js?versionchange-open-test');
+
+  assert.equal(await loadLatestDocument(), null);
+  assert.equal(opens, 1);
+  assert.equal(typeof indexedDb.database.onversionchange, 'function');
+  indexedDb.database.onversionchange();
+  assert.equal(indexedDb.database.closed, true, 'the old connection should be released for schema upgrades');
+
+  assert.equal(await loadLatestDocument(), null);
+  assert.equal(opens, 2, 'future operations should create a new connection');
+});
 
 test('local library lists, retrieves, renames, duplicates, and deletes documents by stable ID', async () => {
   globalThis.indexedDB = createIndexedDbMock();

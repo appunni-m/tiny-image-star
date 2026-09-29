@@ -241,3 +241,121 @@ test('prototype variable-mode actions update the presentation session without mu
   assert.equal(changedMode.modeId, light.id);
   assert.equal(applyPrototypeInteraction(document, session, { ...interaction, modeId: 'missing-mode' }), false);
 });
+
+test('prototype routes match typed variable conditions using session modes and condition-aware deduplication', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Route state');
+  const light = collection.modes[0];
+  const dark = addVariableMode(document, collection.id, 'Dark');
+  const route = createVariable(document, collection.id, 'Route', 'string', 'light');
+  route.valuesByMode[dark.id] = 'dark';
+
+  const home = createNode('frame', { name: 'Home' });
+  const lightDestination = createNode('frame', { name: 'Light route', x: 500 });
+  const darkDestination = createNode('frame', { name: 'Dark route', x: 1000 });
+  const source = createNode('rectangle', { name: 'Conditional route' });
+  const inequalitySource = createNode('rectangle', { name: 'Not dark route', y: 60 });
+  const dedupeSource = createNode('rectangle', { name: 'Conditional duplicate', y: 120 });
+  home.children.push(source, inequalitySource, dedupeSource);
+  addNode(document, home); addNode(document, lightDestination); addNode(document, darkDestination);
+
+  const lightRoute = addPrototypeInteraction(document, source.id, lightDestination.id, {
+    condition: { variableId: route.id, type: 'string', operator: 'equals', value: 'light' }
+  });
+  const darkRoute = addPrototypeInteraction(document, source.id, darkDestination.id, {
+    condition: { variableId: route.id, type: 'string', operator: 'equals', value: 'dark' }
+  });
+  const notDarkRoute = addPrototypeInteraction(document, inequalitySource.id, lightDestination.id, {
+    condition: { variableId: route.id, type: 'string', operator: 'not-equals', value: 'dark' }
+  });
+
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id, lightRoute.id,
+    'an unset session mode should use the collection/frame default');
+  assert.equal(findClickableInteraction(document, document.activePageId, inequalitySource.id, 'on-click', session)?.interaction.id, notDarkRoute.id,
+    'not-equals should match the default variable value');
+
+  const setDark = addPrototypeInteraction(document, source.id, null, {
+    action: 'set-variable-mode', collectionId: collection.id, modeId: dark.id
+  });
+  assert.equal(applyPrototypeInteraction(document, session, setDark), 'variables-updated');
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id, darkRoute.id,
+    'the selected prototype mode should route to its matching interaction');
+  assert.equal(findClickableInteraction(document, document.activePageId, inequalitySource.id, 'on-click', session), null,
+    'a nonmatching not-equals condition should not route');
+
+  const duplicateConditionA = { variableId: route.id, type: 'string', operator: 'equals', value: 'light' };
+  const duplicateConditionB = { variableId: route.id, type: 'string', operator: 'equals', value: 'dark' };
+  const firstDuplicate = addPrototypeInteraction(document, dedupeSource.id, lightDestination.id, { condition: duplicateConditionA });
+  const secondDuplicate = addPrototypeInteraction(document, dedupeSource.id, lightDestination.id, { condition: duplicateConditionB });
+  assert.notEqual(firstDuplicate.id, secondDuplicate.id, 'different conditions on the same trigger/action/destination must coexist');
+  const updatedDuplicate = addPrototypeInteraction(document, dedupeSource.id, lightDestination.id, {
+    condition: duplicateConditionA, duration: 640
+  });
+  assert.equal(updatedDuplicate.id, firstDuplicate.id, 're-adding the same condition should update the existing interaction');
+  assert.equal(updatedDuplicate.duration, 640);
+  assert.equal(dedupeSource.interactions.length, 2);
+
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reloaded, source.id).node.interactions[0].condition.value, 'light', 'conditions should survive local document round trips');
+});
+
+test('matching conditional prototype routes take precedence over an earlier unconditional fallback', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Route state');
+  const light = collection.modes[0];
+  const dark = addVariableMode(document, collection.id, 'Dark');
+  const route = createVariable(document, collection.id, 'Route', 'string', 'light');
+  route.valuesByMode[dark.id] = 'dark';
+
+  const home = createNode('frame', { name: 'Home' });
+  const fallback = createNode('frame', { name: 'Fallback', x: 500 });
+  const conditional = createNode('frame', { name: 'Conditional', x: 1000 });
+  const source = createNode('rectangle', { name: 'Route source' });
+  home.children.push(source);
+  addNode(document, home); addNode(document, fallback); addNode(document, conditional);
+
+  const fallbackRoute = addPrototypeInteraction(document, source.id, fallback.id);
+  const conditionalRoute = addPrototypeInteraction(document, source.id, conditional.id, {
+    condition: { variableId: route.id, type: 'string', operator: 'equals', value: 'light' }
+  });
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id, conditionalRoute.id,
+    'a matching conditional action should win even when the fallback was created first');
+
+  session.variableModes[collection.id] = dark.id;
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id, fallbackRoute.id,
+    'the unconditional action should remain available when no condition matches');
+});
+
+test('prototype interaction conditions reject invalid variable, operator, type, and value schemas', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Conditions');
+  const variable = createVariable(document, collection.id, 'Enabled', 'boolean', true);
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Destination' });
+  const source = createNode('rectangle', { name: 'Conditional' });
+  home.children.push(source);
+  addNode(document, home); addNode(document, destination);
+  const interaction = addPrototypeInteraction(document, source.id, destination.id, {
+    condition: { variableId: variable.id, type: 'boolean', operator: 'equals', value: true }
+  });
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+    'a typed condition must remain valid through serialize/parse validation');
+
+  for (const condition of [
+    { ...interaction.condition, variableId: 'missing-variable' },
+    { ...interaction.condition, operator: 'contains' },
+    { ...interaction.condition, type: 'string' },
+    { ...interaction.condition, value: 'true' },
+    { ...interaction.condition, extra: 'unknown field' },
+    { variableId: variable.id, type: 'boolean', operator: 'equals' }
+  ]) {
+    const invalid = structuredClone(document);
+    findNode(invalid, source.id).node.interactions[0].condition = condition;
+    assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  }
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
+    condition: { variableId: variable.id, type: 'boolean', operator: 'equals', value: 'true' }
+  }), /Invalid prototype interaction condition/);
+});

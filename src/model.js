@@ -36,7 +36,7 @@ const variableBindingSpecs = {
   'autoLayout.padding.left': { type: 'number', nodeTypes: ['frame'] }
 };
 
-function isVariableValue(type, value) {
+export function isVariableValue(type, value) {
   if (type === 'color') return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
   if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
   if (type === 'string') return typeof value === 'string';
@@ -999,6 +999,14 @@ export function resolveVariableValue(document, variableId, node = null) {
   return resolveVariableValueInternal(document, variableId, node, new Map(), new Set());
 }
 
+/** Resolve a variable using explicit per-collection mode overrides before frame modes. */
+export function resolveVariableValueWithModeOverrides(document, variableId, modeOverrides = {}, node = null) {
+  const overrides = modeOverrides instanceof Map
+    ? modeOverrides
+    : new Map(Object.entries(modeOverrides && typeof modeOverrides === 'object' && !Array.isArray(modeOverrides) ? modeOverrides : {}));
+  return resolveVariableValueInternal(document, variableId, node, overrides, new Set());
+}
+
 export function getNodePropertyValue(document, node, property) {
   if (!node) return undefined;
   const variableId = node.variableBindings?.[property];
@@ -1075,6 +1083,14 @@ function materializeAliasesToRemovedVariables(document, removedIds) {
   }
 }
 
+function removePrototypeInteractionsUsingVariables(document, removedIds) {
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    if (!Array.isArray(node.interactions)) return;
+    node.interactions = node.interactions.filter(interaction => !removedIds.has(interaction.condition?.variableId));
+    if (!node.interactions.length) delete node.interactions;
+  });
+}
+
 function clearVariableReferencesFromComponentOverrides(document, variableIds, collectionId = null) {
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     if (!node.componentOverrides) return;
@@ -1098,6 +1114,7 @@ export function deleteVariable(document, variableId) {
   materializeAliasesToRemovedVariables(document, new Set([variableId]));
   materializeVariableBindingsToRemovedVariables(document, new Set([variableId]));
   document.variables.splice(index, 1);
+  removePrototypeInteractionsUsingVariables(document, new Set([variableId]));
   const properties = ['fillVariableId', 'textVariableId', 'strokeVariableId'];
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const property of properties) if (node[property] === variableId) delete node[property];
@@ -1113,6 +1130,7 @@ export function deleteVariableCollection(document, collectionId) {
   materializeAliasesToRemovedVariables(document, variableIds);
   materializeVariableBindingsToRemovedVariables(document, variableIds);
   document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
+  removePrototypeInteractionsUsingVariables(document, variableIds);
   document.variableCollections.splice(index, 1);
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const property of ['fillVariableId', 'textVariableId', 'strokeVariableId']) if (variableIds.has(node[property])) delete node[property];
@@ -2122,6 +2140,18 @@ export function validateDocument(document) {
       if ((node.layoutSizingX != null && !['fixed', 'fill'].includes(node.layoutSizingX)) || (node.layoutSizingY != null && !['fixed', 'fill'].includes(node.layoutSizingY))) throw new TypeError(`Invalid grid sizing on layer ${node.name || node.id}.`);
       if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => {
         if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
+        if (item.condition != null) {
+          const condition = item.condition;
+          const conditionFields = ['variableId', 'type', 'operator', 'value'];
+          const variable = condition && typeof condition === 'object' && !Array.isArray(condition)
+            ? document.variables?.find(candidate => candidate.id === condition.variableId)
+            : null;
+          if (!condition || typeof condition !== 'object' || Array.isArray(condition)
+            || Object.keys(condition).some(key => !conditionFields.includes(key))
+            || typeof condition.variableId !== 'string' || !condition.variableId
+            || !['equals', 'not-equals'].includes(condition.operator)
+            || !variable || condition.type !== variable.type || !isVariableValue(condition.type, condition.value)) return true;
+        }
         const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(item.action);
         if (needsDestination ? typeof item.destinationId !== 'string' : item.destinationId != null) return true;
         if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;

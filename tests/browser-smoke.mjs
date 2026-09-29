@@ -52,6 +52,15 @@ function dispatchClick(element, options = {}) {
 function dispatchContextMenu(element) {
   element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160 }));
 }
+function dispatchImageCanvasContextMenu(app, xOffset = 32, yOffset = 24) {
+  const canvas = app.querySelector('#scene-canvas');
+  const rect = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new app.defaultView.MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, button: 2,
+    clientX: rect.left + rect.width / 2 + xOffset,
+    clientY: rect.top + rect.height / 2 + yOffset
+  }));
+}
 function dispatchShortcut(doc, key, { shift = false } = {}) {
   doc.body.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, ctrlKey: true, shiftKey: shift }));
 }
@@ -121,9 +130,9 @@ try {
 
   let selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   assert(selectedRow, 'the imported image layer was not selected');
-  dispatchContextMenu(selectedRow);
+  dispatchImageCanvasContextMenu(app);
   const saveRecipeItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.includes('Save image recipe'));
-  assert(saveRecipeItem, 'image context menu did not offer recipe saving');
+  assert(saveRecipeItem, 'right-clicking the edited canvas image did not offer recipe saving');
   dispatchClick(saveRecipeItem);
   const dialog = app.querySelector('#recipe-dialog');
   assert(dialog.open, 'the save-recipe dialog did not open');
@@ -137,10 +146,10 @@ try {
     dispatchClick(row, { ctrlKey: index > 0 });
   }
   assert(app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 3, 'multi-select did not retain all target images');
-  selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
-  dispatchContextMenu(selectedRow);
+  dispatchImageCanvasContextMenu(app);
+  assert([...app.querySelectorAll('#context-menu .menu-label')].some(item => item.textContent.trim() === 'Apply recipe to 3 images'), 'canvas context menu did not preserve the full multi-image selection');
   const recipeItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.trim() === 'Local red recipe');
-  assert(recipeItem, 'selected-image context menu did not show the saved recipe');
+  assert(recipeItem, 'right-clicking a selected canvas image did not show the saved recipe for the multi-selection');
   dispatchClick(recipeItem);
   assert(!app.querySelector('#bulk-bar').hidden, 'recipe processing bar did not start');
   dispatchClick(app.querySelector('#bulk-pause'));
@@ -655,7 +664,7 @@ try {
 
   const penButton = app.querySelector('.tool-button[data-tool="pen"]');
   const vectorIdsBeforePen = new Set([...app.querySelectorAll('.layer-row[data-layer-id]')]
-    .filter(row => row.textContent.trim() === 'Vector network').map(row => row.dataset.layerId));
+    .filter(row => row.querySelector('.layer-name')?.textContent.trim() === 'Vector network').map(row => row.dataset.layerId));
   dispatchClick(penButton);
   const penScreenPoint = ({ x, y }) => ({ x: canvasRect.left + panCenter.x + x, y: canvasRect.top + panCenter.y + y });
   const penDownUp = (world, pointerId) => {
@@ -673,7 +682,7 @@ try {
   app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
   await waitFor(() => {
     const row = app.querySelector('.layer-row.is-selected[data-layer-id]');
-    return row?.textContent.trim() === 'Vector network' && !vectorIdsBeforePen.has(row.dataset.layerId);
+    return row?.querySelector('.layer-name')?.textContent.trim() === 'Vector network' && !vectorIdsBeforePen.has(row.dataset.layerId);
   }, 'multi-point Bézier vector network');
   await new Promise(resolve => setTimeout(resolve, 450));
   let vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
@@ -823,18 +832,33 @@ try {
   themeAction.value = 'set-variable-mode'; themeAction.dispatchEvent(new Event('change', { bubbles: true }));
   const themeCollectionSelect = app.querySelector('#prototype-variable-collection');
   const themeModeSelect = app.querySelector('#prototype-variable-mode');
-  assert(themeCollectionSelect && themeModeSelect, 'prototype variable-mode controls were not shown');
+  assert(themeCollectionSelect && themeModeSelect && app.querySelector('#prototype-condition-variable'), 'prototype variable-mode and condition controls were not shown');
   themeCollectionSelect.value = brandColors.id; themeCollectionSelect.dispatchEvent(new Event('change', { bubbles: true }));
   assert(app.querySelector('#prototype-variable-mode').value === darkMode.id, 'prototype variable-mode control did not select the collection default mode');
   app.querySelector('#prototype-variable-mode').value = darkMode.id;
   app.querySelector('#prototype-variable-mode').dispatchEvent(new Event('change', { bubbles: true }));
+  const conditionVariableSelect = app.querySelector('#prototype-condition-variable');
+  conditionVariableSelect.value = surfaceVariable.id; conditionVariableSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(app.querySelector('#prototype-condition-operator')?.value === 'equals', 'a variable condition should default to equality');
+  assert(app.querySelector('#prototype-condition-value')?.value.toLowerCase() === '#202124', 'a color condition should preload the selected variable’s current value');
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
-  await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Dark · Brand colors'), 'prototype variable-mode interaction');
+  await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Dark · Brand colors') && app.querySelector('.prototype-interaction-row')?.textContent.includes('If Surface is #202124'), 'conditional prototype variable-mode interaction');
   await waitForSaveCycle(app, 'prototype variable-mode persistence');
   let themeModeRecords = await readStore('documents'); themeModeRecords.sort((a, b) => b.savedAt - a.savedAt);
   const savedThemeModeDocument = themeModeRecords[0]?.document;
   const savedThemeModeTrigger = flattenNodes(savedThemeModeDocument.pages.flatMap(page => page.children)).find(node => node.id === themeModeTrigger.id);
-  assert(savedThemeModeTrigger?.interactions?.some(item => item.action === 'set-variable-mode' && item.collectionId === brandColors.id && item.modeId === darkMode.id), 'prototype mode action was not serialized');
+  assert(savedThemeModeTrigger?.interactions?.some(item => item.action === 'set-variable-mode' && item.collectionId === brandColors.id && item.modeId === darkMode.id
+    && item.condition?.variableId === surfaceVariable.id && item.condition.type === 'color' && item.condition.operator === 'equals' && item.condition.value === '#202124'), 'prototype condition was not serialized with its mode action');
+  const numericConditionVariable = app.querySelector('#prototype-condition-variable');
+  numericConditionVariable.value = cardWidthVariable.id; numericConditionVariable.dispatchEvent(new Event('change', { bubbles: true }));
+  const numericConditionValue = app.querySelector('#prototype-condition-value');
+  numericConditionValue.value = ''; numericConditionValue.dispatchEvent(new Event('input', { bubbles: true }));
+  numericConditionValue.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  assert(app.querySelectorAll('.prototype-interaction-row').length === 1, 'an empty numeric condition must not silently become zero and add another interaction');
+  assert([...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Enter a valid number')), 'an empty numeric condition should show a validation message');
+  const clearCondition = app.querySelector('#prototype-condition-variable');
+  clearCondition.value = ''; clearCondition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
   const themeDefaultModeControl = app.querySelector(`[data-variable-default-mode="${brandColors.id}"]`);
   themeDefaultModeControl.value = lightMode.id; themeDefaultModeControl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1411,7 +1435,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
