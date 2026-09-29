@@ -307,7 +307,13 @@ export class SceneRenderer {
       ctx.globalAlpha *= node.fillOpacity ?? 1;
       ctx.fillStyle = '#fff';
       if (node.type === 'network') {
-        for (const face of node.faces || []) { ctx.beginPath(); if (traceVectorNetworkFace(ctx, node, face, x, y)) ctx.fill(); }
+        for (const face of node.faces || []) {
+          ctx.save();
+          ctx.globalAlpha *= face.fillOpacity ?? 1;
+          ctx.beginPath();
+          if (traceVectorNetworkFace(ctx, node, face, x, y)) ctx.fill();
+          ctx.restore();
+        }
         ctx.restore();
         return;
       }
@@ -352,10 +358,13 @@ export class SceneRenderer {
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'network') {
       const fill = getNodeColor(document, node, 'fill');
-      if (fill && fill !== 'transparent') {
-        for (const face of node.faces || []) {
-          ctx.beginPath();
-          if (traceVectorNetworkFace(ctx, node, face, x, y)) { ctx.fillStyle = rgba(face.fill || fill, (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1)); ctx.fill(); }
+      for (const face of node.faces || []) {
+        const faceFill = face.fill ?? fill;
+        if (!faceFill || faceFill === 'transparent') continue;
+        ctx.beginPath();
+        if (traceVectorNetworkFace(ctx, node, face, x, y)) {
+          ctx.fillStyle = rgba(faceFill, (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1));
+          ctx.fill();
         }
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }

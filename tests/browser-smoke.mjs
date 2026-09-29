@@ -1,6 +1,6 @@
 import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { SceneRenderer } from '../src/renderer.js';
-import { vectorNetworkEdgePoints } from '../src/vector-path.js';
+import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -409,6 +409,18 @@ try {
   vectorDocument = vectorRecords[0]?.document;
   savedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(savedNetwork.faces[0].fill === '#e14a6d' && savedNetwork.faces[0].fillOpacity === .62, 'region fill color and opacity did not autosave independently');
+  const regionCanvas = document.createElement('canvas'); regionCanvas.width = 320; regionCanvas.height = 460;
+  const regionContext = regionCanvas.getContext('2d');
+  const regionRenderer = Object.create(SceneRenderer.prototype);
+  regionRenderer.getState = () => ({ document: vectorDocument, assets: new Map(), previews: new Map(), zoom: 1 });
+  const faceVertices = savedNetwork.faces[0].vertexIds.map(id => vectorNetworkVertexPoint(savedNetwork, id, { x: savedNetwork.x, y: savedNetwork.y }));
+  const faceSample = faceVertices.reduce((point, vertex) => ({ x: point.x + vertex.x / faceVertices.length, y: point.y + vertex.y / faceVertices.length }), { x: 0, y: 0 });
+  const regionOffset = { x: 40 - savedNetwork.x, y: 30 - savedNetwork.y };
+  regionContext.translate(regionOffset.x, regionOffset.y);
+  regionRenderer.drawNode(regionContext, savedNetwork, 0, 0, new Map());
+  const regionPixel = [...regionContext.getImageData(Math.round(faceSample.x + regionOffset.x), Math.round(faceSample.y + regionOffset.y), 1, 1).data];
+  assert(regionPixel[0] > 210 && regionPixel[1] > 60 && regionPixel[1] < 90 && regionPixel[2] > 95 && regionPixel[3] >= 150 && regionPixel[3] <= 165,
+    `independent region color and opacity did not render over a transparent network fill (${regionPixel.join(',')})`);
 
   const positionedVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
   const editableEdge = positionedVector.node.edges.find(edge => edge.control1 || edge.control2);
@@ -734,7 +746,7 @@ try {
   const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
   assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
