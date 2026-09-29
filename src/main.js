@@ -7,6 +7,7 @@ import {
 } from './model.js';
 import { History } from './history.js';
 import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
+import { calculateTextBox } from './text-layout.js';
 import { LocalImageEngine } from './image-engine.js';
 import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
@@ -52,6 +53,7 @@ const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: upda
 const previewTimers = new Map();
 let presentRenderer = null;
 let presentRenderState = null;
+let textMeasureContext = null;
 
 function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
@@ -355,7 +357,8 @@ function textSection(node) {
   const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
-  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const textFit = node.textFit || 'auto-height';
+  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div class="image-properties-note">Auto height wraps to the box width. Auto width expands to fit each line.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   return section('Typography', body);
 }
 function frameVariableModesSection(frame) {
@@ -592,7 +595,7 @@ function renderInspector() {
   if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
-  for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="fit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
+  for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
 }
 
 function renderAssetsTab() {
@@ -1247,6 +1250,34 @@ function onCanvasPointerUp(event) {
   }
 }
 
+function resizeTextNode(node) {
+  if (node?.type !== 'text') return false;
+  textMeasureContext ||= document.createElement('canvas').getContext('2d');
+  if (!textMeasureContext) return false;
+  const before = { width: node.width, height: node.height };
+  const size = calculateTextBox(textMeasureContext, node, {
+    fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
+    lineHeight: getNodePropertyValue(state.document, node, 'lineHeight'),
+    letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
+    text: getNodePropertyValue(state.document, node, 'text')
+  });
+  node.width = size.width; node.height = size.height;
+  return before.width !== size.width || before.height !== size.height;
+}
+
+function resizeTextLayers(roots, variableId = null) {
+  const layoutParents = new Set();
+  walkNodes(roots, ({ node, parent }) => {
+    if (node.type !== 'text') return;
+    const bindings = node.variableBindings || {};
+    const sizeProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing'];
+    if (variableId && !sizeProperties.some(property => bindings[property] === variableId)) return;
+    if (!variableId && !sizeProperties.some(property => bindings[property])) return;
+    if (resizeTextNode(node) && parent?.autoLayout) layoutParents.add(parent);
+  });
+  for (const parent of layoutParents) applyAutoLayout(parent);
+}
+
 function createTextAt(world) {
   const node = createNode('text', { x: world.x, y: world.y, text: '', width: 240, height: 48 });
   checkpoint('Create text');
@@ -1267,9 +1298,11 @@ function editTextNode(nodeId) {
   const canvasRect = canvasScroll.getBoundingClientRect();
   editor.style.left = `${screen.x - canvasRect.left}px`;
   editor.style.top = `${screen.y - canvasRect.top}px`;
-  editor.style.width = `${Math.max(64, entry.node.width * state.zoom)}px`;
+  editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, entry.node.width * state.zoom)}px`;
   editor.style.minHeight = `${Math.max(28, entry.node.height * state.zoom)}px`;
+  editor.style.whiteSpace = entry.node.textFit === 'auto-width' ? 'pre' : 'pre-wrap';
   editor.style.fontFamily = entry.node.fontFamily;
+  editor.style.fontWeight = String(entry.node.fontWeight || 400);
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
   editor.style.lineHeight = String(getNodePropertyValue(state.document, entry.node, 'lineHeight'));
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
@@ -1293,14 +1326,16 @@ function commitTextEdit() {
   if (!state.textNodeId) return;
   const node = findNode(state.document, state.textNodeId)?.node;
   if (node) {
+    const oldWidth = node.width; const oldHeight = node.height;
     setNodePropertyValue(node, 'text', editor.innerText.replace(/\n$/, ''));
-    const text = getNodePropertyValue(state.document, node, 'text');
-    const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
-    const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
-    node.height = Math.max(36, text.split('\n').length * fontSize * lineHeight + 4);
+    node.textFit ||= 'auto-height';
+    resizeTextNode(node);
     const instanceRoot = componentInstanceRoot(node.id);
     if (instanceRoot) recordComponentOverride(instanceRoot, node, node.variableBindings?.text ? 'variableBindings' : 'text');
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'height');
+    if (instanceRoot && node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
+    if (instanceRoot && node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
+    const parent = findNode(state.document, node.id)?.parent;
+    if (parent?.autoLayout) applyAutoLayout(parent);
   }
   editor.hidden = true; state.textNodeId = null;
   renderInspector(); renderLayers(); queueSave(); renderer.invalidate();
@@ -1391,6 +1426,12 @@ function updateInspectorInput(event) {
     }
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
+    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'text', 'width'].includes(prop)) {
+      const resized = resizeTextNode(node);
+      const parent = findNode(state.document, node.id)?.parent;
+      if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
+      else if (resized && parent?.autoLayout) applyAutoLayout(parent);
+    }
     if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, node.width, node.height);
     if (node.type === 'image' && adjustments) schedulePreview(node);
     if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
@@ -1400,6 +1441,8 @@ function updateInspectorInput(event) {
     }
     if (instanceRoot) {
       recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop);
+      if (node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
+      if (node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
       if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
     }
   }
@@ -1630,6 +1673,7 @@ function applyVariablePropertyToSelection(property, variableId) {
   checkpoint(variableId ? `Bind ${property} variable` : `Unbind ${property} variable`);
   for (const node of compatible) {
     bindVariable(state.document, node.id, variableId || null, property);
+    if (node.type === 'text') resizeTextLayers([node]);
     const instanceRoot = componentInstanceRoot(node.id);
     if (instanceRoot) recordComponentOverride(instanceRoot, node, 'variableBindings');
   }
@@ -2633,6 +2677,7 @@ function initEvents() {
       if (frame?.type === 'frame') {
         checkpoint('Set frame variable mode');
         setFrameVariableMode(state.document, frame.id, event.target.dataset.frameVariableMode, event.target.value || null);
+        resizeTextLayers([frame]);
         const instanceRoot = componentInstanceRoot(frame.id);
         if (instanceRoot) recordComponentOverride(instanceRoot, frame, 'variableModes');
         renderUI(); queueSave(); renderer.invalidate();
@@ -2699,6 +2744,7 @@ function initEvents() {
     const value = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
     if (!state.controlEdit) { checkpoint('Edit variable'); state.controlEdit = true; }
     setVariableValue(state.document, input.dataset.variableValue, value, input.dataset.modeId);
+    resizeTextLayers(state.document.pages.flatMap(page => page.children), input.dataset.variableValue);
     renderer.invalidate();
   });
   $('#variable-collections-list').addEventListener('change', event => {
@@ -2707,6 +2753,7 @@ function initEvents() {
       const variable = state.document.variables?.find(item => item.id === alias.dataset.variableAlias);
       checkpoint(`Change ${variable?.name || 'variable'} alias`);
       if (!setVariableAlias(state.document, alias.dataset.variableAlias, alias.value || null, alias.dataset.modeId)) showToast('Aliases must target another variable of the same type and cannot create a cycle.');
+      resizeTextLayers(state.document.pages.flatMap(page => page.children));
       state.controlEdit = false; renderUI(); queueSave(); renderer.invalidate(); return;
     }
     const mode = event.target.closest('[data-variable-default-mode]');
@@ -2714,6 +2761,7 @@ function initEvents() {
       const collection = state.document.variableCollections?.find(item => item.id === mode.dataset.variableDefaultMode);
       if (!collection || collection.defaultModeId === mode.value) return;
       checkpoint('Change default variable mode'); collection.defaultModeId = mode.value;
+      resizeTextLayers(state.document.pages.flatMap(page => page.children));
       renderUI(); queueSave(); renderer.invalidate(); return;
     }
     if (event.target.matches('[data-variable-value]')) {

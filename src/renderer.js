@@ -1,9 +1,10 @@
 import { findNode, getNodeColor, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
+import { measureTrackedText, textGraphemes, wrapText } from './text-layout.js';
+export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
-const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 
 function rgba(hex, alpha = 1) {
   if (!hex || hex === 'transparent') return `rgba(0,0,0,0)`;
@@ -121,33 +122,6 @@ function traceVectorNetworkFace(ctx, node, face, x, y) {
   }
   ctx.closePath();
   return true;
-}
-
-function textGraphemes(text) {
-  const value = String(text ?? '');
-  if (graphemeSegmenter) return [...graphemeSegmenter.segment(value)].map(part => part.segment);
-  return Array.from(value);
-}
-
-export function measureTrackedText(ctx, text, letterSpacing = 0) {
-  const value = String(text ?? '');
-  const count = textGraphemes(value).length;
-  return ctx.measureText(value).width + Math.max(0, count - 1) * (Number(letterSpacing) || 0);
-}
-
-export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
-  const lines = [];
-  for (const paragraph of String(text ?? '').split('\n')) {
-    const words = paragraph.split(/\s+/);
-    let line = '';
-    for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && measureTrackedText(ctx, candidate, letterSpacing) > maxWidth) { lines.push(line); line = word; }
-      else line = candidate;
-    }
-    lines.push(line);
-  }
-  return lines;
 }
 
 export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = undefined) {

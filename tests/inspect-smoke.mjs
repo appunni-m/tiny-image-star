@@ -57,6 +57,22 @@ try {
   input.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('Local design opened')), 'design import');
 
+  click(app.querySelector(`[data-layer-id="${label.id}"]`));
+  const textFit = app.querySelector('[data-prop="textFit"]');
+  assert(textFit && ['fixed', 'auto-height', 'auto-width'].every(value => [...textFit.options].some(option => option.value === value)), 'text resize modes should be available on the phone');
+  assert(textFit.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the text resize control should fit inside the phone inspector');
+  const textWidth = app.querySelector('[data-prop="width"]');
+  textWidth.value = '50'; textWidth.dispatchEvent(new Event('input', { bubbles: true })); textWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'auto-height text');
+  const textRecords = await readDocuments(); textRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const savedLabel = textRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
+  assert(savedLabel?.textFit === 'auto-height' && savedLabel.width === 50 && savedLabel.height >= 36, 'auto-height text should resize and persist after its width changes');
+  const autoWidth = app.querySelector('[data-prop="textFit"]');
+  autoWidth.value = 'auto-width'; autoWidth.dispatchEvent(new Event('input', { bubbles: true })); autoWidth.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'auto-width text');
+  const autoWidthRecords = await readDocuments(); autoWidthRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const savedAutoWidth = autoWidthRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
+  assert(savedAutoWidth?.textFit === 'auto-width' && savedAutoWidth.width > 50 && savedAutoWidth.width < 160, 'auto-width text should fit its measured line and persist the selected mode');
   click(app.querySelector(`[data-layer-id="${button.id}"]`));
   const limitFields = [...app.querySelectorAll('.size-limits-grid .size-limit-field')];
   assert(limitFields.length === 4 && limitFields.every(field => field.getBoundingClientRect().width >= 96), 'the four size-limit controls should remain readable in the phone inspector');
