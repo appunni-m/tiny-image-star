@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="description" content="A local-first design editor. Your files stay on this device." />
+    <title>Figma Local</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <header class="topbar">
+        <div class="topbar-leading">
+          <button class="icon-button brand-button" id="main-menu-button" aria-label="Main menu" title="Main menu"><span class="brand-mark">F</span></button>
+          <button class="topbar-button file-menu-button" id="file-menu-button"><span class="file-glyph">◩</span><span>File</span><span class="chevron">⌄</span></button>
+          <div class="topbar-divider"></div>
+          <button class="mobile-panel-toggle icon-button" id="sidebar-toggle" aria-label="Toggle layers" title="Layers">▤</button>
+        </div>
+        <div class="document-title-wrap">
+          <input id="document-name" class="document-name" aria-label="File name" value="Untitled" maxlength="120" />
+          <div class="save-state" id="save-state"><span class="save-dot"></span><span>Saved locally</span></div>
+        </div>
+        <div class="topbar-trailing">
+          <button class="topbar-button mode-switcher" id="mode-button" aria-label="Editor mode">Design <span class="chevron">⌄</span></button>
+          <button class="topbar-button present-button" id="present-button" title="Present prototype">▶ <span>Present</span></button>
+          <button class="topbar-button quiet-button" id="share-button" title="Share is local-only">Share</button>
+          <button class="avatar-button" aria-label="Local user">L</button>
+          <button class="mobile-panel-toggle icon-button" id="inspector-toggle" aria-label="Toggle properties" title="Properties">☷</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="left-panel" id="left-panel" aria-label="Pages and layers">
+          <div class="sidebar-tabs" role="tablist" aria-label="Left sidebar">
+            <button class="sidebar-tab is-active" data-sidebar-tab="layers" role="tab" aria-selected="true">Layers</button>
+            <button class="sidebar-tab" data-sidebar-tab="assets" role="tab" aria-selected="false">Assets</button>
+          </div>
+          <section class="pages-section">
+            <div class="section-heading"><span>Pages</span><button class="tiny-icon-button" id="add-page" aria-label="Add page" title="Add page">+</button></div>
+            <div id="pages-list" class="pages-list" role="listbox" aria-label="Pages"></div>
+          </section>
+          <section class="layers-section" id="layers-section">
+            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
+            <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
+            <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
+            <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Draw on the canvas or place an image</span></div>
+          </section>
+          <section class="assets-section" id="assets-section" hidden>
+            <div class="section-heading"><span>Local assets</span><button class="tiny-icon-button" id="place-image-assets" title="Place image">＋</button></div>
+            <div id="assets-list" class="assets-list"></div>
+            <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
+          </section>
+          <div class="sidebar-footer"><span class="device-icon">◉</span><span>Stored on this device</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
+        </aside>
+
+        <main class="canvas-region" id="canvas-region" aria-label="Design canvas">
+          <div class="canvas-topline">
+            <div class="canvas-breadcrumb"><span class="crumb-file" id="canvas-file-name">Untitled</span><span class="crumb-separator">/</span><span id="canvas-page-name">Page 1</span><span class="crumb-chevron">⌄</span></div>
+            <div class="canvas-top-actions"><button class="canvas-action-button" id="outline-mode" title="Toggle outlines">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Toggle rulers">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
+          </div>
+          <div class="canvas-scroll" id="canvas-scroll">
+            <canvas id="scene-canvas" aria-label="Design canvas"></canvas>
+            <div class="text-editor-overlay" id="text-editor-overlay" contenteditable="true" spellcheck="false" hidden aria-label="Edit text layer"></div>
+            <div class="canvas-drop-overlay" id="canvas-drop-overlay">Drop images to place them on the canvas</div>
+            <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" hidden></div>
+            <div class="canvas-ruler ruler-vertical" id="ruler-vertical" hidden></div>
+          </div>
+          <div class="zoom-controls">
+            <button class="canvas-action-button" id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
+            <button class="zoom-readout" id="zoom-readout" title="Reset zoom">100%</button>
+            <button class="canvas-action-button" id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+            <span class="zoom-divider"></span>
+            <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
+          </div>
+          <div class="bottom-toolbar" id="bottom-toolbar" aria-label="Design tools">
+            <button class="tool-button is-selected" data-tool="select" title="Move / Select (V)" aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button" data-tool="frame" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
+            <button class="tool-button" data-tool="section" title="Section (⇧ S)" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
+            <span class="toolbar-separator"></span>
+            <button class="tool-button" data-tool="rectangle" title="Rectangle (R)" aria-label="Rectangle"><span data-icon="rectangle"></span><kbd>R</kbd></button>
+            <button class="tool-button" data-tool="ellipse" title="Ellipse (O)" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
+            <button class="tool-button" data-tool="line" title="Line (L)" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
+            <button class="tool-button" data-tool="polygon" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
+            <span class="toolbar-separator"></span>
+            <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
+            <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
+            <button class="tool-button" data-tool="image" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
+            <span class="toolbar-separator"></span>
+            <button class="tool-button hand-tool" data-tool="hand" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
+          </div>
+          <div class="canvas-status"><span id="selection-status">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
+        </main>
+
+        <aside class="right-panel" id="right-panel" aria-label="Design properties">
+          <div class="inspector-tabs" role="tablist" aria-label="Properties">
+            <button class="inspector-tab is-active" data-inspector-tab="design" role="tab" aria-selected="true">Design</button>
+            <button class="inspector-tab" data-inspector-tab="prototype" role="tab" aria-selected="false">Prototype</button>
+            <button class="inspector-tab" data-inspector-tab="inspect" role="tab" aria-selected="false">Inspect</button>
+          </div>
+          <div class="inspector-content" id="inspector-content"></div>
+          <div class="inspector-footer"><button id="export-selection" class="export-button" title="Export selected layer">Export</button><span class="export-hint">Local export</span></div>
+        </aside>
+      </div>
+
+      <div class="bulk-bar" id="bulk-bar" hidden aria-live="polite">
+        <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span></div></div>
+        <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
+        <label class="speed-control" for="bulk-speed"><span>Speed</span><input id="bulk-speed" type="range" min="1" max="4" value="2" /><output id="bulk-speed-value">2 workers</output></label>
+        <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
+      </div>
+
+      <div class="context-menu" id="context-menu" role="menu" hidden></div>
+      <div class="toast-region" id="toast-region" aria-live="polite"></div>
+      <input id="image-input" type="file" accept="image/*" multiple hidden />
+      <input id="open-file-input" type="file" accept=".flocal,application/octet-stream" hidden />
+      <dialog class="modal" id="recipe-dialog">
+        <form method="dialog" id="recipe-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2>Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <p class="modal-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
+          <label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required />
+          <div class="recipe-preview" id="recipe-preview"><span class="recipe-preview-icon">✦</span><span id="recipe-preview-summary">Brightness · Contrast · Color</span></div>
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-recipe-confirm" value="save">Save recipe</button></div>
+        </form>
+      </dialog>
+
+      <dialog class="presentation-dialog" id="present-dialog" aria-label="Prototype presentation">
+        <canvas id="present-canvas" aria-label="Prototype preview"></canvas>
+        <div class="presentation-toolbar">
+          <button class="presentation-control" id="present-back" type="button" aria-label="Back to previous frame" title="Back" disabled>←</button>
+          <div class="presentation-title"><strong id="present-title">Prototype</strong><span>Local preview</span></div>
+          <button class="presentation-control presentation-exit" id="present-exit" type="button" aria-label="Close presentation" title="Close">×</button>
+        </div>
+        <div class="presentation-help">Press Esc to exit</div>
+      </dialog>
+
+      <div class="mobile-scrim" id="mobile-scrim"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

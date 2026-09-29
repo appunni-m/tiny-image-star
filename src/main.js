@@ -1,0 +1,1201 @@
+import {
+  addNode, applyImageRecipe, cloneDocument, createDocument, createId, createImageRecipe, createNode,
+  duplicateNode, findNode, findNodeAcrossPages, getActivePage, parseDocument, removeNode, serializeDocument,
+  updateNode, walkNodes
+} from './model.js';
+import { History } from './history.js';
+import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
+import { LocalImageEngine } from './image-engine.js';
+import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { icon } from './icons.js';
+import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
+import { addPrototypeInteraction, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
+import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
+
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
+const state = {
+  document: createDocument(), selectedIds: [], tool: 'select', zoom: 1, panX: 0, panY: 0,
+  assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
+  draftNode: null, marquee: null, interaction: null, pointerMap: new Map(),
+  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
+  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '',
+  statusTimer: null, saveTimer: null, lastLayerSelection: null,
+  prototypeSourceId: null, prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
+  presenting: null
+};
+const history = new History(120);
+const canvas = $('#scene-canvas');
+const canvasScroll = $('#canvas-scroll');
+let renderer;
+let pendingRecipeNodeId = null;
+let latestPageLayerIds = [];
+let currentToastTimer = 0;
+const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
+const previewTimers = new Map();
+let presentRenderer = null;
+let presentRenderState = null;
+
+function activePage() { return getActivePage(state.document); }
+function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
+function selectedNodes() { return selectedEntries().map(entry => entry.node); }
+function imageNodes(page = activePage()) {
+  const nodes = [];
+  if (page) walkNodes(page.children, ({ node }) => { if (node.type === 'image') nodes.push(node); });
+  return nodes;
+}
+function rootSelectedIds() {
+  const selected = new Set(state.selectedIds);
+  return selectedEntries().filter(entry => !entry.parents.some(parent => selected.has(parent.id))).map(entry => entry.node.id);
+}
+function setSaveState(kind, text) {
+  const element = $('#save-state');
+  element.classList.toggle('is-saving', kind === 'saving');
+  element.classList.toggle('is-error', kind === 'error');
+  element.lastElementChild.textContent = text;
+}
+function queueSave() {
+  if (!state.ready) return;
+  setSaveState('saving', 'Saving locally…');
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(async () => {
+    try {
+      await saveDocument(JSON.parse(serializeDocument(state.document)));
+      setSaveState('saved', 'Saved locally');
+    } catch (error) {
+      setSaveState('error', 'Could not save');
+      showToast(error.message || 'Could not save this design locally.');
+    }
+  }, 260);
+}
+function checkpoint(label) { history.checkpoint(state.document, label); }
+function setSelection(ids, { keepInspector = false } = {}) {
+  const valid = ids.filter(id => findNode(state.document, id));
+  state.selectedIds = [...new Set(valid)];
+  renderLayers();
+  if (!keepInspector) renderInspector();
+  updateSelectionStatus();
+  renderer?.invalidate();
+}
+function updateSelectionStatus() {
+  const nodes = selectedNodes();
+  $('#selection-status').textContent = nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
+  if (nodes.length === 1) $('#position-status').textContent = `${Math.round(nodes[0].x)}, ${Math.round(nodes[0].y)} · ${Math.round(nodes[0].width)} × ${Math.round(nodes[0].height)}`;
+  else $('#position-status').textContent = `${Math.round(state.zoom * 100)}%`;
+}
+function showToast(message, duration = 2500) {
+  const region = $('#toast-region');
+  region.replaceChildren();
+  const toast = document.createElement('div'); toast.className = 'toast'; toast.textContent = message;
+  region.append(toast);
+  clearTimeout(currentToastTimer);
+  currentToastTimer = setTimeout(() => toast.remove(), duration);
+}
+function setTool(tool) {
+  state.tool = tool;
+  $$('.tool-button').forEach(button => button.classList.toggle('is-selected', button.dataset.tool === tool));
+  canvas.className = `tool-${tool}`;
+  updateSelectionStatus();
+  renderInspector();
+}
+
+function renderPageList() {
+  const list = $('#pages-list'); list.replaceChildren();
+  for (const page of state.document.pages) {
+    const button = document.createElement('button');
+    button.className = `page-row${page.id === state.document.activePageId ? ' is-active' : ''}`;
+    button.dataset.pageId = page.id; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(page.id === state.document.activePageId));
+    button.innerHTML = `<span class="page-row-icon">▧</span><span class="page-row-name">${escapeHtml(page.name)}</span>`;
+    list.append(button);
+  }
+  const page = activePage();
+  $('#canvas-page-name').textContent = page?.name || 'Page';
+}
+
+function renderLayers() {
+  const list = $('#layers-list'); list.replaceChildren();
+  const page = activePage();
+  latestPageLayerIds = [];
+  const search = state.layerSearch.trim().toLowerCase();
+  const matchingNode = node => !search || node.name.toLowerCase().includes(search) || (node.children || []).some(matchingNode);
+  const addRows = (nodes, depth = 0) => {
+    for (const node of [...nodes].reverse()) {
+      if (!matchingNode(node)) continue;
+      latestPageLayerIds.push(node.id);
+      const row = document.createElement('div');
+      row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${node.visible ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
+      row.setAttribute('role', 'treeitem'); row.dataset.layerId = node.id; row.tabIndex = 0;
+      row.style.paddingLeft = `${7 + depth * 13}px`;
+      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' ? 'layerVector' : 'rectangleSmall';
+      const chevron = node.children?.length ? '⌄' : '';
+      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
+      list.append(row);
+      if (node.children?.length) addRows(node.children, depth + 1);
+    }
+  };
+  if (page) addRows(page.children);
+  $('#empty-layers').hidden = latestPageLayerIds.length > 0;
+  $('#layers-list').hidden = latestPageLayerIds.length === 0;
+}
+
+function section(title, body, iconName = null) {
+  return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
+}
+function numberField(label, prop, value, step = 1) {
+  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}" value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${label}" /></div>`;
+}
+function sliderField(label, prop, value, min, max, step = 1) {
+  return `<div class="slider-row"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/><output>${Number(value).toFixed(step < 1 ? 2 : 0)}${prop === 'opacity' ? '%' : ''}</output></div>`;
+}
+function colorField(label, prop, value, opacity = 100) {
+  const safe = /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#ffffff';
+  return `<div class="fill-row"><label class="color-swatch" title="${label}"><input class="prop-input" data-prop="${prop}" type="color" value="${safe}" aria-label="${label} color"/></label><input class="prop-input color-value" data-prop="${prop}" type="text" value="${safe}" maxlength="7" aria-label="${label} color value"/><input class="prop-input fill-opacity" data-prop="fillOpacity" type="number" min="0" max="100" value="${opacity}" title="Opacity percent"/></div>`;
+}
+function transformSection(node) {
+  const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((node.opacity ?? 1) * 100))}</div>`;
+  return section('Position', body);
+}
+function appearanceSection(node) {
+  const fill = colorField('Fill', 'fill', node.fill || '#ffffff', Math.round((node.fillOpacity ?? 1) * 100));
+  const stroke = node.stroke ? colorField('Stroke', 'stroke', node.stroke, 100) : '';
+  const radius = ['rectangle', 'frame', 'section'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', node.radius || 0)}</div>` : '';
+  const body = `${fill}${stroke}<button class="add-fill" data-action="add-stroke">＋ Add stroke</button>${radius}`;
+  return section('Appearance', body);
+}
+function imageAdjustmentsSection(node) {
+  const adjustments = node.adjustments || { brightness: 0, contrast: 0, saturation: 0, blur: 0 };
+  const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
+  const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
+  const body = `${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  return section('Image adjustments', body);
+}
+function autoLayoutSection(node) {
+  if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
+  const layout = createAutoLayout(node.autoLayout);
+  const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
+  const body = `<div class="property-grid"><span class="field-caption">Direction</span>${select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal']])}${numberField('↕', 'autoLayout.gap', layout.gap)}${numberField('⇳', 'autoLayout.padding', layout.padding.top)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div><button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
+  return section('Auto layout', body);
+}
+function constraintsSection(node) {
+  const constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}) };
+  const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="constraints.${prop}" aria-label="${prop} constraint">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
+  return section('Constraints', `<div class="property-grid"><span class="field-caption">Horizontal</span>${select('horizontal', constraints.horizontal, horizontalConstraints)}<span class="field-caption">Vertical</span>${select('vertical', constraints.vertical, verticalConstraints)}</div><div class="image-properties-note">Pins and scales this layer when its parent frame changes size.</div>`);
+}
+function textSection(node) {
+  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', node.color || '#1e1e1e', 100)}</div><button class="add-fill" data-action="edit-text">Edit text content</button>`;
+  return section('Typography', body);
+}
+function prototypeInspector() {
+  const node = selectedNodes()[0] || null;
+  const entry = node ? findNode(state.document, node.id) : null;
+  const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
+  const start = getPrototypeStartFrame(state.document, node?.id);
+  const startBody = frame
+    ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start">${state.document.prototypeStartPoint?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
+    : `<p class="prototype-hint">${start ? `Present starts at “${escapeHtml(start.frame.name)}”.` : 'Create a frame to make a prototype.'}</p>`;
+  const interactions = (node?.interactions || []).map(interaction => {
+    const target = findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node;
+    const targetPage = state.document.pages.find(page => page.id === interaction.destinationPageId);
+    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">↗</span><span class="prototype-interaction-copy"><strong>${escapeHtml(interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap')}</strong><small>${escapeHtml(target?.name || 'Missing frame')} · ${escapeHtml(targetPage?.name || 'Page')}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+  }).join('');
+  const connectState = state.prototypeSourceId === node?.id ? '<div class="prototype-connect-hint">Click a destination frame on the canvas. Press Escape to cancel.</div>' : '';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Transition<select id="prototype-transition" class="select-field"><option value="instant"${state.prototypeTransition === 'instant' ? ' selected' : ''}>Instant</option><option value="dissolve"${state.prototypeTransition === 'dissolve' ? ' selected' : ''}>Dissolve</option><option value="move-left"${state.prototypeTransition === 'move-left' ? ' selected' : ''}>Move in · left</option><option value="move-right"${state.prototypeTransition === 'move-right' ? ' selected' : ''}>Move in · right</option></select></label><label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label><button class="primary-button prototype-add-link" data-action="prototype-connect">＋ Add interaction</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
+  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow.</span></section></div>`;
+}
+
+function renderInspector() {
+  const content = $('#inspector-content');
+  if (state.inspectorTab !== 'design') {
+    if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
+    const messages = {
+      inspect: '<strong>Layer inspection</strong><br/>Select a layer to inspect its local properties and export a raster preview.'
+    };
+    content.innerHTML = `<div class="prototype-placeholder">${messages[state.inspectorTab] || messages.prototype}</div>`;
+    return;
+  }
+  const entries = selectedEntries();
+  if (!entries.length) {
+    const page = activePage();
+    content.innerHTML = `<div class="inspector-empty"><div class="empty-layer-icon">✣</div><strong>Nothing selected</strong><span>Choose a layer or create something on the canvas. Everything is saved locally as you work.</span></div>${section('Page', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(page?.name || 'Page 1')}</div><button class="add-fill" data-action="create-frame">＋ Create a frame</button>`)}`;
+    return;
+  }
+  if (entries.length > 1) {
+    const imageCount = entries.filter(entry => entry.node.type === 'image').length;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Right-click to apply a saved image recipe.` : 'Use the Layers panel to change their order.'}</span></div>${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
+    return;
+  }
+  const node = entries[0].node;
+  let body = transformSection(node);
+  if (node.type === 'text') body += textSection(node);
+  if (node.type === 'image') body += imageAdjustmentsSection(node);
+  if (!['image', 'text', 'line', 'path'].includes(node.type)) body += appearanceSection(node);
+  else if (node.type === 'line' || node.type === 'path') body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  if (node.type === 'frame') body += autoLayoutSection(node);
+  const parent = entries[0].parent;
+  if (parent?.autoLayout) {
+    const sizing = node.layoutSizingMain || 'hug';
+    const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
+    const cross = node.layoutSizingCross || 'hug';
+    body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
+  } else if (parent?.type === 'frame') body += constraintsSection(node);
+  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
+  content.innerHTML = body;
+  for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="fit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
+}
+
+function renderAssetsTab() {
+  const list = $('#assets-list'); list.replaceChildren();
+  for (const node of imageNodes()) {
+    const asset = state.assets.get(node.assetId);
+    const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
+    const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
+    const image = document.createElement('img'); image.alt = ''; image.src = state.previewUrls.get(node.id) || asset?.bitmapUrl || '';
+    thumb.append(image);
+    const name = document.createElement('span'); name.className = 'asset-card-name'; name.textContent = node.name;
+    card.append(thumb, name); list.append(card);
+  }
+}
+
+function renderUI() {
+  $('#document-name').value = state.document.name;
+  $('#canvas-file-name').textContent = state.document.name;
+  renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
+  renderer?.invalidate();
+}
+
+function pageLayerRows(page = activePage()) {
+  const rows = [];
+  if (page) walkNodes(page.children, entry => rows.push(entry));
+  return rows;
+}
+function deepestContainerAt(point) {
+  let result = null;
+  const visit = (nodes, parentX = 0, parentY = 0) => {
+    for (const node of nodes) {
+      const x = parentX + node.x; const y = parentY + node.y;
+      if (['frame', 'group'].includes(node.type) && point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height) result = { node, x, y };
+      visit(node.children || [], x, y);
+    }
+  };
+  visit(activePage()?.children || []);
+  return result;
+}
+function localizeToParent(node, worldX, worldY, parent) {
+  node.x = worldX - (parent?.x || 0);
+  node.y = worldY - (parent?.y || 0);
+  addNode(state.document, node, { parentId: parent?.node.id ?? null });
+  if (parent?.node.autoLayout) applyAutoLayout(parent.node);
+}
+
+function checkPointDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function resizeHandleAt(event) {
+  const nodes = selectedNodes();
+  if (nodes.length !== 1 || nodes[0].locked) return null;
+  const entry = findNode(state.document, nodes[0].id);
+  if (!entry) return null;
+  let x = nodes[0].x; let y = nodes[0].y;
+  for (const parent of entry.parents) { x += parent.x; y += parent.y; }
+  const node = nodes[0];
+  const handles = {
+    nw: [x, y], n: [x + node.width / 2, y], ne: [x + node.width, y], e: [x + node.width, y + node.height / 2],
+    se: [x + node.width, y + node.height], s: [x + node.width / 2, y + node.height], sw: [x, y + node.height], w: [x, y + node.height / 2]
+  };
+  const point = screenToWorld(event, canvas, state);
+  const tolerance = 8 / state.zoom;
+  for (const [name, [hx, hy]] of Object.entries(handles)) if (checkPointDistance(point, { x: hx, y: hy }) <= tolerance) return { name, node, entry };
+  return null;
+}
+function selectedNodeDragStart(node, world, shiftKey) {
+  if (!shiftKey && !state.selectedIds.includes(node.id)) setSelection([node.id]);
+  const entry = findNode(state.document, node.id);
+  if (!shiftKey && state.selectedIds.length === 1 && entry?.parent?.autoLayout) {
+    checkpoint('Reorder auto layout items');
+    state.interaction = { kind: 'reorder', node, parent: entry.parent };
+    return;
+  }
+  const nodes = selectedNodes();
+  checkpoint('Move layers');
+  const originals = new Map(nodes.map(item => [item.id, { x: item.x, y: item.y }]));
+  state.interaction = { kind: 'move', start: world, originals, shiftKey };
+}
+
+function onCanvasPointerDown(event) {
+  if (event.button !== 0 && event.button !== 1) return;
+  state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
+  canvas.setPointerCapture?.(event.pointerId);
+  if (state.pointerMap.size === 2 && [...state.pointerMap.values()].every(point => point.pointerType !== 'mouse')) {
+    const points = [...state.pointerMap.values()];
+    state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
+    event.preventDefault(); return;
+  }
+  if (event.button === 1 || state.spaceDown || state.tool === 'hand') {
+    state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
+    canvas.classList.add('is-panning'); event.preventDefault(); return;
+  }
+  const world = screenToWorld(event, canvas, state);
+  if (state.prototypeSourceId) {
+    const target = findFrameAtPoint(activePage(), world);
+    if (!target) { showToast('Choose a frame as the interaction destination.'); return; }
+    if (target.id === state.prototypeSourceId) { showToast('Choose a different destination frame.'); return; }
+    try {
+      checkpoint('Add prototype interaction');
+      addPrototypeInteraction(state.document, state.prototypeSourceId, target.id, {
+        trigger: state.prototypeTrigger,
+        transition: state.prototypeTransition,
+        duration: state.prototypeDuration
+      });
+      state.prototypeSourceId = null;
+      renderInspector(); queueSave(); renderer.invalidate();
+      showToast(`Connected to “${target.name}”.`);
+    } catch (error) { showToast(error.message); }
+    event.preventDefault(); return;
+  }
+  if (state.tool === 'select') {
+    const handle = resizeHandleAt(event);
+    if (handle) {
+      checkpoint('Resize layer');
+      state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, start: world, x: handle.node.x, y: handle.node.y, width: handle.node.width, height: handle.node.height, aspect: handle.node.height ? handle.node.width / handle.node.height : 1 };
+      if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
+      event.preventDefault(); return;
+    }
+    const hit = hitTestPage(activePage(), world);
+    if (hit) {
+      if (event.shiftKey) {
+        const ids = state.selectedIds.includes(hit.id) ? state.selectedIds.filter(id => id !== hit.id) : [...state.selectedIds, hit.id];
+        setSelection(ids);
+        if (!ids.includes(hit.id)) return;
+      } else if (!state.selectedIds.includes(hit.id)) setSelection([hit.id]);
+      if (!hit.locked) selectedNodeDragStart(hit, world, event.shiftKey);
+      return;
+    }
+    if (!event.shiftKey) setSelection([]);
+    state.marquee = { x1: world.x, y1: world.y, x2: world.x, y2: world.y };
+    state.interaction = { kind: 'marquee', start: world, additive: event.shiftKey };
+    renderer.invalidate(); return;
+  }
+  if (state.tool === 'image') { $('#image-input').click(); return; }
+  if (state.tool === 'text') { createTextAt(world); return; }
+  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', pen: 'path' };
+  const type = typeByTool[state.tool];
+  if (!type) return;
+  const node = createNode(type, { x: world.x, y: world.y, width: 1, height: 1 });
+  state.draftNode = node;
+  state.interaction = { kind: 'draw', type, start: world, moved: false };
+  renderer.invalidate();
+  event.preventDefault();
+}
+
+function onCanvasPointerMove(event) {
+  if (state.pointerMap.has(event.pointerId)) state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
+  const interaction = state.interaction;
+  if (!interaction) return;
+  if (interaction.kind === 'pinch' && state.pointerMap.size >= 2) {
+    const points = [...state.pointerMap.values()];
+    const distance = checkPointDistance(points[0], points[1]);
+    const nextZoom = Math.max(.08, Math.min(8, interaction.zoom * (distance / Math.max(1, interaction.distance))));
+    const rect = canvas.getBoundingClientRect();
+    const centerX = (points[0].x + points[1].x) / 2 - rect.left;
+    const centerY = (points[0].y + points[1].y) / 2 - rect.top;
+    const worldX = (centerX - interaction.panX) / interaction.zoom;
+    const worldY = (centerY - interaction.panY) / interaction.zoom;
+    state.zoom = nextZoom; state.panX = centerX - worldX * nextZoom; state.panY = centerY - worldY * nextZoom;
+    updateZoomUI(); renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'pan') {
+    state.panX = interaction.panX + event.clientX - interaction.clientX;
+    state.panY = interaction.panY + event.clientY - interaction.clientY;
+    renderer.invalidate(); return;
+  }
+  const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'move') {
+    let dx = world.x - interaction.start.x; let dy = world.y - interaction.start.y;
+    if (state.document.settings.snap && !event.altKey) { const grid = state.document.settings.grid || 8; dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
+    for (const [id, original] of interaction.originals) updateNode(state.document, id, { x: original.x + dx, y: original.y + dy });
+    $('#position-status').textContent = `${Math.round(dx)}, ${Math.round(dy)} moved`;
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'reorder') {
+    const parent = interaction.parent;
+    const parentWorld = absolutePosition(parent.id);
+    const axis = parent.autoLayout.axis;
+    const localMain = axis === 'horizontal' ? world.x - parentWorld.x : world.y - parentWorld.y;
+    const siblings = parent.children.filter(item => item.id !== interaction.node.id && item.visible && item.layoutPositioning !== 'absolute');
+    const targetIndex = siblings.findIndex(item => {
+      const center = axis === 'horizontal' ? item.x + item.width / 2 : item.y + item.height / 2;
+      return localMain < center;
+    });
+    const currentIndex = parent.children.findIndex(item => item.id === interaction.node.id);
+    const [moving] = parent.children.splice(currentIndex, 1);
+    const insertionIndex = targetIndex < 0 ? parent.children.length : Math.min(parent.children.length, targetIndex > currentIndex ? targetIndex - 1 : targetIndex);
+    parent.children.splice(insertionIndex, 0, moving);
+    applyAutoLayout(parent);
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'resize') {
+    const dx = world.x - interaction.start.x; const dy = world.y - interaction.start.y;
+    let x = interaction.x; let y = interaction.y; let width = interaction.width; let height = interaction.height;
+    if (interaction.handle.includes('e')) width = Math.max(1, interaction.width + dx);
+    if (interaction.handle.includes('s')) height = Math.max(1, interaction.height + dy);
+    if (interaction.handle.includes('w')) { width = Math.max(1, interaction.width - dx); x = interaction.x + interaction.width - width; }
+    if (interaction.handle.includes('n')) { height = Math.max(1, interaction.height - dy); y = interaction.y + interaction.height - height; }
+    if (event.shiftKey && interaction.aspect) {
+      if (Math.abs(dx) >= Math.abs(dy)) height = width / interaction.aspect;
+      else width = height * interaction.aspect;
+      if (interaction.handle.includes('w')) x = interaction.x + interaction.width - width;
+      if (interaction.handle.includes('n')) y = interaction.y + interaction.height - height;
+    }
+    Object.assign(interaction.node, { x, y, width, height });
+    if (interaction.node.type === 'frame' && interaction.node.autoLayout) applyAutoLayout(interaction.node);
+    else if (interaction.node.type === 'frame') applyFrameConstraints(interaction.node, interaction.width, interaction.height, width, height, interaction.childGeometry);
+    const parent = findNode(state.document, interaction.node.id)?.parent;
+    if (parent?.autoLayout) applyAutoLayout(parent);
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'draw') {
+    const dx = world.x - interaction.start.x; const dy = world.y - interaction.start.y;
+    interaction.moved ||= Math.hypot(dx, dy) > 4 / state.zoom;
+    const node = state.draftNode;
+    const left = Math.min(interaction.start.x, world.x); const top = Math.min(interaction.start.y, world.y);
+    node.x = left; node.y = top; node.width = Math.max(1, Math.abs(dx)); node.height = Math.max(1, Math.abs(dy));
+    if (node.type === 'path') node.points = [{ x: dx < 0 ? 1 : 0, y: dy < 0 ? 1 : 0 }, { x: dx < 0 ? 0 : 1, y: dy < 0 ? 0 : 1 }];
+    state.draftNode = node; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'marquee') {
+    state.marquee.x2 = world.x; state.marquee.y2 = world.y; renderer.invalidate();
+  }
+}
+
+function onCanvasPointerUp(event) {
+  state.pointerMap.delete(event.pointerId);
+  const interaction = state.interaction;
+  if (!interaction) return;
+  if (interaction.kind === 'pinch' && state.pointerMap.size < 2) { state.interaction = null; return; }
+  if (interaction.kind === 'pan') { canvas.classList.remove('is-panning'); state.interaction = null; return; }
+  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') { state.interaction = null; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return; }
+  if (interaction.kind === 'marquee') {
+    const rect = { x: Math.min(state.marquee.x1, state.marquee.x2), y: Math.min(state.marquee.y1, state.marquee.y2), width: Math.abs(state.marquee.x2 - state.marquee.x1), height: Math.abs(state.marquee.y2 - state.marquee.y1) };
+    const hits = pageLayerRows().filter(({ node, parents }) => {
+      let x = node.x; let y = node.y; for (const parent of parents) { x += parent.x; y += parent.y; }
+      return x <= rect.x + rect.width && x + node.width >= rect.x && y <= rect.y + rect.height && y + node.height >= rect.y;
+    }).map(entry => entry.node.id);
+    setSelection(interaction.additive ? [...state.selectedIds, ...hits] : hits);
+    state.marquee = null; state.interaction = null; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'draw') {
+    const node = state.draftNode;
+    state.draftNode = null; state.interaction = null;
+    if (!interaction.moved) {
+      if (node.type === 'frame') { node.width = 390; node.height = 844; }
+      else if (node.type === 'section') { node.width = 480; node.height = 320; }
+      else if (node.type === 'line' || node.type === 'path') { node.width = 120; node.height = 1; if (node.type === 'path') node.points = [{ x: 0, y: 0 }, { x: 1, y: 0 }]; }
+      else { node.width = 120; node.height = 80; }
+      node.x -= node.width / 2; node.y -= node.height / 2;
+    }
+    checkpoint(`Create ${node.type}`);
+    const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+    const parent = node.type === 'section' ? null : deepestContainerAt(center);
+    localizeToParent(node, node.x, node.y, parent);
+    setSelection([node.id]); queueSave(); renderer.invalidate(); return;
+  }
+}
+
+function createTextAt(world) {
+  const node = createNode('text', { x: world.x, y: world.y, text: '', width: 240, height: 48 });
+  checkpoint('Create text');
+  const parent = deepestContainerAt(world);
+  localizeToParent(node, world.x, world.y, parent);
+  setSelection([node.id]);
+  queueSave();
+  editTextNode(node.id);
+}
+
+function editTextNode(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry || entry.node.type !== 'text') return;
+  state.textNodeId = nodeId;
+  const editor = $('#text-editor-overlay');
+  const absolute = absolutePosition(nodeId);
+  const screen = worldToScreen(absolute, canvas, state);
+  const canvasRect = canvasScroll.getBoundingClientRect();
+  editor.style.left = `${screen.x - canvasRect.left}px`;
+  editor.style.top = `${screen.y - canvasRect.top}px`;
+  editor.style.width = `${Math.max(64, entry.node.width * state.zoom)}px`;
+  editor.style.minHeight = `${Math.max(28, entry.node.height * state.zoom)}px`;
+  editor.style.fontFamily = entry.node.fontFamily;
+  editor.style.fontSize = `${entry.node.fontSize * state.zoom}px`;
+  editor.style.lineHeight = String(entry.node.lineHeight);
+  editor.style.color = entry.node.color;
+  editor.textContent = entry.node.text;
+  editor.hidden = false; editor.focus();
+  if (!entry.node.text) document.execCommand?.('selectAll', false, null);
+}
+
+function absolutePosition(nodeId) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry) return { x: 0, y: 0 };
+  let x = entry.node.x; let y = entry.node.y;
+  for (const parent of entry.parents) { x += parent.x; y += parent.y; }
+  return { x, y };
+}
+
+function commitTextEdit() {
+  const editor = $('#text-editor-overlay');
+  if (!state.textNodeId) return;
+  const node = findNode(state.document, state.textNodeId)?.node;
+  if (node) { node.text = editor.innerText.replace(/\n$/, ''); node.height = Math.max(36, node.text.split('\n').length * node.fontSize * node.lineHeight + 4); }
+  editor.hidden = true; state.textNodeId = null;
+  renderInspector(); renderLayers(); queueSave(); renderer.invalidate();
+}
+
+function updateZoomUI() {
+  $('#zoom-readout').textContent = `${Math.round(state.zoom * 100)}%`;
+  updateSelectionStatus();
+}
+function zoomAt(clientX, clientY, nextZoom) {
+  const rect = canvas.getBoundingClientRect();
+  const px = clientX == null ? rect.width / 2 : clientX - rect.left;
+  const py = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const worldX = (px - state.panX) / state.zoom; const worldY = (py - state.panY) / state.zoom;
+  state.zoom = Math.max(.08, Math.min(8, nextZoom));
+  state.panX = px - worldX * state.zoom; state.panY = py - worldY * state.zoom;
+  updateZoomUI(); renderer.invalidate();
+}
+function zoomToSelection() {
+  const entries = selectedEntries();
+  const ids = entries.length ? entries.map(entry => entry.node.id) : pageLayerRows().filter(entry => entry.node.type === 'frame').map(entry => entry.node.id);
+  if (!ids.length) { state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2; updateZoomUI(); renderer.invalidate(); return; }
+  const bounds = ids.map(id => absolutePosition(id)).map((position, index) => ({ ...position, width: findNode(state.document, ids[index]).node.width, height: findNode(state.document, ids[index]).node.height }));
+  const x = Math.min(...bounds.map(item => item.x)); const y = Math.min(...bounds.map(item => item.y));
+  const right = Math.max(...bounds.map(item => item.x + item.width)); const bottom = Math.max(...bounds.map(item => item.y + item.height));
+  const zoom = Math.min(2, (canvas.clientWidth - 100) / Math.max(1, right - x), (canvas.clientHeight - 100) / Math.max(1, bottom - y));
+  state.zoom = Math.max(.08, zoom); state.panX = (canvas.clientWidth - (right - x) * state.zoom) / 2 - x * state.zoom; state.panY = (canvas.clientHeight - (bottom - y) * state.zoom) / 2 - y * state.zoom;
+  updateZoomUI(); renderer.invalidate();
+}
+
+function updateInspectorInput(event) {
+  const input = event.target.closest('[data-prop]');
+  if (!input || !selectedNodes().length) return;
+  if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
+  const prop = input.dataset.prop;
+  const value = input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' ? Number(input.value) : input.value;
+  if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
+  const adjustments = prop.startsWith('adjustments.');
+  const layoutSetting = prop.startsWith('autoLayout.');
+  const constraintSetting = prop.startsWith('constraints.');
+  const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
+  for (const node of selectedNodes()) {
+    const oldWidth = node.width; const oldHeight = node.height;
+    if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
+    else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
+    else if (layoutSetting) {
+      node.autoLayout = createAutoLayout(node.autoLayout || {});
+      node.autoLayout[key] = value;
+      applyAutoLayout(node);
+    }
+    else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
+    else node[prop] = value;
+    if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, node.width, node.height);
+    if (node.type === 'image' && adjustments) schedulePreview(node);
+    if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross') {
+      if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
+      const parent = findNode(state.document, node.id)?.parent;
+      if (parent?.autoLayout) applyAutoLayout(parent);
+    }
+  }
+  renderer.invalidate();
+}
+function finishInspectorInput() {
+  if (!state.controlEdit) return;
+  clearTimeout(state.statusTimer);
+  state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); queueSave(); }, 160);
+}
+function schedulePreview(node, immediate = false) {
+  const previous = previewTimers.get(node.id);
+  if (previous) clearTimeout(previous);
+  state.imageStatus.set(node.id, 'Updating preview…');
+  const run = () => renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
+  const timer = setTimeout(run, immediate ? 0 : 110);
+  previewTimers.set(node.id, timer);
+  if (state.selectedIds.includes(node.id)) {
+    const status = $('#image-engine-status'); if (status) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
+  }
+}
+async function renderImagePreview(nodeId, assetId, adjustments) {
+  const asset = state.assets.get(assetId);
+  if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
+  const version = (state.renderVersion.get(nodeId) || 0) + 1;
+  state.renderVersion.set(nodeId, version);
+  state.imageStatus.set(nodeId, 'Processing locally…');
+  const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments);
+  const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
+  if (state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
+  state.previews.get(nodeId)?.close?.();
+  const previousUrl = state.previewUrls.get(nodeId); if (previousUrl) URL.revokeObjectURL(previousUrl);
+  state.previewUrls.set(nodeId, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
+  state.previews.set(nodeId, bitmap);
+  state.imageStatus.set(nodeId, 'Updated · Pillow-RS WASM');
+  renderer.invalidate(); renderAssetsTab();
+  if (state.selectedIds.includes(nodeId)) { const status = $('#image-engine-status'); if (status) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); } }
+  return true;
+}
+
+function setZoomButtonHandlers() {
+  $('#zoom-in').addEventListener('click', () => zoomAt(null, null, state.zoom * 1.2));
+  $('#zoom-out').addEventListener('click', () => zoomAt(null, null, state.zoom / 1.2));
+  $('#zoom-readout').addEventListener('click', () => zoomAt(null, null, 1));
+  $('#zoom-fit').addEventListener('click', zoomToSelection);
+  canvas.addEventListener('wheel', event => {
+    if (event.ctrlKey || event.metaKey) { zoomAt(event.clientX, event.clientY, state.zoom * Math.exp(-event.deltaY * .002)); }
+    else { state.panX -= event.deltaX; state.panY -= event.deltaY; renderer.invalidate(); }
+    event.preventDefault();
+  }, { passive: false });
+}
+
+function chooseImageFiles() { $('#image-input').click(); }
+async function importImageFiles(files, point = null) {
+  const inputs = [...files].filter(file => file.type.startsWith('image/'));
+  if (!inputs.length) { showToast('Choose an image file to place it on the canvas.'); return; }
+  checkpoint(`Place ${inputs.length} image${inputs.length === 1 ? '' : 's'}`);
+  const defaultWorld = point || { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
+  let imported = 0;
+  for (const [index, file] of inputs.entries()) {
+    try {
+      const assetId = createId('asset');
+      const sourceBytes = new Uint8Array(await file.arrayBuffer());
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale)); const height = Math.max(1, Math.round(bitmap.height * scale));
+      const asset = { id: assetId, name: file.name, type: file.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(file) };
+      state.assets.set(assetId, asset);
+      await saveImageAsset(assetId, file);
+      const node = createNode('image', { id: createId('image'), name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, assetId, width, height, sourceWidth: bitmap.width, sourceHeight: bitmap.height, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
+      localizeToParent(node, node.x, node.y, deepestContainerAt({ x: node.x + width / 2, y: node.y + height / 2 }));
+      state.imageStatus.set(node.id, 'Processing locally…');
+      renderImagePreview(node.id, assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
+      state.selectedIds = [node.id]; imported += 1;
+    } catch (error) { showToast(`${file.name}: ${error.message || 'Could not load image.'}`); }
+  }
+  if (imported) { renderUI(); queueSave(); showToast(`${imported} image${imported === 1 ? '' : 's'} placed. Source images stay on this device.`); }
+  $('#image-input').value = '';
+}
+
+async function restoreImageAssets() {
+  const nodes = imageNodesAcrossPages();
+  for (const node of nodes) {
+    try {
+      const existing = state.assets.get(node.assetId);
+      if (existing) { renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => showToast(error.message)); continue; }
+      const saved = await loadImageAsset(node.assetId);
+      if (!saved) { state.imageStatus.set(node.id, 'Original image missing'); continue; }
+      const sourceBytes = new Uint8Array(saved.bytes);
+      const bitmap = await createImageBitmap(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
+      state.assets.set(node.assetId, { id: node.assetId, name: saved.name || node.name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
+      state.imageStatus.set(node.id, 'Restoring local preview…');
+      renderImagePreview(node.id, node.assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
+    } catch (error) { state.imageStatus.set(node.id, 'Could not restore image'); showToast(error.message); }
+  }
+  renderAssetsTab();
+}
+
+function renderBulkBar() {
+  const bar = $('#bulk-bar'); const bulk = state.bulk;
+  bar.hidden = !bulk;
+  if (!bulk) return;
+  const total = bulk.targets.length;
+  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
+  $('#bulk-subtitle').textContent = bulk.cancelled ? `${bulk.completed} completed · ${bulk.targets.length - bulk.completed} left untouched` : bulk.done ? `${bulk.completed} updated${bulk.failed ? ` · ${bulk.failed} failed` : ''} in place` : bulk.paused ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} finishing before pause` : `Editing original layers · ${bulk.inflight} active`;
+  $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
+  $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
+  $('#bulk-speed').value = bulk.concurrency;
+  $('#bulk-speed-value').textContent = `${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}`;
+  $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
+  $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
+  $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
+  $('#bulk-pause').textContent = bulk.paused ? 'Resume' : 'Pause';
+  $('#bulk-cancel').hidden = bulk.done || bulk.cancelled;
+  $('#bulk-done').hidden = !(bulk.done || bulk.cancelled);
+}
+
+function scheduleBulk() {
+  const bulk = state.bulk;
+  if (!bulk || bulk.paused || bulk.cancelled || bulk.done) return;
+  while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
+    const id = bulk.targets[bulk.next++];
+    const entry = findNode(state.document, id);
+    if (!entry || entry.node.type !== 'image') { bulk.failed += 1; bulk.completed += 1; continue; }
+    const node = entry.node; const oldAdjustments = { ...node.adjustments }; const oldFit = node.fit; const oldOpacity = node.opacity;
+    applyImageRecipe(state.document, id, bulk.recipe);
+    bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
+    renderImagePreview(id, node.assetId, node.adjustments).then(() => {
+      if (state.bulk !== bulk) return;
+      bulk.completed += 1;
+    }).catch(error => {
+      if (state.bulk !== bulk) return;
+      node.adjustments = oldAdjustments; node.fit = oldFit; node.opacity = oldOpacity;
+      state.imageStatus.set(id, 'Recipe failed'); bulk.failed += 1; bulk.completed += 1;
+      showToast(`${node.name}: ${error.message}`);
+    }).finally(() => {
+      if (state.bulk !== bulk) return;
+      bulk.inflight -= 1;
+      queueSave(); renderLayers(); renderer.invalidate();
+      if (!bulk.paused && !bulk.cancelled) scheduleBulk();
+      if ((bulk.next >= bulk.targets.length || bulk.cancelled) && bulk.inflight === 0) {
+        bulk.done = !bulk.cancelled;
+        if (bulk.cancelled) bulk.done = true;
+      }
+      renderBulkBar();
+    });
+  }
+  renderBulkBar();
+}
+
+function startRecipe(recipe, targets) {
+  const unique = [...new Set(targets)].filter(id => findNode(state.document, id)?.node.type === 'image');
+  if (!unique.length) { showToast('Select one or more image layers first.'); return; }
+  checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
+  const concurrency = Math.min(2, CPU_LIMIT);
+  state.bulk = { recipe, targets: unique, next: 0, completed: 0, failed: 0, inflight: 0, concurrency, paused: false, cancelled: false, done: false };
+  imageEngine.setConcurrency(concurrency);
+  renderBulkBar(); scheduleBulk();
+}
+
+function saveRecipeFor(nodeId) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (!node || node.type !== 'image') return;
+  pendingRecipeNodeId = nodeId;
+  const adjustments = node.adjustments || {};
+  const active = ['brightness', 'contrast', 'saturation', 'blur'].filter(key => Number(adjustments[key]) !== 0);
+  $('#recipe-name').value = `${node.name} look`;
+  $('#recipe-preview-summary').textContent = active.length ? active.map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`).join(' · ') : 'Original image look · No adjustments';
+  $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
+}
+
+function showMenu(items, x, y) {
+  const menu = $('#context-menu'); menu.replaceChildren(); menu.hidden = false;
+  for (const item of items) {
+    if (item.separator) { const divider = document.createElement('div'); divider.className = 'menu-separator'; menu.append(divider); continue; }
+    if (item.labelOnly) { const label = document.createElement('div'); label.className = 'menu-label'; label.textContent = item.label; menu.append(label); continue; }
+    const button = document.createElement('button'); button.type = 'button'; button.disabled = Boolean(item.disabled); button.className = item.className || ''; button.setAttribute('role', 'menuitem');
+    const label = document.createElement('span'); label.textContent = item.label;
+    button.append(label);
+    if (item.shortcut) { const shortcut = document.createElement('span'); shortcut.className = 'shortcut'; shortcut.textContent = item.shortcut; button.append(shortcut); }
+    button.addEventListener('click', () => { menu.hidden = true; item.action?.(); });
+    menu.append(button);
+  }
+  const width = menu.offsetWidth; const height = menu.offsetHeight;
+  menu.style.left = `${Math.min(x, innerWidth - width - 8)}px`;
+  menu.style.top = `${Math.min(y, innerHeight - height - 8)}px`;
+}
+function closeMenu() { $('#context-menu').hidden = true; }
+
+function openNodeMenu(nodeId, x, y) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (!state.selectedIds.includes(nodeId)) setSelection([nodeId]);
+  const images = selectedNodes().filter(item => item.type === 'image');
+  const items = [
+    { label: 'Duplicate', shortcut: '⌘D', action: duplicateSelected },
+    { label: 'Rename', shortcut: '↵', action: () => renameSelected() },
+    { label: 'Bring to front', action: () => reorderSelected('front') },
+    { label: 'Send to back', action: () => reorderSelected('back') },
+    { separator: true },
+    { label: 'Delete', shortcut: '⌫', action: deleteSelected }
+  ];
+  if (node?.type === 'image') {
+    items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
+  }
+  if (images.length) {
+    items.push({ separator: true }, { label: `Apply recipe to ${images.length} image${images.length === 1 ? '' : 's'}`, labelOnly: true });
+    if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
+    else items.push({ label: 'Save a recipe from an edited image first', className: 'recipe-option is-empty', disabled: true });
+  }
+  showMenu(items, x, y);
+}
+
+function openFileMenu(x, y) {
+  showMenu([
+    { label: 'New design', shortcut: '⌘N', action: newDesign },
+    { label: 'Open local design…', action: () => $('#open-file-input').click() },
+    { separator: true },
+    { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
+    { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
+    { separator: true },
+    { label: 'Undo', shortcut: '⌘Z', action: undo, disabled: !history.canUndo },
+    { label: 'Redo', shortcut: '⌘⇧Z', action: redo, disabled: !history.canRedo }
+  ], x, y);
+}
+
+function deleteSelected() {
+  const ids = rootSelectedIds(); if (!ids.length) return;
+  checkpoint('Delete layers');
+  for (const id of ids) removeNode(state.document, id);
+  state.selectedIds = []; renderUI(); queueSave();
+}
+function duplicateSelected() {
+  const ids = rootSelectedIds(); if (!ids.length) return;
+  checkpoint('Duplicate layers');
+  const duplicates = ids.map(id => duplicateNode(state.document, id)).filter(Boolean);
+  setSelection(duplicates.map(node => node.id)); renderUI(); queueSave();
+}
+function renameSelected() {
+  const node = selectedNodes()[0]; if (!node) return;
+  const name = prompt('Rename layer', node.name); if (name == null) return;
+  checkpoint('Rename layer'); node.name = name.trim() || node.name; renderUI(); queueSave();
+}
+function reorderSelected(direction) {
+  const ids = new Set(rootSelectedIds()); if (!ids.size) return;
+  checkpoint(direction === 'front' ? 'Bring layers forward' : 'Send layers backward');
+  const page = activePage();
+  const reorder = nodes => {
+    const chosen = nodes.filter(node => ids.has(node.id));
+    const remaining = nodes.filter(node => !ids.has(node.id));
+    const next = direction === 'front' ? [...remaining, ...chosen] : [...chosen, ...remaining];
+    nodes.splice(0, nodes.length, ...next);
+    for (const node of nodes) reorder(node.children || []);
+  };
+  reorder(page.children); renderUI(); queueSave();
+}
+
+function undo() { const next = history.undo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); renderUI(); queueSave(); }
+function redo() { const next = history.redo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); renderUI(); queueSave(); }
+function newDesign() {
+  state.document = createDocument(); state.selectedIds = []; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+  history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); showToast('New local design created.');
+}
+function addPage() {
+  const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
+  checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; renderUI(); queueSave();
+}
+function renamePage(pageId) {
+  const page = state.document.pages.find(item => item.id === pageId); if (!page) return;
+  const name = prompt('Rename page', page.name); if (!name) return;
+  checkpoint('Rename page'); page.name = name.trim() || page.name; renderUI(); queueSave();
+}
+
+function renderPresentationFrame(interaction = null) {
+  if (!state.presenting || !presentRenderState) return;
+  const target = findNodeAcrossPages(state.document, state.presenting.frameId);
+  if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); $('#present-dialog').close(); return; }
+  const displayFrame = structuredClone(target.node);
+  displayFrame.x = 0; displayFrame.y = 0;
+  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: [displayFrame] }] };
+  presentRenderState.assets = state.assets;
+  presentRenderState.previews = state.previews;
+  const rect = $('#present-canvas').getBoundingClientRect();
+  const width = Math.max(1, rect.width); const height = Math.max(1, rect.height);
+  const margin = Math.min(72, Math.max(24, Math.min(width, height) * .08));
+  presentRenderState.zoom = Math.max(.05, Math.min(1.25, (width - margin * 2) / Math.max(1, displayFrame.width), (height - margin * 2) / Math.max(1, displayFrame.height)));
+  presentRenderState.panX = (width - displayFrame.width * presentRenderState.zoom) / 2;
+  presentRenderState.panY = (height - displayFrame.height * presentRenderState.zoom) / 2;
+  $('#present-title').textContent = target.node.name;
+  $('#present-back').disabled = state.presenting.stack.length === 0;
+  $('#present-dialog').style.setProperty('--present-duration', `${Math.max(0, interaction?.duration ?? 240)}ms`);
+  if (interaction?.transition && interaction.transition !== 'instant' && interaction.duration > 0) {
+    const enterFrom = interaction.transition === 'move-left' ? 'translateX(22px)' : interaction.transition === 'move-right' ? 'translateX(-22px)' : 'translateX(0)';
+    const canvasElement = $('#present-canvas');
+    canvasElement.style.opacity = '0';
+    canvasElement.style.transform = enterFrom;
+    requestAnimationFrame(() => {
+      presentRenderer?.invalidate();
+      requestAnimationFrame(() => { canvasElement.style.opacity = '1'; canvasElement.style.transform = 'translateX(0)'; });
+    });
+  } else {
+    $('#present-canvas').style.opacity = '1';
+    $('#present-canvas').style.transform = 'translateX(0)';
+    presentRenderer?.invalidate();
+  }
+}
+
+function startPresentation(selectedId = null) {
+  const start = getPrototypeStartFrame(state.document, selectedId);
+  if (!start) { showToast('Create a frame before presenting this design.'); return; }
+  const dialog = $('#present-dialog');
+  state.presenting = { pageId: start.page.id, frameId: start.frame.id, stack: [], lastHoverInteractionId: null };
+  presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
+  dialog.showModal();
+  requestAnimationFrame(() => {
+    if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentRenderState);
+    renderPresentationFrame();
+  });
+}
+
+function navigatePresentation(interaction) {
+  if (!state.presenting || interaction.action !== 'navigate') return;
+  const target = findNode(state.document, interaction.destinationId, interaction.destinationPageId);
+  if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); return; }
+  state.presenting.stack.push({ pageId: state.presenting.pageId, frameId: state.presenting.frameId });
+  state.presenting.pageId = interaction.destinationPageId;
+  state.presenting.frameId = interaction.destinationId;
+  state.presenting.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+  renderPresentationFrame(interaction);
+}
+
+function handlePresentationPointer(event, trigger) {
+  if (!state.presenting || !presentRenderState?.document) return;
+  const page = presentRenderState.document.pages[0];
+  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState));
+  if (!hit) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
+  const found = findClickableInteraction(state.document, state.presenting.pageId, hit.id, trigger);
+  if (!found) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
+  if (trigger === 'while-hovering' && state.presenting.lastHoverInteractionId === found.interaction.id) return;
+  navigatePresentation(found.interaction);
+}
+
+function backPresentation() {
+  if (!state.presenting?.stack.length) return;
+  const previous = state.presenting.stack.pop();
+  state.presenting.pageId = previous.pageId;
+  state.presenting.frameId = previous.frameId;
+  state.presenting.lastHoverInteractionId = null;
+  renderPresentationFrame();
+}
+
+async function exportDesign() {
+  try {
+    const assets = [];
+    for (const node of imageNodesAcrossPages()) {
+      if (assets.some(asset => asset.id === node.assetId)) continue;
+      const saved = await loadImageAsset(node.assetId);
+      if (saved) assets.push({ id: saved.id, name: saved.name, type: saved.type, bytes: saved.bytes });
+    }
+    await downloadLocalPackage(JSON.parse(serializeDocument(state.document)), assets);
+    showToast('Local design copy downloaded.');
+  } catch (error) { showToast(error.message || 'Could not export this local design.'); }
+}
+function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
+
+async function exportSelectionPng() {
+  const nodes = selectedNodes(); if (!nodes.length) { showToast('Select a layer to export.'); return; }
+  const boundsList = state.selectedIds.map(id => absoluteBoundsSafe(id)).filter(Boolean);
+  const left = Math.min(...boundsList.map(item => item.x)); const top = Math.min(...boundsList.map(item => item.y));
+  const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
+  const scale = Math.min(1, 4096 / Math.max(right - left, bottom - top));
+  const output = document.createElement('canvas'); output.width = Math.max(1, Math.ceil((right - left) * scale)); output.height = Math.max(1, Math.ceil((bottom - top) * scale));
+  const ctx = output.getContext('2d'); ctx.scale(scale, scale); ctx.translate(-left, -top);
+  for (const id of state.selectedIds) {
+    const entry = findNode(state.document, id); if (!entry) continue;
+    const absolute = absolutePosition(id); renderer.drawNode(ctx, entry.node, absolute.x - entry.node.x, absolute.y - entry.node.y, state.assets);
+  }
+  const blob = await new Promise(resolve => output.toBlob(resolve, 'image/png'));
+  if (!blob) { showToast('Could not export this selection.'); return; }
+  const url = URL.createObjectURL(blob); const anchor = Object.assign(document.createElement('a'), { href: url, download: `${nodes[0].name || 'selection'}.png` }); anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function absoluteBoundsSafe(id) { const entry = findNode(state.document, id); if (!entry) return null; const pos = absolutePosition(id); return { ...pos, width: entry.node.width, height: entry.node.height }; }
+
+function applyInspectorAction(action, details = {}) {
+  const node = selectedNodes()[0];
+  if (action === 'prototype-start') {
+    const entry = node ? findNode(state.document, node.id) : null;
+    const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
+    if (!frame) { showToast('Select a frame to set the starting point.'); return; }
+    checkpoint('Set prototype starting point');
+    setPrototypeStartPoint(state.document, frame.id);
+    renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
+  } else if (action === 'prototype-connect') {
+    if (!node) { showToast('Select a layer to add an interaction.'); return; }
+    state.prototypeSourceId = node.id;
+    state.inspectorTab = 'prototype';
+    $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === 'prototype'); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === 'prototype')); });
+    renderInspector(); renderer.invalidate(); showToast('Choose a destination frame on the canvas.');
+  } else if (action === 'remove-prototype-interaction') {
+    const interactionId = details.interactionId;
+    if (!node || !interactionId) return;
+    checkpoint('Remove prototype interaction');
+    removePrototypeInteraction(state.document, node.id, interactionId);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'present') startPresentation(node?.id);
+  else if (action === 'edit-text' && node?.type === 'text') editTextNode(node.id);
+  else if (action === 'reset-image' && node?.type === 'image') {
+    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.fit = 'cover';
+    schedulePreview(node, true); renderInspector(); queueSave();
+  } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
+  else if (action === 'add-stroke') {
+    if (!node) return; checkpoint('Add stroke'); node.stroke ||= '#1e1e1e'; node.strokeWidth ||= 1; renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'auto-layout-toggle') {
+    if (!node || node.type !== 'frame') return;
+    checkpoint(node.autoLayout ? 'Remove auto layout' : 'Add auto layout');
+    if (node.autoLayout) delete node.autoLayout;
+    else { node.autoLayout = createAutoLayout(); applyAutoLayout(node); }
+    renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
+  }
+}
+
+function updateImageEngineState(metrics) {
+  const output = $('#bulk-speed-value');
+  if (output && state.bulk) output.textContent = `${state.bulk.concurrency} worker${state.bulk.concurrency === 1 ? '' : 's'}`;
+}
+
+function toggleMobilePanel(panel) {
+  const left = $('#left-panel'); const right = $('#right-panel'); const scrim = $('#mobile-scrim');
+  if (panel === 'left') { right.classList.remove('is-open'); left.classList.toggle('is-open'); }
+  else { left.classList.remove('is-open'); right.classList.toggle('is-open'); }
+  scrim.classList.toggle('is-visible', left.classList.contains('is-open') || right.classList.contains('is-open'));
+}
+
+function initEvents() {
+  for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
+  $$('.tool-button').forEach(button => button.addEventListener('click', () => {
+    if (button.dataset.tool === 'image') chooseImageFiles(); else setTool(button.dataset.tool);
+  }));
+  canvas.addEventListener('pointerdown', onCanvasPointerDown);
+  canvas.addEventListener('pointermove', onCanvasPointerMove);
+  canvas.addEventListener('pointerup', onCanvasPointerUp);
+  canvas.addEventListener('pointercancel', onCanvasPointerUp);
+  canvas.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world);
+    if (hit) openNodeMenu(hit.id, event.clientX, event.clientY);
+    else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY);
+    else openFileMenu(event.clientX, event.clientY);
+  });
+  canvasScroll.addEventListener('dragover', event => { event.preventDefault(); $('#canvas-drop-overlay').classList.add('is-visible'); });
+  canvasScroll.addEventListener('dragleave', event => { if (!canvasScroll.contains(event.relatedTarget)) $('#canvas-drop-overlay').classList.remove('is-visible'); });
+  canvasScroll.addEventListener('drop', event => {
+    event.preventDefault(); $('#canvas-drop-overlay').classList.remove('is-visible');
+    const point = screenToWorld(event, canvas, state); importImageFiles(event.dataTransfer.files, point);
+  });
+  $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files));
+  $('#open-file-input').addEventListener('change', async event => {
+    const file = event.currentTarget.files?.[0]; if (!file) return;
+    try {
+      const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
+      const importedDocument = parseDocument(packageData.document);
+      for (const asset of packageData.assets) await saveImageAssetBytes(asset.id, asset.name, asset.type, asset.bytes);
+      state.document = importedDocument; state.selectedIds = []; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+      history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); await restoreImageAssets(); showToast('Local design opened on this device.');
+    } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
+    event.currentTarget.value = '';
+  });
+  setZoomButtonHandlers();
+  $('#document-name').addEventListener('change', event => { const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
+  $('#add-page').addEventListener('click', addPage);
+  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; renderUI(); });
+  $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
+  $('#layers-list').addEventListener('click', event => {
+    const row = event.target.closest('[data-layer-id]'); if (!row) return;
+    const node = findNode(state.document, row.dataset.layerId)?.node; if (!node) return;
+    if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); node.visible = !node.visible; renderUI(); queueSave(); return; }
+    if (event.shiftKey) {
+      const rows = latestPageLayerIds; const a = rows.indexOf(state.lastLayerSelection || row.dataset.layerId); const b = rows.indexOf(row.dataset.layerId); const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
+      setSelection([...new Set([...state.selectedIds, ...range])]);
+    } else if (event.metaKey || event.ctrlKey) {
+      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id]);
+    } else setSelection([node.id]);
+    state.lastLayerSelection = node.id;
+  });
+  $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
+  $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
+  $('#inspector-content').addEventListener('input', event => {
+    updateInspectorInput(event);
+    if (event.target.id === 'prototype-duration') {
+      state.prototypeDuration = Number(event.target.value);
+      $('#prototype-duration-value').textContent = `${(state.prototypeDuration / 1000).toFixed(1)} s`;
+    }
+  });
+  $('#inspector-content').addEventListener('change', event => {
+    if (event.target.matches('[data-prop]')) finishInspectorInput();
+    if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
+    if (event.target.id === 'prototype-transition') state.prototypeTransition = event.target.value;
+    if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
+  });
+  $('#inspector-content').addEventListener('focusout', finishInspectorInput);
+  $('#inspector-content').addEventListener('click', event => { const button = event.target.closest('[data-action]'); if (button) applyInspectorAction(button.dataset.action, button.dataset); });
+  $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
+  $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
+  $('#layer-search').addEventListener('input', event => { state.layerSearch = event.currentTarget.value; renderLayers(); });
+  $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { node.visible = true; }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
+  $('#place-image-assets').addEventListener('click', chooseImageFiles);
+  $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
+  $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
+  $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));
+  $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50));
+  $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
+  $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; state.prototypeSourceId = null; $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
+  $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => { state.inspectorTab = tab.dataset.inspectorTab; if (state.inspectorTab !== 'prototype') state.prototypeSourceId = null; $$('.inspector-tab').forEach(item => { item.classList.toggle('is-active', item === tab); item.setAttribute('aria-selected', String(item === tab)); }); renderInspector(); renderer.invalidate(); }));
+  $('#present-button').addEventListener('click', () => startPresentation());
+  $('#present-back').addEventListener('click', backPresentation);
+  $('#present-exit').addEventListener('click', () => $('#present-dialog').close());
+  $('#present-dialog').addEventListener('close', () => {
+    presentRenderer?.destroy(); presentRenderer = null; presentRenderState = null; state.presenting = null;
+    $('#present-canvas').style.opacity = '1'; $('#present-canvas').style.transform = 'translateX(0)';
+  });
+  $('#present-canvas').addEventListener('pointerup', event => handlePresentationPointer(event, 'on-click'));
+  $('#present-canvas').addEventListener('pointermove', event => { if (event.pointerType !== 'touch') handlePresentationPointer(event, 'while-hovering'); });
+  window.addEventListener('resize', () => { if (state.presenting) renderPresentationFrame(); });
+  $$('.sidebar-tab').forEach(tab => tab.addEventListener('click', () => { state.sidebarTab = tab.dataset.sidebarTab; $$('.sidebar-tab').forEach(item => { item.classList.toggle('is-active', item === tab); item.setAttribute('aria-selected', String(item === tab)); }); $('#layers-section').hidden = state.sidebarTab !== 'layers'; $('#assets-section').hidden = state.sidebarTab !== 'assets'; }));
+  $('#export-selection').addEventListener('click', exportSelectionPng);
+  $('#recipe-dialog').addEventListener('close', () => {
+    if ($('#recipe-dialog').returnValue !== 'save' || !pendingRecipeNodeId) return;
+    const node = findNode(state.document, pendingRecipeNodeId)?.node; if (!node) return;
+    checkpoint('Save image recipe');
+    const recipe = createImageRecipe(node, $('#recipe-name').value); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
+    queueSave(); showToast(`Recipe “${recipe.name}” saved. Right-click selected images to apply it.`);
+  });
+  $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
+  $('#bulk-speed').max = String(CPU_LIMIT);
+  $('#bulk-speed').addEventListener('input', event => { if (!state.bulk) return; state.bulk.concurrency = Number(event.currentTarget.value); imageEngine.setConcurrency(state.bulk.concurrency); renderBulkBar(); scheduleBulk(); });
+  $('#bulk-pause').addEventListener('click', () => { if (!state.bulk) return; state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk(); });
+  $('#bulk-cancel').addEventListener('click', () => { if (!state.bulk) return; state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; state.bulk.paused = false; renderBulkBar(); if (!state.bulk.inflight) { state.bulk.done = true; renderBulkBar(); } });
+  $('#bulk-done').addEventListener('click', () => { state.bulk = null; renderBulkBar(); });
+  $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
+  $('#outline-mode').addEventListener('click', event => { event.currentTarget.classList.toggle('is-active'); showToast('Outline view is not enabled yet.'); });
+  $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
+  $('#sidebar-toggle').addEventListener('click', () => toggleMobilePanel('left'));
+  $('#inspector-toggle').addEventListener('click', () => toggleMobilePanel('right'));
+  $('#mobile-scrim').addEventListener('click', () => { $('#left-panel').classList.remove('is-open'); $('#right-panel').classList.remove('is-open'); $('#mobile-scrim').classList.remove('is-visible'); });
+  document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu') && !event.target.closest('#file-menu-button') && !event.target.closest('#main-menu-button')) closeMenu(); });
+  document.addEventListener('keydown', onKeyDown);
+  $('#text-editor-overlay').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); commitTextEdit(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); commitTextEdit(); } });
+  $('#text-editor-overlay').addEventListener('blur', commitTextEdit);
+}
+
+function onKeyDown(event) {
+  const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.code === 'Space' && !editing) { state.spaceDown = true; event.preventDefault(); }
+  if (editing) return;
+  const mod = event.metaKey || event.ctrlKey;
+  const key = event.key.toLowerCase();
+  if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }
+  if (mod && key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
+  if (mod && key === 'y') { event.preventDefault(); redo(); return; }
+  if (mod && key === 'd') { event.preventDefault(); duplicateSelected(); return; }
+  if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
+  if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
+  if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
+  if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
+  if (key === 'escape') { closeMenu(); if (state.bulk && !state.bulk.done) { state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; renderBulkBar(); } setSelection([]); return; }
+  const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text' };
+  if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
+  const delta = event.shiftKey ? 10 : 1;
+  if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key) && selectedNodes().length) {
+    checkpoint('Nudge layers');
+    const dx = key === 'arrowleft' ? -delta : key === 'arrowright' ? delta : 0;
+    const dy = key === 'arrowup' ? -delta : key === 'arrowdown' ? delta : 0;
+    for (const node of selectedNodes()) { node.x += dx; node.y += dy; }
+    renderer.invalidate(); renderLayers(); renderInspector(); queueSave(); event.preventDefault();
+  }
+}
+
+function onKeyUp(event) {
+  if (event.code === 'Space') { state.spaceDown = false; canvas.classList.remove('is-panning'); }
+}
+
+async function boot() {
+  try {
+    const saved = await loadLatestDocument();
+    if (saved) state.document = parseDocument(saved);
+  } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
+  renderer = new SceneRenderer(canvas, () => state);
+  state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+  initEvents(); renderUI(); state.ready = true; document.documentElement.dataset.appReady = 'true';
+  try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
+  if (!await loadLatestDocument().catch(() => null)) queueSave();
+  $('#save-state').lastElementChild.textContent = 'Saved locally';
+  document.addEventListener('keyup', onKeyUp);
+  window.addEventListener('resize', () => renderer.invalidate());
+  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); });
+}
+
+boot();
