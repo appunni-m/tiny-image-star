@@ -118,7 +118,8 @@ try {
   assert(dialog.open, 'the save-recipe dialog did not open');
   app.querySelector('#recipe-name').value = 'Local red recipe';
   dispatchClick(app.querySelector('#save-recipe-confirm'));
-  await waitFor(() => !dialog.open && app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'recipe save');
+  await waitFor(() => !dialog.open, 'recipe dialog close');
+  await waitForSaveCycle(app, 'recipe save');
 
   for (let index = 0; index < 3; index += 1) {
     const row = app.querySelectorAll('.layer-row[data-layer-id]')[index];
@@ -730,6 +731,40 @@ try {
   const separatedRecords = await readStore('documents'); separatedRecords.sort((a, b) => b.savedAt - a.savedAt);
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
+  const preGroupGeometry = new Map([booleanBase.id, booleanCutter.id].map(id => {
+    const entry = findNodeOrigin(separated, id);
+    return [id, { x: entry.x, y: entry.y, rotation: entry.node.rotation }];
+  }));
+  dispatchClick(app.querySelector(`[data-layer-id="${booleanBase.id}"]`));
+  dispatchClick(app.querySelector(`[data-layer-id="${booleanCutter.id}"]`), { ctrlKey: true });
+  assert(app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 2, 'layers for ordinary grouping were not multi-selected');
+  dispatchContextMenu(app.querySelector(`[data-layer-id="${booleanCutter.id}"]`));
+  const groupAction = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Group 2 layers'));
+  assert(groupAction, 'the context menu did not expose ordinary Group');
+  dispatchClick(groupAction);
+  await waitFor(() => app.querySelector('.layer-row.is-selected[data-layer-id]')?.textContent.includes('Group'), 'ordinary layer grouping');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'group autosave');
+  const groupedRecords = await readStore('documents'); groupedRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const groupedDocument = groupedRecords[0]?.document;
+  const groupedLayer = groupedDocument?.pages[0]?.children.find(node => node.type === 'group' && node.children.some(child => child.id === booleanBase.id));
+  assert(groupedLayer?.children.map(node => node.id).join(',') === `${booleanBase.id},${booleanCutter.id}`, 'grouping did not retain the selected layer identities and stack order');
+  for (const id of [booleanBase.id, booleanCutter.id]) {
+    const groupedChild = findNodeOrigin(groupedDocument.pages[0].children, id);
+    assert(groupedChild.x === preGroupGeometry.get(id).x && groupedChild.y === preGroupGeometry.get(id).y, 'grouping changed a child page-space position');
+  }
+  dispatchContextMenu(app.querySelector(`[data-layer-id="${groupedLayer.id}"]`));
+  const ungroupAction = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Ungroup'));
+  assert(ungroupAction, 'the context menu did not expose Ungroup');
+  dispatchClick(ungroupAction);
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 3 && !app.querySelector(`[data-layer-id="${groupedLayer.id}"]`), 'ordinary layer ungrouping');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'ungroup autosave');
+  const ungroupedRecords = await readStore('documents'); ungroupedRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const ungroupedChildren = ungroupedRecords[0]?.document?.pages[0]?.children;
+  assert(ungroupedChildren.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'ungrouping did not restore the original sibling stack order');
+  for (const id of [booleanBase.id, booleanCutter.id]) {
+    const ungroupedChild = ungroupedChildren.find(node => node.id === id);
+    assert(ungroupedChild.x === preGroupGeometry.get(id).x && ungroupedChild.y === preGroupGeometry.get(id).y, 'ungrouping changed a child page-space position');
+  }
   const maskDocument = createDocument();
   const maskedContent = createNode('rectangle', { name: 'Masked content', x: 0, y: 0, width: 100, height: 100, fill: '#00cc44' });
   const maskShape = createNode('ellipse', { name: 'Circle mask', x: 25, y: 25, width: 50, height: 50 });
@@ -753,7 +788,7 @@ try {
   const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
   assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

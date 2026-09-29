@@ -1,8 +1,8 @@
 import {
-  addNode, addVariableMode, addCommentReply, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
+  addNode, addVariableMode, addCommentReply, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
-  canCreateMaskGroup, createMaskGroup, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
+  canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -1763,6 +1763,9 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   const selectedMainComponents = selectedNodes().filter(item => item.isComponent);
   const canCombine = canCombineBoolean(state.document, state.selectedIds);
   const selectedBoolean = selectedNodes().length === 1 && selectedNodes()[0].type === 'boolean' ? selectedNodes()[0] : null;
+  const selectedGroup = selectedNodes().length === 1 && selectedNodes()[0].type === 'group' ? selectedNodes()[0] : null;
+  if (canGroupLayers(state.document, rootSelectedIds())) items.unshift({ label: `Group ${rootSelectedIds().length} layers`, shortcut: '⌘G', action: groupSelectedLayers }, { separator: true });
+  if (selectedGroup && canUngroupLayers(state.document, selectedGroup.id)) items.unshift({ label: 'Ungroup', shortcut: '⌘⇧G', action: () => ungroupSelectedLayers(selectedGroup.id) }, { separator: true });
   if (canCreateMaskGroup(state.document, rootSelectedIds())) items.unshift({ label: 'Use as mask', action: maskSelectedLayers }, { separator: true });
   if (node?.type === 'group' && node.mask) items.unshift({ label: 'Release mask', action: () => releaseSelectedMask(node.id) }, { separator: true });
   if (canCombine) {
@@ -1814,6 +1817,25 @@ function combineSelectedBoolean(operation) {
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
     showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source shapes remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot be combined.'); }
+}
+
+function groupSelectedLayers() {
+  const ids = rootSelectedIds();
+  try {
+    checkpoint('Group layers');
+    const group = groupLayers(state.document, ids);
+    setSelection([group.id]); renderUI(); queueSave();
+    showToast(`${ids.length} layers grouped.`);
+  } catch (error) { showToast(error.message || 'These layers cannot be grouped.'); }
+}
+
+function ungroupSelectedLayers(groupId = selectedNodes()[0]?.id) {
+  try {
+    checkpoint('Ungroup layers');
+    const children = ungroupLayers(state.document, groupId);
+    setSelection(children.map(child => child.id)); renderUI(); queueSave();
+    showToast(`${children.length} layers ungrouped.`);
+  } catch (error) { showToast(error.message || 'This group cannot be ungrouped.'); }
 }
 
 function maskSelectedLayers() {
@@ -2730,6 +2752,7 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (mod && key === 'g') { event.preventDefault(); event.shiftKey ? ungroupSelectedLayers() : groupSelectedLayers(); return; }
   if (event.shiftKey && key === 'g') { event.preventDefault(); toggleLayoutGuides(); return; }
   if (key === 'escape' && state.presenting?.overlays.length) { event.preventDefault(); backPresentation(); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }

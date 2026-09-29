@@ -272,6 +272,83 @@ function visualBounds(node) {
   return { left: centerX - extentX, top: centerY - extentY, right: centerX + extentX, bottom: centerY + extentY };
 }
 
+/** Return whether the selected layers can be grouped without crossing containers. */
+export function canGroupLayers(document, nodeIds, pageId = document.activePageId) {
+  if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  if (entries.some(entry => !entry || entry.node.locked || entry.parents.some(parent => parent.isInstance))) return false;
+  const parent = entries[0].parent;
+  if (parent?.locked || parent?.type === 'boolean') return false;
+  if (!entries.every(entry => entry.parent === parent)) return false;
+  if (parent?.mask && nodeIds.includes(parent.maskSourceId)) return false;
+  return true;
+}
+
+/** Group sibling layers while preserving their stack order and page-space geometry. */
+export function groupLayers(document, nodeIds, pageId = document.activePageId) {
+  if (!canGroupLayers(document, nodeIds, pageId)) throw new Error('Select at least two unlocked sibling layers in the same container.');
+  const entries = nodeIds.map(id => findNode(document, id, pageId));
+  const page = document.pages.find(item => item.id === pageId);
+  const parent = entries[0].parent;
+  const list = parent ? parent.children : page.children;
+  const selectedIds = new Set(nodeIds);
+  const selectedEntries = entries.map(entry => ({ ...entry, index: list.indexOf(entry.node) })).sort((a, b) => a.index - b.index);
+  const bounds = selectedEntries.map(entry => visualBounds(entry.node));
+  const left = Math.min(...bounds.map(item => item.left));
+  const top = Math.min(...bounds.map(item => item.top));
+  const right = Math.max(...bounds.map(item => item.right));
+  const bottom = Math.max(...bounds.map(item => item.bottom));
+  const children = selectedEntries.map(entry => {
+    entry.node.x -= left;
+    entry.node.y -= top;
+    return entry.node;
+  });
+  const group = createNode('group', {
+    name: 'Group', x: left, y: top,
+    width: Math.max(1, right - left), height: Math.max(1, bottom - top),
+    children
+  });
+  const frontmostIndex = selectedEntries.at(-1).index;
+  const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
+  for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
+  list.splice(insertionIndex, 0, group);
+  return group;
+}
+
+/** Return whether a regular, editable group can be expanded into its siblings. */
+export function canUngroupLayers(document, groupId, pageId = document.activePageId) {
+  const entry = findNode(document, groupId, pageId);
+  return Boolean(entry && entry.node.type === 'group' && !entry.node.mask && !entry.node.isComponent && !entry.node.isInstance
+    && !entry.node.locked && entry.node.children?.length && entry.parent?.type !== 'boolean' && !entry.parent?.locked
+    && !entry.parents.some(parent => parent.isInstance));
+}
+
+/** Ungroup layers, applying the group's rotation before promoting its children. */
+export function ungroupLayers(document, groupId, pageId = document.activePageId) {
+  if (!canUngroupLayers(document, groupId, pageId)) throw new Error('Select an unlocked regular group that can be expanded.');
+  const entry = findNode(document, groupId, pageId);
+  const group = entry.node;
+  const angle = (group.rotation || 0) * Math.PI / 180;
+  const centerX = group.x + group.width / 2;
+  const centerY = group.y + group.height / 2;
+  for (const child of group.children) {
+    const childCenterX = group.x + child.x + child.width / 2;
+    const childCenterY = group.y + child.y + child.height / 2;
+    const dx = childCenterX - centerX;
+    const dy = childCenterY - centerY;
+    child.x = centerX + dx * Math.cos(angle) - dy * Math.sin(angle) - child.width / 2;
+    child.y = centerY + dx * Math.sin(angle) + dy * Math.cos(angle) - child.height / 2;
+    child.rotation = (child.rotation || 0) + (group.rotation || 0);
+    if (!group.visible) child.visible = false;
+    if (group.opacity !== 1) child.opacity *= group.opacity;
+  }
+  const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
+  const children = group.children;
+  list.splice(entry.index, 1, ...children);
+  group.children = [];
+  return children;
+}
+
 function isBooleanOperand(node) {
   return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0);
 }
