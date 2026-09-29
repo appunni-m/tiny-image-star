@@ -6,6 +6,7 @@ import {
   updateNode, walkNodes
 } from './model.js';
 import { createImageFill } from './image-fills.js';
+import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
 import { calculateTextBox } from './text-layout.js';
@@ -267,6 +268,11 @@ function transformSection(node) {
   const opacity = getNodePropertyValue(state.document, node, 'opacity');
   const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
   return section('Position', body);
+}
+function blendingSection(node) {
+  const selected = node.blendMode || 'normal';
+  const options = layerBlendModes.map(mode => `<option value="${mode}"${selected === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('');
+  return section('Blending', `<select class="prop-input select-field blend-mode-select" data-prop="blendMode" aria-label="Layer blend mode"${node.locked ? ' disabled' : ''}>${options}</select>`);
 }
 function appearanceSection(node) {
   const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
@@ -606,7 +612,7 @@ function renderInspector() {
     return;
   }
   const node = entries[0].node;
-  let body = componentSection(node) + transformSection(node);
+  let body = componentSection(node) + transformSection(node) + blendingSection(node);
   if (node.type === 'boolean') {
     const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
     body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><div class="image-properties-note">The source shapes stay editable inside this live Boolean group.</div>`);

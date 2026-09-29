@@ -152,6 +152,11 @@ try {
   dispatchCanvasPointer(app, fillCanvas, 'pointermove', fillEnd.x, fillEnd.y, 93);
   dispatchCanvasPointer(app, fillCanvas, 'pointerup', fillEnd.x, fillEnd.y, 93);
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 4, 'image-fill test shape');
+  const blendModeControl = app.querySelector('[data-prop="blendMode"]');
+  assert(blendModeControl?.options.length === 16, 'the Inspector did not expose all 16 layer blend modes');
+  blendModeControl.value = 'multiply';
+  blendModeControl.dispatchEvent(new Event('input', { bubbles: true }));
+  blendModeControl.dispatchEvent(new Event('change', { bubbles: true }));
   const fillType = app.querySelector('[data-prop="fillType"]');
   assert(fillType?.querySelector('option[value="image"]'), 'shape appearance did not offer image fills');
   fillType.value = 'image';
@@ -180,6 +185,7 @@ try {
   assert(current?.recipes.some(item => item.name === 'Local red recipe'), 'the saved recipe was not persisted with the design');
   const imageFillNode = current.pages.flatMap(page => flattenNodes(page.children)).find(node => node.imageFill);
   assert(imageFillNode?.imageFill.adjustments.brightness === -18, 'the image fill and its edit recipe were not saved with the layer');
+  assert(imageFillNode.blendMode === 'multiply', 'the layer blend mode was not saved with the design');
   const assetRecords = await readStore('assets');
   assert(assetRecords.some(asset => asset.id === imageFillNode.imageFill.assetId), 'the portable package did not retain the image-fill source bytes');
   const packaged = buildPackage(current, assetRecords);
@@ -192,6 +198,7 @@ try {
   const restoredFillRow = app.querySelector(`[data-layer-id="${imageFillNode.id}"]`);
   assert(restoredFillRow, 'the portable design did not restore its image-filled layer');
   dispatchClick(restoredFillRow);
+  assert(app.querySelector('[data-prop="blendMode"]')?.value === 'multiply', 'the portable design did not restore the selected blend mode');
   await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'reopened image-fill controls');
   await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'reopened image-fill preview');
   dispatchContextMenu(app.querySelector(`[data-layer-id="${imageFillNode.id}"]`));
@@ -910,7 +917,31 @@ try {
   assert(containBar === 0 && containImage > 0, `contain mode did not preserve transparent letterbox space (${containBar} / ${containImage})`);
   fillBitmap.close?.();
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  const blendDocument = createDocument();
+  const blendBackdrop = createNode('rectangle', { x: 4, y: 4, width: 32, height: 32, fill: '#0000ff' });
+  const multiplyNode = createNode('rectangle', { x: 12, y: 12, width: 36, height: 36, fill: '#ff0000', blendMode: 'multiply' });
+  addNode(blendDocument, blendBackdrop); addNode(blendDocument, multiplyNode);
+  effectRenderer.getState = () => ({ document: blendDocument, assets: new Map(), previews: new Map(), zoom: 1, outlineMode: false, presenting: false });
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, blendBackdrop, 0, 0, new Map());
+  effectRenderer.drawNode(effectContext, multiplyNode, 0, 0, new Map());
+  const multipliedPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
+  const blendOnlyPixel = [...effectContext.getImageData(40, 40, 1, 1).data];
+  assert(multipliedPixel[0] < 5 && multipliedPixel[1] < 5 && multipliedPixel[2] < 5, `multiply blend should combine red with blue as black (${multipliedPixel.join(',')})`);
+  assert(blendOnlyPixel[0] > 245 && blendOnlyPixel[1] < 5 && blendOnlyPixel[2] < 5, `multiply blend should retain the unblended red area (${blendOnlyPixel.join(',')})`);
+  const groupedBlendDocument = createDocument();
+  const groupBackdrop = createNode('rectangle', { x: 4, y: 4, width: 32, height: 32, fill: '#0000ff' });
+  const multiplyGroup = createNode('group', { x: 12, y: 12, width: 20, height: 20, blendMode: 'multiply' });
+  const groupedRed = createNode('rectangle', { x: 0, y: 0, width: 20, height: 20, fill: '#ff0000' });
+  addNode(groupedBlendDocument, groupBackdrop); addNode(groupedBlendDocument, multiplyGroup); addNode(groupedBlendDocument, groupedRed, { parentId: multiplyGroup.id });
+  effectRenderer.getState = () => ({ document: groupedBlendDocument, assets: new Map(), previews: new Map(), zoom: 1, outlineMode: false, presenting: false });
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, groupBackdrop, 0, 0, new Map());
+  effectRenderer.drawNode(effectContext, multiplyGroup, 0, 0, new Map());
+  const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
+  assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

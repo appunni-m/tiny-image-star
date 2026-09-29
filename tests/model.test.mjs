@@ -74,6 +74,17 @@ test('image fills validate and survive a portable design round trip', () => {
   assert.throws(() => validateDocument(reopened), /Image fill is not supported/);
 });
 
+test('layer blend modes validate and survive local design serialization', () => {
+  const document = createDocument();
+  const rectangle = createNode('rectangle', { blendMode: 'multiply' });
+  addNode(document, rectangle);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(reopened.pages[0].children[0].blendMode, 'multiply');
+  assert.equal(validateDocument(reopened), true);
+  reopened.pages[0].children[0].blendMode = 'vivid-light';
+  assert.throws(() => validateDocument(reopened), /Invalid blend mode/);
+});
+
 test('history restores both document direction and redo state', () => {
   const document = createDocument();
   const history = new History();

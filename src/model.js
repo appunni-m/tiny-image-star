@@ -1,6 +1,7 @@
 import { isValidLayerEffects } from './layer-effects.js';
 import { isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -98,6 +99,7 @@ const componentOverrideProperties = new Set([
   'effects',
   'fillGradient',
   'imageFill',
+  'blendMode',
   'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
 
@@ -108,7 +110,7 @@ export function createNode(type, overrides = {}) {
     id: createId(type), type,
     name: preset.name,
     x: 0, y: 0, width: preset.width, height: preset.height,
-    rotation: 0, opacity: 1, visible: true, locked: false,
+    rotation: 0, opacity: 1, visible: true, locked: false, blendMode: 'normal',
     fill: preset.fill, stroke: preset.stroke ?? null,
     strokeWidth: preset.strokeWidth ?? 0,
     radius: preset.radius ?? 0,
@@ -1318,6 +1320,7 @@ export function validateDocument(document) {
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
+      if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
         && !(node.type === 'path' && node.closed) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
@@ -1404,6 +1407,7 @@ export function validateDocument(document) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
           if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
+          if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
         }
       }

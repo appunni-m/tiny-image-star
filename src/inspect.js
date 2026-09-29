@@ -95,6 +95,7 @@ function cssForEntry(document, entry) {
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
   const effectFilter = buildLayerEffectFilter(node.effects);
   if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
+  if (node.blendMode && node.blendMode !== 'normal') declarations.push(`mix-blend-mode: ${node.blendMode};`);
 
   if (node.type === 'text') {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize')) || 24;
@@ -156,6 +157,7 @@ function summaryForEntry(document, entry) {
   if (fill) summary.color = fill;
   if (node.fillGradient) summary.fillGradient = node.fillGradient;
   if (node.imageFill) summary.imageFill = node.imageFill;
+  if (node.blendMode && node.blendMode !== 'normal') summary.blendMode = node.blendMode;
   if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = { color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth };
   if (node.type === 'text') {
     summary.text = getNodePropertyValue(document, node, 'text');

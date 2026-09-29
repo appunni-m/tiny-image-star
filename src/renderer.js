@@ -4,6 +4,7 @@ import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } fr
 import { measureTrackedText, textGraphemes, wrapText } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint } from './fills.js';
+import { canvasBlendOperation } from './layer-blend.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -244,7 +245,10 @@ export class SceneRenderer {
     if (!getNodePropertyValue(document, node, 'visible')) return;
     const effects = (node.effects || []).filter(effect => effect.visible);
     const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
-    if (effects.length && !draft && !maskMode && !outline && renderOptions.effectBypassNodeId !== node.id && typeof ctx.filter === 'string') {
+    const blendMode = node.blendMode || 'normal';
+    const compositeBypassed = renderOptions.compositeBypassNodeId === node.id;
+    if ((effects.length && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed)
+      && !draft && !maskMode && !outline && typeof ctx.filter === 'string') {
       this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
       return;
     }
@@ -254,6 +258,7 @@ export class SceneRenderer {
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
     ctx.save();
+    if (blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
     ctx.globalAlpha *= opacity ?? 1;
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
     if (!draft && !state.presenting && (renderOptions.outlineMode ?? state.outlineMode)) {
@@ -417,15 +422,19 @@ export class SceneRenderer {
       : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
     const effectContext = surface.getContext('2d');
     if (!effectContext) {
-      this.drawNode(ctx, node, parentX, parentY, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id });
+      ctx.save();
+      ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
+      this.drawNode(ctx, node, parentX, parentY, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+      ctx.restore();
       return;
     }
     effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
     const copy = { ...node, x: 0, y: 0 };
-    this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id });
+    this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
     ctx.filter = buildLayerEffectFilter(effects, displayScale);
+    ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(surface, x - padX, y - padY, logicalWidth, logicalHeight);
     ctx.restore();
   }

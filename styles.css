@@ -216,6 +216,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .fill-type-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; margin: 2px 0 8px; color: #777; font-size: 10px; }
 .fill-type-row .select-field { width: 100%; min-width: 0; height: 29px; }
+.blend-mode-select { width: 100%; min-height: 30px; }
 .image-fill-controls { display: grid; gap: 8px; margin: 8px 0; }
 .image-fill-source { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: 8px; color: #777; font-size: 10px; }
 .image-fill-source .select-field { width: 100%; min-width: 0; height: 29px; }
@@ -483,6 +484,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .effect-opacity output { min-width: 36px; }
   .fill-type-row { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .fill-type-row .select-field { height: 38px; font-size: 12px; }
+  .blend-mode-select { min-height: 40px; font-size: 12px; }
   .image-fill-source { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .image-fill-source .select-field { height: 38px; font-size: 12px; }
   .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(72px, .8fr) 38px; gap: 8px; }

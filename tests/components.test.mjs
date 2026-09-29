@@ -26,6 +26,20 @@ test('component instances link to a main component and can be placed on another 
   assert.equal(validateDocument(document), true);
 });
 
+test('component blend-mode overrides validate with the component property schema', () => {
+  const document = createDocument();
+  const main = createNode('rectangle', { name: 'Blend card' });
+  addNode(document, main);
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  const sourceId = instanceNode.componentSourceId;
+  instanceNode.componentOverrides[sourceId] = { blendMode: 'screen' };
+  assert.equal(validateDocument(document), true);
+  instanceNode.componentOverrides[sourceId].blendMode = 'vivid-light';
+  assert.throws(() => validateDocument(document), /Invalid component blend mode override/);
+});
+
 test('main component edits synchronize while preserving instance placement and stable layer identities', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Card', width: 220, height: 120 });

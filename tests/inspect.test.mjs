@@ -111,3 +111,12 @@ test('Inspect output preserves image-fill source and edit settings in layer data
   assert.match(output.css, /Local image fill source and adjustments are retained in layer JSON/);
   assert.doesNotMatch(output.css, /background-color:/);
 });
+
+test('Inspect output exposes blend modes in generated CSS and structured layer data', () => {
+  const document = createDocument();
+  const node = createNode('rectangle', { blendMode: 'soft-light' });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.match(output.css, /mix-blend-mode: soft-light;/);
+  assert.equal(output.layers[0].blendMode, 'soft-light');
+});
