@@ -136,6 +136,34 @@ export function gridTrackDefinitions(layout, axis, count) {
   return Array.from({ length: count }, (_, index) => tracks?.[index] ?? { mode: "fill", value: 1 });
 }
 
+function constrainLayoutSize(node, width, height) {
+  const bounds = node?.layoutMinMax ?? {};
+  return { width: Math.max(bounds.minWidth ?? .01, Math.min(bounds.maxWidth ?? Infinity, width)),
+    height: Math.max(bounds.minHeight ?? .01, Math.min(bounds.maxHeight ?? Infinity, height)) };
+}
+
+function distributeFillSizes(items, available, axis) {
+  const sizes = new Map(), pending = new Set(items);
+  let remaining = available;
+  while (pending.size) {
+    const share = Math.max(0, remaining) / pending.size;
+    let constrained = false;
+    for (const item of pending) {
+      const min = item.node.layoutMinMax?.[`min${axis}`] ?? .01;
+      const max = item.node.layoutMinMax?.[`max${axis}`] ?? Infinity;
+      if (share < min || share > max) {
+        const size = share < min ? min : max;
+        sizes.set(item.id, size); remaining -= size; pending.delete(item); constrained = true;
+      }
+    }
+    if (!constrained) {
+      for (const item of pending) sizes.set(item.id, share);
+      break;
+    }
+  }
+  return sizes;
+}
+
 function gridTrackSizes(layout, axis, count, available, children, placements, gap, hugParent = false) {
   const tracks = gridTrackDefinitions(layout, axis, count), minima = Array(count).fill(0), sizes = Array(count).fill(0);
   for (const child of children) {
@@ -183,8 +211,10 @@ export function resolveGridTrackGeometry(project, slideId, frameId, variantId = 
     const child = project.nodes[id], patch = slide.overrides[id] ?? {};
     const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? child.variantFrames?.[variant.id] ?? child.frame;
     const intrinsic = child.kind === "frame" && child.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
-    return { id, width: child.layoutSizing?.width === "hug" ? intrinsic.width : child.layoutSize?.width ?? frame.width * parentWidth,
-      height: child.layoutSizing?.height === "hug" ? intrinsic.height : child.layoutSize?.height ?? frame.height * parentHeight };
+    const size = constrainLayoutSize(child,
+      child.layoutSizing?.width === "hug" ? intrinsic.width : child.layoutSize?.width ?? frame.width * parentWidth,
+      child.layoutSizing?.height === "hug" ? intrinsic.height : child.layoutSize?.height ?? frame.height * parentHeight);
+    return { id, ...size };
   });
   const definitions = {
     columns: gridTrackDefinitions(layout, "columns", layout.columns),
@@ -406,7 +436,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+      keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -527,6 +557,17 @@ export function validateProject(project) {
         check(object(node.layoutSize), "Invalid fixed layer size."); keys(node.layoutSize, ["width", "height"]);
         check(number(node.layoutSize.width, .01, 16384) && number(node.layoutSize.height, .01, 16384), "Invalid fixed layer size.");
       }
+      if (node.layoutMinMax != null) {
+        const bounds = node.layoutMinMax, parentLayout = node.parentId && project.nodes[node.parentId]?.style?.layout;
+        check(object(bounds) && parentLayout, "Min/max sizing requires an Auto Layout child.");
+        keys(bounds, ["minWidth", "maxWidth", "minHeight", "maxHeight"]);
+        for (const value of Object.values(bounds)) check(number(value, .01, 16384), "Invalid Auto Layout size limit.");
+        for (const axis of ["Width", "Height"]) {
+          const minimum = bounds[`min${axis}`], maximum = bounds[`max${axis}`];
+          check(minimum == null || maximum == null || minimum <= maximum, "Auto Layout minimum size cannot exceed its maximum.");
+        }
+        check(Object.keys(bounds).length > 0, "Auto Layout size limits cannot be empty.");
+      }
       if (node.opacity != null) check(number(node.opacity, 0, 1), "Invalid opacity.");
       if (node.rotation != null) check(number(node.rotation, -360, 360), "Invalid rotation.");
       for (const key of ["flipX", "flipY"]) if (node[key] != null) check(node.kind === "image" && typeof node[key] === "boolean", `Invalid image ${key} transform.`);
@@ -594,10 +635,9 @@ function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) 
       ? intrinsicFrameSize(project, slide, id, variant, nextStack)
       : { width: child.layoutSize?.width ?? frame.width * fallback.width,
         height: child.layoutSize?.height ?? frame.height * fallback.height };
-    return { id,
-      width: child.layoutSizing?.width === "hug" ? own.width : child.layoutSize?.width ?? frame.width * fallback.width,
-      height: child.layoutSizing?.height === "hug" ? own.height : child.layoutSize?.height ?? frame.height * fallback.height,
-    };
+    return { id, ...constrainLayoutSize(child,
+      child.layoutSizing?.width === "hug" ? own.width : child.layoutSize?.width ?? frame.width * fallback.width,
+      child.layoutSizing?.height === "hug" ? own.height : child.layoutSize?.height ?? frame.height * fallback.height) };
   });
   const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
   if (layout.direction === "grid") {
@@ -654,12 +694,13 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
     const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
     const widthMode = node.layoutSizing?.width ?? "fixed", heightMode = node.layoutSizing?.height ?? "fixed";
-    const width = widthMode === "hug" ? intrinsic.width
+    const rawWidth = widthMode === "hug" ? intrinsic.width
       : widthMode === "fill" ? Math.max(.01, parentWidth * (1 - frame.x) - padding.right)
         : node.layoutSize?.width ?? frame.width * parentWidth;
-    const height = heightMode === "hug" ? intrinsic.height
+    const rawHeight = heightMode === "hug" ? intrinsic.height
       : heightMode === "fill" ? Math.max(.01, parentHeight * (1 - frame.y) - padding.bottom)
         : node.layoutSize?.height ?? frame.height * parentHeight;
+    const { width, height } = constrainLayoutSize(node, rawWidth, rawHeight);
     result.set(id, { x: frame.x, y: frame.y, width: width / parentWidth, height: height / parentHeight });
   }
   if (!flowChildIds.length) return result;
@@ -672,8 +713,9 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
       const node = project.nodes[id], patch = slide.overrides[id] ?? {};
       const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
       const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
-      return { id, width: node.layoutSizing?.width === "hug" ? intrinsic.width : node.layoutSize?.width ?? frame.width * parentWidth,
-        height: node.layoutSizing?.height === "hug" ? intrinsic.height : node.layoutSize?.height ?? frame.height * parentHeight };
+      return { id, ...constrainLayoutSize(node,
+        node.layoutSizing?.width === "hug" ? intrinsic.width : node.layoutSize?.width ?? frame.width * parentWidth,
+        node.layoutSizing?.height === "hug" ? intrinsic.height : node.layoutSize?.height ?? frame.height * parentHeight) };
     });
     const childrenById = new Map(children.map((child) => [child.id, child]));
     const widths = gridTrackSizes(layout, "columns", columns, availableWidth, children, placements, columnGap);
@@ -688,8 +730,10 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
       const alignY = node.gridAlignment?.vertical ?? layout.align;
       const stretchX = alignX === "stretch" || node.layoutSizing?.width === "fill";
       const stretchY = alignY === "stretch" || node.layoutSizing?.height === "fill";
-      const childWidth = Math.max(.01, stretchX ? cellWidth : Math.min(child.width, cellWidth));
-      const childHeight = Math.max(.01, stretchY ? cellHeight : Math.min(child.height, cellHeight));
+      const bounded = constrainLayoutSize(node,
+        Math.max(.01, stretchX ? cellWidth : Math.min(child.width, cellWidth)),
+        Math.max(.01, stretchY ? cellHeight : Math.min(child.height, cellHeight)));
+      const childWidth = bounded.width, childHeight = bounded.height;
       const freeX = Math.max(0, cellWidth - childWidth), freeY = Math.max(0, cellHeight - childHeight);
       const offsetX = alignX === "center" ? freeX / 2 : alignX === "end" ? freeX : 0;
       const offsetY = alignY === "center" ? freeY / 2 : alignY === "end" ? freeY : 0;
@@ -713,8 +757,9 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
     const size = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant)
       : { width: 0, height: 0 };
-    const width = node.layoutSizing?.width === "hug" ? size.width : node.layoutSize?.width ?? frame.width * parentWidth;
-    const height = node.layoutSizing?.height === "hug" ? size.height : node.layoutSize?.height ?? frame.height * parentHeight;
+    const { width, height } = constrainLayoutSize(node,
+      node.layoutSizing?.width === "hug" ? size.width : node.layoutSize?.width ?? frame.width * parentWidth,
+      node.layoutSizing?.height === "hug" ? size.height : node.layoutSize?.height ?? frame.height * parentHeight);
     return { id, node, width, height, main: horizontal ? width : height, cross: horizontal ? height : width,
       mainSizing: node.layoutSizing?.[horizontal ? "width" : "height"] ?? "fixed",
       crossSizing: node.layoutSizing?.[horizontal ? "height" : "width"] ?? "fixed" };
@@ -732,10 +777,12 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
   let crossCursor = crossStart;
   for (const row of lines) {
     const lineCrossExtent = layout.wrap ? row.cross : crossAvailable;
-    const fillCount = row.items.filter((item) => item.mainSizing === "fill").length;
+    const fillItems = row.items.filter((item) => item.mainSizing === "fill");
+    const fillCount = fillItems.length;
     const fixedMain = row.items.filter((item) => item.mainSizing !== "fill").reduce((sum, item) => sum + item.main, 0);
-    const distributedMain = fillCount ? Math.max(0, (mainAvailable - fixedMain - mainGap * Math.max(0, row.items.length - 1)) / fillCount) : 0;
-    const mainSizes = row.items.map((item) => item.mainSizing === "fill" ? distributedMain : item.main);
+    const fillSizes = distributeFillSizes(fillItems,
+      mainAvailable - fixedMain - mainGap * Math.max(0, row.items.length - 1), horizontal ? "Width" : "Height");
+    const mainSizes = row.items.map((item) => item.mainSizing === "fill" ? fillSizes.get(item.id) : item.main);
     const occupiedMain = mainSizes.reduce((sum, value) => sum + value, 0) + mainGap * Math.max(0, row.items.length - 1);
     const free = Math.max(0, mainAvailable - occupiedMain);
     const distributable = !fillCount && row.items.length > 0;
@@ -749,7 +796,9 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     let mainCursor = mainStart + offset;
     row.items.forEach((item, index) => {
       const stretch = align === "stretch" || item.crossSizing === "fill";
-      const childCross = stretch ? lineCrossExtent : item.cross;
+      const crossSize = constrainLayoutSize(item.node, horizontal ? mainSizes[index] : (stretch ? lineCrossExtent : item.cross),
+        horizontal ? (stretch ? lineCrossExtent : item.cross) : mainSizes[index]);
+      const childCross = horizontal ? crossSize.height : crossSize.width;
       const crossOffset = align === "center" && !stretch ? Math.max(0, (lineCrossExtent - childCross) / 2)
         : align === "end" && !stretch ? Math.max(0, lineCrossExtent - childCross) : 0;
       const x = horizontal ? mainCursor : crossCursor + crossOffset, y = horizontal ? crossCursor + crossOffset : mainCursor;

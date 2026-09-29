@@ -589,6 +589,39 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-layout-sizing-width").selectOption("fill");
     autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(autoLayout.nodes[shapeId].layoutSizing.width, "fill", "Fill container is stored on the child layer");
+    await page.locator("#design-layout-min-width").fill("80");
+    await page.locator("#design-layout-min-width").press("Tab");
+    await page.locator("#design-layout-max-width").fill("120");
+    await page.locator("#design-layout-max-width").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.deepEqual(autoLayout.nodes[shapeId].layoutMinMax, { minWidth: 80, maxWidth: 120 },
+      "Auto Layout size limits persist on the same selected child");
+    const constrainedWidth = autoLayout.resolvedFrames[shapeId].frame.width * autoLayout.variant.width;
+    assert.ok(constrainedWidth >= 80 - 1e-6 && constrainedWidth <= 120 + 1e-6,
+      `the same page preview clamps Fill sizing to its min/max width: ${constrainedWidth}px`);
+    await page.locator("#design-canvas").focus();
+    await page.keyboard.press("Control+z");
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].layoutMinMax?.maxWidth == null, shapeId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.ok(autoLayout.resolvedFrames[shapeId].frame.width * autoLayout.variant.width > 120,
+      "undo restores the unconstrained live Fill size");
+    await page.keyboard.press("Control+y");
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].layoutMinMax?.maxWidth === 120, shapeId);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-layout-min-width").fill("130");
+    await page.locator("#design-layout-min-width").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("minimum size cannot exceed"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.deepEqual(autoLayout.nodes[shapeId].layoutMinMax, { minWidth: 80, maxWidth: 120 },
+      "invalid min/max edits are rejected without changing the saved layer");
+    for (const field of ["#design-layout-min-width", "#design-layout-max-width"]) {
+      await page.locator(field).fill(""); await page.locator(field).press("Tab");
+    }
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[shapeId].layoutMinMax, undefined, "clearing both bounds removes the optional size-limit record");
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     await page.locator("#design-frame-layout").selectOption("grid");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
@@ -762,11 +795,16 @@ export async function assertDesignWorkspace(browser, address) {
     const mobileResizing = await page.evaluate(() => ({
       visible: !document.querySelector("#design-resizing-options")?.hidden,
       fields: [...document.querySelectorAll("#design-resizing-options select")].map((node) => node.getBoundingClientRect().toJSON()),
+      boundsVisible: !document.querySelector("#design-layout-min-max")?.hidden,
+      bounds: [...document.querySelectorAll("#design-layout-min-max input")].map((node) => node.getBoundingClientRect().toJSON()),
       width: innerWidth,
     }));
     assert.equal(mobileResizing.visible, true, "mobile inspector exposes Auto Layout resizing controls");
     assert.ok(mobileResizing.fields.length === 2 && mobileResizing.fields.every((box) => box.height >= 43 && box.left >= 0 && box.right <= mobileResizing.width),
       `Auto Layout sizing controls remain touch-sized and on-screen: ${JSON.stringify(mobileResizing.fields)}`);
+    assert.equal(mobileResizing.boundsVisible, true, "mobile inspector exposes Auto Layout min/max sizing controls");
+    assert.ok(mobileResizing.bounds.length === 4 && mobileResizing.bounds.every((box) => box.height >= 43 && box.left >= 0 && box.right <= mobileResizing.width),
+      `Auto Layout size limits remain touch-sized and on-screen: ${JSON.stringify(mobileResizing.bounds)}`);
     const mobile = await page.evaluate(() => ({
       viewport: document.documentElement.clientWidth,
       layout: document.querySelector("#design-view").scrollWidth,

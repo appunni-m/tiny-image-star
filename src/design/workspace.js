@@ -319,11 +319,17 @@ export function attachDesignWorkspace() {
     get("layout-positioning").value = node.layoutPositioning ?? "auto";
     const canHug = node.kind === "frame" && Boolean(node.style?.layout);
     get("resizing-options").hidden = !parentHasLayout && !canHug;
+    get("layout-min-max").hidden = !parentHasLayout;
     for (const axis of ["width", "height"]) {
       const control = get(`layout-sizing-${axis}`);
       control.value = node.layoutSizing?.[axis] ?? "fixed";
       control.querySelector('option[value="hug"]').disabled = !canHug;
       control.querySelector('option[value="fill"]').disabled = !parentHasLayout;
+    }
+    for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+      const control = get(`layout-${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`);
+      control.value = node.layoutMinMax?.[key] ?? "";
+      control.disabled = Boolean(world.locked);
     }
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
     get("grid-placement").hidden = !parentHasGrid || node.layoutPositioning === "absolute";
@@ -2143,6 +2149,27 @@ export function attachDesignWorkspace() {
     history.apply({ type: "node", id, value }, "Change layer resizing");
     edited("Layer resizing updated.");
   });
+  for (const key of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+    const controlId = `layout-${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+    get(controlId).addEventListener("change", () => {
+      const id = currentSelection()[0], node = id && layer(id), world = node && worldLayer(id);
+      if (!node || !node.parentId || !layer(node.parentId)?.style?.layout || world?.locked) return;
+      const raw = get(controlId).value.trim(), bounds = { ...node.layoutMinMax };
+      if (raw === "") delete bounds[key];
+      else {
+        const value = Number(raw);
+        if (!Number.isFinite(value)) { renderWorkspace(); return; }
+        bounds[key] = value;
+      }
+      const updated = clone(node);
+      if (Object.keys(bounds).length) updated.layoutMinMax = bounds;
+      else delete updated.layoutMinMax;
+      try {
+        history.apply({ type: "node", id, value: updated }, "Change Auto Layout size limits");
+        edited("Auto Layout size limits updated.");
+      } catch (error) { setStatus(error.message); renderWorkspace(); }
+    });
+  }
   for (const [field, axis] of [["constraint-horizontal", "horizontal"], ["constraint-vertical", "vertical"]]) {
     get(field).addEventListener("change", () => {
       const id = currentSelection()[0], node = id && layer(id); if (!node?.parentId) return;

@@ -326,6 +326,72 @@ test("Auto Layout wraps in flow order and distributes Fill sizing on both axes",
   close(filled.get("second").frame.height, 1 / 3); // Fill uses the 100px inner cross-axis of a 300px page.
 });
 
+test("Auto Layout child min/max bounds clamp Fixed, Fill, vertical flow, and Grid sizes", () => {
+  const project = createSceneProject({ id: "layout-min-max", variants: [{ id: "page", width: 400, height: 200 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+        style: { layout: { direction: "horizontal", align: "stretch" } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .25, height: .3 }, layoutSizing: { width: "fill", height: "fill" },
+        layoutSize: { width: 100, height: 60 }, layoutMinMax: { minWidth: 100, maxWidth: 140, minHeight: 60, maxHeight: 100 } },
+      second: { id: "second", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .15, height: .3 }, layoutSizing: { width: "fill", height: "fill" },
+        layoutSize: { width: 60, height: 60 }, layoutMinMax: { minWidth: 60, maxWidth: 300, minHeight: 50, maxHeight: 90 } },
+    } });
+  const close = (value, expected) => assert.ok(Math.abs(value - expected) < 1e-8, `${value} ≈ ${expected}`);
+  let resolved = resolveLayerFrames(project, "page-one");
+  close(resolved.get("first").frame.width * 400, 140, "a Fill child respects its maximum width");
+  close(resolved.get("second").frame.width * 400, 260, "remaining Fill space is redistributed after a sibling reaches max width");
+  close(resolved.get("first").frame.height * 200, 100, "a stretched cross-axis respects its maximum height");
+  close(resolved.get("second").frame.height * 200, 90);
+
+  const fixed = structuredClone(project);
+  fixed.nodes.first.layoutSizing.width = "fixed";
+  fixed.nodes.first.layoutSize.width = 200;
+  resolved = resolveLayerFrames(fixed, "page-one");
+  close(resolved.get("first").frame.width * 400, 140, "Fixed sizing also respects its maximum width");
+  close(resolved.get("second").frame.width * 400, 260, "a fixed sibling leaves its actual constrained size for Fill children");
+
+  project.nodes.frame.frame.width = .45;
+  validateProject(project);
+  resolved = resolveLayerFrames(project, "page-one");
+  close(resolved.get("first").frame.width * 400, 100, "a Fill child respects its minimum width after its parent shrinks");
+  close(resolved.get("second").frame.width * 400, 80, "remaining space is shared after the first Fill child reaches its minimum");
+  close(resolved.get("second").frame.x * 400, 100, "the next item starts after the constrained minimum width");
+
+  project.nodes.frame.frame.width = 1;
+  project.nodes.frame.style.layout.direction = "vertical";
+  resolved = resolveLayerFrames(project, "page-one");
+  close(resolved.get("first").frame.height * 200, 100, "vertical Fill also respects its maximum height");
+  close(resolved.get("second").frame.height * 200, 90);
+  project.nodes.frame.frame.height = .45;
+  validateProject(project);
+  resolved = resolveLayerFrames(project, "page-one");
+  close(resolved.get("first").frame.height * 200, 60, "vertical Fill respects its minimum height when the parent is too small");
+  close(resolved.get("second").frame.height * 200, 50);
+
+  const grid = createSceneProject({ id: "grid-min-max", variants: [{ id: "page", width: 400, height: 200 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "child"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+        style: { layout: { direction: "grid", columns: 1, rows: 1, justify: "stretch", align: "stretch" } } },
+      child: { id: "child", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .25, height: .3 }, layoutSizing: { width: "fill", height: "fill" },
+        layoutSize: { width: 100, height: 60 }, layoutMinMax: { minWidth: 80, maxWidth: 120, minHeight: 40, maxHeight: 70 } },
+    } });
+  resolved = resolveLayerFrames(grid, "page-one");
+  close(resolved.get("child").frame.width * 400, 120, "a stretched Grid child respects its maximum width");
+  close(resolved.get("child").frame.height * 200, 70, "a stretched Grid child respects its maximum height");
+
+  const invalid = structuredClone(project);
+  invalid.nodes.first.layoutMinMax.minWidth = 141;
+  assert.throws(() => validateProject(invalid), /minimum size cannot exceed its maximum/);
+  const detached = structuredClone(project);
+  detached.nodes.frame.style.layout = null;
+  detached.nodes.first.layoutSizing = { width: "fixed", height: "fixed" };
+  detached.nodes.second.layoutSizing = { width: "fixed", height: "fixed" };
+  assert.throws(() => validateProject(detached), /requires an Auto Layout child/);
+});
+
 test("grid Auto Layout resolves equal tracks, auto rows, spans, and rejects occupied or missing cells", () => {
   const ids = ["frame", "first", "second", "third", "fourth"];
   const nodes = { frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },

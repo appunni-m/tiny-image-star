@@ -96,6 +96,12 @@ export function createDesignView() {
             <label class="design-field"><span>Width</span><select id="design-layout-sizing-width"><option value="fixed">Fixed</option><option value="hug">Hug contents</option><option value="fill">Fill container</option></select></label>
             <label class="design-field"><span>Height</span><select id="design-layout-sizing-height"><option value="fixed">Fixed</option><option value="hug">Hug contents</option><option value="fill">Fill container</option></select></label>
           </fieldset>
+          <fieldset id="design-layout-min-max" class="design-fieldset design-layout-min-max" hidden><legend>Size limits</legend>
+            <label class="design-field"><span>Min width (px)</span><input id="design-layout-min-width" type="number" min="0.01" max="16384" step="1" inputmode="numeric" aria-label="Minimum width in pixels" /></label>
+            <label class="design-field"><span>Max width (px)</span><input id="design-layout-max-width" type="number" min="0.01" max="16384" step="1" inputmode="numeric" aria-label="Maximum width in pixels" /></label>
+            <label class="design-field"><span>Min height (px)</span><input id="design-layout-min-height" type="number" min="0.01" max="16384" step="1" inputmode="numeric" aria-label="Minimum height in pixels" /></label>
+            <label class="design-field"><span>Max height (px)</span><input id="design-layout-max-height" type="number" min="0.01" max="16384" step="1" inputmode="numeric" aria-label="Maximum height in pixels" /></label>
+          </fieldset>
           <fieldset id="design-frame-layout-options" class="design-fieldset" hidden><legend>Layout</legend>
             <label id="design-layout-gap-field" class="design-field"><span>Gap (px)</span><input id="design-layout-gap" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
             <label class="design-field"><span>Row gap (px)</span><input id="design-layout-row-gap" type="number" min="0" max="16384" step="1" inputmode="numeric" /></label>
