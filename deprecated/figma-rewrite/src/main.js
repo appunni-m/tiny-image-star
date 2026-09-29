@@ -1,4 +1,5 @@
 import { createBlankPage, createDefaultDocument, createLayer, makeId, resizedBounds, scaleNodesToBounds } from "./model.js";
+import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree } from "./layout.js";
 import { CanvasRenderer } from "./renderer.js";
 import { PillowWorkerPool } from "./image-engine.js";
 
@@ -59,6 +60,7 @@ let activeTool = "select";
 let activeLeftTab = "layers";
 let frameExpanded = true;
 let expandedGroups = new Set(model.groups.map((group) => group.id));
+let expandedAutoFrames = new Set();
 let pointerState = null;
 let spaceHeld = false;
 let editBaseline = null;
@@ -109,6 +111,84 @@ function nodeById(id) { return model.nodes.find((node) => node.id === id); }
 function selectedNodes() { return [...selectedIds].map(nodeById).filter(Boolean); }
 function selectedImageNodes() { return selectedNodes().filter((node) => node.type === "image"); }
 function primaryNode() { return selectedNodes().at(-1) ?? null; }
+function childNodes(parentId) { return model.nodes.filter((node) => node.parentId === parentId); }
+function relayoutNode(node) {
+  const frame = node?.autoLayout ? node : node?.parentId ? nodeById(node.parentId) : null;
+  if (frame?.autoLayout) layoutAutoLayoutTree(model.nodes, frame);
+}
+function descendantsOf(nodes) {
+  const included = new Set(nodes.map((node) => node.id));
+  const pending = [...nodes];
+  while (pending.length) {
+    const parent = pending.pop();
+    for (const child of childNodes(parent.id)) if (!included.has(child.id)) { included.add(child.id); pending.push(child); }
+  }
+  return model.nodes.filter((node) => included.has(node.id));
+}
+function pinAutoLayoutSize(frame, horizontalChanged, verticalChanged) {
+  if (!frame?.autoLayout) return;
+  const primaryIsHorizontal = frame.autoLayout.direction === "horizontal";
+  if ((primaryIsHorizontal && horizontalChanged) || (!primaryIsHorizontal && verticalChanged)) frame.autoLayout.primarySizing = "fixed";
+  if ((primaryIsHorizontal && verticalChanged) || (!primaryIsHorizontal && horizontalChanged)) frame.autoLayout.counterSizing = "fixed";
+}
+function relayoutMovedSelection(rootIds) {
+  const parentIds = new Set(); const frameIds = new Set();
+  for (const id of rootIds) {
+    const node = nodeById(id);
+    if (node?.parentId) parentIds.add(node.parentId);
+    if (node?.autoLayout) frameIds.add(node.id);
+  }
+  for (const parentId of parentIds) {
+    const parent = nodeById(parentId); if (!parent?.autoLayout) continue;
+    const axis = parent.autoLayout.direction === "horizontal" ? "x" : "y";
+    childNodes(parentId).slice().sort((a, b) => (axis === "x" ? a.x + a.w / 2 - b.x - b.w / 2 : a.y + a.h / 2 - b.y - b.h / 2))
+      .forEach((node, index) => { node.layoutOrder = index; });
+    layoutAutoLayoutTree(model.nodes, parent);
+  }
+  for (const frameId of frameIds) { const frame = nodeById(frameId); if (frame) layoutAutoLayoutTree(model.nodes, frame); }
+}
+
+function createAutoLayoutFromSelection() {
+  const selected = selectedNodes().filter((node) => !node.hidden);
+  if (selected.length < 2) { toast("Select at least two layers to create auto layout"); return; }
+  if (selected.some((node) => node.locked)) { toast("Unlock selected layers before adding auto layout"); return; }
+  pushHistory();
+  const bounds = selectionBounds(selected); const inferred = inferAutoLayout(selected);
+  const layout = createAutoLayout(inferred.direction); layout.spacing = inferred.spacing;
+  const frame = createLayer("frame", bounds.x - layout.padding.left, bounds.y - layout.padding.top, {
+    name: `Auto layout ${selected.length}`, w: bounds.w + layout.padding.left + layout.padding.right,
+    h: bounds.h + layout.padding.top + layout.padding.bottom, section: selected[0].section ?? "Hero",
+    fill: "#ffffff", stroke: "#d8d8df", strokeWidth: 1, autoLayout: layout,
+  });
+  const order = new Map(inferred.order.map((node, index) => [node.id, index]));
+  const oldParents = new Set(selected.map((node) => node.parentId).filter(Boolean));
+  for (const node of selected) {
+    node.parentId = frame.id;
+    node.layoutOrder = order.get(node.id) ?? 0;
+    node.layoutSizing ??= { primary: "fixed", counter: "fixed" };
+  }
+  const selectedSet = new Set(selected.map((node) => node.id));
+  const insertion = Math.min(...model.nodes.map((node, index) => selectedSet.has(node.id) ? index : Infinity));
+  const orderedForStack = model.nodes.filter((node) => selectedSet.has(node.id));
+  model.nodes = model.nodes.filter((node) => !selectedSet.has(node.id));
+  model.nodes.splice(Math.min(insertion, model.nodes.length), 0, frame, ...orderedForStack);
+  // Parent ids are reassigned above; recalculate any former layouts that lost children.
+  for (const parentId of oldParents) { const oldParent = nodeById(parentId); if (oldParent) layoutAutoLayoutTree(model.nodes, oldParent); }
+  layoutAutoLayoutTree(model.nodes, frame);
+  selectedIds = new Set([frame.id]); expandedAutoFrames.add(frame.id);
+  renderAll(); scheduleSave(); toast("Auto layout created");
+}
+
+function enableFrameAutoLayout(frame) {
+  if (!frame || frame.type !== "frame" || frame.autoLayout) return;
+  pushHistory();
+  const layout = createAutoLayout("vertical");
+  layout.primarySizing = "fixed"; layout.counterSizing = "fixed";
+  frame.autoLayout = layout;
+  const children = childNodes(frame.id);
+  children.forEach((node, index) => { node.layoutSizing ??= { primary: "fixed", counter: "fixed" }; node.layoutOrder ??= index; });
+  layoutAutoLayoutTree(model.nodes, frame); renderAll(); scheduleSave();
+}
 
 function toast(message, duration = 2200) {
   const el = $("#toast"); el.textContent = message; el.classList.add("visible");
@@ -142,6 +222,15 @@ function propertyField(letter, prop, value, step = 1, min = -10000) {
 function section(title, contents, extra = "") {
   return `<section class="inspector-section"><div class="inspector-section-title"><span>${title}</span><button type="button" aria-label="${title} options">···</button></div>${contents}${extra}</section>`;
 }
+function inspectorSelect(label, property, value, choices, dataset = "layout-prop") {
+  return `<div class="inspector-row"><span>${label}</span><select data-${dataset}="${property}" aria-label="${label}">${choices.map(([key, name]) => `<option value="${key}" ${value === key ? "selected" : ""}>${name}</option>`).join("")}</select></div>`;
+}
+function autoLayoutControls(node) {
+  if (!node.autoLayout) return `<button type="button" class="add-fill" data-action="enable-auto-layout">＋ Add auto layout</button>`;
+  const layout = node.autoLayout;
+  const numeric = (label, key, value) => `<div class="prop-field"><label>${label}</label><input type="number" min="0" max="1000" step="1" data-layout-prop="${key}" value="${Number(value) || 0}" aria-label="${label}"></div>`;
+  return `${section("Auto layout", `${inspectorSelect("Flow", "direction", layout.direction, [["horizontal", "Horizontal"], ["vertical", "Vertical"]])}${inspectorSelect("Align", "align", layout.align, [["start", "Start"], ["center", "Center"], ["end", "End"], ["stretch", "Stretch"]])}${inspectorSelect("Distribute", "justify", layout.justify, [["start", "Start"], ["center", "Center"], ["end", "End"], ["space-between", "Space between"]])}${inspectorSelect("Primary sizing", "primarySizing", layout.primarySizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}${inspectorSelect("Counter sizing", "counterSizing", layout.counterSizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}<div class="inspector-grid">${numeric("Spacing", "spacing", layout.spacing)}${numeric("Top padding", "padding.top", layout.padding.top)}${numeric("Right padding", "padding.right", layout.padding.right)}${numeric("Bottom padding", "padding.bottom", layout.padding.bottom)}${numeric("Left padding", "padding.left", layout.padding.left)}</div>`)}`;
+}
 function renderInspector() {
   const nodes = selectedNodes();
   if (!nodes.length) {
@@ -150,12 +239,17 @@ function renderInspector() {
   }
   if (nodes.length > 1) {
     const images = nodes.filter((node) => node.type === "image").length;
-    inspector.innerHTML = `${section("Selection", `<div class="inspector-empty multi-selection-message">${nodes.length} layers selected${images ? ` · ${images} images` : ""}<br>Move them together on the canvas, or right-click to save/apply an image recipe.</div><div class="inspector-grid">${propertyField("X", "x", nodes[0].x)}${propertyField("Y", "y", nodes[0].y)}<div class="prop-field full"><label>Op</label><input type="number" data-prop="opacity" value="${Math.round((nodes[0].opacity ?? 1) * 100)}" min="0" max="100" aria-label="Opacity percent"></div></div>`)}${section("Appearance", `<div class="inspector-row"><span>Mixed selection</span><span>${nodes.map((node) => node.type).join(", ")}</span></div>`)}`;
+    inspector.innerHTML = `${section("Selection", `<div class="inspector-empty multi-selection-message">${nodes.length} layers selected${images ? ` · ${images} images` : ""}<br>Move and resize the selection together, or create a responsive auto layout.</div><div class="inspector-grid">${propertyField("X", "x", nodes[0].x)}${propertyField("Y", "y", nodes[0].y)}<div class="prop-field full"><label>Op</label><input type="number" data-prop="opacity" value="${Math.round((nodes[0].opacity ?? 1) * 100)}" min="0" max="100" aria-label="Opacity percent"></div></div><button type="button" class="add-fill" data-action="create-auto-layout">＋ Create auto layout <kbd>⇧ A</kbd></button>`)}${section("Appearance", `<div class="inspector-row"><span>Mixed selection</span><span>${nodes.map((node) => node.type).join(", ")}</span></div>`)}`;
     return;
   }
   const node = nodes[0];
   const kind = node.type === "text" ? "Text" : node.type === "image" ? "Image" : node.type === "landscape" ? "Illustration" : node.type === "ellipse" ? "Ellipse" : node.type === "frame" ? "Frame" : "Rectangle";
   let html = section(kind, `<div class="prop-field full selection-name-field"><label>◩</label><input data-prop="name" value="${escapeHtml(node.name)}" aria-label="Layer name"></div><div class="inspector-grid">${propertyField("X", "x", node.x)}${propertyField("Y", "y", node.y)}${propertyField("W", "w", node.w, 1, 1)}${propertyField("H", "h", node.h, 1, 1)}</div>`);
+  if (node.type === "frame") html += autoLayoutControls(node);
+  if (node.parentId) {
+    const sizing = node.layoutSizing ?? { primary: "fixed", counter: "fixed" };
+    html += section("Auto layout child", `${inspectorSelect("Primary axis", "primary", sizing.primary, [["fixed", "Fixed"], ["fill", "Fill container"]], "layout-sizing")}${inspectorSelect("Counter axis", "counter", sizing.counter, [["fixed", "Fixed"], ["fill", "Fill container"]], "layout-sizing")}`);
+  }
   if (node.type === "text") {
     html += section("Typography", `<div class="inspector-row"><span>Font</span><select data-prop="fontFamily" aria-label="Font family"><option value="Inter, sans-serif" ${node.fontFamily?.startsWith("Inter") ? "selected" : ""}>Inter</option><option value="Georgia, serif" ${node.fontFamily?.startsWith("Georgia") ? "selected" : ""}>Georgia</option><option value="Arial, sans-serif" ${node.fontFamily?.startsWith("Arial") ? "selected" : ""}>Arial</option><option value="ui-monospace, monospace" ${node.fontFamily?.startsWith("ui-monospace") ? "selected" : ""}>Mono</option></select></div><div class="inspector-row"><span>Weight</span><select data-prop="fontWeight" aria-label="Font weight">${[400,500,600,700,800].map((value) => `<option value="${value}" ${Number(node.fontWeight) === value ? "selected" : ""}>${value}</option>`).join("")}</select></div><div class="inspector-grid">${propertyField("T", "fontSize", node.fontSize ?? 16, 1, 1)}${propertyField("↕", "lineHeight", node.lineHeight ?? 1.2, .05, .5)}</div><label class="inspector-row text-content-label"><span>Text content</span><span></span></label><textarea class="text-content-input" data-prop="text" aria-label="Text content" rows="3">${escapeHtml(node.text ?? "")}</textarea>`);
   }
@@ -184,17 +278,33 @@ function renderLayers() {
   const frameMatch = model.frame.name.toLowerCase().includes(filter);
   let html = frameMatch ? `<div class="layer-row" data-frame-row="true"><span class="layer-chevron">${frameExpanded ? "▾" : "▸"}</span><span class="layer-icon">▱</span><span class="layer-name">${escapeHtml(model.frame.name)}</span><span class="layer-eye">◉</span></div>` : "";
   const groupIds = new Set(model.groups.map((group) => group.name));
+  const children = new Map();
+  for (const node of model.nodes) if (node.parentId) {
+    if (!children.has(node.parentId)) children.set(node.parentId, []);
+    children.get(node.parentId).push(node);
+  }
+  const iconFor = (node) => node.type === "text" ? "T" : node.type === "image" ? "▧" : node.type === "ellipse" ? "◯" : node.type === "landscape" ? "▧" : node.type === "frame" ? "▱" : "▰";
+  const matchesTree = (node) => !filter || node.name.toLowerCase().includes(filter) || (children.get(node.id) ?? []).some(matchesTree);
+  const renderNode = (node, level) => {
+    if (!matchesTree(node)) return "";
+    const nested = children.get(node.id) ?? [];
+    const expanded = expandedAutoFrames.has(node.id);
+    const row = `<div class="layer-row ${selectedIds.has(node.id) ? "selected" : ""} ${selectedIds.size > 1 && selectedIds.has(node.id) ? "multi-selected" : ""}" role="treeitem" aria-selected="${selectedIds.has(node.id)}" ${nested.length ? `aria-expanded="${expanded}"` : ""} data-id="${escapeHtml(node.id)}" data-level="${Math.min(level, 3)}"><button type="button" class="layer-chevron" ${nested.length ? `data-toggle-node="${escapeHtml(node.id)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(node.name)}"` : "disabled aria-hidden=\"true\""}>${nested.length ? expanded ? "▾" : "▸" : ""}</button><span class="layer-icon">${iconFor(node)}</span><span class="layer-name">${escapeHtml(node.name)}</span>${node.hidden ? `<span class="layer-warning">◌</span>` : ""}</div>`;
+    if (!nested.length || !expanded) return row;
+    const orderedChildren = nested.slice().sort((a, b) => (a.layoutOrder ?? 0) - (b.layoutOrder ?? 0));
+    return row + orderedChildren.map((child) => renderNode(child, level + 1)).join("");
+  };
   for (const group of frameExpanded ? model.groups : []) {
-    const groupNodes = model.nodes.filter((node) => (node.section ?? "Hero") === group.name).slice().reverse();
-    const visibleNodes = groupNodes.filter((node) => !filter || node.name.toLowerCase().includes(filter));
+    const groupNodes = model.nodes.filter((node) => (node.section ?? "Hero") === group.name && !node.parentId).slice().reverse();
+    const visibleNodes = groupNodes.filter(matchesTree);
     if (!visibleNodes.length && filter) continue;
     html += `<div class="layer-row" data-group="${group.id}" role="treeitem"><span class="layer-chevron">${expandedGroups.has(group.id) ? "▾" : "▸"}</span><span class="layer-icon">▰</span><span class="layer-name">${escapeHtml(group.name)}</span></div>`;
     if (expandedGroups.has(group.id)) {
-      html += visibleNodes.map((node) => `<div class="layer-row ${selectedIds.has(node.id) ? "selected" : ""} ${selectedIds.size > 1 && selectedIds.has(node.id) ? "multi-selected" : ""}" role="treeitem" aria-selected="${selectedIds.has(node.id)}" data-id="${node.id}" data-level="1"><span class="layer-chevron"></span><span class="layer-icon">${node.type === "text" ? "T" : node.type === "image" ? "▧" : node.type === "ellipse" ? "◯" : node.type === "landscape" ? "▧" : "▱"}</span><span class="layer-name">${escapeHtml(node.name)}</span>${node.hidden ? `<span class="layer-warning">◌</span>` : ""}</div>`).join("");
+      html += visibleNodes.map((node) => renderNode(node, 1)).join("");
     }
   }
-  const ungrouped = model.nodes.filter((node) => !groupIds.has(node.section ?? "Hero"));
-  if (ungrouped.length) html += ungrouped.slice().reverse().map((node) => `<div class="layer-row ${selectedIds.has(node.id) ? "selected" : ""}" data-id="${node.id}" data-level="1"><span class="layer-chevron"></span><span class="layer-icon">${node.type === "text" ? "T" : "▱"}</span><span class="layer-name">${escapeHtml(node.name)}</span></div>`).join("");
+  const ungrouped = model.nodes.filter((node) => !node.parentId && !groupIds.has(node.section ?? "Hero"));
+  if (ungrouped.length) html += ungrouped.slice().reverse().map((node) => renderNode(node, 1)).join("");
   layerTree.innerHTML = html;
 }
 
@@ -501,6 +611,8 @@ function showContextMenu(x, y, targetNode) {
   if (targetNode) {
     list.push({ label: "Rename layer", action: "rename" }, { label: "Duplicate", action: "duplicate" }, { label: "Bring to front", action: "front" }, { divider: true });
   }
+  if (selected.length > 1) list.push({ label: "Create auto layout", action: "create-auto-layout", icon: "▦" });
+  else if (targetNode?.type === "frame" && !targetNode.autoLayout && childNodes(targetNode.id).length) list.push({ label: "Add auto layout to frame", action: "enable-auto-layout", icon: "▦" });
   if (images.length) {
     if (images.length === 1) list.push({ label: "Save edits as a recipe…", action: "save-recipe", icon: "✦" });
     list.push({ label: `Apply a recipe to ${images.length} selected image${images.length === 1 ? "" : "s"}`, action: "recipe-heading", disabled: true });
@@ -553,7 +665,9 @@ function contextAction(event) {
     if (page && confirm(`Delete “${page.name}” and all of its layers?`)) deletePage(pageId);
     return;
   }
-  if (action === "save-recipe") openRecipeDialog(selectedImageNodes());
+  if (action === "create-auto-layout") createAutoLayoutFromSelection();
+  else if (action === "enable-auto-layout") enableFrameAutoLayout(target);
+  else if (action === "save-recipe") openRecipeDialog(selectedImageNodes());
   else if (action === "apply-recipe") { const recipe = recipes().find((item) => item.id === button.dataset.recipeId); if (recipe) applyRecipe(recipe); }
   else if (action === "duplicate") duplicateSelected();
   else if (action === "front" && target) { pushHistory(); model.nodes.splice(model.nodes.indexOf(target), 1); model.nodes.push(target); renderAll(); scheduleSave(); }
@@ -572,8 +686,31 @@ function updateProperties(event) {
   const target = event.target;
   const prop = target.dataset.prop;
   const adjustment = target.dataset.adjustment;
-  const nodes = selectedNodes(); if (!prop && !adjustment) return;
+  const layoutProp = target.dataset.layoutProp;
+  const layoutSizing = target.dataset.layoutSizing;
+  const nodes = selectedNodes(); if (!prop && !adjustment && !layoutProp && !layoutSizing) return;
   beginInspectorEdit();
+  if (layoutProp) {
+    const node = nodes[0];
+    if (!node?.autoLayout) return;
+    const value = target.type === "number" ? Number(target.value) : target.value;
+    if (layoutProp.startsWith("padding.")) node.autoLayout.padding[layoutProp.slice("padding.".length)] = Math.max(0, Math.min(1000, value));
+    else node.autoLayout[layoutProp] = value;
+    layoutAutoLayoutTree(model.nodes, node);
+    renderer.draw([...selectedIds]);
+    return;
+  }
+  if (layoutSizing) {
+    const parentIds = new Set();
+    for (const node of nodes) {
+      node.layoutSizing ??= { primary: "fixed", counter: "fixed" };
+      node.layoutSizing[layoutSizing] = target.value;
+      if (node.parentId) parentIds.add(node.parentId);
+    }
+    for (const parentId of parentIds) { const parent = nodeById(parentId); if (parent) layoutAutoLayoutTree(model.nodes, parent); }
+    renderer.draw([...selectedIds]);
+    return;
+  }
   if (adjustment) {
     for (const node of nodes.filter((candidate) => candidate.type === "image")) {
       node.adjustments ??= { brightness: 0, contrast: 0, saturation: 0, blur: 0 };
@@ -586,9 +723,12 @@ function updateProperties(event) {
   const value = target.type === "color" ? target.value : target.type === "number" || target.type === "range" ? Number(target.value) : target.value;
   for (const node of nodes) {
     if ((prop === "x" || prop === "y" || prop === "w" || prop === "h") && nodes.length > 1) continue;
+    if (node.type === "frame" && node.autoLayout) pinAutoLayoutSize(node, prop === "w", prop === "h");
     node[prop] = prop === "opacity" ? Number(value) / (target.getAttribute("aria-label") === "Opacity percent" ? 100 : 100) : value;
     if (prop === "text") node.h = Math.max(node.fontSize * 1.2, node.text.split("\n").length * node.fontSize * (node.lineHeight ?? 1.2));
+    if (prop === "fontSize") node.h = Math.max(node.fontSize * 1.2, node.text.split("\n").length * node.fontSize * (node.lineHeight ?? 1.2));
     if (prop === "strokeWidth" && value === 0) node.stroke = "";
+    relayoutNode(node);
   }
   const output = target.parentElement?.querySelector("output"); if (output) output.textContent = prop === "opacity" ? `${value}%` : String(value);
   renderer.draw([...selectedIds]);
@@ -598,6 +738,12 @@ function updateProperties(event) {
 }
 
 function selectLayerFromTarget(target, event) {
+  const toggle = target.closest("[data-toggle-node]");
+  if (toggle) {
+    const id = toggle.dataset.toggleNode;
+    if (expandedAutoFrames.has(id)) expandedAutoFrames.delete(id); else expandedAutoFrames.add(id);
+    renderLayers(); return;
+  }
   const row = target.closest(".layer-row[data-id]");
   if (!row) {
     const group = target.closest(".layer-row[data-group]");
@@ -626,10 +772,12 @@ canvas.addEventListener("pointerdown", (event) => {
     const nodes = selectedNodes().filter((node) => !node.hidden);
     if (handle && nodes.length && nodes.every((node) => !node.locked)) {
       pushHistory();
+      const initial = nodes.map((node) => ({ id: node.id, x: node.x, y: node.y, w: node.w, h: node.h, fontSize: node.fontSize, autoLayout: node.autoLayout ? structuredClone(node.autoLayout) : undefined }));
+      for (const node of nodes) pinAutoLayoutSize(node, /[ew]/.test(handle), /[ns]/.test(handle));
       pointerState = {
         kind: "resize", pointerId: event.pointerId, handle,
         start: renderer.toWorld(point.x, point.y), bounds: renderer.getSelectionBounds([...selectedIds]),
-        initial: nodes.map((node) => ({ id: node.id, x: node.x, y: node.y, w: node.w, h: node.h, fontSize: node.fontSize })),
+        initial,
       };
       canvas.setPointerCapture(event.pointerId); canvas.classList.add("canvas-resizing"); return;
     }
@@ -647,7 +795,8 @@ canvas.addEventListener("pointerdown", (event) => {
       if (!selectedIds.size) selectedIds.add(hit.id);
     } else if (!selectedIds.has(hit.id)) selectedIds = new Set([hit.id]);
     pushHistory(); renderAll();
-    pointerState = { kind: "move", pointerId: event.pointerId, start: renderer.toWorld(point.x, point.y), initial: selectedNodes().map((node) => ({ id: node.id, x: node.x, y: node.y })) };
+    const roots = selectedNodes(); const moving = descendantsOf(roots);
+    pointerState = { kind: "move", pointerId: event.pointerId, roots: roots.map((node) => node.id), start: renderer.toWorld(point.x, point.y), initial: moving.map((node) => ({ id: node.id, x: node.x, y: node.y })) };
     if (!hit.locked) canvas.setPointerCapture(event.pointerId);
   } else {
     if (!event.metaKey && !event.ctrlKey) { selectedIds.clear(); renderAll(); }
@@ -671,6 +820,7 @@ canvas.addEventListener("pointermove", (event) => {
     }
     const bounds = resizedBounds(pointerState.bounds, pointerState.handle, world, { preserveAspect: event.shiftKey });
     scaleNodesToBounds(pointerState.initial.map((initial) => nodeById(initial.id)).filter(Boolean), pointerState.bounds, bounds);
+    for (const id of selectedIds) { const node = nodeById(id); if (node?.autoLayout) layoutAutoLayoutTree(model.nodes, node); }
     renderer.draw([...selectedIds]);
   } else if (pointerState.kind === "create") {
     const node = pointerState.node; const start = pointerState.start;
@@ -683,6 +833,8 @@ canvas.addEventListener("pointerup", (event) => {
   if (!pointerState || pointerState.pointerId !== event.pointerId) return;
   if (pointerState.kind === "pan") canvas.classList.remove("canvas-grabbing");
   if (pointerState.kind === "resize") canvas.classList.remove("canvas-resizing");
+  if (pointerState.kind === "move") relayoutMovedSelection(pointerState.roots);
+  if (pointerState.kind === "create" && pointerState.node.parentId) { const parent = nodeById(pointerState.node.parentId); if (parent) layoutAutoLayoutTree(model.nodes, parent); }
   if (["move", "resize", "create"].includes(pointerState.kind)) { renderAll(); scheduleSave(); }
   pointerState = null;
 });
@@ -690,7 +842,7 @@ canvas.addEventListener("pointercancel", () => {
   if (pointerState?.kind === "resize") {
     for (const initial of pointerState.initial) {
       const node = nodeById(initial.id);
-      if (node) Object.assign(node, { x: initial.x, y: initial.y, w: initial.w, h: initial.h, fontSize: initial.fontSize });
+      if (node) Object.assign(node, { x: initial.x, y: initial.y, w: initial.w, h: initial.h, fontSize: initial.fontSize, ...(initial.autoLayout ? { autoLayout: initial.autoLayout } : {}) });
     }
     canvas.classList.remove("canvas-resizing"); renderer.draw([...selectedIds]);
   }

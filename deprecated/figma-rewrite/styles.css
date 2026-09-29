@@ -529,10 +529,18 @@ button:disabled
 .layer-chevron
 {
   width:9px;
+  height:20px;
+  padding:0;
   flex:0 0 9px;
   color:#999;
+  background:transparent;
   font-size:9px;
   text-align:center
+}
+.layer-chevron:disabled
+{
+  opacity:0;
+  cursor:default
 }
 .layer-icon
 {

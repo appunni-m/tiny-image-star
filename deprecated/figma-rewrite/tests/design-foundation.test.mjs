@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createDefaultDocument, createLayer, resizedBounds, scaleNodesToBounds, selectionBounds } from "../src/model.js";
+import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree } from "../src/layout.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -46,13 +47,42 @@ test("canvas selection bounds resize from anchored handles and scale multiselect
   assert.deepEqual([nodes[2].x, nodes[2].y], [-200, -200], "hidden layers do not alter selection transforms");
 });
 
+test("auto layout hugs measured content, applies padding and spacing, and distributes fill children", () => {
+  const frame = { id: "auto", x: 20, y: 30, w: 180, h: 120, autoLayout: createAutoLayout("vertical") };
+  frame.autoLayout.spacing = 6;
+  frame.autoLayout.padding = { top: 10, right: 12, bottom: 14, left: 8 };
+  const children = [
+    { id: "one", parentId: "auto", x: 0, y: 0, w: 50, h: 20 },
+    { id: "two", parentId: "auto", x: 0, y: 0, w: 30, h: 30 },
+  ];
+  layoutAutoLayoutTree([frame, ...children], frame);
+  assert.deepEqual([frame.w, frame.h], [70, 80]);
+  assert.deepEqual(children.map(({ x, y }) => [x, y]), [[28, 40], [28, 66]]);
+
+  const fixed = { id: "fixed", x: 100, y: 100, w: 160, h: 100, autoLayout: { ...createAutoLayout("horizontal"), primarySizing: "fixed", counterSizing: "fixed", align: "center", padding: { top: 10, right: 10, bottom: 10, left: 10 }, spacing: 10 } };
+  const flexible = { id: "flexible", parentId: fixed.id, x: 0, y: 0, w: 20, h: 10, layoutSizing: { primary: "fill", counter: "fixed" } };
+  const fixedChild = { id: "fixed-child", parentId: fixed.id, x: 0, y: 0, w: 30, h: 20 };
+  layoutAutoLayoutTree([fixed, flexible, fixedChild], fixed);
+  assert.deepEqual([flexible.x, flexible.y, flexible.w, fixedChild.x, fixedChild.y], [110, 145, 100, 220, 140]);
+});
+
+test("auto layout direction and initial order follow the selected layers' spatial arrangement", () => {
+  const result = inferAutoLayout([
+    { id: "right", x: 80, y: 10, w: 30, h: 20 },
+    { id: "left", x: 10, y: 10, w: 30, h: 20 },
+  ]);
+  assert.equal(result.direction, "horizontal");
+  assert.deepEqual(result.order.map((node) => node.id), ["left", "right"]);
+  assert.equal(result.spacing, 40);
+});
+
 test("fresh root is independent of the archived editor and loads the local WASM worker", async () => {
   const [html, main, worker, packageJson, oldIndex] = await Promise.all([
     readFile(new URL("index.html", root), "utf8"),
     readFile(new URL("src/main.js", root), "utf8"),
     readFile(new URL("src/pillow-worker.js", root), "utf8"),
     readFile(new URL("package.json", root), "utf8"),
-    readFile(new URL("deprecated/index.html", root), "utf8"),
+    readFile(new URL("../index.html", root), "utf8"),
   ]);
   assert.match(html, /id="design-canvas"/);
   assert.match(html, /id="layer-tree"/);
