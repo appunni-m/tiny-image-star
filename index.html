@@ -146,6 +146,18 @@
         </form>
       </dialog>
 
+      <dialog class="modal design-library-dialog" id="design-library-dialog" aria-labelledby="design-library-title">
+        <section class="design-library-content">
+          <div class="modal-title-row">
+            <div><span class="modal-eyebrow">TINY IMAGE STAR · ON THIS DEVICE</span><h2 id="design-library-title">Your designs</h2></div>
+            <button class="icon-button" id="design-library-close" type="button" aria-label="Close design library">×</button>
+          </div>
+          <p class="modal-copy">Open a saved design or make a separate copy. Your files and images stay in this browser.</p>
+          <div class="design-library-list" id="design-library-list" aria-live="polite"></div>
+          <div class="dialog-actions"><button class="secondary-button" id="design-library-export" type="button">Save current design as file…</button><button class="primary-button" id="design-library-new" type="button">＋ New design</button></div>
+        </section>
+      </dialog>
+
       <dialog class="modal" id="variable-dialog" aria-labelledby="variable-dialog-title">
         <form method="dialog" id="variable-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL DESIGN SYSTEM</span><h2 id="variable-dialog-title">Create variable</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>

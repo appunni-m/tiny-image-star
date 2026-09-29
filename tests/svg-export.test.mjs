@@ -178,6 +178,11 @@ test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () =>
   });
   const assets = new Map([['local', { type: 'image/png', sourceBytes: new Uint8Array([1]), width: 1, height: 1 }]]);
   assert.throws(() => exportNodeToSvg(adjusted, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image adjustments');
+
+  const cropped = createNode('image', { assetId: 'local', transforms: { crop: { left: 0.1, top: 0, right: 0.9, bottom: 1 }, rotation: 0 } });
+  assert.throws(() => exportNodeToSvg(cropped, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
+  const rotated = createNode('rectangle', { imageFill: { assetId: 'local', fit: 'cover', transforms: { crop: null, rotation: 90 }, adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 } } });
+  assert.throws(() => exportNodeToSvg(rotated, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
 });
 
 test('does not reject hidden unsupported layers because they are absent from the rendered page', () => {

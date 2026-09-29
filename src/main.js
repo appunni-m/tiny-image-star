@@ -6,12 +6,13 @@ import {
   updateNode, walkNodes
 } from './model.js';
 import { createImageFill } from './image-fills.js';
+import { createImageTransforms } from './image-transforms.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
-import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText } from './text-layout.js';
 import { LocalImageEngine } from './image-engine.js';
-import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listSavedDocuments, loadDocumentById, loadImageAsset, loadLatestDocument, renameStoredDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
@@ -20,8 +21,9 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
+import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect } from './transform-geometry.js';
 import {
-  appendVectorNetworkPath, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
+  appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
   setVectorNetworkEdgeControlPoint, setVectorNetworkVertexPoint, setVectorNodePoint, vectorGeometryFromAnchors,
   vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint, vectorNodePoint
@@ -37,7 +39,8 @@ const state = {
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
-  statusTimer: null, saveTimer: null, lastLayerSelection: null,
+  statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
+  documentGeneration: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
@@ -111,17 +114,29 @@ function setSaveState(kind, text) {
   element.classList.toggle('is-error', kind === 'error');
   element.lastElementChild.textContent = text;
 }
+function enqueueDocumentSave(snapshot) {
+  const next = state.saveChain.catch(() => {}).then(() => saveDocument(snapshot));
+  state.saveChain = next.catch(() => {});
+  return next;
+}
+function setDocumentEditingBlocked(blocked) {
+  $('.topbar').inert = blocked;
+  $('.workspace').inert = blocked;
+}
 function queueSave() {
   if (!state.ready) return;
+  state.saveRevision += 1;
   if (syncAllComponentInstances(state.document)) {
     renderLayers();
     renderer?.invalidate();
   }
   setSaveState('saving', 'Saving locally…');
+  if (state.documentTransitioning) return;
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(async () => {
     try {
-      await saveDocument(JSON.parse(serializeDocument(state.document)));
+      const snapshot = JSON.parse(serializeDocument(state.document));
+      await enqueueDocumentSave(snapshot);
       setSaveState('saved', 'Saved locally');
     } catch (error) {
       setSaveState('error', 'Could not save');
@@ -279,7 +294,13 @@ function imageFillControls(node) {
   const options = sources.map(source => `<option value="${escapeHtml(source.assetId)}"${imageFill.assetId === source.assetId ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('');
   const adjustments = imageFill.adjustments;
   const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}" aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
-  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${imageTransformControls(imageFill.transforms, 'fill', node.locked)}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
+}
+function imageTransformControls(transforms, target, disabled = false) {
+  const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
+  const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
+    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="1" value="${Math.round(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}" aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
+  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div><div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}" aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}" aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${disabled || (!transforms?.crop && !transforms?.rotation) ? ' disabled' : ''}>Reset crop/rotation</button><div class="image-properties-note">Crop and rotation stay editable and are included in saved recipes.</div></div>`;
 }
 function transformSection(node) {
   const geometry = resolvedGeometry(node);
@@ -314,7 +335,7 @@ function imageAdjustmentsSection(node) {
   const adjustments = node.adjustments || { brightness: 0, contrast: 0, saturation: 0, blur: 0 };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
 function imageRecipeOptions(selectedId = '') {
@@ -839,38 +860,55 @@ function pageLayerRows(page = activePage()) {
   if (page) walkNodes(page.children, entry => rows.push(entry));
   return rows;
 }
-function deepestContainerAt(point) {
-  let result = null;
-  const visit = (nodes, parentX = 0, parentY = 0) => {
-    for (const node of nodes) {
-      const geometry = resolvedGeometry(node);
-      const x = parentX + geometry.x; const y = parentY + geometry.y;
-      if (['frame', 'group'].includes(node.type) && point.x >= x && point.y >= y && point.x <= x + geometry.width && point.y <= y + geometry.height) result = { node, x, y };
-      visit(node.children || [], x, y);
-    }
-  };
-  visit(activePage()?.children || []);
-  return result;
+function nodeTransformContext(node) {
+  const entry = node ? findNode(state.document, node.id) : null;
+  if (!entry) return null;
+  const geometry = { ...node, ...resolvedGeometry(node) };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  return { entry, geometry, ancestors, origin: { x: geometry.x, y: geometry.y } };
 }
-function localizeToParent(node, worldX, worldY, parent) {
-  node.x = worldX - (parent?.x || 0);
-  node.y = worldY - (parent?.y || 0);
+function deepestContainerAt(point) {
+  return deepestContainerAtPagePoint(activePage()?.children || [], point, state.document);
+}
+function parentLocalPenAnchors(anchors, parent, nodeGeometry = null) {
+  if (!parent) return anchors.map(point => ({ ...point }));
+  const toParent = point => nodeGeometry
+    ? pageToNodeParentLocal(nodeGeometry, point, parent.ancestors)
+    : pageToParentLocal(point, parent.ancestors);
+  return anchors.map(point => ({
+    ...point,
+    ...toParent(point),
+    ...(point.in ? { in: toParent(point.in) } : {}),
+    ...(point.out ? { out: toParent(point.out) } : {})
+  }));
+}
+function localizeToParent(node, pageX, pageY, parent, { anchor = 'top-left' } = {}) {
+  const local = parent
+    ? pageToParentLocal({ x: pageX, y: pageY }, parent.ancestors)
+    : { x: pageX, y: pageY };
+  const anchorX = anchor === 'center' ? node.width / 2 : 0;
+  const anchorY = anchor === 'center' ? node.height / 2 : 0;
+  node.x = local.x - anchorX;
+  node.y = local.y - anchorY;
   addNode(state.document, node, { parentId: parent?.node.id ?? null });
   if (parent?.node.autoLayout) applyAutoLayout(parent.node);
 }
 
 function networkAnchorAt(world, node, pointerType = 'mouse') {
   if (!node || node.type !== 'network' || node.locked) return null;
-  const origin = absolutePosition(node.id);
-  const geometry = resolvedGeometry(node);
-  const center = { x: origin.x + geometry.width / 2, y: origin.y + geometry.height / 2 };
+  const context = nodeTransformContext(node);
+  if (!context) return null;
   let best = null;
-  for (const vertex of node.vertices || []) {
-    const localPoint = vectorNetworkVertexPoint(node, vertex.id, origin);
-    const screenPoint = rotatePoint(localPoint, center, geometry.rotation);
-    const distance = checkPointDistance(world, screenPoint);
+  for (const vertex of context.geometry.vertices || []) {
+    const nodeLocalPoint = vectorNetworkVertexPoint(context.geometry, vertex.id, { x: 0, y: 0 });
+    if (!nodeLocalPoint) continue;
+    const pagePoint = nodeLocalToPage(context.geometry, nodeLocalPoint, context.ancestors);
+    const parentPoint = vectorNetworkVertexPoint(context.geometry, vertex.id, context.origin);
+    const distance = checkPointDistance(world, pagePoint);
     const tolerance = (pointerType === 'touch' ? 22 : 12) / Math.max(.08, state.zoom);
-    if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, localPoint, distance };
+    if (distance <= tolerance && (!best || distance < best.distance)) {
+      best = { node, origin: context.origin, ancestors: context.ancestors, vertexId: vertex.id, localPoint: parentPoint, pagePoint, distance };
+    }
   }
   return best;
 }
@@ -881,46 +919,40 @@ function startPenPath(world, pointerType = 'mouse') {
   const closeTolerance = 10 / Math.max(.08, state.zoom);
   const draft = state.penDraft;
   if (draft) {
-    const target = draft.networkNodeId ? findNode(state.document, draft.networkNodeId)?.node : targetNetwork;
+    const targetId = draft.targetNetworkId || draft.networkNodeId;
+    const target = targetId ? findNode(state.document, targetId)?.node : targetNetwork;
     const existing = target ? networkAnchorAt(world, target, pointerType) : null;
     const first = draft.anchors[0];
     if (existing && draft.anchors.length >= 2) {
-      const existingOrigin = absolutePosition(target.id);
-      const targetGeometry = resolvedGeometry(target);
-      const firstWorld = rotatePoint(first, { x: existingOrigin.x + targetGeometry.width / 2, y: existingOrigin.y + targetGeometry.height / 2 }, targetGeometry.rotation);
       const closesAtFirst = (first.vertexId && first.vertexId === existing.vertexId)
-        || (!first.vertexId && checkPointDistance(world, firstWorld) <= closeTolerance);
+        || (!first.vertexId && checkPointDistance(world, first) <= closeTolerance);
       if (closesAtFirst) {
         if (draft.anchors.length >= 3) finishPenPath(true);
         else showToast('Add one more point before closing a region.');
         return;
       }
-      const point = { ...existing.localPoint, in: { ...existing.localPoint }, out: { ...existing.localPoint }, vertexId: existing.vertexId };
+      const point = { ...existing.pagePoint, in: { ...existing.pagePoint }, out: { ...existing.pagePoint }, vertexId: existing.vertexId };
       draft.anchors.push(point);
       finishPenPath(false);
       return;
     }
-    const targetOrigin = target ? absolutePosition(target.id) : null;
-    const targetGeometry = target ? resolvedGeometry(target) : null;
-    const firstWorld = target ? rotatePoint(first, { x: targetOrigin.x + targetGeometry.width / 2, y: targetOrigin.y + targetGeometry.height / 2 }, targetGeometry.rotation) : first;
-    if (draft.anchors.length >= 3 && checkPointDistance(world, firstWorld) <= closeTolerance) {
+    if (draft.anchors.length >= 3 && checkPointDistance(world, first) <= closeTolerance) {
       finishPenPath(true);
       return;
     }
-    const pointPosition = target ? unrotateForPath(world, target, targetOrigin) : world;
+    const pointPosition = world;
     const point = { ...pointPosition, in: { ...pointPosition }, out: { ...pointPosition } };
     draft.anchors.push(point);
     const pointIndex = draft.anchors.length - 1;
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false, ...(target ? { networkNodeId: target.id } : {}) };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false };
   } else {
     const existing = targetNetwork ? networkAnchorAt(world, targetNetwork, pointerType) : null;
-    const origin = targetNetwork ? absolutePosition(targetNetwork.id) : null;
-    const point = existing ? existing.localPoint : targetNetwork ? unrotateForPath(world, targetNetwork, origin) : world;
+    const point = existing ? existing.pagePoint : world;
     state.penDraft = {
-      ...(targetNetwork ? { networkNodeId: targetNetwork.id } : {}),
+      ...(targetNetwork ? { targetNetworkId: targetNetwork.id } : {}),
       anchors: [{ ...point, in: { ...point }, out: { ...point }, ...(existing ? { vertexId: existing.vertexId } : {}) }]
     };
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false, ...(targetNetwork ? { networkNodeId: targetNetwork.id } : {}) };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false };
     showToast(existing ? 'Starting at a shared point · add a branch, connect another point, then press Enter.' : 'Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
   }
   state.penHover = world;
@@ -932,22 +964,34 @@ function finishPenPath(closed = false, { selectAfter = true } = {}) {
   const draft = state.penDraft;
   if (!draft || draft.anchors.length < 2) return false;
   state.penDraft = null; state.penHover = null; state.interaction = null;
-  const existing = draft.networkNodeId ? findNode(state.document, draft.networkNodeId)?.node : null;
+  const targetNetworkId = draft.targetNetworkId || draft.networkNodeId;
+  const existing = targetNetworkId ? findNode(state.document, targetNetworkId)?.node : null;
   let node;
   if (existing?.type === 'network' && !existing.locked) {
     node = existing;
     checkpoint('Extend vector network');
-    const origin = absolutePosition(node.id);
-    const result = appendVectorNetworkPath(node, draft.anchors, origin, { closed });
+    const context = nodeTransformContext(node);
+    if (!context) return false;
+    const anchors = parentLocalPenAnchors(draft.anchors, { ancestors: context.ancestors }, context.geometry);
+    const geometryProperties = ['x', 'y', 'width', 'height'];
+    const result = appendVectorNetworkPathResolved(node, anchors, context.geometry, {
+      closed,
+      writeGeometry: geometry => geometryProperties.every(property => setNodePropertyValue(node, property, geometry[property]))
+    });
     if (!result?.addedEdges) { showToast('Add at least two distinct points to make a vector path.'); renderer.invalidate(); return false; }
-    recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces', 'x', 'y', 'width', 'height']);
+    const boundGeometryProperties = geometryProperties.filter(property => node.variableBindings?.[property]);
+    if (boundGeometryProperties.length) recordNodeComponentOverrides(node, ['variableBindings']);
+    recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces', ...geometryProperties.filter(property => !node.variableBindings?.[property])]);
   } else {
-    const geometry = vectorNetworkGeometryFromAnchors(draft.anchors, { closed });
-    node = createNode('network', geometry);
     checkpoint('Create vector network');
-    const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
-    const parent = deepestContainerAt(center);
-    localizeToParent(node, node.x, node.y, parent);
+    const pageGeometry = vectorNetworkGeometryFromAnchors(draft.anchors, { closed });
+    const center = { x: pageGeometry.x + pageGeometry.width / 2, y: pageGeometry.y + pageGeometry.height / 2 };
+    const parent = deepestContainerAtPagePoint(activePage()?.children || [], center, state.document);
+    const anchors = parentLocalPenAnchors(draft.anchors, parent);
+    const geometry = vectorNetworkGeometryFromAnchors(anchors, { closed });
+    node = createNode('network', geometry);
+    addNode(state.document, node, { parentId: parent?.node.id ?? null });
+    if (parent?.node.autoLayout) applyAutoLayout(parent.node);
   }
   if (selectAfter) setTool('select');
   setSelection([node.id]); queueSave(); renderer.invalidate();
@@ -971,26 +1015,29 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
   const nodes = selectedNodes();
   const node = nodes.length === 1 && ['path', 'network'].includes(nodes[0].type) && !nodes[0].locked ? nodes[0] : null;
   if (!node || state.tool !== 'select') return null;
-  const origin = absolutePosition(node.id);
-  const geometry = resolvedGeometry(node);
-  const center = { x: origin.x + geometry.width / 2, y: origin.y + geometry.height / 2 };
+  const entry = findNode(state.document, node.id);
+  if (!entry) return null;
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const geometry = { ...node, ...resolvedGeometry(node) };
+  const origin = { x: 0, y: 0 };
+  const toPage = point => nodeLocalToPage(geometry, point, ancestors);
   const tolerance = (pointerType === 'touch' ? 22 : 9) / Math.max(.08, state.zoom);
   let best = null;
   if (node.type === 'network') {
     for (const edge of node.edges || []) {
-      const points = vectorNetworkEdgePoints(node, edge.id, origin);
+      const points = vectorNetworkEdgePoints(geometry, edge.id, origin);
       if (!points) continue;
       for (const [part, handle, anchor] of [['control1', points[1], points[0]], ['control2', points[2], points[3]]]) {
         if (!edge[part]) continue;
-        const point = rotatePoint(handle, center, geometry.rotation);
+        const point = toPage(handle);
         const distance = checkPointDistance(world, point);
-        if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, edgeId: edge.id, part, distance };
+        if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, ancestors, edgeId: edge.id, part, distance };
       }
     }
     for (const vertex of node.vertices || []) {
-      const point = rotatePoint(vectorNetworkVertexPoint(node, vertex.id, origin), center, geometry.rotation);
+      const point = toPage(vectorNetworkVertexPoint(geometry, vertex.id, origin));
       const distance = checkPointDistance(world, point);
-      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, part: 'anchor', distance };
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, ancestors, vertexId: vertex.id, part: 'anchor', distance };
     }
     return best;
   }
@@ -1000,15 +1047,15 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
         const handle = node.points[index][part];
         if (!handle || (Number(handle.x) === 0 && Number(handle.y) === 0)) continue;
       }
-      const point = rotatePoint(vectorNodePoint(node, index, part, origin), center, geometry.rotation);
+      const point = toPage(vectorNodePoint(geometry, index, part, origin));
       const distance = checkPointDistance(world, point);
-      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, index, part, distance };
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, ancestors, index, part, distance };
     }
   }
   return best;
 }
 
-function insertPathPoint(node, segmentIndex, t = .5, origin = absolutePosition(node.id)) {
+function insertPathPoint(node, segmentIndex, t = .5, origin = nodeTransformContext(node)?.origin || { x: node.x, y: node.y }) {
   if (!node || !['path', 'network'].includes(node.type) || node.locked) return false;
   if (node.type === 'network') {
     const vertexId = insertVectorNetworkPoint(node, segmentIndex, t, origin);
@@ -1029,11 +1076,12 @@ function insertPathPoint(node, segmentIndex, t = .5, origin = absolutePosition(n
 function insertPathPointOnLongestSegment(nodeId = selectedNodes()[0]?.id) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   if (!node || !['path', 'network'].includes(node.type)) return;
-  const origin = absolutePosition(node.id);
-  const segment = node.type === 'network' ? longestVectorNetworkEdge(node, origin) : longestVectorSegment(node, origin);
+  const context = nodeTransformContext(node);
+  if (!context) return;
+  const segment = node.type === 'network' ? longestVectorNetworkEdge(node, context.origin) : longestVectorSegment(node, context.origin);
   if (!segment) { showToast('This vector shape has no segment to split.'); return; }
   checkpoint('Insert vector point');
-  insertPathPoint(node, node.type === 'network' ? segment.edgeId : segment.segmentIndex, segment.t, origin);
+  insertPathPoint(node, node.type === 'network' ? segment.edgeId : segment.segmentIndex, segment.t, context.origin);
 }
 
 function insertPathPointAtWorld(world) {
@@ -1045,12 +1093,16 @@ function insertPathPointAtWorld(world) {
     setSelection([node.id]);
   }
   if (node.locked || vectorPathControlAt(world)) return false;
-  const origin = absolutePosition(node.id);
-  const localWorld = unrotateForPath(world, node, origin);
-  const closest = node.type === 'network' ? closestVectorNetworkEdge(node, localWorld, origin) : closestVectorSegment(node, localWorld, origin);
+  const context = nodeTransformContext(node);
+  if (!context) return false;
+  const parentPoint = pageToParentLocal(world, context.ancestors);
+  const localWorld = unrotateForPath(parentPoint, context.geometry, context.origin);
+  const closest = node.type === 'network'
+    ? closestVectorNetworkEdge(context.geometry, localWorld, context.origin)
+    : closestVectorSegment(context.geometry, localWorld, context.origin);
   if (!closest || closest.distance > 12 / Math.max(.08, state.zoom)) return false;
   checkpoint('Insert vector point');
-  return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, origin);
+  return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, context.origin);
 }
 
 function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
@@ -1092,17 +1144,14 @@ function resizeHandleAt(event) {
   if (nodes.length !== 1 || nodes[0].locked) return null;
   const entry = findNode(state.document, nodes[0].id);
   if (!entry) return null;
-  const nodeGeometry = resolvedGeometry(nodes[0]);
-  let x = nodeGeometry.x; let y = nodeGeometry.y;
-  for (const parent of entry.parents) { const geometry = resolvedGeometry(parent); x += geometry.x; y += geometry.y; }
   const node = nodes[0];
-  const handles = {
-    nw: [x, y], n: [x + nodeGeometry.width / 2, y], ne: [x + nodeGeometry.width, y], e: [x + nodeGeometry.width, y + nodeGeometry.height / 2],
-    se: [x + nodeGeometry.width, y + nodeGeometry.height], s: [x + nodeGeometry.width / 2, y + nodeGeometry.height], sw: [x, y + nodeGeometry.height], w: [x, y + nodeGeometry.height / 2]
-  };
+  const nodeGeometry = { ...node, ...resolvedGeometry(node) };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const handles = getTransformHandles(nodeGeometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
   const point = screenToWorld(event, canvas, state);
   const tolerance = 8 / state.zoom;
-  for (const [name, [hx, hy]] of Object.entries(handles)) if (checkPointDistance(point, { x: hx, y: hy }) <= tolerance) return { name, node, entry };
+  if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'rotate', node, entry, geometry: nodeGeometry, ancestors, center: nodeLocalToPage(nodeGeometry, { x: nodeGeometry.width / 2, y: nodeGeometry.height / 2 }, ancestors) };
+  for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) return { kind: 'resize', name, node, entry, geometry: nodeGeometry, ancestors };
   return null;
 }
 function selectedNodeDragStart(node, world, shiftKey) {
@@ -1115,11 +1164,17 @@ function selectedNodeDragStart(node, world, shiftKey) {
   }
   const nodes = selectedNodes();
   checkpoint('Move layers');
-  const originals = new Map(nodes.map(item => { const geometry = resolvedGeometry(item); return [item.id, { x: geometry.x, y: geometry.y }]; }));
+  const originals = new Map(nodes.map(item => {
+    const entry = findNode(state.document, item.id);
+    const geometry = { ...item, ...resolvedGeometry(item) };
+    const ancestors = (entry?.parents || []).map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+    return [item.id, { x: geometry.x, y: geometry.y, ancestors }];
+  }));
   state.interaction = { kind: 'move', start: world, originals, shiftKey };
 }
 
 function onCanvasPointerDown(event) {
+  if (state.documentTransitioning) return;
   if (event.button !== 0 && event.button !== 1) return;
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   canvas.setPointerCapture?.(event.pointerId);
@@ -1177,10 +1232,16 @@ function onCanvasPointerDown(event) {
     }
     const handle = resizeHandleAt(event);
     if (handle) {
-      checkpoint('Resize layer');
-      const geometry = resolvedGeometry(handle.node);
-      state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, start: world, ...geometry, aspect: geometry.height ? geometry.width / geometry.height : 1 };
-      if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
+      if (handle.kind === 'rotate') {
+        checkpoint('Rotate layer');
+        const angle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
+        state.interaction = { kind: 'rotate', node: handle.node, entry: handle.entry, center: handle.center, startAngle: angle, lastAngle: angle, rotationDelta: 0, rotation: handle.geometry.rotation || 0 };
+      } else {
+        checkpoint('Resize layer');
+        const geometry = handle.geometry;
+        state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, ancestors: handle.ancestors, rect: geometry, width: geometry.width, height: geometry.height };
+        if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
+      }
       event.preventDefault(); return;
     }
     const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document);
@@ -1239,14 +1300,13 @@ function onCanvasPointerMove(event) {
     const point = state.penDraft?.anchors[interaction.pointIndex];
     if (!point) return;
     interaction.moved ||= checkPointDistance(world, interaction.start) > 3 / state.zoom;
-    const network = interaction.networkNodeId ? findNode(state.document, interaction.networkNodeId)?.node : null;
-    const anchorWorld = network ? unrotateForPath(world, network, absolutePosition(network.id)) : world;
-    point.out = { ...anchorWorld };
-    point.in = { x: point.x - (anchorWorld.x - point.x), y: point.y - (anchorWorld.y - point.y) };
+    point.out = { ...world };
+    point.in = { x: point.x - (world.x - point.x), y: point.y - (world.y - point.y) };
     state.penHover = world; renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-control') {
-    const local = unrotateForPath(world, interaction.node, interaction.origin);
+    const geometry = { ...interaction.node, ...resolvedGeometry(interaction.node) };
+    const local = pageToNodeLocal(geometry, world, interaction.ancestors);
     setVectorNodePoint(interaction.node, interaction.index, interaction.part, local, {
       origin: interaction.origin,
       symmetric: interaction.part !== 'anchor' && !event.altKey
@@ -1254,21 +1314,38 @@ function onCanvasPointerMove(event) {
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'network-control') {
-    const local = unrotateForPath(world, interaction.node, interaction.origin);
+    const geometry = { ...interaction.node, ...resolvedGeometry(interaction.node) };
+    const local = pageToNodeLocal(geometry, world, interaction.ancestors);
     if (interaction.part === 'anchor') setVectorNetworkVertexPoint(interaction.node, interaction.vertexId, local, interaction.origin);
     else setVectorNetworkEdgeControlPoint(interaction.node, interaction.edgeId, interaction.part, local, interaction.origin);
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'move') {
-    let dx = world.x - interaction.start.x; let dy = world.y - interaction.start.y;
-    if (state.document.settings.snap && !event.altKey) { const grid = state.document.settings.grid || 8; dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
+    const pageDx = world.x - interaction.start.x; const pageDy = world.y - interaction.start.y;
+    const grid = state.document.settings.grid || 8;
     for (const [id, original] of interaction.originals) {
       const node = findNode(state.document, id)?.node;
       if (!node) continue;
+      const startLocal = pageToParentLocal(interaction.start, original.ancestors);
+      const currentLocal = pageToParentLocal(world, original.ancestors);
+      let dx = currentLocal.x - startLocal.x; let dy = currentLocal.y - startLocal.y;
+      if (state.document.settings.snap && !event.altKey) { dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
       setNodePropertyValue(node, 'x', original.x + dx);
       setNodePropertyValue(node, 'y', original.y + dy);
     }
-    $('#position-status').textContent = `${Math.round(dx)}, ${Math.round(dy)} moved`;
+    $('#position-status').textContent = `${Math.round(pageDx)}, ${Math.round(pageDy)} moved`;
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'rotate') {
+    const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
+    let delta = angle - interaction.lastAngle;
+    if (delta > Math.PI) delta -= Math.PI * 2;
+    else if (delta < -Math.PI) delta += Math.PI * 2;
+    interaction.rotationDelta += delta * 180 / Math.PI;
+    interaction.lastAngle = angle;
+    const nextRotation = interaction.rotation + interaction.rotationDelta;
+    setNodePropertyValue(interaction.node, 'rotation', event.shiftKey ? Math.round(nextRotation / 15) * 15 : nextRotation);
+    $('#position-status').textContent = `${Math.round(resolvedGeometry(interaction.node).rotation)}° rotation`;
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'reorder') {
@@ -1289,19 +1366,9 @@ function onCanvasPointerMove(event) {
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'resize') {
-    const dx = world.x - interaction.start.x; const dy = world.y - interaction.start.y;
-    let x = interaction.x; let y = interaction.y; let width = interaction.width; let height = interaction.height;
-    if (interaction.handle.includes('e')) width = Math.max(1, interaction.width + dx);
-    if (interaction.handle.includes('s')) height = Math.max(1, interaction.height + dy);
-    if (interaction.handle.includes('w')) { width = Math.max(1, interaction.width - dx); x = interaction.x + interaction.width - width; }
-    if (interaction.handle.includes('n')) { height = Math.max(1, interaction.height - dy); y = interaction.y + interaction.height - height; }
-    if (event.shiftKey && interaction.aspect) {
-      if (Math.abs(dx) >= Math.abs(dy)) height = width / interaction.aspect;
-      else width = height * interaction.aspect;
-      if (interaction.handle.includes('w')) x = interaction.x + interaction.width - width;
-      if (interaction.handle.includes('n')) y = interaction.y + interaction.height - height;
-    }
-    for (const [property, value] of Object.entries({ x, y, width, height })) setNodePropertyValue(interaction.node, property, value);
+    const aspectRatio = event.shiftKey && interaction.rect.height ? interaction.rect.width / interaction.rect.height : undefined;
+    const resized = resizeOrientedRect(interaction.rect, interaction.handle, world, interaction.ancestors, { aspectRatio });
+    for (const property of ['x', 'y', 'width', 'height']) setNodePropertyValue(interaction.node, property, resized[property]);
     const geometry = resolvedGeometry(interaction.node);
     if (interaction.node.type === 'frame' && interaction.node.autoLayout) applyAutoLayout(interaction.node);
     else if (interaction.node.type === 'frame') applyFrameConstraints(interaction.node, interaction.width, interaction.height, geometry.width, geometry.height, interaction.childGeometry);
@@ -1342,7 +1409,7 @@ function onCanvasPointerUp(event) {
     recordNodeComponentOverrides(interaction.node, ['vertices', 'edges', 'faces']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
-  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') {
+  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'rotate' || interaction.kind === 'reorder') {
     const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()] : interaction.node ? [interaction.node.id] : [];
     if (interaction.kind === 'reorder') editedIds.push(interaction.parent?.id);
     for (const id of editedIds.filter(Boolean)) {
@@ -1356,7 +1423,7 @@ function onCanvasPointerUp(event) {
           instanceRoot.componentOverrides[node.componentSourceId].__childOrder = node.children.map(child => child.componentSourceId);
         }
       } else {
-        const properties = interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : ['x', 'y'];
+        const properties = interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : interaction.kind === 'rotate' ? ['rotation'] : ['x', 'y'];
         if (properties.some(property => node.variableBindings?.[property])) recordNodeComponentOverrides(node, ['variableBindings']);
         recordNodeComponentOverrides(node, properties.filter(property => !node.variableBindings?.[property]));
       }
@@ -1369,11 +1436,15 @@ function onCanvasPointerUp(event) {
   }
   if (interaction.kind === 'marquee') {
     const rect = { x: Math.min(state.marquee.x1, state.marquee.x2), y: Math.min(state.marquee.y1, state.marquee.y2), width: Math.abs(state.marquee.x2 - state.marquee.x1), height: Math.abs(state.marquee.y2 - state.marquee.y1) };
-    const hits = pageLayerRows().filter(({ node, parents }) => {
-      const geometry = resolvedGeometry(node);
-      let x = geometry.x; let y = geometry.y;
-      for (const parent of parents) { const parentGeometry = resolvedGeometry(parent); x += parentGeometry.x; y += parentGeometry.y; }
-      return x <= rect.x + rect.width && x + geometry.width >= rect.x && y <= rect.y + rect.height && y + geometry.height >= rect.y;
+  const hits = pageLayerRows().filter(({ node, parents }) => {
+      const geometry = { ...node, ...resolvedGeometry(node) };
+      const ancestors = parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+      const corners = selectionOverlayGeometry(geometry, ancestors, { zoom: 1, rotateOffset: 0 }).corners;
+      const left = Math.min(...corners.map(point => point.x));
+      const top = Math.min(...corners.map(point => point.y));
+      const right = Math.max(...corners.map(point => point.x));
+      const bottom = Math.max(...corners.map(point => point.y));
+      return left <= rect.x + rect.width && right >= rect.x && top <= rect.y + rect.height && bottom >= rect.y;
     }).map(entry => entry.node.id);
     setSelection(interaction.additive ? [...state.selectedIds, ...hits] : hits);
     state.marquee = null; state.interaction = null; renderer.invalidate(); return;
@@ -1391,7 +1462,7 @@ function onCanvasPointerUp(event) {
     checkpoint(`Create ${node.type}`);
     const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
     const parent = node.type === 'section' ? null : deepestContainerAt(center);
-    localizeToParent(node, node.x, node.y, parent);
+    localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
     setSelection([node.id]); queueSave(); renderer.invalidate(); return;
   }
 }
@@ -1884,9 +1955,16 @@ function zoomToSelection() {
   const entries = selectedEntries();
   const ids = entries.length ? entries.map(entry => entry.node.id) : pageLayerRows().filter(entry => entry.node.type === 'frame').map(entry => entry.node.id);
   if (!ids.length) { state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2; updateZoomUI(); renderer.invalidate(); return; }
-  const bounds = ids.map(id => absolutePosition(id)).map((position, index) => ({ ...position, width: findNode(state.document, ids[index]).node.width, height: findNode(state.document, ids[index]).node.height }));
-  const x = Math.min(...bounds.map(item => item.x)); const y = Math.min(...bounds.map(item => item.y));
-  const right = Math.max(...bounds.map(item => item.x + item.width)); const bottom = Math.max(...bounds.map(item => item.y + item.height));
+  const corners = ids.flatMap(id => {
+    const entry = findNode(state.document, id);
+    if (!entry) return [];
+    const node = { ...entry.node, ...resolvedGeometry(entry.node) };
+    const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+    return selectionOverlayGeometry(node, ancestors, { zoom: 1, rotateOffset: 0 }).corners;
+  });
+  if (!corners.length) return;
+  const x = Math.min(...corners.map(point => point.x)); const y = Math.min(...corners.map(point => point.y));
+  const right = Math.max(...corners.map(point => point.x)); const bottom = Math.max(...corners.map(point => point.y));
   const zoom = Math.min(2, (canvas.clientWidth - 100) / Math.max(1, right - x), (canvas.clientHeight - 100) / Math.max(1, bottom - y));
   state.zoom = Math.max(.08, zoom); state.panX = (canvas.clientWidth - (right - x) * state.zoom) / 2 - x * state.zoom; state.panY = (canvas.clientHeight - (bottom - y) * state.zoom) / 2 - y * state.zoom;
   updateZoomUI(); renderer.invalidate();
@@ -1947,6 +2025,58 @@ function updateImageFillInput(input) {
   } else return;
   recordNodeComponentOverrides(node, ['imageFill']);
   renderer.invalidate();
+}
+
+function imageTransformTarget(node, target) {
+  if (target === 'fill') return node?.imageFill || null;
+  return node?.type === 'image' ? node : null;
+}
+
+function updateImageTransformInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  const target = imageTransformTarget(node, input.dataset.imageTransformTarget);
+  if (!node || !target || node.locked || input.value.trim() === '') return;
+  const edge = input.dataset.imageTransformField;
+  if (!['left', 'top', 'right', 'bottom'].includes(edge)) return;
+  const percent = Number(input.value);
+  if (!Number.isFinite(percent)) return;
+  const value = Math.max(0, Math.min(100, percent)) / 100;
+  const current = createImageTransforms(target.transforms || {});
+  const crop = { ...(current.crop || { left: 0, top: 0, right: 1, bottom: 1 }) };
+  const start = edge === 'left' ? 'left' : edge === 'top' ? 'top' : null;
+  const end = edge === 'right' ? 'right' : edge === 'bottom' ? 'bottom' : null;
+  const counterpart = start ? (edge === 'left' ? 'right' : 'bottom') : (edge === 'right' ? 'left' : 'top');
+  crop[edge] = value;
+  if (start && crop[edge] >= crop[counterpart]) {
+    if (value >= 1) { crop[edge] = 0.99; crop[counterpart] = 1; }
+    else crop[counterpart] = Math.min(1, value + 0.01);
+  } else if (end && crop[edge] <= crop[counterpart]) {
+    if (value <= 0) { crop[edge] = 0.01; crop[counterpart] = 0; }
+    else crop[counterpart] = Math.max(0, value - 0.01);
+  }
+  const transforms = createImageTransforms({ ...current, crop });
+  if (!state.controlEdit) { checkpoint('Crop image'); state.controlEdit = true; }
+  target.transforms = transforms;
+  if (input.nextElementSibling?.tagName === 'OUTPUT') input.nextElementSibling.value = `${Math.round(crop[edge] * 100)}%`;
+  recordNodeComponentOverrides(node, input.dataset.imageTransformTarget === 'fill' ? ['imageFill'] : ['transforms']);
+  schedulePreview(node);
+  renderer.invalidate();
+}
+
+function applyImageTransformAction(node, targetName, action, direction) {
+  const target = imageTransformTarget(node, targetName);
+  if (!target || node.locked) return;
+  const current = createImageTransforms(target.transforms || {});
+  let transforms;
+  if (action === 'rotate-image') transforms = createImageTransforms({ ...current, rotation: current.rotation + (direction === 'left' ? -90 : 90) });
+  else if (action === 'reset-image-transforms') transforms = createImageTransforms();
+  else return;
+  if (JSON.stringify(transforms) === JSON.stringify(current)) return;
+  checkpoint(action === 'rotate-image' ? 'Rotate image' : 'Reset image crop and rotation');
+  target.transforms = transforms;
+  recordNodeComponentOverrides(node, targetName === 'fill' ? ['imageFill'] : ['transforms']);
+  schedulePreview(node, true);
+  renderInspector(); queueSave(); renderer.invalidate();
 }
 
 function updateInspectorInput(event) {
@@ -2089,32 +2219,39 @@ function schedulePreview(node, immediate = false) {
   state.imageStatus.set(node.id, 'Updating preview…');
   const assetId = node.imageFill?.assetId || node.assetId;
   const adjustments = node.imageFill?.adjustments || node.adjustments;
-  const run = () => renderImagePreview(node.id, assetId, adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
+  const transforms = node.imageFill?.transforms || node.transforms;
+  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
   const timer = setTimeout(run, immediate ? 0 : 110);
   previewTimers.set(node.id, timer);
   if (state.selectedIds.includes(node.id)) {
     for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
   }
 }
-async function renderImagePreview(nodeId, assetId, adjustments) {
+async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}) {
+  const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
   const version = (state.renderVersion.get(nodeId) || 0) + 1;
   state.renderVersion.set(nodeId, version);
   state.imageStatus.set(nodeId, 'Processing locally…');
-  const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments);
-  const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
-  if (state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
-  state.previews.get(nodeId)?.close?.();
-  const previousUrl = state.previewUrls.get(nodeId); if (previousUrl) URL.revokeObjectURL(previousUrl);
-  state.previewUrls.set(nodeId, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
-  state.previews.set(nodeId, bitmap);
-  state.previewAssetIds.set(nodeId, assetId);
-  state.previewVersions.set(nodeId, (state.previewVersions.get(nodeId) || 0) + 1);
-  state.imageStatus.set(nodeId, 'Updated · Pillow-RS WASM');
-  renderer.invalidate(); renderAssetsTab();
-  if (state.selectedIds.includes(nodeId)) for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); }
-  return true;
+  try {
+    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms);
+    const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
+    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
+    state.previews.get(nodeId)?.close?.();
+    const previousUrl = state.previewUrls.get(nodeId); if (previousUrl) URL.revokeObjectURL(previousUrl);
+    state.previewUrls.set(nodeId, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
+    state.previews.set(nodeId, bitmap);
+    state.previewAssetIds.set(nodeId, assetId);
+    state.previewVersions.set(nodeId, (state.previewVersions.get(nodeId) || 0) + 1);
+    state.imageStatus.set(nodeId, 'Updated · Pillow-RS WASM');
+    renderer.invalidate(); renderAssetsTab();
+    if (state.selectedIds.includes(nodeId)) for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); }
+    return true;
+  } catch (error) {
+    if (generation !== state.documentGeneration) return false;
+    throw error;
+  }
 }
 
 function setZoomButtonHandlers() {
@@ -2131,8 +2268,15 @@ function setZoomButtonHandlers() {
 
 function chooseImageFiles() { $('#image-input').click(); }
 async function importImageFiles(files, point = null) {
+  if (state.documentTransitioning) {
+    showToast('Wait for the current design switch to finish before importing images.');
+    return;
+  }
+  const generation = state.documentGeneration;
   const inputs = [...files].filter(file => file.type.startsWith('image/'));
   if (!inputs.length) { showToast('Choose an image file to place it on the canvas.'); return; }
+  state.pendingImageImports += 1;
+  try {
   checkpoint(`Place ${inputs.length} image${inputs.length === 1 ? '' : 's'}`);
   const defaultWorld = point || { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
   let imported = 0;
@@ -2141,39 +2285,49 @@ async function importImageFiles(files, point = null) {
       const assetId = createId('asset');
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
       const bitmap = await createImageBitmap(file);
+      if (generation !== state.documentGeneration) { bitmap.close?.(); continue; }
       const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
       const width = Math.max(1, Math.round(bitmap.width * scale)); const height = Math.max(1, Math.round(bitmap.height * scale));
       const asset = { id: assetId, name: file.name, type: file.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(file) };
       state.assets.set(assetId, asset);
       await saveImageAsset(assetId, file);
+      if (generation !== state.documentGeneration) continue;
       const node = createNode('image', { id: createId('image'), name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, assetId, width, height, sourceWidth: bitmap.width, sourceHeight: bitmap.height, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
-      localizeToParent(node, node.x, node.y, deepestContainerAt({ x: node.x + width / 2, y: node.y + height / 2 }));
+      const center = { x: node.x + width / 2, y: node.y + height / 2 };
+      const parent = deepestContainerAt(center);
+      localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
       state.imageStatus.set(node.id, 'Processing locally…');
-      renderImagePreview(node.id, assetId, node.adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
+      renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
       state.selectedIds = [node.id]; imported += 1;
     } catch (error) { showToast(`${file.name}: ${error.message || 'Could not load image.'}`); }
   }
   if (imported) { renderUI(); queueSave(); showToast(`${imported} image${imported === 1 ? '' : 's'} placed. Source images stay on this device.`); }
-  $('#image-input').value = '';
+  } finally {
+    state.pendingImageImports -= 1;
+    $('#image-input').value = '';
+  }
 }
 
-async function restoreImageAssets() {
+async function restoreImageAssets(generation = state.documentGeneration) {
   const references = imageAssetReferencesAcrossPages();
   for (const reference of references) {
-    const { node, assetId, name, adjustments } = reference;
+    if (generation !== state.documentGeneration) return;
+    const { node, assetId, name, adjustments, transforms } = reference;
     try {
       const existing = state.assets.get(assetId);
-      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments).catch(error => showToast(error.message)); continue; }
+      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => showToast(error.message)); continue; }
       const saved = await loadImageAsset(assetId);
+      if (generation !== state.documentGeneration) return;
       if (!saved) { state.imageStatus.set(node.id, 'Original image missing'); continue; }
       const sourceBytes = new Uint8Array(saved.bytes);
       const bitmap = await createImageBitmap(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
+      if (generation !== state.documentGeneration) { bitmap.close?.(); return; }
       state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
       state.imageStatus.set(node.id, 'Restoring local preview…');
-      renderImagePreview(node.id, assetId, adjustments).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
-    } catch (error) { state.imageStatus.set(node.id, 'Could not restore image'); showToast(error.message); }
+      renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
+    } catch (error) { if (generation !== state.documentGeneration) return; state.imageStatus.set(node.id, 'Could not restore image'); showToast(error.message); }
   }
-  renderAssetsTab();
+  if (generation === state.documentGeneration) renderAssetsTab();
 }
 
 function renderBulkBar() {
@@ -2202,6 +2356,7 @@ function snapshotRecipeField(object, key) {
 function snapshotRecipeState(node) {
   return {
     adjustments: { ...(node.adjustments || {}) },
+    transforms: snapshotRecipeField(node, 'transforms'),
     fit: snapshotRecipeField(node, 'fit'),
     opacity: snapshotRecipeField(node, 'opacity')
   };
@@ -2224,6 +2379,15 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     changed = true;
   }
   if (changed) node.adjustments = currentAdjustments;
+
+  const currentTransforms = snapshotRecipeField(node, 'transforms');
+  const recipeTransforms = applied.transforms;
+  if (currentTransforms.present === recipeTransforms.present && currentTransforms.present
+    && JSON.stringify(currentTransforms.value) === JSON.stringify(recipeTransforms.value)) {
+    if (before.transforms.present) node.transforms = structuredClone(before.transforms.value);
+    else delete node.transforms;
+    changed = true;
+  }
 
   for (const key of ['fit', 'opacity']) {
     const current = snapshotRecipeField(node, key);
@@ -2248,7 +2412,7 @@ function scheduleBulk() {
     applyImageRecipe(state.document, id, bulk.recipe);
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
-    renderImagePreview(id, node.assetId, node.adjustments).then(() => {
+    renderImagePreview(id, node.assetId, node.adjustments, node.transforms).then(() => {
       if (state.bulk !== bulk) return;
       bulk.completed += 1;
     }).catch(error => {
@@ -2292,9 +2456,13 @@ function saveRecipeFor(nodeId) {
   if (!node || node.type !== 'image') return;
   pendingRecipeNodeId = nodeId;
   const adjustments = node.adjustments || {};
-  const active = ['brightness', 'contrast', 'saturation', 'blur'].filter(key => Number(adjustments[key]) !== 0);
+  const active = ['brightness', 'contrast', 'saturation', 'blur'].filter(key => Number(adjustments[key]) !== 0)
+    .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
+  const transforms = createImageTransforms(node.transforms || {});
+  if (transforms.crop) active.push(`Crop ${Math.round(transforms.crop.left * 100)}%/${Math.round(transforms.crop.top * 100)}% to ${Math.round(transforms.crop.right * 100)}%/${Math.round(transforms.crop.bottom * 100)}%`);
+  if (transforms.rotation) active.push(`Rotate ${transforms.rotation}°`);
   $('#recipe-name').value = `${node.name} look`;
-  $('#recipe-preview-summary').textContent = active.length ? active.map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`).join(' · ') : 'Original image look · No adjustments';
+  $('#recipe-preview-summary').textContent = active.length ? active.join(' · ') : 'Original image look · No adjustments';
   $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
 }
 
@@ -2677,6 +2845,7 @@ function separateSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
 function openFileMenu(x, y, commentAnchor = null) {
   showMenu([
     ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
+    { label: 'Your designs…', action: openDesignLibrary },
     { label: 'New design', shortcut: '⌘N', action: newDesign },
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { separator: true },
@@ -2859,11 +3028,59 @@ function reorderSelected(direction) {
   reorder(page.children); renderUI(); queueSave();
 }
 
-function undo() { const next = history.undo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
-function redo() { const next = history.redo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
+function refreshHistoryImagePreviews(previousDocument) {
+  for (const reference of imageAssetReferencesAcrossPages()) {
+    const { node, assetId, adjustments, transforms } = reference;
+    const previousNode = findNode(previousDocument, node.id)?.node;
+    const previousSource = previousNode?.type === 'image' ? previousNode : previousNode?.imageFill;
+    const previousSettings = previousSource
+      ? JSON.stringify([previousSource.assetId, previousSource.adjustments || {}, previousSource.transforms || {}])
+      : null;
+    const currentSettings = JSON.stringify([assetId, adjustments || {}, transforms || {}]);
+    if (previousSettings === currentSettings) continue;
+
+    const timer = previewTimers.get(node.id);
+    if (timer) clearTimeout(timer);
+    previewTimers.delete(node.id);
+    const asset = state.assets.get(assetId);
+    if (!asset?.sourceBytes) {
+      state.previews.get(node.id)?.close?.();
+      state.previews.delete(node.id);
+      state.previewAssetIds.delete(node.id);
+      const url = state.previewUrls.get(node.id);
+      if (url) URL.revokeObjectURL(url);
+      state.previewUrls.delete(node.id);
+      state.imageStatus.set(node.id, 'Original image missing');
+      continue;
+    }
+    state.imageStatus.set(node.id, 'Updating preview…');
+    renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => {
+      state.imageStatus.set(node.id, 'Preview failed');
+      showToast(`${node.name}: ${error.message || 'Could not restore the image preview.'}`);
+      if (state.selectedIds.includes(node.id)) renderInspector();
+    });
+  }
+}
+function undo() {
+  const previousDocument = state.document;
+  const next = history.undo(previousDocument);
+  if (!next) return;
+  state.document = next;
+  refreshHistoryImagePreviews(previousDocument);
+  state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
+  state.selectedVectorPoint = null; renderUI(); queueSave();
+}
+function redo() {
+  const previousDocument = state.document;
+  const next = history.redo(previousDocument);
+  if (!next) return;
+  state.document = next;
+  refreshHistoryImagePreviews(previousDocument);
+  state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
+  state.selectedVectorPoint = null; renderUI(); queueSave();
+}
 function newDesign() {
-  state.document = createDocument(); state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
-  history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); showToast('New local design created.');
+  return switchToDocument(createDocument(), { message: 'New local design created.' });
 }
 function addPage() {
   const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
@@ -3052,12 +3269,178 @@ async function exportDesign() {
     showToast('Local design copy downloaded.');
   } catch (error) { showToast(error.message || 'Could not export this local design.'); }
 }
+async function persistCurrentDocumentNow() {
+  if (!state.ready) return true;
+  clearTimeout(state.saveTimer);
+  state.saveTimer = null;
+  setSaveState('saving', 'Saving locally…');
+  try {
+    while (true) {
+      const revision = state.saveRevision;
+      const snapshot = JSON.parse(serializeDocument(state.document));
+      await enqueueDocumentSave(snapshot);
+      if (revision === state.saveRevision) {
+        clearTimeout(state.saveTimer);
+        state.saveTimer = null;
+        setSaveState('saved', 'Saved locally');
+        return true;
+      }
+      clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+  } catch (error) {
+    setSaveState('error', 'Could not save');
+    showToast(error.message || 'Could not save this design before switching files.');
+    return false;
+  }
+}
+
+function releaseImageRuntimeForDocumentSwitch() {
+  for (const timer of previewTimers.values()) clearTimeout(timer);
+  previewTimers.clear();
+  for (const assetId of state.assets.keys()) imageEngine.dispose(assetId);
+  for (const asset of state.assets.values()) {
+    asset.bitmap?.close?.();
+    if (asset.bitmapUrl) URL.revokeObjectURL(asset.bitmapUrl);
+  }
+  for (const bitmap of state.previews.values()) bitmap.close?.();
+  for (const url of state.previewUrls.values()) URL.revokeObjectURL(url);
+  state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear();
+  state.previewVersions.clear(); state.imageStatus.clear(); state.renderVersion.clear();
+}
+
+async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null } = {}) {
+  if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) {
+    showToast('Finish or stop the active image recipe before switching designs.');
+    return false;
+  }
+  if (state.documentTransitioning) { showToast('A design switch is already in progress.'); return false; }
+  if (state.interaction) { showToast('Finish the current canvas action before switching designs.'); return false; }
+  if (state.pendingImageImports) { showToast('Wait for the current image import to finish before switching designs.'); return false; }
+  state.documentTransitioning = true;
+  setDocumentEditingBlocked(true);
+  try {
+    if (saveCurrent && !(await persistCurrentDocumentNow())) return false;
+    if (beforeSwitch) await beforeSwitch(nextDocument);
+    const generation = ++state.documentGeneration;
+    releaseImageRuntimeForDocumentSwitch();
+    state.document = nextDocument;
+    state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null;
+    state.draftNode = null; state.penDraft = null; state.penHover = null; state.marquee = null; state.interaction = null;
+    state.pointerMap.clear(); state.prototypeSourceId = null; state.textNodeId = null; state.textSelection = null;
+    state.bulk = null; state.inspectorTab = 'design';
+    state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+    history.undoStack.length = 0; history.redoStack.length = 0;
+    renderBulkBar(); renderUI();
+    await restoreImageAssets(generation);
+    showToast(message);
+    return true;
+  } catch (error) {
+    showToast(error.message || 'Could not switch designs.');
+    return false;
+  } finally {
+    state.documentTransitioning = false;
+    setDocumentEditingBlocked(false);
+    if (state.document === nextDocument) queueSave();
+  }
+}
+
+async function renderDesignLibrary() {
+  const list = $('#design-library-list');
+  list.setAttribute('aria-busy', 'true');
+  list.replaceChildren();
+  try {
+    const documents = await listSavedDocuments();
+    if (!documents.length) {
+      list.innerHTML = '<div class="design-library-empty">Your local designs will appear here as you work. They are stored in this browser profile.</div>';
+      return;
+    }
+    list.innerHTML = documents.map(item => {
+      const current = item.id === state.document.id;
+      let date = 'Saved on this device';
+      if (item.savedAt) {
+        try { date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(item.savedAt)); } catch { /* Keep the local fallback label. */ }
+      }
+      return `<article class="design-file-row${current ? ' is-current' : ''}"><div class="design-file-details"><span class="design-file-name">${escapeHtml(item.name)}${current ? ' · Current' : ''}</span><span class="design-file-date">${escapeHtml(date)} · This device</span></div><div class="design-file-actions"><button type="button" data-design-action="open" data-design-id="${escapeHtml(item.id)}"${current ? ' disabled aria-current="true"' : ''}>${current ? 'Open' : 'Open'}</button><button type="button" data-design-action="rename" data-design-id="${escapeHtml(item.id)}">Rename</button><button type="button" data-design-action="duplicate" data-design-id="${escapeHtml(item.id)}">Duplicate</button><button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}">Delete</button></div></article>`;
+    }).join('');
+  } finally {
+    list.setAttribute('aria-busy', 'false');
+  }
+}
+
+async function openDesignLibrary() {
+  const dialog = $('#design-library-dialog');
+  const list = $('#design-library-list');
+  if (!dialog.open) dialog.showModal();
+  list.setAttribute('aria-busy', 'true');
+  list.innerHTML = '<div class="design-library-empty">Loading your local designs…</div>';
+  setDocumentEditingBlocked(true);
+  try {
+    if (!(await persistCurrentDocumentNow())) return;
+    await renderDesignLibrary();
+  } catch (error) { showToast(error.message || 'Could not read the local design library.'); }
+  finally {
+    list.setAttribute('aria-busy', 'false');
+    if (!state.documentTransitioning) setDocumentEditingBlocked(false);
+  }
+}
+
+async function handleDesignLibraryAction(action, id) {
+  try {
+    if (action === 'open') {
+      const saved = await loadDocumentById(id);
+      if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
+      const opened = await switchToDocument(parseDocument(saved));
+      if (opened) { $('#design-library-dialog').close(); await renderDesignLibrary(); }
+      return;
+    }
+    if (action === 'rename') {
+      const saved = await loadDocumentById(id);
+      if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
+      const name = prompt('Rename local design', saved.name || 'Untitled');
+      if (name == null) return;
+      const nextName = String(name).trim();
+      if (!nextName || nextName.length > 120) { showToast('A design name must contain 1–120 characters.'); return; }
+      if (!(await renameStoredDocument(id, nextName))) { showToast('That saved design is no longer available.'); return; }
+      if (id === state.document.id) { state.document.name = nextName; renderUI(); await persistCurrentDocumentNow(); }
+      await renderDesignLibrary();
+      return;
+    }
+    if (action === 'duplicate') {
+      if (id === state.document.id && !(await persistCurrentDocumentNow())) return;
+      const duplicate = await duplicateStoredDocument(id);
+      if (!duplicate) { showToast('That saved design is no longer available.'); return; }
+      await renderDesignLibrary();
+      showToast(`“${duplicate.name}” was added to your local designs.`);
+      return;
+    }
+    if (action === 'delete') {
+      if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) { showToast('Finish or stop the active image recipe before deleting a design.'); return; }
+      const saved = await loadDocumentById(id);
+      if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
+      if (!confirm(`Delete “${saved.name || 'Untitled'}” from this device? This cannot be undone.`)) return;
+      if (id === state.document.id) {
+        const switched = await switchToDocument(createDocument(), {
+          message: 'Design deleted. A new local design is ready.',
+          beforeSwitch: async () => {
+            if (!await deleteStoredDocument(id)) throw new Error('That saved design is no longer available.');
+          }
+        });
+        if (!switched) return;
+      } else {
+        await deleteStoredDocument(id);
+      }
+      await renderDesignLibrary();
+    }
+  } catch (error) { showToast(error.message || 'Could not update the local design library.'); }
+}
+
 function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
 function imageAssetReferencesAcrossPages() {
   const result = [];
   for (const page of state.document.pages) walkNodes(page.children, ({ node }) => {
-    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments });
-    if (node.imageFill?.assetId) result.push({ node, assetId: node.imageFill.assetId, name: node.name, adjustments: node.imageFill.adjustments });
+    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms });
+    if (node.imageFill?.assetId) result.push({ node, assetId: node.imageFill.assetId, name: node.name, adjustments: node.imageFill.adjustments, transforms: node.imageFill.transforms });
   });
   return result;
 }
@@ -3118,16 +3501,34 @@ async function refreshImagesForExport(nodeIds) {
   const images = new Map();
   for (const id of nodeIds) {
     const node = findNode(state.document, id)?.node;
-    if (node) walkNodes([node], ({ node: child }) => { if (child.type === 'image') images.set(child.id, child); });
+    if (node) walkNodes([node], ({ node: child }) => {
+      if (child.type === 'image' && child.assetId) {
+        images.set(child.id, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms });
+      }
+      if (child.imageFill?.assetId) {
+        images.set(child.id, {
+          node: child,
+          assetId: child.imageFill.assetId,
+          adjustments: child.imageFill.adjustments,
+          transforms: child.imageFill.transforms
+        });
+      }
+    });
   }
-  await Promise.all([...images.values()].map(async node => {
-    const asset = state.assets.get(node.assetId);
+  await Promise.all([...images.values()].map(async ({ node, assetId, adjustments, transforms }) => {
+    const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
     const status = state.imageStatus.get(node.id) || '';
     const timer = previewTimers.get(node.id);
     if (timer) { clearTimeout(timer); previewTimers.delete(node.id); }
-    if (timer || status === 'Updating preview…' || status === 'Processing locally…') await renderImagePreview(node.id, node.assetId, node.adjustments);
-    if (!state.previews.has(node.id) && node.adjustments && Object.values(node.adjustments).some(value => Number(value) !== 0)) await renderImagePreview(node.id, node.assetId, node.adjustments);
+    if (timer || status === 'Updating preview…' || status === 'Processing locally…') {
+      await renderImagePreview(node.id, assetId, adjustments, transforms);
+    }
+    const hasEdits = Object.values(adjustments || {}).some(value => Number(value) !== 0)
+      || Boolean(transforms?.crop || transforms?.rotation);
+    const previewMatchesAsset = state.previews.has(node.id)
+      && (state.previewAssetIds.get(node.id) == null || state.previewAssetIds.get(node.id) === assetId);
+    if (!previewMatchesAsset && hasEdits) await renderImagePreview(node.id, assetId, adjustments, transforms);
   }));
 }
 
@@ -3293,6 +3694,10 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'rotate-image' || action === 'reset-image-transforms') {
+    applyImageTransformAction(node, details.transformTarget, action, details.direction);
+    return;
+  }
   if (action === 'apply-image-recipe' || action === 'apply-selection-image-recipe') {
     const recipeId = $('#selection-image-recipe')?.value;
     const recipe = state.document.recipes.find(item => item.id === recipeId);
@@ -3441,7 +3846,8 @@ function applyInspectorAction(action, details = {}) {
   }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
-    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.fit = 'cover';
+    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.transforms = createImageTransforms(); node.fit = 'cover';
+    recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit']);
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
   else if (action === 'add-stroke') {
@@ -3507,14 +3913,15 @@ function initEvents() {
     try {
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
       const importedDocument = parseDocument(packageData.document);
-      for (const asset of packageData.assets) await saveImageAssetBytes(asset.id, asset.name, asset.type, asset.bytes);
-      state.document = importedDocument; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
-      history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); await restoreImageAssets(); showToast('Local design opened on this device.');
+      await switchToDocument(importedDocument, {
+        message: 'Local design opened on this device.',
+        beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, packageData.assets)).document)
+      });
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
     input.value = '';
   });
   setZoomButtonHandlers();
-  $('#document-name').addEventListener('change', event => { const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
+  $('#document-name').addEventListener('change', event => { if (state.documentTransitioning) return; const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
   $('#add-page').addEventListener('click', addPage);
   $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
@@ -3545,6 +3952,9 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    if (state.documentTransitioning) return;
+    const imageTransformField = event.target.closest('[data-image-transform-field]');
+    if (imageTransformField) { updateImageTransformInput(imageTransformField); return; }
     const imageFillField = event.target.closest('[data-image-fill-field]');
     if (imageFillField) { updateImageFillInput(imageFillField); return; }
     const gradientField = event.target.closest('[data-gradient-field]');
@@ -3569,6 +3979,8 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    if (state.documentTransitioning) return;
+    if (event.target.matches('[data-image-transform-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }
@@ -3701,6 +4113,16 @@ function initEvents() {
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50));
+  $('#design-library-close').addEventListener('click', () => $('#design-library-dialog').close());
+  $('#design-library-export').addEventListener('click', exportDesign);
+  $('#design-library-new').addEventListener('click', async () => {
+    $('#design-library-dialog').close();
+    await newDesign();
+  });
+  $('#design-library-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-design-action]');
+    if (button) void handleDesignLibraryAction(button.dataset.designAction, button.dataset.designId);
+  });
   $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
   $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; state.prototypeSourceId = null; $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
@@ -3744,6 +4166,7 @@ function initEvents() {
 }
 
 function onKeyDown(event) {
+  if (state.documentTransitioning) return;
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
   if (event.code === 'Space' && !editing) { state.spaceDown = true; event.preventDefault(); }
   if (editing) return;
@@ -3797,10 +4220,11 @@ async function boot() {
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
   renderer = new SceneRenderer(canvas, () => state);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
-  initEvents(); renderUI(); state.ready = true; document.documentElement.dataset.appReady = 'true';
+  initEvents(); renderUI(); state.ready = true;
   try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
-  if (!await loadLatestDocument().catch(() => null)) queueSave();
-  $('#save-state').lastElementChild.textContent = 'Saved locally';
+  if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
+  else setSaveState('saved', 'Saved locally');
+  document.documentElement.dataset.appReady = 'true';
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => renderer.invalidate());
   window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); });

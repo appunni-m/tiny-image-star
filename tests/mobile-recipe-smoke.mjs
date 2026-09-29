@@ -98,11 +98,20 @@ try {
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('New design'));
   assert(newDesign, 'the mobile main menu should offer a fresh local design.');
   tap(app, newDesign);
+  await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'new local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');
 
   const source = fixtureBmp();
-  addImages(app, Array.from({ length: 3 }, (_, index) => new app.defaultView.File([source], `phone-image-${index + 1}.bmp`, { type: 'image/bmp' })));
-  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 3, 'three imported images');
+  const importToasts = [];
+  try {
+    addImages(app, Array.from({ length: 3 }, (_, index) => new app.defaultView.File([source], `phone-image-${index + 1}.bmp`, { type: 'image/bmp' })));
+    await waitFor(() => {
+      const message = app.querySelector('#toast-region')?.textContent?.trim();
+      if (message) importToasts.push(message);
+      return app.querySelectorAll('.layer-row[data-layer-id]').length === 3;
+    }, 'three imported images');
+  }
+  catch (error) { throw new Error(`${error.message} (observed import errors: ${importToasts.join(' | ') || 'none'})`); }
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
   const imageIds = [...app.querySelectorAll('.layer-row[data-layer-id]')].map(row => row.dataset.layerId);
@@ -117,6 +126,15 @@ try {
   brightness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updating preview'), 'scheduled source preview');
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'source image preview');
+  const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="layer"]');
+  assert(cropLeft, 'the phone image inspector should expose normalized crop bounds.');
+  assertTouchTarget(app, cropLeft, 'Crop left control', 34);
+  setInput(app, cropLeft, 20);
+  cropLeft.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  const rotateRight = app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="layer"]');
+  assertTouchTarget(app, rotateRight, 'Rotate right control');
+  tap(app, rotateRight);
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'cropped and rotated source preview');
   await waitFor(() => sampleUntouchedSecondImage(app)[3] > 0, 'untouched batch target preview');
   const beforeBatch = sampleUntouchedSecondImage(app);
 
@@ -125,6 +143,7 @@ try {
   tap(app, saveRecipe);
   const dialog = app.querySelector('#recipe-dialog');
   assert(dialog?.open, 'Save recipe should open from the image inspector without a context menu.');
+  assert(app.querySelector('#recipe-preview-summary').textContent.includes('Crop') && app.querySelector('#recipe-preview-summary').textContent.includes('Rotate 90°'), 'the recipe preview should describe crop and rotation.');
   app.querySelector('#recipe-name').value = 'Phone batch look';
   tap(app, app.querySelector('#save-recipe-confirm'));
   await waitFor(() => !dialog.open, 'recipe save dialog');
@@ -185,11 +204,13 @@ try {
   await waitFor(async () => {
     const stored = await readDocuments(app); stored.sort((a, b) => b.savedAt - a.savedAt);
     const images = stored[0]?.document?.pages.flatMap(page => page.children).filter(node => node.type === 'image') || [];
-    return images.length === 3 && images.every(node => node.adjustments?.brightness === -65);
+    return images.length === 3 && images.every(node => node.adjustments?.brightness === -65
+      && node.transforms?.crop?.left === 0.2 && node.transforms?.rotation === 90);
   }, 'all applied recipe settings persisted locally');
   const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
   const savedImages = records[0]?.document?.pages.flatMap(page => page.children).filter(node => node.type === 'image') || [];
-  assert(savedImages.length === 3 && savedImages.every(node => node.adjustments?.brightness === -65), 'the image layers should retain the applied recipe settings in local storage.');
+  assert(savedImages.length === 3 && savedImages.every(node => node.adjustments?.brightness === -65
+    && node.transforms?.crop?.left === 0.2 && node.transforms?.rotation === 90), 'the image layers should retain recipe adjustments, crop, and rotation in local storage.');
 
   tap(app, app.querySelector('#bulk-done'));
   tap(app, app.querySelector('#sidebar-toggle'));
@@ -223,6 +244,8 @@ try {
   setInspectorInput(app, '[data-prop="adjustments.brightness"]', -19);
   setInspectorInput(app, '[data-prop="opacity"]', 37);
   setInspectorInput(app, '[data-prop="fit"]', 'contain');
+  setInspectorInput(app, '[data-image-transform-field="left"]', 30);
+  tap(app, app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="layer"]'));
   rejectRecipeBitmap(new Error('Injected recipe-render failure for rollback regression.'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe finished with errors', 'failed recipe batch completion');
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'newer image edit preview after failed recipe');
@@ -231,12 +254,14 @@ try {
     const target = stored[0]?.document?.pages.flatMap(page => page.children).find(node => node.id === failureTargetId);
     return target?.adjustments?.brightness === -19
       && target?.adjustments?.contrast === 24
+      && target?.transforms?.crop?.left === 0.3
+      && target?.transforms?.rotation === 180
       && target?.opacity === 0.37
       && target?.fit === 'contain';
   }, 'newer edit and unchanged recipe fields to persist after rollback');
   app.defaultView.createImageBitmap = nativeCreateImageBitmap;
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, recipeRenderFailureInjected: true, newerEditsPreserved: ['brightness', 'opacity', 'fit'], unchangedRecipeFieldsRestored: ['contrast'], liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, recipeRenderFailureInjected: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], unchangedRecipeFieldsRestored: ['contrast'], liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

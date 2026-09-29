@@ -1,3 +1,5 @@
+import { createId, walkNodes } from './model.js';
+
 const DB_NAME = 'figma-local-documents';
 const DB_VERSION = 1;
 let dbPromise;
@@ -48,6 +50,88 @@ export async function loadLatestDocument() {
   return records[0]?.document ?? null;
 }
 
+/** Return document-library rows without loading every design tree into the UI. */
+export async function listSavedDocuments() {
+  const db = await openDatabase();
+  const records = await requestResult(db.transaction('documents').objectStore('documents').getAll());
+  return records
+    .filter(record => record?.document && typeof record.id === 'string')
+    .map(({ id, savedAt, document }) => ({
+      id,
+      name: typeof document.name === 'string' && document.name.trim() ? document.name : 'Untitled',
+      savedAt: Number.isFinite(savedAt) ? savedAt : 0
+    }))
+    .sort((left, right) => right.savedAt - left.savedAt || left.name.localeCompare(right.name));
+}
+
+/** Retrieve one saved local design by its stable document ID. */
+export async function loadDocumentById(id) {
+  if (typeof id !== 'string' || !id) return null;
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('documents').objectStore('documents').get(id));
+  return record?.document ?? null;
+}
+
+/** Rename a saved document. Returns false when the requested ID is absent. */
+export async function renameStoredDocument(id, name) {
+  const nextName = String(name ?? '').trim();
+  if (!nextName || nextName.length > 120) throw new TypeError('A design name must contain 1–120 characters.');
+  const db = await openDatabase();
+  const tx = db.transaction('documents', 'readwrite');
+  const store = tx.objectStore('documents');
+  let found = false;
+  const done = transactionDone(tx);
+  const request = store.get(id);
+  request.onsuccess = () => {
+    const existing = request.result;
+    if (!existing?.document) return;
+    found = true;
+    store.put({ ...existing, savedAt: Date.now(), document: { ...existing.document, name: nextName } });
+  };
+  await done;
+  return found;
+}
+
+/** Duplicate a saved design under a new document ID while retaining its local asset references. */
+export async function duplicateStoredDocument(id, name = null) {
+  if (name != null && (!String(name).trim() || String(name).trim().length > 120)) throw new TypeError('A design name must contain 1–120 characters.');
+  const db = await openDatabase();
+  const tx = db.transaction('documents', 'readwrite');
+  const store = tx.objectStore('documents');
+  let duplicate = null;
+  const done = transactionDone(tx);
+  const request = store.get(id);
+  request.onsuccess = () => {
+    const existing = request.result;
+    if (!existing?.document) return;
+    duplicate = structuredClone(existing.document);
+    duplicate.id = createId('file');
+    const suggestedName = `${String(duplicate.name || 'Untitled').slice(0, 114)} copy`;
+    duplicate.name = name == null ? suggestedName : String(name).trim();
+    store.put({ id: duplicate.id, savedAt: Date.now(), document: duplicate });
+  };
+  await done;
+  return duplicate && structuredClone(duplicate);
+}
+
+/** Delete one saved design atomically. Asset rows are intentionally retained: v1 assets have no document ownership metadata. */
+export async function deleteStoredDocument(id) {
+  if (typeof id !== 'string' || !id) return false;
+  const db = await openDatabase();
+  const tx = db.transaction('documents', 'readwrite');
+  const store = tx.objectStore('documents');
+  let found = false;
+  const done = transactionDone(tx);
+  const request = store.get(id);
+  request.onsuccess = () => {
+    if (!request.result) return;
+    found = true;
+    store.delete(id);
+  };
+  await done;
+  return found;
+}
+
 export async function saveImageAsset(id, file) {
   return saveImageAssetBytes(id, file.name, file.type, new Uint8Array(await file.arrayBuffer()));
 }
@@ -57,6 +141,100 @@ export async function saveImageAssetBytes(id, name, type, bytes) {
   const tx = db.transaction('assets', 'readwrite');
   tx.objectStore('assets').put({ id, name, type, bytes: bytes.slice().buffer });
   await transactionDone(tx);
+}
+
+/**
+ * Import package assets without replacing an existing source image. Identical
+ * bytes reuse the stored ID; an ID collision with different bytes gets a new
+ * ID. All reads and writes share one readwrite transaction, so the collision
+ * decision cannot race another tab and the entire import rolls back on error.
+ */
+export async function importLocalPackage(document, assets) {
+  if (!document || typeof document.id !== 'string' || !document.id || !Array.isArray(document.pages)) {
+    throw new TypeError('Local design package does not contain a valid design.');
+  }
+  if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
+  const seen = new Set();
+  for (const asset of assets) {
+    if (!asset || typeof asset.id !== 'string' || !asset.id || seen.has(asset.id)
+      || !(asset.bytes instanceof Uint8Array) || typeof asset.name !== 'string' || typeof asset.type !== 'string') {
+      throw new TypeError('Local design package contains an invalid or duplicate image asset.');
+    }
+    seen.add(asset.id);
+  }
+
+  const db = await openDatabase();
+  const tx = db.transaction(['assets', 'documents'], 'readwrite');
+  const assetStore = tx.objectStore('assets');
+  const documentStore = tx.objectStore('documents');
+  const done = transactionDone(tx);
+  const mappingPromise = new Promise((resolve, reject) => {
+    const fail = error => {
+      reject(error);
+      try { tx.abort(); } catch { /* IndexedDB may already be aborting. */ }
+    };
+    const existing = new Array(assets.length);
+    let existingDocument;
+    let remaining = assets.length + 1;
+    const prepareImport = () => {
+      if (remaining !== 0) return;
+      const mapping = new Map();
+      const reserved = new Set(seen);
+      const importedDocument = structuredClone(document);
+      if (existingDocument) importedDocument.id = createId('file');
+      try {
+        for (let itemIndex = 0; itemIndex < assets.length; itemIndex += 1) {
+          const assetToSave = assets[itemIndex];
+          const stored = existing[itemIndex];
+          const source = assetToSave.bytes;
+          const storedBytes = stored?.bytes ? new Uint8Array(stored.bytes) : null;
+          const identical = storedBytes && storedBytes.byteLength === source.byteLength
+            && storedBytes.every((value, byteIndex) => value === source[byteIndex]);
+          if (stored && identical) {
+            mapping.set(assetToSave.id, assetToSave.id);
+            continue;
+          }
+          let id = assetToSave.id;
+          if (stored) {
+            do { id = createId('asset'); } while (reserved.has(id));
+          }
+          reserved.add(id);
+          assetStore.add({ id, name: assetToSave.name, type: assetToSave.type, bytes: source.slice().buffer });
+          mapping.set(assetToSave.id, id);
+        }
+        for (const page of importedDocument.pages) {
+          walkNodes(page.children || [], ({ node }) => {
+            if (node.type === 'image' && mapping.has(node.assetId)) node.assetId = mapping.get(node.assetId);
+            if (node.imageFill && mapping.has(node.imageFill.assetId)) node.imageFill.assetId = mapping.get(node.imageFill.assetId);
+          });
+        }
+        documentStore.add({ id: importedDocument.id, savedAt: Date.now(), document: importedDocument });
+        resolve({ document: importedDocument, assetIds: mapping });
+      } catch (error) {
+        fail(error);
+      }
+    };
+    const documentRequest = documentStore.get(document.id);
+    documentRequest.onsuccess = () => { existingDocument = documentRequest.result; remaining -= 1; prepareImport(); };
+    documentRequest.onerror = () => fail(documentRequest.error || new Error('Could not check the local design library.'));
+    for (const [index, asset] of assets.entries()) {
+      const request = assetStore.get(asset.id);
+      request.onsuccess = () => {
+        existing[index] = request.result;
+        remaining -= 1;
+        prepareImport();
+      };
+      request.onerror = () => fail(request.error || new Error('Could not check imported image assets.'));
+    }
+  });
+  try {
+    const imported = await mappingPromise;
+    await done;
+    return imported;
+  } catch (error) {
+    await done.catch(() => {});
+    throw error;
+  }
 }
 
 export async function loadImageAsset(id) {

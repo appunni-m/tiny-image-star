@@ -5,10 +5,24 @@ import { measureTrackedText, textGraphemes, transformTextCase, wrapText } from '
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
+import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
 const richWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
+
+/** Return the selection outline and all transform handles in page coordinates. */
+export function selectionOverlayGeometry(node, ancestors = [], { zoom = 1, rotateOffset = 24 } = {}) {
+  if (!Number.isFinite(zoom) || zoom <= 0) throw new TypeError('Selection overlay zoom must be a positive finite number.');
+  const corners = [
+    nodeLocalToPage(node, { x: 0, y: 0 }, ancestors),
+    nodeLocalToPage(node, { x: node.width, y: 0 }, ancestors),
+    nodeLocalToPage(node, { x: node.width, y: node.height }, ancestors),
+    nodeLocalToPage(node, { x: 0, y: node.height }, ancestors)
+  ];
+  const handles = getTransformHandles(node, ancestors, { rotateOffset: rotateOffset / zoom });
+  return { corners, handles };
+}
 
 function rgba(hex, alpha = 1) {
   if (!hex || hex === 'transparent') return `rgba(0,0,0,0)`;
@@ -847,38 +861,47 @@ export class SceneRenderer {
 
   drawSelection(ctx, nodes, selectedIds, parentX, parentY) {
     const selected = [];
-    const collect = (list, offsetX, offsetY) => {
+    const collect = (list, ancestors = []) => {
       for (const node of list) {
         const geometry = getNodeGeometry(this.getState().document, node);
-        if (selectedIds.includes(node.id)) selected.push({ node: { ...node, ...geometry }, x: offsetX + geometry.x, y: offsetY + geometry.y });
-        collect(node.children || [], offsetX + geometry.x, offsetY + geometry.y);
+        const resolvedNode = { ...node, ...geometry };
+        if (selectedIds.includes(node.id)) selected.push({ node: resolvedNode, ancestors });
+        collect(node.children || [], [...ancestors, resolvedNode]);
       }
     };
-    collect(nodes, parentX, parentY);
+    collect(nodes, []);
     if (!selected.length) return;
+    const zoom = Math.max(.08, this.getState().zoom || 1);
+    const size = 6 / zoom;
     ctx.save();
     ctx.strokeStyle = BLUE; ctx.fillStyle = '#ffffff'; ctx.lineWidth = 1 / (this.getState().zoom || 1);
     for (const entry of selected) {
-      ctx.save();
-      const { node, x, y } = entry;
-      const cx = x + node.width / 2; const cy = y + node.height / 2;
-      if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
-      ctx.strokeRect(x - 1 / (this.getState().zoom || 1), y - 1 / (this.getState().zoom || 1), node.width + 2 / (this.getState().zoom || 1), node.height + 2 / (this.getState().zoom || 1));
-      ctx.restore();
+      const { corners } = selectionOverlayGeometry(entry.node, entry.ancestors, { zoom, rotateOffset: 0 });
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+      ctx.closePath(); ctx.stroke();
     }
     if (selected.length === 1) {
-      const { node, x, y } = selected[0];
-      if (node.rotation) { const cx = x + node.width / 2; const cy = y + node.height / 2; ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
-      const size = 6 / (this.getState().zoom || 1);
-      for (const [hx, hy] of [[x, y], [x + node.width / 2, y], [x + node.width, y], [x + node.width, y + node.height / 2], [x + node.width, y + node.height], [x + node.width / 2, y + node.height], [x, y + node.height], [x, y + node.height / 2]]) {
-        ctx.beginPath(); ctx.rect(hx - size / 2, hy - size / 2, size, size); ctx.fill(); ctx.stroke();
+      const { node, ancestors } = selected[0];
+      const overlay = selectionOverlayGeometry(node, ancestors, { zoom });
+      const resizePoints = Object.values(overlay.handles.resize);
+      const north = overlay.handles.resize.n;
+      const rotate = overlay.handles.rotate;
+      ctx.beginPath(); ctx.moveTo(north.x, north.y); ctx.lineTo(rotate.x, rotate.y); ctx.stroke();
+      for (const point of resizePoints) {
+        ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
       }
+      ctx.beginPath(); ctx.arc(rotate.x, rotate.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+      const nodeTransform = nodeLocalToPageTransform(node, ancestors);
+      const pagePoint = point => transformPoint(nodeTransform, point);
       if (node.type === 'path') {
         const selectedPointIndex = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.index : -1;
-        for (const [index, point] of (node.points || []).entries()) {
-          const anchor = vectorNodePoint(node, index, 'anchor', { x, y });
+        for (const [index] of (node.points || []).entries()) {
+          const anchor = pagePoint(vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }));
           for (const part of ['in', 'out']) {
-            const control = vectorNodePoint(node, index, part, { x, y });
+            const control = pagePoint(vectorNodePoint(node, index, part, { x: 0, y: 0 }));
             if (Math.hypot(control.x - anchor.x, control.y - anchor.y) < size) continue;
             ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
             ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -890,17 +913,18 @@ export class SceneRenderer {
       } else if (node.type === 'network') {
         const selectedVertexId = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.vertexId : null;
         for (const edge of node.edges || []) {
-          const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
+          const points = vectorNetworkEdgePoints(node, edge.id, { x: 0, y: 0 });
           if (!points) continue;
-          const from = points[0]; const to = points[3];
+          const from = pagePoint(points[0]); const to = pagePoint(points[3]);
           for (const [part, handle, anchor] of [['control1', points[1], from], ['control2', points[2], to]]) {
             if (!edge[part]) continue;
-            ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(handle.x, handle.y); ctx.stroke();
-            ctx.beginPath(); ctx.arc(handle.x, handle.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            const pageHandle = pagePoint(handle);
+            ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(pageHandle.x, pageHandle.y); ctx.stroke();
+            ctx.beginPath(); ctx.arc(pageHandle.x, pageHandle.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           }
         }
         for (const vertex of node.vertices || []) {
-          const anchor = vectorNetworkVertexPoint(node, vertex.id, { x, y });
+          const anchor = pagePoint(vectorNetworkVertexPoint(node, vertex.id, { x: 0, y: 0 }));
           if (!anchor) continue;
           ctx.fillStyle = selectedVertexId === vertex.id ? BLUE : '#ffffff';
           ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
@@ -1023,26 +1047,72 @@ export function worldToScreen(point, canvas, state) {
   return { x: rect.left + state.panX + point.x * state.zoom, y: rect.top + state.panY + point.y * state.zoom };
 }
 
-export function hitTestPage(page, point, containsBoolean = null, document = null) {
-  const hits = [];
-  const visit = (nodes, parentX = 0, parentY = 0) => {
-    for (const node of nodes) {
+function containsPointInClip(node, point, ancestors, document) {
+  const geometry = document ? { ...node, ...getNodeGeometry(document, node) } : node;
+  const local = pageToNodeLocal(geometry, point, ancestors);
+  const { width, height } = geometry;
+  if (local.x < 0 || local.y < 0 || local.x > width || local.y > height) return false;
+  const rawRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
+  const radius = Math.min(Math.max(0, Number(rawRadius) || 0), width / 2, height / 2);
+  if (!radius || (local.x >= radius && local.x <= width - radius) || (local.y >= radius && local.y <= height - radius)) return true;
+  const centerX = local.x < radius ? radius : width - radius;
+  const centerY = local.y < radius ? radius : height - radius;
+  return (local.x - centerX) ** 2 + (local.y - centerY) ** 2 <= radius ** 2 + 1e-9;
+}
+
+function pointInsideAncestorClips(point, ancestors, document) {
+  return ancestors.every((ancestor, index) => !ancestor.clip
+    || containsPointInClip(ancestor, point, ancestors.slice(0, index), document));
+}
+
+/** Find the deepest visible frame/group containing a point after ancestor clips. */
+export function deepestContainerAtPagePoint(nodes, point, document = null) {
+  let result = null;
+  const visit = (items, ancestors = []) => {
+    for (const node of items || []) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
-      const geometry = document ? getNodeGeometry(document, node) : node;
-      const resolvedNode = document ? { ...node, ...geometry } : node;
-      const x = parentX + geometry.x; const y = parentY + geometry.y;
-      const center = { x: x + geometry.width / 2, y: y + geometry.height / 2 };
-      const angle = -(Number(geometry.rotation) || 0) * Math.PI / 180;
-      const dx = point.x - center.x; const dy = point.y - center.y;
-      const localPoint = angle ? {
-        x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle),
-        y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle)
-      } : point;
-      const inBounds = localPoint.x >= x && localPoint.y >= y && localPoint.x <= x + geometry.width && localPoint.y <= y + geometry.height;
-      if (inBounds && (node.type !== 'boolean' || !containsBoolean || containsBoolean(resolvedNode, point, x, y))) hits.push(resolvedNode);
-      if (node.type !== 'boolean') visit(node.children || [], x, y);
+      if (!pointInsideAncestorClips(point, ancestors, document)) continue;
+      const geometry = document ? { ...node, ...getNodeGeometry(document, node) } : node;
+      if (['frame', 'group'].includes(node.type)) {
+        const local = pageToNodeLocal(geometry, point, ancestors);
+        if (local.x >= 0 && local.y >= 0 && local.x <= geometry.width && local.y <= geometry.height) {
+          result = { node, ancestors: [...ancestors, geometry] };
+        }
+      }
+      visit(node.children || [], [...ancestors, geometry]);
     }
   };
-  visit(page.children);
+  visit(nodes);
+  return result;
+}
+
+export function hitTestPage(page, point, containsBoolean = null, document = null) {
+  const hits = [];
+  const visit = (nodes, ancestors = []) => {
+    for (const node of nodes) {
+      if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
+      if (!pointInsideAncestorClips(point, ancestors, document)) continue;
+      const geometry = document ? getNodeGeometry(document, node) : node;
+      const resolvedNode = document ? { ...node, ...geometry } : node;
+      const localPoint = pageToNodeLocal(resolvedNode, point, ancestors);
+      const inBounds = localPoint.x >= 0 && localPoint.y >= 0
+        && localPoint.x <= geometry.width && localPoint.y <= geometry.height;
+      if (inBounds) {
+        let contained = true;
+        if (node.type === 'boolean' && containsBoolean) {
+          // The boolean raster is queried in page coordinates by existing callers.
+          // Fold ancestor rotations into the node rotation and use its true page
+          // center so that the callback sees the same rigid transform as drawing.
+          const center = nodeLocalToPage(resolvedNode, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors);
+          const rotation = ancestors.reduce((sum, ancestor) => sum + Number(ancestor.rotation || 0), Number(geometry.rotation || 0));
+          const booleanNode = { ...resolvedNode, rotation };
+          contained = containsBoolean(booleanNode, point, center.x - geometry.width / 2, center.y - geometry.height / 2);
+        }
+        if (contained) hits.push(resolvedNode);
+      }
+      if (node.type !== 'boolean') visit(node.children || [], [...ancestors, resolvedNode]);
+    }
+  };
+  visit(page.children || []);
   return hits.at(-1) ?? null;
 }

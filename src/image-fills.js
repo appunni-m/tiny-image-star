@@ -1,3 +1,5 @@
+import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
+
 export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
 export const imageFillAdjustmentRanges = Object.freeze({
   brightness: [-100, 100],
@@ -17,8 +19,10 @@ export function createImageFill(assetId, overrides = {}) {
   return {
     assetId,
     fit: 'cover',
+    transforms: createImageTransforms(),
     adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 },
     ...overrides,
+    transforms: createImageTransforms(overrides.transforms || {}),
     adjustments: {
       brightness: 0, contrast: 0, saturation: 0, blur: 0,
       ...(overrides.adjustments || {})
@@ -30,6 +34,7 @@ export function isValidImageFill(fill) {
   if (!fill || typeof fill !== 'object' || Array.isArray(fill)
     || typeof fill.assetId !== 'string' || !fill.assetId.trim() || fill.assetId.length > 256
     || !['cover', 'contain'].includes(fill.fit)
+    || (fill.transforms != null && !isValidImageTransforms(fill.transforms))
     || !fill.adjustments || typeof fill.adjustments !== 'object' || Array.isArray(fill.adjustments)
     || Object.keys(fill.adjustments).some(key => !Object.hasOwn(imageFillAdjustmentRanges, key))) return false;
   return Object.entries(imageFillAdjustmentRanges).every(([field, [minimum, maximum]]) => {

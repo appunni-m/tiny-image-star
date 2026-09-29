@@ -27,7 +27,7 @@ self.onmessage = async event => {
     const cachedRender = sources.withSource(message.assetId, () => {
       if (!message.sourceBytes) throw new Error('The original image is no longer available in memory.');
       return decodeOriginal(pillow, new Uint8Array(message.sourceBytes));
-    }, source => renderImage(source, message.adjustments));
+    }, source => renderImage(source, message.adjustments, message.transforms));
     const { result, retained, evictedAssetIds } = cachedRender;
     self.postMessage({ type: 'rendered', requestId: message.requestId, assetId: message.assetId, sourceRetained: retained, evictedAssetIds, ...result }, [result.bytes.buffer]);
   } catch (error) {

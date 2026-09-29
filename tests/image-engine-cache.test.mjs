@@ -37,7 +37,11 @@ class CacheWorkerMock {
       return;
     }
     if (message.type !== 'render') return;
-    this.renderRequests.push({ assetId: message.assetId, hasSourceBytes: message.sourceBytes instanceof ArrayBuffer });
+    this.renderRequests.push({
+      assetId: message.assetId,
+      hasSourceBytes: message.sourceBytes instanceof ArrayBuffer,
+      transforms: message.transforms,
+    });
     queueMicrotask(() => {
       try {
         const cachedRender = this.cache.withSource(message.assetId, () => {
@@ -116,6 +120,19 @@ test('LocalImageEngine omits source bytes for retained cache hits and resends af
     const worker = engine.workers[0].worker;
     assert.deepEqual(worker.renderRequests.map(request => request.hasSourceBytes), [true, false, true]);
     assert.deepEqual(worker.disposed, ['asset']);
+  });
+});
+
+test('LocalImageEngine snapshots crop and rotation metadata into worker render requests', async () => {
+  await withEngine(async engine => {
+    const transforms = { crop: { left: 0.1, top: 0.2, right: 0.9, bottom: 0.8 }, rotation: 270 };
+    const pending = engine.render('asset', bytesFor(2), {}, transforms);
+    transforms.crop.left = 0.75;
+    await pending;
+    assert.deepEqual(engine.workers[0].worker.renderRequests[0].transforms, {
+      crop: { left: 0.1, top: 0.2, right: 0.9, bottom: 0.8 },
+      rotation: 270,
+    });
   });
 });
 

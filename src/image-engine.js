@@ -130,13 +130,23 @@ export class LocalImageEngine {
     this.#notify();
   }
 
-  render(assetId, sourceBytes, adjustments) {
+  render(assetId, sourceBytes, adjustments, transforms = {}) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({ assetId, sourceBytes, adjustments: { ...adjustments }, resolve, reject });
+      this.queue.push({
+        assetId,
+        sourceBytes,
+        adjustments: { ...adjustments },
+        transforms: {
+          ...transforms,
+          ...(transforms?.crop ? { crop: { ...transforms.crop } } : {}),
+        },
+        resolve,
+        reject,
+      });
       if (!this.workers.length) this.setConcurrency(this.concurrency);
       this.#dispatch();
       this.#notify();
@@ -156,7 +166,14 @@ export class LocalImageEngine {
     if (firstLoad) slot.loaded.add(job.assetId);
     slot.busy = true;
     this.pending.set(requestId, { ...job, slot });
-    slot.worker.postMessage({ type: 'render', requestId, assetId: job.assetId, sourceBytes: bytes?.buffer, adjustments: job.adjustments }, bytes ? [bytes.buffer] : []);
+    slot.worker.postMessage({
+      type: 'render',
+      requestId,
+      assetId: job.assetId,
+      sourceBytes: bytes?.buffer,
+      adjustments: job.adjustments,
+      transforms: job.transforms,
+    }, bytes ? [bytes.buffer] : []);
     this.#dispatch();
   }
 

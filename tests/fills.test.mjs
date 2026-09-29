@@ -2,6 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createDocument, createGradientFill, createNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
 import { createGradientPaint, gradientFillToCSS, isValidGradientFill } from '../src/fills.js';
+import { createImageFill, isValidImageFill } from '../src/image-fills.js';
+
+test('image fills default to uncropped upright pixels and validate normalized crop and rotation', () => {
+  const defaults = createImageFill('asset-photo');
+  assert.deepEqual(defaults.transforms, { crop: null, rotation: 0 });
+  assert.equal(isValidImageFill(defaults), true);
+
+  const cropped = createImageFill('asset-photo', {
+    transforms: { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90 }
+  });
+  assert.deepEqual(cropped.transforms, { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90 });
+  assert.equal(isValidImageFill(cropped), true);
+
+  for (const transforms of [
+    { crop: { left: -0.01, top: 0, right: 0.8, bottom: 1 }, rotation: 0 },
+    { crop: { left: 0.6, top: 0, right: 0.6, bottom: 1 }, rotation: 0 },
+    { crop: null, rotation: 45 },
+    { crop: null, rotation: 90.5 }
+  ]) {
+    assert.equal(isValidImageFill({ ...defaults, transforms }), false);
+  }
+  assert.throws(() => createImageFill('asset-photo', { transforms: { crop: { left: 0, top: 0, right: 1.1, bottom: 1 } } }), /crop edges/);
+  assert.throws(() => createImageFill('asset-photo', { transforms: { rotation: 45 } }), /quarter turns/);
+});
 
 test('linear and radial gradients survive local design serialization', () => {
   const document = createDocument();

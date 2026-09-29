@@ -1,4 +1,5 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
+import { createImageFill } from '../src/image-fills.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -66,9 +67,14 @@ try {
     name: 'Local photo', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
     x: 112, y: 20, width: 40, height: 28, rotation: -8, opacity: 0.8, fit: 'cover'
   });
+  const imageFilled = createNode('rectangle', {
+    name: 'Image-filled export', x: 220, y: 30, width: 40, height: 40, fill: '#ffffff',
+    imageFill: createImageFill(imageAssetId, { fit: 'contain' })
+  });
   addNode(design, group); addNode(design, artwork, { parentId: group.id });
   addNode(design, caption, { parentId: group.id });
   addNode(design, localImage, { parentId: group.id });
+  addNode(design, imageFilled);
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
   const imageAssets = [{ id: imageAssetId, name: 'local-photo.png', type: 'image/png', bytes: imageBytes }];
   transfer.items.add(new File([packageFile(design, imageAssets)], 'export-smoke.flocal', { type: 'application/octet-stream' }));
@@ -176,7 +182,47 @@ try {
   const localImageSvg = await downloads[6].blob.text();
   assert(localImageSvg.includes('href="data:image/png;base64,') && !localImageSvg.includes('blob:') && !localImageSvg.includes('href="http'),
     'Selected local image SVG should embed the source bytes and contain no temporary or network URL.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, rasterExportUnaffectedByOutlineView: true })}`;
+
+  click(app.querySelector(`[data-layer-id="${imageFilled.id}"]`));
+  await waitFor(() => app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]'), 'image-fill crop control for export race');
+  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'initial image-fill preview for export race');
+  const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
+  const pendingPreviewTimers = new Set();
+  const nativeSetTimeout = view.setTimeout.bind(view);
+  const nativeClearTimeout = view.clearTimeout.bind(view);
+  view.setTimeout = (callback, delay, ...args) => {
+    if (delay === 110) {
+      const timer = { callback, args, cancelled: false };
+      pendingPreviewTimers.add(timer);
+      return timer;
+    }
+    return nativeSetTimeout(callback, delay, ...args);
+  };
+  view.clearTimeout = timer => {
+    if (pendingPreviewTimers.has(timer)) { timer.cancelled = true; return; }
+    nativeClearTimeout(timer);
+  };
+  try {
+    cropLeft.value = '50';
+    cropLeft.dispatchEvent(new view.Event('input', { bubbles: true }));
+    cropLeft.dispatchEvent(new view.Event('change', { bubbles: true }));
+    view.setTimeout = nativeSetTimeout;
+    assert([...pendingPreviewTimers].some(timer => !timer.cancelled), 'the crop edit should have a queued debounced image-fill render before export.');
+    click(app.querySelector('#export-selection'));
+    await waitFor(() => downloads.length === 8, 'immediate image-fill PNG download');
+    assert([...pendingPreviewTimers].every(timer => timer.cancelled), 'export should drain the pending image-fill preview before drawing.');
+    const bitmap = await view.createImageBitmap(downloads[7].blob);
+    assert(bitmap.width === 40 && bitmap.height === 40, 'the image-filled shape export should retain its layer dimensions.');
+    const previewCanvas = view.document.createElement('canvas'); previewCanvas.width = bitmap.width; previewCanvas.height = bitmap.height;
+    const previewContext = previewCanvas.getContext('2d', { willReadFrequently: true });
+    previewContext.drawImage(bitmap, 0, 0); bitmap.close();
+    const croppedPixel = previewContext.getImageData(4, 20, 1, 1).data;
+    assert(croppedPixel[2] > croppedPixel[0] * 1.5, `the immediate PNG should contain the new blue-only crop, not the stale red half (${Array.from(croppedPixel).join(',')}).`);
+  } finally {
+    view.setTimeout = nativeSetTimeout;
+    view.clearTimeout = nativeClearTimeout;
+  }
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, imageFillImmediateExport: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

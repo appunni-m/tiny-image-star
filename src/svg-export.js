@@ -2,6 +2,7 @@ import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js'
 import { layoutTextRuns, transformTextCase, wrapTextWithMeasure } from './text-layout.js';
 import { isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
+import { isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 
@@ -158,6 +159,9 @@ function unsupportedFeature(node, assets) {
     if (image.error) return image.error;
     const adjustments = node.type === 'image' ? node.adjustments : node.imageFill.adjustments;
     if (adjustments && Object.values(adjustments).some(value => Number(value) !== 0)) return 'raster image adjustments';
+    const transforms = node.type === 'image' ? node.transforms : node.imageFill.transforms;
+    if (transforms != null && !isValidImageTransforms(transforms)) throw new TypeError(`SVG export requires valid image transforms on layer ${node.name || node.id || '(unnamed)'}.`);
+    if (transforms?.crop || Number(transforms?.rotation || 0) % 360 !== 0) return 'raster image crop or rotation';
     const fit = imageFit(node);
     if (!['cover', 'contain'].includes(fit)) return node.type === 'image' ? 'image layer fit mode' : 'image fill fit mode';
     if (!(image.width > 0) || !(image.height > 0)) return node.type === 'image' ? 'image layers' : 'image fills';

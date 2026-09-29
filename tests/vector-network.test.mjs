@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  appendVectorNetworkPath, insertVectorNetworkPoint, setVectorNetworkEdgeControlPoint,
+  appendVectorNetworkPath, appendVectorNetworkPathResolved, insertVectorNetworkPoint, setVectorNetworkEdgeControlPoint,
   removeVectorNetworkVertex, setVectorNetworkVertexPoint, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors,
   vectorNetworkVertexPoint
 } from '../src/vector-path.js';
 import {
-  addNode, canCombineBoolean, canCreateMaskGroup, combineBoolean, createDocument, createMaskGroup,
-  createNode, parseDocument, serializeDocument
+  addNode, bindVariable, canCombineBoolean, canCreateMaskGroup, combineBoolean, createDocument, createMaskGroup,
+  createNode, createVariable, createVariableCollection, getNodeGeometry, parseDocument, serializeDocument, setVariableValue
 } from '../src/model.js';
+import { nodeLocalToPage, pageToNodeParentLocal, parentLocalToPageTransform, transformPoint } from '../src/transform-geometry.js';
 
 function evaluate(points, t) {
   const inverse = 1 - t; const [p0, p1, p2, p3] = points;
@@ -81,6 +82,63 @@ test('a new stroke can branch from two existing junctions without duplicating ei
   assert.equal(network.edges.length, 4);
   assert.ok(network.edges.some(edge => edge.from === middleId));
   assert.ok(network.edges.some(edge => edge.to === firstId));
+});
+
+test('branching a variable-bound rotated network preserves existing nested page positions', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 120, y: -90, width: 300, height: 220, rotation: 37 });
+  const group = createNode('group', { x: 32, y: 24, width: 160, height: 110, rotation: -26 });
+  const network = createNode('network', vectorNetworkGeometryFromAnchors([{ x: 100, y: 50 }, { x: 145, y: 55 }]));
+  addNode(document, frame);
+  addNode(document, group, { parentId: frame.id });
+  addNode(document, network, { parentId: group.id });
+
+  const collection = createVariableCollection(document, 'Network geometry');
+  const boundValues = { x: 92, y: 46, width: 88, height: 32, rotation: 29 };
+  for (const [property, value] of Object.entries(boundValues)) {
+    const variable = createVariable(document, collection.id, `Network ${property}`, 'number', value);
+    assert.equal(bindVariable(document, network.id, variable.id, property), true);
+  }
+
+  const ancestors = [frame, group].map(parent => ({ ...parent, ...getNodeGeometry(document, parent) }));
+  const geometry = { ...network, ...getNodeGeometry(document, network) };
+  const oldVertexIds = network.vertices.map(vertex => vertex.id);
+  const pagePosition = (nodeGeometry, vertexId) => nodeLocalToPage(
+    nodeGeometry,
+    vectorNetworkVertexPoint(nodeGeometry, vertexId, { x: 0, y: 0 }),
+    ancestors
+  );
+  const before = new Map(oldVertexIds.map(id => [id, pagePosition(geometry, id)]));
+  const firstId = oldVertexIds[0];
+  const firstLocal = vectorNetworkVertexPoint(geometry, firstId, { x: 0, y: 0 });
+  const firstPage = nodeLocalToPage(geometry, firstLocal, ancestors);
+  const branchParentPoint = { x: 150, y: 92 };
+  const branchPage = transformPoint(parentLocalToPageTransform(ancestors), branchParentPoint);
+  const anchors = [firstPage, branchPage].map(point => pageToNodeParentLocal(geometry, point, ancestors));
+  anchors[0].vertexId = firstId;
+
+  const result = appendVectorNetworkPathResolved(network, anchors, geometry, {
+    writeGeometry(next) {
+      return Object.entries(next).every(([property, value]) => setVariableValue(
+        document,
+        network.variableBindings[property],
+        value,
+        collection.defaultModeId
+      ));
+    }
+  });
+  assert.deepEqual(result, { addedEdges: 1, addedVertices: 1 });
+
+  const afterGeometry = { ...network, ...getNodeGeometry(document, network) };
+  for (const [id, expected] of before) {
+    const actual = pagePosition(afterGeometry, id);
+    assert.ok(Math.hypot(actual.x - expected.x, actual.y - expected.y) < 1e-8, `bound vertex ${id} moved`);
+  }
+  const added = network.vertices.find(vertex => !oldVertexIds.includes(vertex.id));
+  assert.ok(added);
+  const addedPage = pagePosition(afterGeometry, added.id);
+  assert.ok(Math.hypot(addedPage.x - branchPage.x, addedPage.y - branchPage.y) < 1e-8,
+    'the new branch endpoint should stay under the page-space pointer through both ancestor rotations and the network rotation.');
 });
 
 test('extending a rotated network preserves existing junction positions around its rotation center', () => {

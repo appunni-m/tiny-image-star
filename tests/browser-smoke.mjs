@@ -96,6 +96,7 @@ try {
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.includes('New design'));
   assert(newDesign, 'the file menu did not expose a fresh local design for this isolated workflow');
   dispatchClick(newDesign);
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('New local design created.')), 'fresh local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh local design');
   const source = fixtureBmp();
   const files = Array.from({ length: 3 }, (_, index) => new File([source], `local-fixture-${index + 1}.bmp`, { type: 'image/bmp' }));
@@ -111,6 +112,11 @@ try {
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const after = pixelInLeftHalf(app);
   assert(after[0] < before[0] - 20, `brightness edit did not change the same canvas image (${before.join(',')} -> ${after.join(',')})`);
+  await waitForSaveCycle(app, 'image edit before history preview check');
+  dispatchShortcut(app, 'z');
+  await waitFor(() => Math.abs(pixelInLeftHalf(app)[0] - before[0]) < 12, 'undo image preview restoration');
+  dispatchShortcut(app, 'z', { shift: true });
+  await waitFor(() => Math.abs(pixelInLeftHalf(app)[0] - after[0]) < 12, 'redo image preview restoration');
 
   let selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   assert(selectedRow, 'the imported image layer was not selected');
@@ -281,13 +287,24 @@ try {
   fillBrightness.dispatchEvent(new Event('input', { bubbles: true }));
   fillBrightness.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill WASM preview');
+  const fillCropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
+  assert(fillCropLeft, 'image fills did not expose local crop controls');
+  fillCropLeft.value = '20';
+  fillCropLeft.dispatchEvent(new Event('input', { bubbles: true }));
+  fillCropLeft.dispatchEvent(new Event('change', { bubbles: true }));
+  const fillRotateRight = app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="fill"]');
+  assert(fillRotateRight, 'image fills did not expose quarter-turn controls');
+  dispatchClick(fillRotateRight);
+  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill crop and rotation preview');
   await waitForSaveCycle(app, 'image-fill save');
 
   const documentRecords = await readStore('documents'); documentRecords.sort((a, b) => b.savedAt - a.savedAt);
   const current = documentRecords[0]?.document;
   assert(current?.recipes.some(item => item.name === 'Local red recipe'), 'the saved recipe was not persisted with the design');
   const imageFillNode = current.pages.flatMap(page => flattenNodes(page.children)).find(node => node.imageFill);
-  assert(imageFillNode?.imageFill.adjustments.brightness === -18, 'the image fill and its edit recipe were not saved with the layer');
+  assert(imageFillNode?.imageFill.adjustments.brightness === -18
+    && imageFillNode?.imageFill.transforms?.crop?.left === 0.2
+    && imageFillNode?.imageFill.transforms?.rotation === 90, 'the image fill adjustments, crop, and rotation were not saved with the layer');
   assert(imageFillNode.blendMode === 'multiply', 'the layer blend mode was not saved with the design');
   const assetRecords = await readStore('assets');
   assert(assetRecords.some(asset => asset.id === imageFillNode.imageFill.assetId), 'the portable package did not retain the image-fill source bytes');

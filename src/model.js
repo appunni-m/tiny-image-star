@@ -1,6 +1,7 @@
 import { isValidLayerEffects } from './layer-effects.js';
 import { isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
+import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 
 const clone = value => structuredClone(value);
@@ -113,7 +114,7 @@ const defaults = {
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
   text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left', textCase: 'none', textDecoration: 'none' },
-  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, fit: 'cover' },
+  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, transforms: { crop: null, rotation: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
@@ -131,7 +132,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'constraints', 'autoLayout',
+  'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -158,7 +159,8 @@ export function createNode(type, overrides = {}) {
     ...preset,
     ...overrides,
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
-    children: overrides.children ? clone(overrides.children) : []
+    children: overrides.children ? clone(overrides.children) : [],
+    ...(type === 'image' ? { transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {}) } : {})
   };
 }
 
@@ -643,6 +645,7 @@ export function createImageRecipe(imageNode, name) {
     id: createId('recipe'),
     name: String(name).trim() || `${imageNode.name} recipe`,
     adjustments: { ...imageNode.adjustments },
+    transforms: createImageTransforms(imageNode.transforms || {}),
     fit: imageNode.fit ?? 'cover',
     opacity: imageNode.opacity ?? 1,
     createdAt: new Date().toISOString()
@@ -653,6 +656,7 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   const entry = findNode(document, nodeId, pageId);
   if (!entry || entry.node.type !== 'image') return false;
   entry.node.adjustments = { ...recipe.adjustments };
+  entry.node.transforms = createImageTransforms(recipe.transforms || {});
   entry.node.fit = recipe.fit ?? entry.node.fit;
   entry.node.opacity = recipe.opacity ?? entry.node.opacity;
   return true;
@@ -1440,6 +1444,7 @@ export function validateDocument(document) {
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isImageFillSupported(node)) throw new TypeError(`Image fill is not supported on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isValidImageFill(node.imageFill)) throw new TypeError(`Invalid image fill on layer ${node.name || node.id}.`);
+      if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
@@ -1673,6 +1678,9 @@ export function validateDocument(document) {
     }
   });
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
+  if (document.recipes.some(recipe => recipe?.transforms != null && !isValidImageTransforms(recipe.transforms))) {
+    throw new TypeError('Invalid image transforms in image recipe.');
+  }
   if (document.colorStyles != null) {
     if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');
     const styleIds = new Set();

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, selectionOverlayGeometry, wrapText } from '../src/renderer.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
+import { nodeLocalToPage } from '../src/transform-geometry.js';
 
 function textContext({ nativeTracking = false } = {}) {
   const calls = [];
@@ -147,4 +148,83 @@ test('hit testing follows mode-resolved geometry and rotation', () => {
   assert.equal(hitTestPage(document.pages[0], { x: 60, y: 45 }, null, document)?.id, card.id);
   assert.equal(hitTestPage(document.pages[0], { x: 45, y: 15 }, null, document)?.id, frame.id, 'rotated resolved bounds should reject an unrotated-only hit');
   assert.equal(compact, collection.defaultModeId);
+});
+
+test('hit testing follows nested frame and group rotations to the deepest visible child', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 120, y: -90, width: 300, height: 220, rotation: 37 });
+  const group = createNode('group', { x: 32, y: 24, width: 160, height: 110, rotation: -26 });
+  const child = createNode('rectangle', { x: 22, y: 18, width: 64, height: 42, rotation: 19 });
+  addNode(document, frame);
+  addNode(document, group, { parentId: frame.id });
+  addNode(document, child, { parentId: group.id });
+
+  // Independent center transform: apply each local-to-parent rotation from
+  // the leaf up to the page, as the canvas does while recursively drawing.
+  const transformNodePoint = (point, node) => {
+    const x = point.x + node.x;
+    const y = point.y + node.y;
+    const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+    const radians = node.rotation * Math.PI / 180;
+    const dx = x - center.x;
+    const dy = y - center.y;
+    return {
+      x: center.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+      y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+    };
+  };
+  const childCenter = [child, group, frame].reduce(
+    (point, node) => transformNodePoint(point, node),
+    { x: child.width / 2, y: child.height / 2 }
+  );
+
+  assert.equal(hitTestPage(document.pages[0], childCenter, null, document)?.id, child.id,
+    'a click at the nested child’s rendered center should hit that child through both ancestor rotations.');
+});
+
+test('hit testing excludes nested children outside a rotated frame clip', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 100, y: 50, width: 100, height: 100, rotation: 35, clip: true });
+  const group = createNode('group', { x: 100, y: 20, width: 80, height: 60, rotation: -15 });
+  const child = createNode('rectangle', { x: 5, y: 5, width: 30, height: 30 });
+  addNode(document, frame);
+  addNode(document, group, { parentId: frame.id });
+  addNode(document, child, { parentId: group.id });
+  const childCenter = nodeLocalToPage(child, { x: 15, y: 15 }, [frame, group]);
+
+  assert.equal(hitTestPage(document.pages[0], childCenter, null, document), null,
+    'a child center outside its rotated clipping frame should not be selectable.');
+  frame.clip = false;
+  assert.equal(hitTestPage(document.pages[0], childCenter, null, document)?.id, child.id,
+    'the nested child should be hittable when the ancestor clip is disabled.');
+});
+
+test('container placement falls back from a group in a rotated rounded frame clip corner', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 100, y: 50, width: 100, height: 100, rotation: 35, radius: 24, clip: true });
+  const group = createNode('group', { x: -12, y: -12, width: 28, height: 28, rotation: -15 });
+  addNode(document, frame);
+  addNode(document, group, { parentId: frame.id });
+  const groupCenter = nodeLocalToPage(group, { x: group.width / 2, y: group.height / 2 }, [frame]);
+
+  assert.equal(deepestContainerAtPagePoint(document.pages[0].children, groupCenter, document)?.node.id, frame.id,
+    'a rounded clipped-away group should not become the Pen destination.');
+  frame.clip = false;
+  assert.equal(deepestContainerAtPagePoint(document.pages[0].children, groupCenter, document)?.node.id, group.id,
+    'the group should become the deepest destination when clipping is disabled.');
+});
+
+test('selection overlay corners and transform handles include nested ancestor rotations', () => {
+  const parent = { x: 100, y: 50, width: 100, height: 80, rotation: 90 };
+  const node = { x: 10, y: 20, width: 40, height: 20, rotation: 90 };
+  const overlay = selectionOverlayGeometry(node, [parent], { zoom: 2 });
+  const closePoint = (actual, expected) => assert.ok(Math.hypot(actual.x - expected.x, actual.y - expected.y) < 1e-9,
+    `Expected (${actual.x}, ${actual.y}) to equal (${expected.x}, ${expected.y}).`);
+
+  closePoint(overlay.corners[0], { x: 180, y: 80 });
+  closePoint(overlay.corners[1], { x: 140, y: 80 });
+  closePoint(overlay.handles.resize.nw, overlay.corners[0]);
+  closePoint(overlay.handles.resize.se, overlay.corners[2]);
+  assert.ok(Math.abs(Math.hypot(overlay.handles.rotate.x - overlay.handles.resize.n.x, overlay.handles.rotate.y - overlay.handles.resize.n.y) - 12) < 1e-9,
+    'The rotation handle offset should remain 24 screen pixels at 200% zoom.');
 });

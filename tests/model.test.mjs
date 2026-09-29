@@ -36,14 +36,64 @@ test('node edits, duplication and removal preserve independent identities', () =
 
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
-  const source = createNode('image', { assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, blur: 2 } });
+  const source = createNode('image', {
+    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, blur: 2 },
+    transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 }
+  });
   const target = createNode('image', { assetId: 'asset-b' });
   addNode(document, source); addNode(document, target);
   const recipe = createImageRecipe(source, 'Warm dusk');
   source.adjustments.brightness = 0;
+  source.transforms.crop.left = 0.4;
+  target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
   assert.equal(applyImageRecipe(document, target.id, recipe), true);
   assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, blur: 2 });
+  assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 });
+  assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop and quarter-turn rotation');
   assert.equal(target.assetId, 'asset-b');
+});
+
+test('image layers default to no crop and zero rotation, and persist normalized transforms', () => {
+  const document = createDocument();
+  const image = createNode('image', { transforms: { crop: { left: 0.05, top: 0.15, right: 0.95, bottom: 0.8 }, rotation: 180 } });
+  const untouched = createNode('image');
+  addNode(document, image); addNode(document, untouched);
+  assert.deepEqual(untouched.transforms, { crop: null, rotation: 0 });
+  const restored = parseDocument(serializeDocument(document));
+  assert.deepEqual(restored.pages[0].children[0].transforms, image.transforms);
+  assert.deepEqual(restored.pages[0].children[1].transforms, { crop: null, rotation: 0 });
+});
+
+test('image layer validation rejects invalid normalized crop bounds and non-quarter-turn rotation', () => {
+  const document = createDocument();
+  const image = createNode('image'); addNode(document, image);
+  image.transforms.crop = { left: -0.1, top: 0, right: 0.8, bottom: 1 };
+  assert.throws(() => validateDocument(document), /Invalid image transforms/);
+  image.transforms = { crop: { left: 0.5, top: 0.2, right: 0.5, bottom: 0.9 }, rotation: 0 };
+  assert.throws(() => validateDocument(document), /Invalid image transforms/);
+  image.transforms = { crop: null, rotation: 45 };
+  assert.throws(() => validateDocument(document), /Invalid image transforms/);
+});
+
+test('import validation rejects malformed image recipe transforms and accepts legacy recipes', () => {
+  const document = createDocument();
+  const malformedTransforms = [
+    { crop: { left: -0.1, top: 0, right: 0.8, bottom: 1 }, rotation: 0 },
+    { crop: { left: 0.2, top: 0, right: 0.2, bottom: 1 }, rotation: 0 },
+    { crop: null, rotation: 45 },
+    { crop: null, rotation: 90.5 },
+    { crop: null, rotation: 0, scale: 2 }
+  ];
+
+  for (const transforms of malformedTransforms) {
+    const imported = structuredClone(document);
+    imported.recipes.push({ id: 'recipe-imported', name: 'Imported look', transforms });
+    assert.throws(() => parseDocument(imported), /Invalid image transforms in image recipe/);
+  }
+
+  const legacy = structuredClone(document);
+  legacy.recipes.push({ id: 'recipe-legacy', name: 'Legacy look', adjustments: { brightness: 10 } });
+  assert.equal(validateDocument(legacy), true, 'recipes saved before crop/rotation remain loadable');
 });
 
 test('serialized design validates after reload and rejects duplicate layer identities', () => {

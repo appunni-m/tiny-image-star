@@ -439,6 +439,22 @@ export function appendVectorNetworkPath(node, anchors, origin = { x: node.x, y: 
   return { addedEdges, addedVertices };
 }
 
+/** Append a Pen path using the network geometry resolved for the active mode. */
+export function appendVectorNetworkPathResolved(node, anchors, geometry, { closed = false, writeGeometry = null } = {}) {
+  if (!node || !geometry) return false;
+  const working = structuredClone(node);
+  for (const property of ['x', 'y', 'width', 'height', 'rotation']) working[property] = geometry[property];
+  const result = appendVectorNetworkPath(working, anchors, { x: geometry.x, y: geometry.y }, { closed });
+  if (!result?.addedEdges) return result;
+  const nextGeometry = { x: working.x, y: working.y, width: working.width, height: working.height };
+  if (writeGeometry && writeGeometry(nextGeometry) === false) return false;
+  node.vertices = working.vertices;
+  node.edges = working.edges;
+  node.faces = working.faces;
+  if (!writeGeometry) Object.assign(node, nextGeometry);
+  return result;
+}
+
 /** Split one graph edge while preserving its cubic outline exactly. */
 export function insertVectorNetworkPoint(node, edgeId, t = .5, origin = { x: node.x, y: node.y }) {
   const edge = node?.edges?.find(item => item.id === edgeId);
