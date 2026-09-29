@@ -124,6 +124,24 @@ try {
   const gradientRecords = await readDocuments(); gradientRecords.sort((a, b) => b.savedAt - a.savedAt);
   const gradientButton = gradientRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
   assert(gradientButton?.fillGradient?.type === 'radial' && gradientButton.fillGradient.stops.length === 3 && gradientButton.fillGradient.stops[0].color === '#00ff00' && gradientButton.fillGradient.stops[0].position === 0.2, 'gradient type, stop position, color, and additional stop should persist');
+  click(app.querySelector('[data-action="add-stroke"]'));
+  await waitForSaveCycle(app, 'add stroke');
+  const strokeWidth = app.querySelector('[data-prop="strokeWidth"]');
+  const strokePattern = app.querySelector('[data-prop="strokePattern"]');
+  const strokeCap = app.querySelector('[data-prop="strokeCap"]');
+  const strokeJoin = app.querySelector('[data-prop="strokeJoin"]');
+  const strokeMiterLimit = app.querySelector('[data-prop="strokeMiterLimit"]');
+  assert(strokeWidth?.getAttribute('aria-label') === 'Stroke width' && strokePattern && strokeCap && strokeJoin && strokeMiterLimit?.getAttribute('aria-label') === 'Stroke miter limit', 'the phone inspector should expose editable stroke settings');
+  assert([strokeWidth, strokePattern, strokeCap, strokeJoin, strokeMiterLimit].every(control => control.getBoundingClientRect().right <= rightPanel.right), 'stroke controls should fit in the phone inspector');
+  for (const [control, value] of [[strokeWidth, '3'], [strokePattern, 'dashed'], [strokeCap, 'round'], [strokeJoin, 'bevel'], [strokeMiterLimit, '4']]) {
+    control.value = value;
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    control.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  await waitForSaveCycle(app, 'stroke style');
+  const strokeRecords = await readDocuments(); strokeRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const styledButton = strokeRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
+  assert(styledButton?.strokeWidth === 3 && styledButton.strokePattern === 'dashed' && styledButton.strokeCap === 'round' && styledButton.strokeJoin === 'bevel' && styledButton.strokeMiterLimit === 4, 'stroke appearance edits should be saved in the local document');
   const addShadow = app.querySelector('[data-action="add-layer-effect"][data-effect-type="drop-shadow"]');
   assert(addShadow && addShadow.getBoundingClientRect().right <= rightPanel.right, 'effect actions should fit inside the phone inspector');
   click(addShadow);
@@ -162,6 +180,10 @@ try {
   assert(panel.textContent.includes('Primary button') && panel.textContent.includes('Mobile screen'), 'The selected layer or its owner is missing from the handoff summary.');
   const html = [...panel.querySelectorAll('.inspect-code-card')].find(card => card.querySelector('strong')?.textContent === 'HTML structure')?.querySelector('code')?.textContent || '';
   assert(html.includes('data-layer-type="rectangle"'), 'HTML handoff should include the selected layer.');
+  const reactCard = [...panel.querySelectorAll('.inspect-code-card')].find(card => card.querySelector('strong')?.textContent === 'React component');
+  const jsx = reactCard?.querySelector('code')?.textContent || '';
+  assert(jsx.includes("import React from 'react';") && jsx.includes('export default function TinyImageStarHandoff()') && jsx.includes('<style>{styles}</style>'), 'React handoff should provide a component and its generated styles.');
+  assert(jsx.includes('data-layer-type={"rectangle"}') && jsx.includes('className={"primary-button-'), 'React JSX should contain the selected editable layer.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(panel.querySelector('.inspect-copy')).minHeight) >= 40, 'Copy control should remain finger-sized on a phone viewport.');
 
   const copied = [];
@@ -172,14 +194,20 @@ try {
   click(panel.querySelector('[data-inspect-copy="html"]'));
   await waitFor(() => copied.length === 2, 'copy HTML');
   assert(copied[1] === html, 'Copy HTML did not copy the visible generated markup.');
+  click(panel.querySelector('[data-inspect-copy="jsx"]'));
+  await waitFor(() => copied.length === 3, 'copy React JSX');
+  assert(copied[2] === jsx, 'Copy JSX did not copy the visible generated React component.');
   click(panel.querySelector('[data-inspect-copy="json"]'));
-  await waitFor(() => copied.length === 3, 'copy layer JSON');
-  assert(JSON.parse(copied[2]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
+  await waitFor(() => copied.length === 4, 'copy layer JSON');
+  assert(JSON.parse(copied[3]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
 
   click(app.querySelector(`[data-layer-id="${screen.id}"]`));
-  await waitFor(() => app.querySelector('.inspect-panel .inspect-code-card:nth-of-type(2) code')?.textContent.includes('data-layer-type="text"'), 'nested frame HTML handoff');
-  const frameHtml = app.querySelector('.inspect-panel .inspect-code-card:nth-of-type(2) code')?.textContent || '';
+  const handoffCard = kind => [...app.querySelectorAll('.inspect-panel .inspect-code-card')].find(card => card.querySelector('strong')?.textContent === kind);
+  await waitFor(() => handoffCard('HTML structure')?.querySelector('code')?.textContent.includes('data-layer-type="text"'), 'nested frame HTML handoff');
+  const frameHtml = handoffCard('HTML structure')?.querySelector('code')?.textContent || '';
   assert(frameHtml.includes('data-layer-type="frame"') && frameHtml.includes('data-layer-type="text"') && frameHtml.includes('Continue'), 'HTML handoff should preserve nested frame and text structure.');
+  const frameJsx = handoffCard('React component')?.querySelector('code')?.textContent || '';
+  assert(frameJsx.includes('data-layer-type={"frame"}') && frameJsx.includes('data-layer-type={"text"}') && frameJsx.includes('>{"Continue"}</span>'), 'React handoff should preserve nested frames and safely encoded text.');
 
   click(app.querySelector(`[data-layer-id="${label.id}"]`));
   await waitFor(() => app.querySelector('.inspect-panel')?.textContent.includes('16 px · Arial, sans-serif'), 'text metrics');
@@ -189,7 +217,7 @@ try {
   const handoffLayer = JSON.parse(handoffJson)[0];
   const verticalCss = app.querySelector('.inspect-panel .inspect-code-card code')?.textContent || '';
   assert(verticalCss.includes('justify-content: flex-end;'), `Inspect CSS should hand off bottom-aligned text; control=${selectedVerticalAlign}, layer=${handoffLayer?.verticalAlign}, typography=${handoffLayer?.typography?.verticalAlign}; found: ${verticalCss}`);
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

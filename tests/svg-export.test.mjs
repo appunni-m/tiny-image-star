@@ -69,13 +69,27 @@ test('exports a selected node in its own rotated local bounds and supports vecto
   assert.match(svg, /<ellipse cx="20" cy="10" rx="20" ry="10" fill="#ff0088"/);
 
   const line = createNode('line', { width: 31, height: 12, stroke: '#224466', strokeWidth: 4 });
-  assert.match(exportNodeToSvg(line), /<path d="M 0 0 L 31 12" fill="none" stroke="#224466" stroke-width="4"\/>/);
+  assert.match(exportNodeToSvg(line), /<path d="M 0 0 L 31 12" fill="none" stroke="#224466" stroke-width="4" stroke-miterlimit="10"\/>/);
 
   const vector = createNode('path', { width: 100, height: 80, closed: true, fill: '#ccddaa', points: [
     { x: 0, y: 0, out: { x: 0.25, y: 0 } },
     { x: 1, y: 1, in: { x: -0.25, y: 0 } }
   ] });
   assert.match(exportNodeToSvg(vector), /<path d="M 0 0 C 25 0 75 80 100 80 L 0 0 Z" fill="#ccddaa"/);
+});
+
+test('SVG export preserves non-default stroke cap, join, and pattern styles', () => {
+  const dashed = createNode('line', { width: 40, height: 0, stroke: '#123456', strokeWidth: 3, strokeCap: 'square', strokeJoin: 'bevel', strokePattern: 'dashed' });
+  const dashedSvg = exportNodeToSvg(dashed);
+  assert.match(dashedSvg, /stroke-width="3" stroke-linecap="square" stroke-linejoin="bevel" stroke-dasharray="12 6"/);
+
+  const dotted = createNode('path', { width: 40, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], stroke: '#654321', strokeWidth: 2, strokePattern: 'dotted' });
+  assert.match(exportNodeToSvg(dotted), /stroke-width="2" stroke-linecap="round" stroke-miterlimit="10" stroke-dasharray="0 4"/);
+
+  const limited = createNode('line', { width: 20, height: 0, stroke: '#000000', strokeWidth: 2, strokeMiterLimit: 2.5 });
+  assert.match(exportNodeToSvg(limited), /stroke-width="2" stroke-miterlimit="2.5"/);
+  const svgDefault = createNode('line', { width: 20, height: 0, stroke: '#000000', strokeWidth: 2, strokeMiterLimit: 4 });
+  assert.doesNotMatch(exportNodeToSvg(svgDefault), /stroke-miterlimit=/);
 });
 
 test('exports graph-backed vector networks as editable face and edge paths', () => {

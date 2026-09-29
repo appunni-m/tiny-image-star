@@ -59,6 +59,42 @@ test('Inspect output provides nested HTML and CSS scaffolding for a selected lay
   assert.match(output.css, /\.badge-[a-z0-9_-]+ \{/);
 });
 
+test('Inspect output generates a deterministic React component with the selected tree and local CSS', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { name: 'Card', width: 240, height: 120, fill: '#f0f0f0' });
+  const title = createNode('text', { name: 'Title', text: 'Save <changes> & keep', x: 12, y: 16, width: 180, height: 28, fontSize: 18 });
+  const badge = createNode('ellipse', { name: 'Badge', x: 190, y: 12, width: 24, height: 24, fill: '#abcdef' });
+  addNode(document, frame); addNode(document, title, { parentId: frame.id }); addNode(document, badge, { parentId: frame.id });
+
+  const entries = [findNode(document, frame.id), findNode(document, title.id)];
+  const output = buildInspectOutput(document, entries);
+  assert.equal(output.jsx, buildInspectOutput(document, entries).jsx, 'the handoff source is deterministic');
+  assert.match(output.jsx, /import React from 'react';/);
+  assert.match(output.jsx, /export default function TinyImageStarHandoff\(\)/);
+  assert.match(output.jsx, /<style>\{styles\}<\/style>/);
+  assert.match(output.jsx, /\.card-[a-z0-9_-]+ \{/);
+  assert.match(output.jsx, /className=\{"card-[a-z0-9_-]+"\} data-layer-type=\{"frame"\}/);
+  assert.match(output.jsx, /className=\{"title-[a-z0-9_-]+"\} data-layer-type=\{"text"\}>\{"Save <changes> & keep"\}/);
+  assert.match(output.jsx, /className=\{"badge-[a-z0-9_-]+"\} data-layer-type=\{"ellipse"\}/);
+  assert.equal((output.jsx.match(/data-layer-type=\{"text"\}/g) || []).length, 1, 'selected descendant layers should not be emitted twice');
+  assert.match(output.jsx, /<>[\s\S]*<div className=\{"card-[^\n]+[\s\S]*<\/div>[\s\S]*<\/>/);
+});
+
+test('Inspect React JSX safely serializes hostile text, image labels, and JavaScript line separators', () => {
+  const document = createDocument();
+  const payload = '</span><script>alert("x")</script>{value} \\ \u2028end';
+  const text = createNode('text', { name: 'Untrusted </script>', text: payload });
+  const image = createNode('image', { name: 'Photo " onerror={alert(1)}', fileName: 'local " image.png' });
+  addNode(document, text); addNode(document, image);
+  const entries = [findNode(document, text.id), findNode(document, image.id)];
+  const jsx = buildInspectOutput(document, entries).jsx;
+  const encodedPayload = JSON.stringify(payload).replace(/[\u2028\u2029]/g, character => character === '\u2028' ? '\\u2028' : '\\u2029');
+  assert.ok(jsx.includes(`>{${encodedPayload}}</span>`), 'text is emitted as a JavaScript string expression instead of JSX syntax');
+  assert.ok(jsx.includes(`aria-label={${JSON.stringify('local " image.png')}}`), 'image labels are serialized as string expressions');
+  assert.doesNotMatch(jsx, /aria-label="local " image\.png"/);
+  assert.match(jsx, /const styles = "[\s\S]*";/, 'CSS is embedded as a quoted JavaScript string');
+});
+
 test('Inspect output describes responsive grid layout and multiple selected layers', () => {
   const document = createDocument();
   const grid = createNode('frame', {
@@ -101,6 +137,16 @@ test('Inspect output includes auto layout size limits in CSS and layer summary',
   assert.match(output.css, /max-width: 180px;/);
   assert.match(output.css, /min-height: 36px;/);
   assert.deepEqual(output.layers[0].sizeLimits, { minWidth: 72, maxWidth: 180, minHeight: 36 });
+});
+
+test('Inspect handoff describes vector stroke pattern, cap, join, and miter limit', () => {
+  const document = createDocument();
+  const line = createNode('line', { stroke: '#123456', strokeWidth: 3, strokePattern: 'dashed', strokeCap: 'round', strokeJoin: 'bevel', strokeMiterLimit: 4 });
+  addNode(document, line);
+  const output = buildInspectOutput(document, [findNode(document, line.id)]);
+  assert.match(output.css, /border-top: 3px dashed #123456;/);
+  assert.match(output.css, /Vector stroke cap\/join\/miter limit \(round\/bevel\/4\) remain exact in layer JSON/);
+  assert.deepEqual(output.layers[0].stroke, { color: '#123456', width: 3, cap: 'round', join: 'bevel', miterLimit: 4, pattern: 'dashed' });
 });
 
 test('Inspect output hands off enabled layer effects as CSS filters and structured data', () => {

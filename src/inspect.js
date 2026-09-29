@@ -88,6 +88,10 @@ function autoLayoutDeclarations(layout) {
   ];
 }
 
+function strokePatternStyle(node) {
+  return ['dashed', 'dotted'].includes(node.strokePattern) ? node.strokePattern : 'solid';
+}
+
 function cssForEntry(document, entry) {
   const node = entry.node;
   const geometry = getNodeGeometry(document, node);
@@ -157,11 +161,16 @@ function cssForEntry(document, entry) {
     else if (background && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background-color: ${background};`);
     if (node.type === 'line') {
       const stroke = cssColor(getNodeColor(document, node, 'stroke'));
-      if (stroke && Number(node.strokeWidth) > 0) declarations.push(`border-top: ${number(node.strokeWidth)}px solid ${stroke};`);
+      if (stroke && Number(node.strokeWidth) > 0) declarations.push(`border-top: ${number(node.strokeWidth)}px ${strokePatternStyle(node)} ${stroke};`);
       declarations.push('/* Exact line geometry is retained in layer JSON. */');
     } else if (node.stroke && Number(node.strokeWidth) > 0) {
       const stroke = cssColor(getNodeColor(document, node, 'stroke'));
-      if (stroke) declarations.push(`border: ${number(node.strokeWidth)}px solid ${stroke};`);
+      if (stroke) declarations.push(`border: ${number(node.strokeWidth)}px ${strokePatternStyle(node)} ${stroke};`);
+    }
+    if (node.stroke && Number(node.strokeWidth) > 0
+      && ((node.strokeCap && node.strokeCap !== 'butt') || (node.strokeJoin && node.strokeJoin !== 'miter')
+        || (node.strokeMiterLimit != null && node.strokeMiterLimit !== 10))) {
+      declarations.push(`/* Vector stroke cap/join/miter limit (${node.strokePattern === 'dotted' ? 'round' : node.strokeCap || 'butt'}/${node.strokeJoin || 'miter'}/${node.strokeMiterLimit ?? 10}) remain exact in layer JSON. */`);
     }
     const radius = Number(getNodePropertyValue(document, node, 'radius')) || 0;
     if (radius) declarations.push(`border-radius: ${number(radius)}px;`);
@@ -188,6 +197,35 @@ function markupForNode(document, node) {
   const children = (node.children || []).map(child => markupForNode(document, child)).join('\n');
   const content = children ? `\n${children}\n` : '';
   return `<div class="${className}" data-layer-type="${type}">${content}</div>`;
+}
+
+function jsxString(value) {
+  return JSON.stringify(String(value ?? '')).replace(/[\u2028\u2029]/g, character => character === '\u2028' ? '\\u2028' : '\\u2029');
+}
+
+function jsxForNode(document, node, depth = 0) {
+  const indent = '  '.repeat(depth);
+  const className = jsxString(cssClass(node));
+  const type = jsxString(node.type || 'layer');
+  if (node.type === 'text') {
+    const value = jsxString(getNodePropertyValue(document, node, 'text') ?? '');
+    return `${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>{${value}}</span>`;
+  }
+  if (node.type === 'image') {
+    const label = jsxString(node.fileName || node.name || 'Local image');
+    return `${indent}<div className={${className}} data-layer-type={${type}} role={${jsxString('img')}} aria-label={${label}}>{/* Set the source to the local image asset in your app. */}</div>`;
+  }
+  const children = (node.children || []).map(child => jsxForNode(document, child, depth + 1));
+  if (!children.length) return `${indent}<div className={${className}} data-layer-type={${type}} />`;
+  return `${indent}<div className={${className}} data-layer-type={${type}}>\n${children.join('\n')}\n${indent}</div>`;
+}
+
+function reactComponent(css, roots, document) {
+  const intro = "import React from 'react';\n\n";
+  if (!roots.length) return `${intro}export default function TinyImageStarHandoff() {\n  return null;\n}\n`;
+  const children = roots.map(entry => jsxForNode(document, entry.node, roots.length > 1 ? 4 : 3));
+  const content = children.length === 1 ? children[0] : `      <>\n${children.join('\n')}\n      </>`;
+  return `${intro}const styles = ${jsxString(css)};\n\nexport default function TinyImageStarHandoff() {\n  return (\n    <>\n      <style>{styles}</style>\n${content}\n    </>\n  );\n}\n`;
 }
 
 function treeEntries(root) {
@@ -219,7 +257,11 @@ function summaryForEntry(document, entry) {
   if (node.fillGradient) summary.fillGradient = node.fillGradient;
   if (node.imageFill) summary.imageFill = node.imageFill;
   if (node.blendMode && node.blendMode !== 'normal') summary.blendMode = node.blendMode;
-  if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = { color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth };
+  if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = {
+    color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth,
+    cap: node.strokePattern === 'dotted' ? 'round' : node.strokeCap || 'butt',
+    join: node.strokeJoin || 'miter', miterLimit: node.strokeMiterLimit ?? 10, pattern: strokePatternStyle(node)
+  };
   if (node.type === 'text') {
     summary.text = getNodePropertyValue(document, node, 'text');
     summary.typography = {
@@ -248,10 +290,12 @@ export function buildInspectOutput(document, entries) {
   const selectedIds = new Set(selected.map(entry => entry.node.id));
   const roots = selected.filter(entry => !(entry.parents || []).some(parent => selectedIds.has(parent.id)));
   const includedEntries = roots.flatMap(treeEntries);
+  const css = includedEntries.map(entry => cssForEntry(document, entry)).join('\n\n');
   return {
     layers: selected.map(entry => summaryForEntry(document, entry)),
-    css: includedEntries.map(entry => cssForEntry(document, entry)).join('\n\n'),
+    css,
     html: roots.map(entry => markupForNode(document, entry.node)).join('\n'),
-    json: JSON.stringify(selected.length === 1 ? selected[0].node : selected.map(entry => entry.node), null, 2)
+    json: JSON.stringify(selected.length === 1 ? selected[0].node : selected.map(entry => entry.node), null, 2),
+    jsx: reactComponent(css, roots, document)
   };
 }

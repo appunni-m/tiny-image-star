@@ -17,10 +17,13 @@ const MAX_DEPTH = 128;
 const MAX_COORDINATE = 100_000_000;
 const MAX_VECTOR_POINTS = 20_000;
 const MAX_VECTOR_TOKENS = 100_000;
+const MAX_GRADIENTS = 1_000;
+const MAX_GRADIENT_STOPS = 8;
 const initialStyle = {
   fill: '#000000', fillAlpha: 1, fillColorAlpha: 1, fillOpacityValue: 1,
   stroke: null, strokeAlpha: 1, strokeColorAlpha: 1, strokeOpacityValue: 1, strokeWidth: 1,
-  strokeLinecap: 'butt', strokeLinejoin: 'miter', fillRule: 'nonzero', opacity: 1,
+  strokeCap: 'butt', strokeJoin: 'miter', strokePattern: 'solid', strokeMiterLimit: 4, strokeDashArray: null, fillGradient: null,
+  fillRule: 'nonzero', opacity: 1,
   display: true, visibility: 'visible', visible: true
 };
 
@@ -357,10 +360,123 @@ function parseAlpha(value, label, element) {
   return result;
 }
 
-const inheritedProperties = new Set(['fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility']);
+function gradientCoordinate(value, label, units, element, fallback) {
+  if (value == null) return fallback;
+  if (units === 'objectBoundingBox') {
+    const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%)?$/i.exec(value.trim());
+    if (!match) fail('unsupported-gradient', `SVG gradient ${label} must use a unitless or percentage object-bounding-box coordinate.`, element);
+    const number = finiteNumber(match[1], `gradient ${label}`, element);
+    return match[2] ? number / 100 : number;
+  }
+  return coordinateLength(value, `gradient ${label}`, element);
+}
+
+function gradientStops(node) {
+  if (node.children.length < 2 || node.children.length > MAX_GRADIENT_STOPS) {
+    fail('unsupported-gradient', `SVG gradients must contain between two and ${MAX_GRADIENT_STOPS} color stops.`, node.tag);
+  }
+  let previousPosition = -1;
+  let commonAlpha = null;
+  const stops = node.children.map(stop => {
+    if (stop.tag !== 'stop' || stop.children.length) fail('unsupported-gradient', 'SVG gradients may contain only empty <stop> elements.', stop.tag);
+    const allowed = new Set(['id', 'offset', 'stop-color', 'stop-opacity', 'style']);
+    for (const key of Object.keys(stop.attrs)) {
+      if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, 'stop');
+      if (!allowed.has(key)) fail('unsupported-gradient', `SVG gradient stop attribute “${key}” is unsupported.`, 'stop');
+    }
+    const style = Object.create(null);
+    if (stop.attrs.style != null) {
+      for (const declaration of stop.attrs.style.split(';')) {
+        if (!declaration.trim()) continue;
+        const colon = declaration.indexOf(':');
+        if (colon <= 0) fail('invalid-style', 'SVG gradient stop style is malformed.', 'stop');
+        const name = declaration.slice(0, colon).trim().toLowerCase();
+        if (!['stop-color', 'stop-opacity'].includes(name) || Object.hasOwn(style, name)) {
+          fail('unsupported-gradient', `SVG gradient stop style “${name}” is unsupported or repeated.`, 'stop');
+        }
+        style[name] = declaration.slice(colon + 1).trim().replace(/\s*!important\s*$/i, '');
+      }
+    }
+    const offsetText = stop.attrs.offset ?? '0';
+    const offsetMatch = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%)?$/i.exec(offsetText.trim());
+    if (!offsetMatch) fail('invalid-gradient', 'SVG gradient stop offsets must be numbers from zero to one or percentages.', 'stop');
+    const rawPosition = finiteNumber(offsetMatch[1], 'gradient stop offset', 'stop', { min: 0, max: 1_000_000 }) / (offsetMatch[2] ? 100 : 1);
+    const position = Math.min(1, Math.max(previousPosition, rawPosition));
+    previousPosition = position;
+    const parsedColor = color(style['stop-color'] ?? stop.attrs['stop-color'] ?? '#000000', 'stop');
+    const alpha = parsedColor.alpha * parseAlpha(style['stop-opacity'] ?? stop.attrs['stop-opacity'] ?? '1', 'stop opacity', 'stop');
+    if (commonAlpha == null) commonAlpha = alpha;
+    else if (Math.abs(commonAlpha - alpha) > 1e-8) {
+      fail('unsupported-gradient', 'The editor cannot preserve different opacity values between SVG gradient stops.', 'stop');
+    }
+    if (!parsedColor.value) fail('unsupported-gradient', 'Transparent SVG gradient stops are not supported.', 'stop');
+    return { color: parsedColor.value, position };
+  });
+  return { stops, alpha: commonAlpha ?? 1 };
+}
+
+function parseGradient(node, ids) {
+  if (!['linearGradient', 'radialGradient'].includes(node.tag)) fail('unsupported-gradient', 'Only SVG linearGradient and radialGradient definitions are supported.', node.tag);
+  const id = node.attrs.id;
+  if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) fail('invalid-gradient', 'Every SVG gradient must have a unique, simple id.', node.tag);
+  const linear = node.tag === 'linearGradient';
+  const allowed = new Set(['id', 'gradientUnits', 'gradientTransform', 'spreadMethod', ...(linear ? ['x1', 'y1', 'x2', 'y2'] : ['cx', 'cy', 'r', 'fx', 'fy', 'fr'])]);
+  for (const key of Object.keys(node.attrs)) {
+    if (/^(?:href|xlink:href)$/i.test(key)) fail('external-reference', 'SVG gradients cannot reference another element.', node.tag);
+    if (!allowed.has(key)) fail('unsupported-gradient', `SVG gradient attribute “${key}” is unsupported.`, node.tag);
+  }
+  const units = node.attrs.gradientUnits ?? 'objectBoundingBox';
+  if (!['objectBoundingBox', 'userSpaceOnUse'].includes(units)) fail('invalid-gradient', 'SVG gradientUnits must be objectBoundingBox or userSpaceOnUse.', node.tag);
+  const spread = node.attrs.spreadMethod ?? 'pad';
+  if (!['pad', 'reflect', 'repeat'].includes(spread)) fail('invalid-gradient', 'SVG gradient spreadMethod is invalid.', node.tag);
+  if (spread !== 'pad') fail('unsupported-gradient', 'SVG repeating and reflecting gradient spreads are not supported.', node.tag);
+  const transform = parseTransform(node.attrs.gradientTransform, node.tag);
+  const { stops, alpha } = gradientStops(node);
+  ids.add(id);
+  if (linear) {
+    return {
+      id, type: 'linear', units, transform,
+      x1: gradientCoordinate(node.attrs.x1, 'x1', units, node.tag, 0),
+      y1: gradientCoordinate(node.attrs.y1, 'y1', units, node.tag, 0),
+      x2: gradientCoordinate(node.attrs.x2, 'x2', units, node.tag, 1),
+      y2: gradientCoordinate(node.attrs.y2, 'y2', units, node.tag, 0), stops, alpha
+    };
+  }
+  const cx = gradientCoordinate(node.attrs.cx, 'cx', units, node.tag, 0.5);
+  const cy = gradientCoordinate(node.attrs.cy, 'cy', units, node.tag, 0.5);
+  const fx = gradientCoordinate(node.attrs.fx, 'fx', units, node.tag, cx);
+  const fy = gradientCoordinate(node.attrs.fy, 'fy', units, node.tag, cy);
+  const fr = gradientCoordinate(node.attrs.fr, 'fr', units, node.tag, 0);
+  const r = gradientCoordinate(node.attrs.r, 'r', units, node.tag, 0.5);
+  if (r <= 0 || fr !== 0 || Math.abs(fx - cx) > 1e-9 || Math.abs(fy - cy) > 1e-9) {
+    fail('unsupported-gradient', 'The editor supports centered SVG radial gradients with a positive outer radius and no inner radius.', node.tag);
+  }
+  return { id, type: 'radial', units, transform, cx, cy, r, stops, alpha };
+}
+
+function collectGradients(root) {
+  const gradients = new Map();
+  const ids = new Set();
+  let stopCount = 0;
+  for (const defs of root.children.filter(child => child.tag === 'defs')) {
+    for (const child of defs.children) {
+      if (!['linearGradient', 'radialGradient'].includes(child.tag)) {
+        fail('unsupported-gradient', '<defs> may contain only supported gradient definitions.', child.tag);
+      }
+      if (gradients.size >= MAX_GRADIENTS) fail('resource-limit', `SVG contains more than ${MAX_GRADIENTS} gradient definitions.`, 'defs');
+      stopCount += child.children.length;
+      if (stopCount > MAX_GRADIENTS * MAX_GRADIENT_STOPS) fail('resource-limit', 'SVG contains too many gradient stops.', 'defs');
+      const gradient = parseGradient(child, ids);
+      gradients.set(gradient.id, gradient);
+    }
+  }
+  return gradients;
+}
+
+const inheritedProperties = new Set(['fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility']);
 const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility']);
 
-function parseStyle(node, parentStyle) {
+function parseStyle(node, parentStyle, gradients = new Map()) {
   const values = { ...parentStyle, opacity: 1, display: parentStyle.display, visibility: parentStyle.visibility };
   const declarations = Object.create(null);
   for (const [name, value] of Object.entries(node.attrs)) {
@@ -385,7 +501,16 @@ function parseStyle(node, parentStyle) {
     if (value === 'inherit' && inheritedProperties.has(key)) continue;
     switch (key) {
       case 'fill': {
-        const parsed = color(value, node.tag); values.fill = parsed.value; values.fillColorAlpha = parsed.alpha; break;
+        const reference = /^url\(\s*#([A-Za-z_][\w.-]*)\s*\)$/i.exec(value);
+        if (reference) {
+          const gradient = gradients.get(reference[1]);
+          if (!gradient) fail('missing-gradient', `SVG fill references missing gradient “${reference[1]}”.`, node.tag);
+          values.fill = null; values.fillColorAlpha = 1; values.fillGradient = gradient;
+        } else {
+          if (/^url\(/i.test(value)) fail('external-reference', 'SVG paint references must point to a local supported gradient.', node.tag);
+          const parsed = color(value, node.tag); values.fill = parsed.value; values.fillColorAlpha = parsed.alpha; values.fillGradient = null;
+        }
+        break;
       }
       case 'stroke': {
         const parsed = color(value, node.tag); values.stroke = parsed.value; values.strokeColorAlpha = parsed.alpha; break;
@@ -396,15 +521,19 @@ function parseStyle(node, parentStyle) {
       case 'opacity': values.opacity = parseAlpha(value, key, node.tag); break;
       case 'stroke-linecap':
         if (!['butt', 'round', 'square'].includes(value)) fail('invalid-stroke', 'SVG stroke-linecap must be butt, round, or square.', node.tag);
-        if (value !== 'butt') fail('unsupported-stroke-style', `SVG stroke-linecap “${value}” cannot be represented by the editor.`, node.tag);
-        values.strokeLinecap = value; break;
+        values.strokeCap = value; break;
       case 'stroke-linejoin':
         if (!['miter', 'round', 'bevel'].includes(value)) fail('invalid-stroke', 'SVG stroke-linejoin must be miter, round, or bevel.', node.tag);
-        if (value !== 'miter') fail('unsupported-stroke-style', `SVG stroke-linejoin “${value}” cannot be represented by the editor.`, node.tag);
-        values.strokeLinejoin = value; break;
+        values.strokeJoin = value; break;
+      case 'stroke-dasharray': {
+        if (value === 'none') { values.strokePattern = 'solid'; values.strokeDashArray = null; break; }
+        const dash = value.split(/[\s,]+/).filter(Boolean).map(part => length(part, 'stroke dash length', node.tag));
+        if (!dash.length || dash.some(item => item < 0) || dash.every(item => item === 0)) fail('invalid-stroke', 'SVG stroke-dasharray must contain a positive dash length.', node.tag);
+        values.strokeDashArray = dash;
+        break;
+      }
       case 'stroke-miterlimit': {
-        const limit = finiteNumber(value, key, node.tag, { min: 1, max: 1000 });
-        if (limit !== 10) fail('unsupported-stroke-style', 'The editor cannot preserve a custom SVG stroke-miterlimit.', node.tag);
+        values.strokeMiterLimit = finiteNumber(value, key, node.tag, { min: 1, max: 1000 });
         break;
       }
       case 'fill-rule':
@@ -421,23 +550,40 @@ function parseStyle(node, parentStyle) {
       default: fail('unsupported-style', `SVG style property “${key}” is unsupported.`, node.tag);
     }
   }
-  if (!Object.hasOwn(declarations, 'fill')) { values.fill = parentStyle.fill; values.fillColorAlpha = parentStyle.fillColorAlpha; }
+  if (!Object.hasOwn(declarations, 'fill')) { values.fill = parentStyle.fill; values.fillColorAlpha = parentStyle.fillColorAlpha; values.fillGradient = parentStyle.fillGradient; }
   if (!Object.hasOwn(declarations, 'stroke')) { values.stroke = parentStyle.stroke; values.strokeColorAlpha = parentStyle.strokeColorAlpha; }
   if (!Object.hasOwn(declarations, 'fill-opacity')) values.fillOpacityValue = parentStyle.fillOpacityValue;
   if (!Object.hasOwn(declarations, 'stroke-opacity')) values.strokeOpacityValue = parentStyle.strokeOpacityValue;
   if (!Object.hasOwn(declarations, 'stroke-width')) values.strokeWidth = parentStyle.strokeWidth;
-  if (!Object.hasOwn(declarations, 'stroke-linecap')) values.strokeLinecap = parentStyle.strokeLinecap;
-  if (!Object.hasOwn(declarations, 'stroke-linejoin')) values.strokeLinejoin = parentStyle.strokeLinejoin;
+  if (!Object.hasOwn(declarations, 'stroke-linecap')) values.strokeCap = parentStyle.strokeCap;
+  if (!Object.hasOwn(declarations, 'stroke-linejoin')) values.strokeJoin = parentStyle.strokeJoin;
+  if (!Object.hasOwn(declarations, 'stroke-miterlimit')) values.strokeMiterLimit = parentStyle.strokeMiterLimit;
+  if (!Object.hasOwn(declarations, 'stroke-dasharray')) {
+    values.strokeDashArray = parentStyle.strokeDashArray ?? null;
+    values.strokePattern = parentStyle.strokePattern;
+  }
+  if (values.strokeDashArray) {
+    const normalized = values.strokeDashArray.length % 2 ? [...values.strokeDashArray, ...values.strokeDashArray] : values.strokeDashArray;
+    const unit = values.strokeWidth;
+    const close = (left, right) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-6;
+    if (normalized.length === 2 && close(normalized[0], unit * 4) && close(normalized[1], unit * 2)) values.strokePattern = 'dashed';
+    else if (normalized.length === 2 && close(normalized[0], 0) && close(normalized[1], unit * 2)) values.strokePattern = 'dotted';
+    else fail('unsupported-stroke-style', 'SVG custom dash arrays cannot be represented; use solid, 4:2 dashed, or round 0:2 dotted strokes.', node.tag);
+  }
   if (!Object.hasOwn(declarations, 'fill-rule')) values.fillRule = parentStyle.fillRule;
   values.fillAlpha = values.fillColorAlpha * values.fillOpacityValue;
   values.strokeAlpha = values.strokeColorAlpha * values.strokeOpacityValue;
+  if (values.stroke && values.strokeAlpha > 0 && values.strokeWidth > 0
+    && values.strokePattern === 'dotted' && values.strokeCap !== 'round') {
+    fail('unsupported-stroke-style', 'SVG dotted strokes require round line caps to remain visible in the editor.', node.tag);
+  }
   values.visible = values.visibility === 'visible';
   return values;
 }
 
 const geomAttrs = {
   svg: new Set(['xmlns', 'version', 'width', 'height', 'viewBox', 'preserveAspectRatio']),
-  g: new Set(),
+  g: new Set(), defs: new Set(['id']),
   rect: new Set(['x', 'y', 'width', 'height', 'rx', 'ry']),
   circle: new Set(['cx', 'cy', 'r']),
   ellipse: new Set(['cx', 'cy', 'rx', 'ry']),
@@ -446,7 +592,7 @@ const geomAttrs = {
 };
 const commonAttrs = new Set([
   'id', 'transform', 'style', 'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap',
-  'stroke-linejoin', 'stroke-miterlimit', 'fill-rule', 'opacity', 'display', 'visibility', 'color', 'class',
+  'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'opacity', 'display', 'visibility', 'color', 'class',
   'href', 'xlink:href', 'xml:space', 'role', 'focusable'
 ]);
 
@@ -783,6 +929,126 @@ function cleanLayerName(value) {
   return name || 'Imported vector';
 }
 
+function gradientBounds(subpath) {
+  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+  const include = point => {
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+  };
+  const points = subpath.points;
+  for (const point of points) include(point);
+  const cubicAt = (p0, p1, p2, p3, t) => {
+    const inverse = 1 - t;
+    return inverse ** 3 * p0 + 3 * inverse ** 2 * t * p1 + 3 * inverse * t ** 2 * p2 + t ** 3 * p3;
+  };
+  const roots = (p0, p1, p2, p3) => {
+    const a = -p0 + 3 * p1 - 3 * p2 + p3;
+    const b = 2 * (p0 - 2 * p1 + p2);
+    const c = p1 - p0;
+    if (Math.abs(a) < 1e-12) return Math.abs(b) < 1e-12 ? [] : [-c / b];
+    const discriminant = b * b - 4 * a * c;
+    if (discriminant < 0) return [];
+    const root = Math.sqrt(discriminant);
+    return [(-b + root) / (2 * a), (-b - root) / (2 * a)];
+  };
+  const segmentCount = subpath.closed ? points.length : Math.max(0, points.length - 1);
+  for (let index = 0; index < segmentCount; index += 1) {
+    const from = points[index]; const to = points[(index + 1) % points.length];
+    const control1 = from.out ? { x: from.x + from.out.x, y: from.y + from.out.y } : from;
+    const control2 = to.in ? { x: to.x + to.in.x, y: to.y + to.in.y } : to;
+    for (const axis of ['x', 'y']) {
+      const p0 = from[axis]; const p1 = control1[axis]; const p2 = control2[axis]; const p3 = to[axis];
+      for (const t of roots(p0, p1, p2, p3)) {
+        if (t > 0 && t < 1) include({ x: axis === 'x' ? cubicAt(p0, p1, p2, p3, t) : from.x, y: axis === 'y' ? cubicAt(p0, p1, p2, p3, t) : from.y });
+      }
+    }
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function gradientColorAt(stops, position) {
+  if (position <= stops[0].position) return stops[0].color;
+  if (position >= stops.at(-1).position) return stops.at(-1).color;
+  const rightIndex = stops.findIndex(stop => stop.position >= position);
+  const left = stops[rightIndex - 1]; const right = stops[rightIndex];
+  if (right.position === left.position) return right.color;
+  const amount = (position - left.position) / (right.position - left.position);
+  const channels = [1, 3, 5].map(offset => {
+    const from = Number.parseInt(left.color.slice(offset, offset + 2), 16);
+    const to = Number.parseInt(right.color.slice(offset, offset + 2), 16);
+    return Math.round(from + (to - from) * amount).toString(16).padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
+}
+
+function clippedGradientStops(stops, sourceStart, sourceEnd, targetStart, targetEnd) {
+  const span = sourceEnd - sourceStart;
+  if (!(span > 1e-10) || !(targetEnd > targetStart)) fail('invalid-gradient', 'SVG gradient endpoints have no visible span.', 'gradient');
+  const start = (targetStart - sourceStart) / span;
+  const end = (targetEnd - sourceStart) / span;
+  const result = [{ color: gradientColorAt(stops, start), position: 0 }];
+  for (const stop of stops) {
+    if (stop.position <= start + 1e-9 || stop.position >= end - 1e-9) continue;
+    result.push({ color: stop.color, position: (stop.position - start) / (end - start) });
+  }
+  result.push({ color: gradientColorAt(stops, end), position: 1 });
+  if (result.length > MAX_GRADIENT_STOPS) fail('unsupported-gradient', 'The mapped SVG gradient needs too many stops for an editable fill.', 'gradient');
+  return result;
+}
+
+function applyGradientPoint(total, point, outputX, outputY) {
+  const mapped = mapPoint(total, point);
+  if (!Number.isFinite(mapped.x) || !Number.isFinite(mapped.y) || Math.abs(mapped.x) > MAX_COORDINATE || Math.abs(mapped.y) > MAX_COORDINATE) {
+    fail('coordinate-out-of-range', 'Transformed SVG gradient exceeds the supported coordinate range.', 'gradient');
+  }
+  return { x: mapped.x - outputX, y: mapped.y - outputY };
+}
+
+function resolveGradient(gradient, sourceBounds, matrix, outputBounds) {
+  const box = gradient.units === 'objectBoundingBox'
+    ? [sourceBounds.width, 0, 0, sourceBounds.height, sourceBounds.x, sourceBounds.y]
+    : [1, 0, 0, 1, 0, 0];
+  const total = matrixMultiply(matrix, matrixMultiply(box, gradient.transform));
+  let angle = 0;
+  let stops = gradient.stops;
+  if (gradient.type === 'linear') {
+    const start = applyGradientPoint(total, { x: gradient.x1, y: gradient.y1 }, outputBounds.x, outputBounds.y);
+    const end = applyGradientPoint(total, { x: gradient.x2, y: gradient.y2 }, outputBounds.x, outputBounds.y);
+    const dx = end.x - start.x; const dy = end.y - start.y;
+    if (Math.hypot(dx, dy) < 1e-8) fail('invalid-gradient', 'SVG linear gradients need distinct endpoints.', 'linearGradient');
+    angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+    const radians = angle * Math.PI / 180;
+    const halfLength = Math.abs(Math.cos(radians)) * outputBounds.width / 2 + Math.abs(Math.sin(radians)) * outputBounds.height / 2;
+    const center = { x: outputBounds.width / 2, y: outputBounds.height / 2 };
+    const centerProjection = center.x * Math.cos(radians) + center.y * Math.sin(radians);
+    const startProjection = start.x * Math.cos(radians) + start.y * Math.sin(radians);
+    const endProjection = end.x * Math.cos(radians) + end.y * Math.sin(radians);
+    stops = clippedGradientStops(gradient.stops, startProjection, endProjection, centerProjection - halfLength, centerProjection + halfLength);
+  } else {
+    const scale = matrixScale(total);
+    if (scale == null) fail('unsupported-gradient', 'The editor cannot preserve elliptical or skewed SVG radial gradients.', 'radialGradient');
+    const center = applyGradientPoint(total, { x: gradient.cx, y: gradient.cy }, outputBounds.x, outputBounds.y);
+    const radius = gradient.r * scale;
+    const targetRadius = Math.hypot(outputBounds.width, outputBounds.height) / 2;
+    const tolerance = Math.max(1, outputBounds.width, outputBounds.height) * 1e-6;
+    if (Math.hypot(center.x - outputBounds.width / 2, center.y - outputBounds.height / 2) > tolerance || radius <= 0) {
+      fail('unsupported-gradient', 'The editor supports only centered SVG radial gradients.', 'radialGradient');
+    }
+    const visibleGradientEnd = targetRadius / radius;
+    if (visibleGradientEnd >= 1) stops = gradient.stops.map(stop => ({ ...stop, position: stop.position / visibleGradientEnd }));
+    else {
+      stops = gradient.stops.filter(stop => stop.position < visibleGradientEnd)
+        .map(stop => ({ ...stop, position: stop.position / visibleGradientEnd }));
+      const edgeColor = gradientColorAt(gradient.stops, visibleGradientEnd);
+      if (!stops.length) stops.push({ color: edgeColor, position: 0 });
+      if (stops.at(-1)?.position === 1) stops[stops.length - 1].color = edgeColor;
+      else stops.push({ color: edgeColor, position: 1 });
+    }
+    if (stops.length > MAX_GRADIENT_STOPS) fail('unsupported-gradient', 'The mapped SVG radial gradient needs too many stops for an editable fill.', 'radialGradient');
+  }
+  return { type: gradient.type, angle, stops, alpha: gradient.alpha };
+}
+
 function makePathNode(subpath, style, matrix, prefix, name) {
   const scale = matrixScale(matrix);
   if (style.stroke && style.strokeAlpha > 0 && style.strokeWidth > 0 && scale == null) {
@@ -802,6 +1068,9 @@ function makePathNode(subpath, style, matrix, prefix, name) {
   }
   const actualWidth = maxX - minX; const actualHeight = maxY - minY;
   const width = actualWidth || 1; const height = actualHeight || 1;
+  const sourceBounds = gradientBounds(subpath);
+  const resolvedGradient = style.fillGradient && !subpath.noFill
+    ? resolveGradient(style.fillGradient, sourceBounds, matrix, { x: minX, y: minY, width, height }) : null;
   for (const point of subpath.points) {
     const original = { x: point.x, y: point.y };
     const anchor = mapPoint(matrix, original);
@@ -821,12 +1090,26 @@ function makePathNode(subpath, style, matrix, prefix, name) {
     rotation: 0, fill: 'transparent', stroke: null, strokeWidth: 0, fillOpacity: 1,
     closed: subpath.closed, points: subpath.points, children: []
   });
-  return { base, strokeWidth: style.strokeWidth * (scale ?? 1) };
+  return { base, strokeWidth: style.strokeWidth * (scale ?? 1), fillGradient: resolvedGradient };
 }
 
 function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fillAllowed = true } = {}) {
-  const fillVisible = fillAllowed && style.fill && style.fillAlpha > 0;
+  const gradientVisible = Boolean(style.fillGradient && style.fillAlpha * style.fillGradient.alpha > 0);
+  const fillVisible = fillAllowed && ((style.fill && style.fillAlpha > 0) || gradientVisible);
   const strokeVisible = style.stroke && strokeWidth > 0 && style.strokeAlpha > 0;
+  const setFill = node => {
+    node.fill = style.fill || 'transparent';
+    node.fillOpacity = style.fillGradient ? style.fillAlpha * style.fillGradient.alpha : style.fillAlpha;
+    if (style.fillGradient) {
+      node.fillGradient = {
+        type: style.fillGradient.type,
+        angle: style.fillGradient.angle,
+        stops: style.fillGradient.stops.map((stop, index) => ({
+          id: `${prefix}-${serial}-gradient-stop-${index}`, color: stop.color, position: stop.position
+        }))
+      };
+    }
+  };
   if (!fillVisible && !strokeVisible) return [];
   if (fillVisible && strokeVisible) {
     const group = createNode('group', {
@@ -840,8 +1123,7 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
     fillNode.x = 0;
     fillNode.y = 0;
     fillNode.opacity = 1;
-    fillNode.fill = style.fill;
-    fillNode.fillOpacity = style.fillAlpha;
+    setFill(fillNode);
     fillNode.closed = true;
     strokeNode.id = `${prefix}-${serial}-stroke`;
     strokeNode.name = `${cleanLayerName(name)} stroke`;
@@ -852,12 +1134,20 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
     strokeNode.fillOpacity = 0;
     strokeNode.stroke = style.stroke;
     strokeNode.strokeWidth = strokeWidth;
+    strokeNode.strokeCap = style.strokeCap;
+    strokeNode.strokeJoin = style.strokeJoin;
+    strokeNode.strokePattern = style.strokePattern;
+    strokeNode.strokeMiterLimit = style.strokeMiterLimit;
     group.children = [fillNode, strokeNode];
     return [group];
   }
   const node = { ...base, id: `${prefix}-${serial}`, opacity: style.opacity, fill: 'transparent', stroke: null, strokeWidth: 0 };
-  if (fillVisible) { node.fill = style.fill; node.fillOpacity = style.fillAlpha; node.closed = true; }
-  if (strokeVisible) { node.stroke = style.stroke; node.strokeWidth = strokeWidth; node.opacity *= style.strokeAlpha; }
+  if (fillVisible) { setFill(node); node.closed = true; }
+  if (strokeVisible) {
+    node.stroke = style.stroke; node.strokeWidth = strokeWidth; node.opacity *= style.strokeAlpha;
+    node.strokeCap = style.strokeCap; node.strokeJoin = style.strokeJoin; node.strokePattern = style.strokePattern;
+    node.strokeMiterLimit = style.strokeMiterLimit;
+  }
   return [node];
 }
 
@@ -895,8 +1185,9 @@ function localName(node) {
   return node.attrs.id ? cleanLayerName(node.attrs.id) : `${node.tag} ${node.serial}`;
 }
 
-function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget) {
+function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients) {
   if (node.tag === 'svg' && node !== counter.root) fail('unsupported-nested-svg', 'Nested <svg> viewports are not supported.', 'svg');
+  if (node.tag === 'defs') return [];
   const unsafe = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
   if (unsafe.has(node.tag)) {
     const code = ['script', 'foreignObject'].includes(node.tag) ? 'active-content' : ['image', 'use'].includes(node.tag) ? 'external-reference' : 'unsupported-element';
@@ -904,7 +1195,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget) {
   }
   if (!geomAttrs[node.tag]) fail('unsupported-element', `SVG element <${node.tag}> is not supported.`, node.tag);
   checkElementAttributes(node);
-  const style = parseStyle(node, parentStyle);
+  const style = parseStyle(node, parentStyle, gradients);
   if (!style.display || (node.tag !== 'g' && node.tag !== 'svg' && !style.visible)) return [];
   const matrix = matrixMultiply(parentMatrix, parseTransform(node.attrs.transform, node.tag));
   if (node.tag !== 'g' && node.tag !== 'svg') {
@@ -912,13 +1203,14 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget) {
     const output = [];
     for (const path of paths) {
       const name = localName(node);
-      const { base, strokeWidth } = makePathNode(path, style, matrix, prefix, name);
-      output.push(...createPaintLayers(base, style, strokeWidth, prefix, counter.next++, name, { fillAllowed: !path.noFill }));
+      const serial = counter.next++;
+      const { base, strokeWidth, fillGradient } = makePathNode(path, style, matrix, prefix, name);
+      output.push(...createPaintLayers(base, { ...style, fillGradient }, strokeWidth, prefix, serial, name, { fillAllowed: !path.noFill }));
     }
     return output;
   }
   const childLayers = [];
-  for (const child of node.children) childLayers.push(...buildTree(child, matrix, style, prefix, counter, budget));
+  for (const child of node.children) childLayers.push(...buildTree(child, matrix, style, prefix, counter, budget, gradients));
   if (!childLayers.length) {
     if (!style.visible) return [];
     const group = createNode('group', {
@@ -945,6 +1237,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget) {
  */
 export function importSvgToLayers(source, { viewportWidth = null, viewportHeight = null } = {}) {
   const root = parseXml(source);
+  const gradients = collectGradients(root);
   for (const node of [root, ...root.children]) checkElementAttributes(node);
   const viewBox = parseViewBox(root.attrs.viewBox);
   const suppliedWidth = viewportWidth == null ? null : length(String(viewportWidth), 'viewport width', 'svg');
@@ -971,9 +1264,9 @@ export function importSvgToLayers(source, { viewportWidth = null, viewportHeight
   const prefix = `svg-${hash}`;
   const counter = { next: 0, root };
   const budget = { points: 0, tokens: 0 };
-  const style = parseStyle(root, initialStyle);
+  const style = parseStyle(root, initialStyle, gradients);
   const children = [];
-  for (const child of root.children) children.push(...buildTree(child, transformedRootMatrix, style, prefix, counter, budget));
+  for (const child of root.children) children.push(...buildTree(child, transformedRootMatrix, style, prefix, counter, budget, gradients));
   const layers = [];
   for (const child of children) layers.push(translateLayer(child, 0, 0));
   const rootLayer = createNode('frame', {

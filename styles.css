@@ -874,6 +874,43 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .variable-value[type="checkbox"] { width: 22px; height: 22px; }
   .variable-remove { width: 40px; height: 40px; flex: 0 0 40px; }
 }
+@media (max-width: 820px) and (pointer: coarse) {
+  :where(.bottom-toolbar button, .zoom-controls button, .inspector-tabs button, .inspector-content button, .layer-row button) {
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .left-panel, .right-panel, .layers-list, .inspector-content { overscroll-behavior: contain; }
+  .layer-row { min-height: 44px; }
+  .layer-chevron, .layer-icon { height: 44px; }
+  .layer-row .layer-order-control, .layer-row .layer-visibility {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+    border-radius: 8px;
+  }
+  .layer-row.is-selected .layer-order-control,
+  .layer-row.is-selected .layer-visibility,
+  .layer-row:focus-within .layer-visibility { display: grid; place-items: center; }
+  .layer-row.is-selected .layer-order-control:not(:disabled), .layer-row.is-selected .layer-visibility {
+    background: #fff;
+    color: #0876c4;
+    box-shadow: inset 0 0 0 1px rgba(13,153,255,.2);
+  }
+  .layer-row .layer-order-control:active:not(:disabled), .layer-row .layer-visibility:active {
+    background: #dcefff;
+  }
+  .inspector-tabs { flex-basis: 48px; gap: 3px; padding-inline: 6px; }
+  .inspector-tab { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 6px; }
+  .property-section button:not(.tiny-icon-button) { min-height: 40px; }
+  .property-section .tiny-icon-button { width: 40px; min-width: 40px; height: 40px; }
+  .property-section .add-fill, .property-section .primary-button, .property-section .secondary-button { min-height: 44px; }
+  .bottom-toolbar { min-height: 58px; }
+  .tool-button { width: 44px; min-width: 44px; height: 44px; flex-basis: 44px; }
+  .zoom-controls { height: 52px; }
+  .zoom-controls > button { min-width: 44px; min-height: 44px; }
+  .zoom-readout { min-width: 44px; height: 44px; }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }

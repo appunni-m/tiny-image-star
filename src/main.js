@@ -240,8 +240,8 @@ function renderLayers() {
 function section(title, body, iconName = null) {
   return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
 }
-function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false) {
-  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${label}" /></div>`;
+function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false, ariaLabel = label) {
+  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${ariaLabel}" /></div>`;
 }
 function optionalNumberField(label, prop, value) {
   return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="1" value="${Number.isFinite(value) ? value : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
@@ -333,6 +333,14 @@ function blendingSection(node) {
   const options = layerBlendModes.map(mode => `<option value="${mode}"${selected === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('');
   return section('Blending', `<select class="prop-input select-field blend-mode-select" data-prop="blendMode" aria-label="Layer blend mode"${node.locked ? ' disabled' : ''}>${options}</select>`);
 }
+function strokeStyleControls(node) {
+  const cap = ['butt', 'round', 'square'].includes(node.strokeCap) ? node.strokeCap : node.strokePattern === 'dotted' ? 'round' : 'butt';
+  const join = ['miter', 'round', 'bevel'].includes(node.strokeJoin) ? node.strokeJoin : 'miter';
+  const pattern = ['solid', 'dashed', 'dotted'].includes(node.strokePattern) ? node.strokePattern : 'solid';
+  const miterLimit = Number.isFinite(node.strokeMiterLimit) ? node.strokeMiterLimit : 10;
+  const select = (property, label, value, options) => `<select class="prop-input select-field stroke-style-select" data-prop="${property}" aria-label="${label}"${node.locked || (property === 'strokeCap' && pattern === 'dotted') ? ' disabled' : ''}>${options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('')}</select>`;
+  return `<div class="property-grid stroke-style-grid">${numberField('W', 'strokeWidth', node.strokeWidth ?? 1, .5, 0, 100_000, node.locked, 'Stroke width')}${select('strokePattern', 'Stroke pattern', pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}${select('strokeCap', 'Stroke cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']])}${select('strokeJoin', 'Stroke join', join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}${numberField('Miter', 'strokeMiterLimit', miterLimit, .5, 1, 1000, node.locked, 'Stroke miter limit')}</div>`;
+}
 function appearanceSection(node) {
   const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
   const fillType = node.imageFill ? 'image' : node.fillGradient?.type || 'solid';
@@ -344,7 +352,7 @@ function appearanceSection(node) {
   const gradient = gradientFillControls(node);
   const image = imageFillControls(node);
   const gradientOpacity = hasFill && (node.fillGradient || node.imageFill) ? `<div class="property-grid">${numberField('Opacity %', 'fillOpacity', Math.round((node.fillOpacity ?? 1) * 100), 1, 0, 100)}</div>` : '';
-  const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>` : '';
+  const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}` : '';
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
   const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) || node.fillGradient || node.imageFill ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button></div>`;
@@ -644,7 +652,8 @@ function inspectPanel() {
   const css = output.css || '/* Select a layer to generate CSS. */';
   const html = output.html || '<!-- Select a layer to generate an HTML structure. -->';
   const json = output.json || '[]';
-  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
+  const jsx = output.jsx || 'export default function TinyImageStarHandoff() { return null; }';
+  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card"><header><div><strong>React component</strong><span>Ready-to-adapt JSX with generated styles</span></div><button class="inspect-copy" type="button" data-inspect-copy="jsx">Copy JSX</button></header><pre><code>${escapeHtml(jsx)}</code></pre><p>Image source files remain local; connect each image layer to an asset in your app.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
 }
 function buildPrototypeInteractionCondition() {
   const variable = state.document.variables?.find(item => item.id === state.prototypeConditionVariableId);
@@ -867,14 +876,14 @@ function renderInspector() {
     const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
     body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.closed) body += appearanceSection(node);
-    else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+    else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   } else if (node.type === 'network') {
     const selectedVertex = state.selectedVectorPoint?.nodeId === node.id && state.selectedVectorPoint.vertexId;
     body += section('Vector network', `<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point, then use Pen to branch from it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.faces.length && !node.imageFill) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
-  else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   body += layerEffectsSection(node);
   if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
@@ -4020,9 +4029,10 @@ function updateExportSetting(input) {
 async function copyInspectText(kind) {
   const text = buildInspectOutput(state.document, selectedEntries())[kind];
   if (!text) { showToast('Select a layer before copying handoff data.'); return; }
+  const label = ({ css: 'CSS', html: 'HTML', jsx: 'React JSX', json: 'Layer JSON' })[kind] || 'Handoff data';
   try {
     await navigator.clipboard.writeText(text);
-    showToast(`${kind === 'css' ? 'CSS' : kind === 'html' ? 'HTML' : 'Layer JSON'} copied.`);
+    showToast(`${label} copied.`);
     return;
   } catch { /* Use the selection-based fallback when clipboard access is unavailable. */ }
   const field = document.createElement('textarea');
@@ -4032,7 +4042,7 @@ async function copyInspectText(kind) {
   let copied = false;
   try { copied = document.execCommand('copy'); } catch { /* A blocked clipboard can still be copied from the visible code block. */ }
   field.remove();
-  showToast(copied ? `${kind === 'css' ? 'CSS' : 'Layer JSON'} copied.` : 'Clipboard unavailable. Select the code block and copy it.');
+  showToast(copied ? `${label} copied.` : 'Clipboard unavailable. Select the code block and copy it.');
 }
 
 function applyInspectorAction(action, details = {}) {

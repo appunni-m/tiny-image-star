@@ -83,10 +83,12 @@ try {
   assert((await readDocument(design.id))?.pages?.[0]?.children?.[0]?.id === existing.id, 'The baseline layer should be persisted before SVG import.');
 
   const source = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 120 80">
+    <defs><linearGradient id="sunset"><stop offset="0" stop-color="#3366cc"/><stop offset="1" stop-color="#ff7744"/></linearGradient></defs>
     <g id="Editable group" transform="translate(5 7)">
       <path id="Blue curve" d="M 5 8 C 14 1 22 18 31 9 L 31 25 L 5 25 Z" fill="#3366cc"/>
     </g>
     <rect id="Red box" x="55" y="12" width="25" height="18" fill="#cc3322"/>
+    <rect id="Gradient box" x="85" y="12" width="25" height="18" fill="url(#sunset)"/>
   </svg>`;
   await importViaFileMenu(app, 'safe-artwork.svg', source);
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('safe-artwork.svg imported as editable layers')), 'editable SVG import');
@@ -100,6 +102,8 @@ try {
   assert(firstNodes.some(node => node.type === 'group' && node.name === 'Editable group'), 'SVG groups should remain editable groups.');
   assert(firstNodes.some(node => node.type === 'path' && node.name === 'Blue curve' && node.fill.toLowerCase() === '#3366cc'), 'SVG geometry should be imported as an editable filled vector path.');
   assert(firstNodes.some(node => node.type === 'path' && node.name === 'Red box' && node.fill.toLowerCase() === '#cc3322'), 'SVG rectangles should be imported as editable vector paths.');
+  const gradientBox = firstNodes.find(node => node.name === 'Gradient box');
+  assert(gradientBox?.type === 'path' && gradientBox.fillGradient?.type === 'linear' && gradientBox.fillGradient.stops.length === 2, 'local SVG linear gradients should become editable gradient fills.');
   const firstIds = firstNodes.map(node => node.id);
   assert(new Set(firstIds).size === firstIds.length, 'The imported vector tree should have unique layer IDs.');
   const firstRootRow = app.querySelector(`[data-layer-id="${firstRoot.id}"]`);
@@ -134,7 +138,7 @@ try {
     assert(app.querySelector('#svg-input').value === '', `The SVG input should reset after rejecting ${unsafe.name}.`);
   }
 
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', mobileViewport: '390x844', fileMenuPicker: true, editableGroupsAndPaths: true, inPlaceAppend: true, selectedLayerTree: true, repeatImportFreshIds: true, activeContentRejectedAtomically: true, externalReferenceRejectedAtomically: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', mobileViewport: '390x844', fileMenuPicker: true, editableGroupsAndPaths: true, editableGradients: true, inPlaceAppend: true, selectedLayerTree: true, repeatImportFreshIds: true, activeContentRejectedAtomically: true, externalReferenceRejectedAtomically: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

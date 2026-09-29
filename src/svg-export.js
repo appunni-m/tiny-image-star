@@ -5,6 +5,7 @@ import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { strokeDashArray } from './stroke-style.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from './vector-path.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
@@ -141,7 +142,14 @@ function strokeAttributes(document, node) {
   if (!Number.isFinite(strokeWidth) || strokeWidth < 0) throw new TypeError(`SVG export requires a valid stroke width on layer ${node.name || node.id || '(unnamed)'}.`);
   const resolved = node.stroke && strokeWidth ? color(document, node, 'stroke') : 'none';
   const stroke = resolved === 'transparent' ? 'none' : resolved;
-  return ` stroke="${escapeXml(stroke)}" stroke-width="${number(strokeWidth)}"`;
+  const pattern = ['solid', 'dashed', 'dotted'].includes(node.strokePattern) ? node.strokePattern : 'solid';
+  const cap = pattern === 'dotted' ? 'round' : ['butt', 'round', 'square'].includes(node.strokeCap) ? node.strokeCap : 'butt';
+  const join = ['miter', 'round', 'bevel'].includes(node.strokeJoin) ? node.strokeJoin : 'miter';
+  const miterLimit = Number(node.strokeMiterLimit ?? 10);
+  if (!Number.isFinite(miterLimit) || miterLimit < 1 || miterLimit > 1000) throw new TypeError(`SVG export requires a valid stroke miter limit on layer ${node.name || node.id || '(unnamed)'}.`);
+  const dash = resolved !== 'none' ? strokeDashArray({ strokeWidth, strokePattern: pattern }) : [];
+  const miter = resolved !== 'none' && join === 'miter' && miterLimit !== 4 ? ` stroke-miterlimit="${number(miterLimit)}"` : '';
+  return ` stroke="${escapeXml(stroke)}" stroke-width="${number(strokeWidth)}"${cap === 'butt' ? '' : ` stroke-linecap="${cap}"`}${join === 'miter' ? '' : ` stroke-linejoin="${join}"`}${miter}${dash.length ? ` stroke-dasharray="${dash.map(number).join(' ')}"` : ''}`;
 }
 
 function radius(document, node) {

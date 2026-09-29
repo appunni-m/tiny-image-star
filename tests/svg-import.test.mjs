@@ -145,7 +145,7 @@ test('rejects active content, external references, declarations, and unresolved 
   importFailure(`<svg><image href="https://example.test/a.png" width="10" height="10"/></svg>`, 'external-reference');
   importFailure(`<svg><use href="#shape"/></svg>`, 'external-reference');
   importFailure(`<!DOCTYPE svg [<!ENTITY x SYSTEM "https://example.test/x">]><svg>&x;</svg>`, 'unsafe-declaration');
-  importFailure(`<svg><rect width="10" height="10" style="fill:url(https://example.test/a.svg#x)"/></svg>`, 'unsupported-color');
+  importFailure(`<svg><rect width="10" height="10" style="fill:url(https://example.test/a.svg#x)"/></svg>`, 'external-reference');
   importFailure(`<svg><rect width="10" height="10" filter="url(#blur)"/></svg>`, 'unsupported-attribute');
 });
 
@@ -153,8 +153,85 @@ test('reports model-incompatible geometry and paint explicitly', () => {
   importFailure(`<svg><text x="0" y="0">hello</text></svg>`, 'unsupported-text');
   importFailure(`<svg><path d="M0 0L10 0 M20 20L30 30" fill="#000"/></svg>`, 'unsupported-compound-path');
   importFailure(`<svg><path d="M0 0L10 0L10 10Z" fill="#000" fill-rule="evenodd"/></svg>`, 'unsupported-fill-rule');
-  importFailure(`<svg><path d="M0 0L10 0" stroke="#000" stroke-linecap="round"/></svg>`, 'unsupported-stroke-style');
   importFailure(`<svg><g><marker/></g></svg>`, 'unsupported-element');
+});
+
+test('imports editable SVG stroke caps, joins, and standard dash patterns', () => {
+  const result = importSvgToLayers(`<svg><g stroke="#123456" stroke-width="2" stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="8 4">
+    <path id="dashed" d="M0 0L20 0" fill="none"/>
+    <path id="dotted" d="M0 10L20 10" fill="none" stroke-dasharray="0 4"/>
+  </g></svg>`);
+  const nodes = allNodes(result.nodes);
+  const dashed = nodes.find(node => node.name === 'dashed');
+  assert.equal(dashed.strokeCap, 'round');
+  assert.equal(dashed.strokeJoin, 'bevel');
+  assert.equal(dashed.strokePattern, 'dashed');
+  const dotted = nodes.find(node => node.name === 'dotted');
+  assert.equal(dotted.strokePattern, 'dotted');
+  assert.equal(dotted.strokeCap, 'round');
+  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="3 5"/></svg>`, 'unsupported-stroke-style');
+  importFailure(`<svg><path d="M0 0L20 0" stroke="#000" stroke-width="2" stroke-dasharray="0 4"/></svg>`, 'unsupported-stroke-style');
+});
+
+test('rechecks inherited SVG dash lengths against each element width and lets none clear them', () => {
+  importFailure(`<svg><g stroke="#123456" stroke-width="1" stroke-dasharray="4 2"><path d="M0 0L20 0" stroke-width="2"/></g></svg>`, 'unsupported-stroke-style');
+  const result = importSvgToLayers(`<svg><g stroke="#123456" stroke-width="1" stroke-dasharray="4 2">
+    <path id="cleared" d="M0 0L20 0" stroke-width="2" stroke-dasharray="none"/>
+    <path id="redeclared" d="M0 10L20 10" stroke-width="2" stroke-dasharray="8 4"/>
+  </g></svg>`);
+  const nodes = allNodes(result.nodes);
+  assert.equal(nodes.find(node => node.name === 'cleared stroke').strokePattern, 'solid');
+  assert.equal(nodes.find(node => node.name === 'redeclared stroke').strokePattern, 'dashed');
+});
+
+test('preserves the SVG default, explicit, and inherited miter limits on editable strokes', () => {
+  const result = importSvgToLayers(`<svg>
+    <path id="default-limit" d="M0 0L20 0L10 1Z" fill="none" stroke="#000000"/>
+    <path id="custom-limit" d="M0 10L20 10L10 11Z" fill="none" stroke="#000000" stroke-miterlimit="7"/>
+    <g stroke-miterlimit="6"><path id="inherited-limit" d="M0 20L20 20L10 21Z" fill="none" stroke="#000000"/></g>
+  </svg>`);
+  const nodes = allNodes(result.nodes);
+  assert.equal(nodes.find(node => node.name === 'default-limit').strokeMiterLimit, 4);
+  assert.equal(nodes.find(node => node.name === 'custom-limit').strokeMiterLimit, 7);
+  assert.equal(nodes.find(node => node.name === 'inherited-limit').strokeMiterLimit, 6);
+});
+
+test('imports gradients that map faithfully to editable linear and radial fills', () => {
+  const result = importSvgToLayers(`<svg width="100" height="100">
+    <defs>
+      <linearGradient id="horizontal"><stop offset="0" stop-color="#ff0000"/><stop offset="100%" style="stop-color:#0000ff"/></linearGradient>
+      <linearGradient id="vertical" gradientTransform="rotate(90 .5 .5)"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#000000"/></linearGradient>
+      <linearGradient id="shifted" x1="25%" x2="75%"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient>
+      <radialGradient id="radial" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ff0000" stop-opacity=".5"/><stop offset="1" stop-color="#0000ff" stop-opacity=".5"/></radialGradient>
+    </defs>
+    <rect id="wide" width="100" height="40" fill="url(#horizontal)"/>
+    <rect id="tall" y="45" width="20" height="40" fill="url(#vertical)"/>
+    <rect id="square" x="50" y="50" width="40" height="40" fill="url(#radial)"/>
+    <rect id="shifted-fill" y="90" width="20" height="10" fill="url(#shifted)"/>
+  </svg>`);
+  const nodes = allNodes(result.nodes);
+  const wide = nodes.find(node => node.name === 'wide');
+  assert.equal(wide.fillGradient.type, 'linear');
+  assert.equal(wide.fillGradient.angle, 0);
+  assert.deepEqual(wide.fillGradient.stops.map(({ color, position }) => [color, position]), [['#ff0000', 0], ['#0000ff', 1]]);
+  assert.equal(new Set(wide.fillGradient.stops.map(stop => stop.id)).size, 2);
+  const tall = nodes.find(node => node.name === 'tall');
+  assert.equal(tall.fillGradient.type, 'linear');
+  assert.ok(Math.abs(tall.fillGradient.angle - 90) < 1e-6);
+  const square = nodes.find(node => node.name === 'square');
+  assert.equal(square.fillGradient.type, 'radial');
+  assert.equal(square.fillOpacity, 0.5);
+  assert.ok(square.fillGradient.stops[1].position < 1, 'radial stop positions scale to the editor’s larger circle');
+  const shifted = nodes.find(node => node.name === 'shifted-fill');
+  assert.deepEqual(shifted.fillGradient.stops.map(stop => stop.position), [0, 0.25, 0.75, 1]);
+});
+
+test('rejects SVG gradients the editable fill model would render differently', () => {
+  importFailure(`<svg><rect width="10" height="10" fill="url(#missing)"/></svg>`, 'missing-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#repeat)"/><defs><linearGradient id="repeat" spreadMethod="repeat"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#alpha)"/><defs><linearGradient id="alpha"><stop stop-opacity=".2"/><stop offset="1" stop-opacity=".8"/></linearGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#focus)"/><defs><radialGradient id="focus" fx="20%"><stop/><stop offset="1"/></radialGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#bad)"/><defs><linearGradient id="bad" href="#other"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'external-reference');
 });
 
 test('rejects oversized path point counts during bounded preflight before building point arrays', () => {

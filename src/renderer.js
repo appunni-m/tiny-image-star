@@ -5,6 +5,7 @@ import { measureTrackedText, textGraphemes, transformTextCase, wrapText } from '
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
+import { applyStrokeStyle } from './stroke-style.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
@@ -532,7 +533,7 @@ export class SceneRenderer {
         ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('Loading image…', cx, cy);
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else if (node.type === 'text') {
       const sourceText = getNodePropertyValue(document, node, 'text');
       if (Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === sourceText) {
@@ -569,7 +570,7 @@ export class SceneRenderer {
           drawTextDecoration(ctx, x + offsetX, textY + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
         });
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else if (node.type === 'network') {
       const fill = getNodeColor(document, node, 'fill');
       const fillImage = node.imageFill ? imageForNode(node, assets, this.getState(), node.imageFill.assetId) : null;
@@ -586,7 +587,7 @@ export class SceneRenderer {
           ctx.restore();
         }
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
       if ((fill && fill !== 'transparent' || node.fillGradient || node.imageFill) && node.type !== 'line' && (node.type !== 'path' || node.closed)) {
@@ -600,7 +601,7 @@ export class SceneRenderer {
           ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.fillStyle = gradient; ctx.fill(); ctx.restore();
         } else { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
       }
-      if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+      if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     }
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }

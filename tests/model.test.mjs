@@ -11,6 +11,25 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(validateDocument(document), true);
 });
 
+test('stroke cap, join, and pattern settings persist and reject invalid values', () => {
+  const document = createDocument();
+  const line = createNode('line', { strokeWidth: 4, strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'dashed', strokeMiterLimit: 4 });
+  addNode(document, line);
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[0], line);
+
+  for (const [property, invalid] of [['strokeWidth', -1], ['strokeWidth', 100_001], ['strokeCap', 'triangle'], ['strokeJoin', 'chamfer'], ['strokePattern', 'custom'], ['strokeMiterLimit', 0], ['strokeMiterLimit', 1001]]) {
+    const candidate = structuredClone(reopened);
+    candidate.pages[0].children[0][property] = invalid;
+    assert.throws(() => validateDocument(candidate), /Invalid stroke style/);
+  }
+  const invisibleDots = structuredClone(reopened);
+  invisibleDots.pages[0].children[0].strokePattern = 'dotted';
+  invisibleDots.pages[0].children[0].strokeCap = 'butt';
+  assert.throws(() => validateDocument(invisibleDots), /Invalid stroke style/);
+});
+
 test('frames own nested layers and bounds resolve into page coordinates', () => {
   const document = createDocument();
   const frame = createNode('frame', { x: 120, y: 80, width: 400, height: 500 });

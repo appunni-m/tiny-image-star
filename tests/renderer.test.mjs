@@ -26,6 +26,31 @@ test('text tracking affects measured line width and wrapping', () => {
   assert.deepEqual(wrapText(context, 'ab cd', 46, 2), ['ab', 'cd']);
 });
 
+test('shape rendering applies editable stroke cap, join, and dash patterns', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', {
+    stroke: '#123456', strokeWidth: 3, strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'dashed', strokeMiterLimit: 4
+  });
+  addNode(document, shape);
+  const calls = [];
+  const context = {
+    globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    save() {}, restore() {}, beginPath() {}, rect() {}, fill() {},
+    setLineDash(value) { calls.push(['dash', [...value]]); },
+    stroke() { calls.push(['stroke', this.lineCap, this.lineJoin, this.miterLimit, this.lineWidth, this.strokeStyle]); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, shape, 0, 0, new Map());
+  assert.deepEqual(calls, [['dash', [12, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']]);
+
+  shape.strokePattern = 'dotted';
+  shape.strokeCap = undefined;
+  calls.length = 0;
+  renderer.drawNode(context, shape, 0, 0, new Map());
+  assert.deepEqual(calls, [['dash', [0, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']], 'dots need a round cap to keep zero-length dash segments visible');
+});
+
 test('fallback text tracking retains pair kerning and native tracking restores canvas state', () => {
   const fallback = textContext();
   drawTrackedText(fallback, 'AV', 4, 8, 2);

@@ -176,10 +176,13 @@ const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude'])
 const textCases = new Set(['none', 'uppercase', 'lowercase', 'capitalize']);
 const textDecorations = new Set(['none', 'underline', 'line-through']);
 const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
+const strokeCaps = new Set(['butt', 'round', 'square']);
+const strokeJoins = new Set(['miter', 'round', 'bevel']);
+const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -2066,6 +2069,12 @@ export function validateDocument(document) {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      if ((node.strokeWidth != null && (!Number.isFinite(node.strokeWidth) || node.strokeWidth < 0 || node.strokeWidth > 100_000))
+        || (node.strokeCap != null && !strokeCaps.has(node.strokeCap))
+        || (node.strokeJoin != null && !strokeJoins.has(node.strokeJoin))
+        || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
+        || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
+        || (node.strokePattern === 'dotted' && node.strokeCap != null && node.strokeCap !== 'round')) throw new TypeError(`Invalid stroke style on layer ${node.name || node.id}.`);
       const sizeLimits = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'];
       const hasSizeLimit = sizeLimits.some(property => node[property] != null);
       if (hasSizeLimit && !(node.type === 'frame' && node.autoLayout) && !parent?.autoLayout) throw new TypeError(`Size limits require an auto layout frame on layer ${node.name || node.id}.`);
