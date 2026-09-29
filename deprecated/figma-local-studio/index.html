@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#f8f8fa" />
     <title>Design — Local Studio</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/src/image.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -53,6 +54,7 @@
             <button class="tool-button" data-tool="rect" title="Rectangle (R)" aria-label="Rectangle tool"><span>▱</span><small>▾</small></button>
             <button class="tool-button" data-tool="ellipse" title="Ellipse (O)" aria-label="Ellipse tool"><span>◯</span></button>
             <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text tool"><span>T</span></button>
+            <button class="tool-button" data-tool="image" title="Place image" aria-label="Place image"><span>▧</span></button>
             <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen tool"><span>⌁</span></button>
             <span class="tool-divider"></span>
             <button class="tool-button" data-tool="hand" title="Hand (H)" aria-label="Hand tool"><span>✋</span></button>
@@ -84,12 +86,23 @@
               <textarea id="prop-text" rows="3" aria-label="Text content"></textarea>
               <div class="property-grid"><label class="property-field"><span>Font size</span><input id="prop-font-size" type="number" min="1" /></label><label class="property-field"><span>Weight</span><select id="prop-font-weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semibold</option><option value="700">Bold</option></select></label></div>
             </section>
+            <section class="inspector-section image-section" id="image-section" hidden>
+              <div class="section-heading"><span>Image adjustments</span><button class="tiny-button" id="reset-image-adjustments" title="Reset adjustments">↺</button></div>
+              <p class="image-source-name" id="image-source-name"></p>
+              <p class="image-engine-status" id="image-engine-status">Loading local Pillow-RS WebAssembly…</p>
+              <label class="image-slider"><span>Brightness <output id="brightness-value">0</output></span><input data-adjustment="brightness" type="range" min="-100" max="100" step="1" value="0" /></label>
+              <label class="image-slider"><span>Contrast <output id="contrast-value">0</output></span><input data-adjustment="contrast" type="range" min="-100" max="100" step="1" value="0" /></label>
+              <label class="image-slider"><span>Saturation <output id="saturation-value">0</output></span><input data-adjustment="saturation" type="range" min="-100" max="100" step="1" value="0" /></label>
+              <label class="image-slider"><span>Blur <output id="blur-value">0 px</output></span><input data-adjustment="blur" type="range" min="0" max="20" step="1" value="0" /></label>
+              <p class="inspector-note">Adjustments re-render from the original image bytes in local WebAssembly. The image stays selected and updates in place.</p>
+            </section>
             <section class="inspector-section export-section"><div class="section-heading"><span>Export</span><button class="tiny-button" id="export-add">＋</button></div><button class="export-button" id="export-selection">Export selection <span>↗</span></button></section>
           </div>
           <div class="properties-footer"><span>Local design file</span><button id="help-button">?</button></div>
         </aside>
       </div>
       <input id="import-file" type="file" accept="application/json,.json,.localdesign" hidden />
+      <input id="image-input" type="file" accept="image/*" multiple hidden />
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </div>
     <script type="module" src="/src/main.js"></script>

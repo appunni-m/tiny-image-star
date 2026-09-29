@@ -87,6 +87,11 @@ export class CanvasRenderer {
     if (node.type === 'ellipse') {
       ctx.beginPath(); ctx.ellipse(x + w / 2, y + h / 2, Math.abs(w / 2), Math.abs(h / 2), 0, 0, Math.PI * 2);
       if (node.fill !== 'none') ctx.fill(); if (node.strokeWidth > 0) ctx.stroke();
+    } else if (node.type === 'image') {
+      const bitmap = node.previewBitmap ?? node.sourceBitmap;
+      ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.min((node.radius || 0) * this.zoom, Math.abs(w) / 2, Math.abs(h) / 2)); ctx.clip();
+      if (bitmap) ctx.drawImage(bitmap, x, y, w, h);
+      else { ctx.fillStyle = '#efedf5'; ctx.fillRect(x, y, w, h); }
     } else if (node.type === 'text') {
       ctx.font = `${node.fontWeight || 400} ${Math.max(1, (node.fontSize || 32) * this.zoom)}px Inter, ui-sans-serif, system-ui, sans-serif`;
       ctx.textBaseline = 'top'; ctx.fillStyle = node.fill || '#1e1e1e';
