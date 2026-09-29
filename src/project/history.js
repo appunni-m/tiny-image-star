@@ -1,4 +1,4 @@
-import { canonicalJSON, clone, validateProject } from "./model.js";
+import { canonicalJSON, clone, synchronizeComponentInstances, validateProject } from "./model.js";
 
 export const MAX_HISTORY_COMMANDS = 100;
 export const MAX_HISTORY_BYTES = 2 * 1024 * 1024;
@@ -6,7 +6,7 @@ export const MAX_PROJECT_GROUP_COMMANDS = 512;
 
 // Commands replace bounded parameter records by stable ID; source bytes never
 // appear in the document or undo history. A group is one reversible user action.
-export function applyProjectCommand(project, command) {
+export function applyProjectCommand(project, command, { trackComponentOverrides = true } = {}) {
   const next = clone(project);
   const inverses = [];
   const commands = command.type === "group" ? command.commands : [command];
@@ -24,6 +24,9 @@ export function applyProjectCommand(project, command) {
       next[field] = clone(item.value);
     } else throw new Error("Unsupported project command.");
   }
+  synchronizeComponentInstances(next, { beforeProject: project,
+    changedNodeIds: commands.filter((item) => item.type === "node" && item.value != null).map((item) => item.id),
+    trackOverrides: trackComponentOverrides });
   next.revision = project.revision + 1;
   validateProject(next);
   return { project: next, inverse: { type: "group", commands: inverses } };
@@ -64,7 +67,7 @@ export class ProjectHistory {
     const base = this.base;
     this.base = null;
     if (!command.commands.length) return false;
-    const { inverse } = applyProjectCommand(base, command);
+    const { inverse } = applyProjectCommand(base, command, { trackComponentOverrides: false });
     this.past.push({ label, command, inverse });
     this.future = [];
     while (this.past.length > MAX_HISTORY_COMMANDS || new TextEncoder().encode(JSON.stringify(this.past)).byteLength > MAX_HISTORY_BYTES) this.past.shift();
@@ -76,7 +79,7 @@ export class ProjectHistory {
     this.commit();
     const entry = this.past.pop();
     if (!entry) return false;
-    this.update(applyProjectCommand(this.document, entry.inverse).project);
+    this.update(applyProjectCommand(this.document, entry.inverse, { trackComponentOverrides: false }).project);
     this.future.push(entry);
     return true;
   }
@@ -84,7 +87,7 @@ export class ProjectHistory {
     if (this.base) this.commit();
     const entry = this.future.pop();
     if (!entry) return false;
-    this.update(applyProjectCommand(this.document, entry.command).project);
+    this.update(applyProjectCommand(this.document, entry.command, { trackComponentOverrides: false }).project);
     this.past.push(entry);
     return true;
   }

@@ -1,5 +1,6 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+  createComponentCommand, createComponentInstanceCommand, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand,
   addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand,
   setLayoutPositioningCommand, updatePageSelection } from "../project/design-page.js";
@@ -167,7 +168,10 @@ export function attachDesignWorkspace() {
       row.classList.toggle("selected", selection.ids.includes(id)); row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(selection.ids.includes(id))); row.dataset.layerId = id;
       const select = document.createElement("button"); select.type = "button"; select.className = "design-layer-select";
-      select.textContent = node.name || (node.kind === "image" ? project.assets[node.assetId]?.name : node.kind[0].toUpperCase() + node.kind.slice(1)) || "Layer";
+      const label = node.name || (node.kind === "image" ? project.assets[node.assetId]?.name : node.kind[0].toUpperCase() + node.kind.slice(1)) || "Layer";
+      const componentMark = node.componentDefinition ? "◆ " : node.componentInstanceOf != null ? "◇ " : "";
+      select.textContent = `${componentMark}${label}`;
+      select.setAttribute("aria-label", `${node.componentDefinition ? "Component" : node.componentInstanceOf != null ? "Component instance" : node.kind}, ${label}`);
       select.title = select.textContent; select.addEventListener("click", (event) => {
         selection = updatePageSelection(selection, page.nodeIds, id, { toggle: event.metaKey || event.ctrlKey, extend: event.shiftKey });
         selectionChanged();
@@ -180,7 +184,35 @@ export function attachDesignWorkspace() {
         ...current, locked: !current.locked,
       }), [id]), "design-layer-icon"); lock.setAttribute("aria-label", `${node.locked ? "Unlock" : "Lock"} ${select.textContent}`); lock.title = lock.getAttribute("aria-label");
       lock.disabled = parentLocked;
-      row.append(select, eye, lock); row.addEventListener("contextmenu", (event) => { event.preventDefault(); contextMenuForLayer(event, id); });
+      row.append(select, eye, lock);
+      row.addEventListener("contextmenu", (event) => { event.preventDefault(); contextMenuForLayer(event, id); });
+      select.addEventListener("keydown", (event) => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault(); const bounds = select.getBoundingClientRect();
+        contextMenuForLayer({ clientX: bounds.left + bounds.width / 2, clientY: bounds.bottom, currentTarget: select }, id);
+      });
+      let longPressTimer = 0, longPressConsumed = false, longPressPoint = null;
+      row.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "touch" || event.button !== 0) return;
+        clearTimeout(longPressTimer); longPressConsumed = false;
+        longPressPoint = { x: event.clientX, y: event.clientY };
+        longPressTimer = setTimeout(() => {
+          longPressTimer = 0; longPressConsumed = true;
+          contextMenuForLayer({ clientX: longPressPoint.x, clientY: longPressPoint.y, currentTarget: row }, id);
+          setTimeout(() => { longPressConsumed = false; }, 1000);
+        }, 550);
+      });
+      row.addEventListener("pointermove", (event) => {
+        if (!longPressTimer || !longPressPoint || Math.hypot(event.clientX - longPressPoint.x, event.clientY - longPressPoint.y) < 12) return;
+        clearTimeout(longPressTimer); longPressTimer = 0;
+      });
+      for (const eventName of ["pointerup", "pointercancel", "pointerleave"]) row.addEventListener(eventName, () => {
+        clearTimeout(longPressTimer); longPressTimer = 0;
+      });
+      row.addEventListener("click", (event) => {
+        if (!longPressConsumed) return;
+        longPressConsumed = false; event.preventDefault(); event.stopPropagation();
+      }, true);
       container.append(row);
     }
   }
@@ -1600,6 +1632,22 @@ export function attachDesignWorkspace() {
     const imageIds = ids.filter((selectedId) => layer(selectedId)?.kind === "image" && !layer(selectedId)?.locked);
     const recipes = window.tinyImageStarBatch?.listRecipes?.() ?? [];
     const frameItems = ids.length > 1 ? [{ type: "separator" }, { label: "Frame selection", disabled: Boolean(recipeJob), action: frameSelection }] : [];
+    const instanceRootId = componentInstanceRootId(id), instanceRoot = instanceRootId && layer(instanceRootId);
+    const instanceMembers = instanceRootId && currentPage()?.nodeIds.filter((nodeId) => componentInstanceRootId(nodeId) === instanceRootId) || [];
+    const hasInstanceOverrides = instanceMembers.some((nodeId) => (layer(nodeId)?.componentOverrides ?? [])
+      .some((path) => !(nodeId === instanceRootId && ["frame.x", "frame.y"].includes(path))));
+    const componentItems = node?.componentDefinition ? [
+      { type: "separator" }, { type: "heading", label: "Component" },
+      { label: "Create instance", disabled: Boolean(recipeJob), action: () => createComponentInstance(id) },
+      { label: "Remove component status", disabled: componentHasInstances(id), action: () => removeComponentStatus(id) },
+    ] : instanceRoot ? [
+      { type: "separator" }, { type: "heading", label: "Component instance" },
+      { label: "Reset overrides", disabled: !hasInstanceOverrides || Boolean(recipeJob), action: () => resetComponentInstance(instanceRootId) },
+      { label: "Detach instance", disabled: Boolean(recipeJob), action: () => detachComponentInstance(instanceRootId) },
+    ] : !ids.some((selectedId) => layer(selectedId)?.componentDefinition || layer(selectedId)?.componentInstanceOf != null
+      || layer(selectedId)?.componentSourceNodeId != null || componentDefinitionRootId(selectedId)) ? [
+      { type: "separator" }, { label: ids.length === 1 ? "Create component" : "Create component from selection", disabled: Boolean(recipeJob), action: createComponent },
+    ] : [];
     const recipeItems = node?.kind === "image" ? [
       { type: "separator" },
       { type: "heading", label: `${imageIds.length} image layer${imageIds.length === 1 ? "" : "s"} selected` },
@@ -1616,14 +1664,80 @@ export function attachDesignWorkspace() {
           action: () => startDesignRecipeJob(recipe, imageIds) };
       }),
     ] : [];
-    openContextMenu({ x: event.clientX, y: event.clientY, anchor: event.currentTarget, focus: event.currentTarget,
+    const anchor = [...get("layer-list").querySelectorAll(".design-layer-row")].find((row) => row.dataset.layerId === id)
+      ?.querySelector(".design-layer-select") ?? event.currentTarget;
+    openContextMenu({ x: event.clientX, y: event.clientY, anchor, focus: anchor,
       items: [{ label: "Add text", action: () => addText() }, { type: "separator" },
         { label: node?.visible === false ? "Show layer" : "Hide layer", action: () => mutateMany("Visibility", (current) => ({ ...current, visible: current.visible === false }), ids) },
         { label: "Bring to front", action: () => layerOrderCommand(id, true) },
         { label: "Send to back", action: () => layerOrderCommand(id, false) },
         { label: node?.locked ? "Unlock selection" : "Lock selection", action: () => mutateMany("Lock", (current) => ({ ...current, locked: !node?.locked }), ids) },
-        { label: `Delete ${ids.length === 1 ? "layer" : `${ids.length} layers`}`, action: () => deleteSelected() }, ...frameItems, ...recipeItems],
+        { label: `Delete ${ids.length === 1 ? "layer" : `${ids.length} layers`}`, action: () => deleteSelected() }, ...frameItems, ...componentItems, ...recipeItems],
     });
+  }
+
+  function componentInstanceRootId(id) {
+    let node = layer(id);
+    while (node) {
+      if (node.componentInstanceOf != null) return node.id;
+      node = node.parentId ? layer(node.parentId) : null;
+    }
+    return null;
+  }
+
+  function componentDefinitionRootId(id) {
+    let node = layer(id);
+    while (node) {
+      if (node.componentDefinition) return node.id;
+      node = node.parentId ? layer(node.parentId) : null;
+    }
+    return null;
+  }
+
+  function componentHasInstances(id) {
+    return Object.values(renderProject()?.nodes ?? {}).some((node) => node.componentInstanceOf === id);
+  }
+
+  function createComponent() {
+    if (!history || !currentPage()) return;
+    try {
+      const created = createComponentCommand(history.document, currentPage().id, topLevelSelection());
+      history.apply(created.command, "Create component"); selection = { ids: [created.id], anchorId: created.id };
+      edited("Component created.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function createComponentInstance(definitionId) {
+    if (!history || !currentPage()) return;
+    try {
+      const created = createComponentInstanceCommand(history.document, currentPage().id, definitionId);
+      history.apply(created.command, "Create component instance"); selection = { ids: [created.id], anchorId: created.id };
+      edited("Component instance created.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function resetComponentInstance(instanceId) {
+    if (!history || !currentPage()) return;
+    try {
+      history.apply(resetComponentOverridesCommand(history.document, currentPage().id, instanceId), "Reset component overrides");
+      selection = { ids: [instanceId], anchorId: instanceId }; edited("Component overrides reset.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function detachComponentInstance(instanceId) {
+    if (!history || !currentPage()) return;
+    try {
+      history.apply(detachComponentInstanceCommand(history.document, currentPage().id, instanceId), "Detach component instance");
+      selection = { ids: [instanceId], anchorId: instanceId }; edited("Instance detached from its component.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function removeComponentStatus(definitionId) {
+    if (!history) return;
+    try {
+      history.apply(removeComponentDefinitionCommand(history.document, definitionId), "Remove component status");
+      edited("Component status removed.");
+    } catch (error) { setStatus(error.message); }
   }
 
   function addText() {

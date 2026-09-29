@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createComponentCommand,
+  createComponentInstanceCommand, createDesignPageProject, detachComponentInstanceCommand, resetComponentOverridesCommand,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   addGridTrackCommand, deleteGridTrackCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
   setGridPlacementCommand, setLayoutPositioningCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
@@ -101,6 +102,79 @@ test("page layer add and delete commands are atomic, and image sources stay shar
   assert.equal(Object.hasOwn(history.document.assets, "extra-1"), false, "unreferenced source asset is released with its last layer");
   history.undo();
   assert.equal(Object.hasOwn(history.document.assets, "extra-1"), true);
+});
+
+test("component instances share local sources, inherit master edits, preserve overrides and detach cleanly", () => {
+  const project = createDesignPageProject({ images: images(2), id: "component-design", slideId: "component-page" });
+  const history = new ProjectHistory(project), pageId = "component-page";
+  const frame = addFrameAroundSelectionCommand(history.document, pageId, history.document.slides[0].nodeIds);
+  history.apply(frame.command, "Frame component layers");
+  history.apply(createComponentCommand(history.document, pageId, [frame.id]).command, "Create component");
+  const definitionId = frame.id;
+  const sourceChildId = history.document.slides[0].nodeIds.find((id) => history.document.nodes[id].parentId === definitionId);
+  assert.equal(history.document.nodes[definitionId].componentDefinition, true);
+
+  const instance = createComponentInstanceCommand(history.document, pageId, definitionId);
+  history.apply(instance.command, "Create component instance");
+  const instanceId = instance.id;
+  const instanceChildId = history.document.slides[0].nodeIds.find((id) => history.document.nodes[id].componentSourceNodeId === sourceChildId);
+  assert.ok(instanceChildId);
+  const instanceOtherChildId = history.document.slides[0].nodeIds.find((id) => history.document.nodes[id].parentId === instanceId
+    && id !== instanceChildId);
+  assert.ok(instanceOtherChildId);
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, definitionId);
+  assert.equal(history.document.nodes[instanceChildId].assetId, history.document.nodes[sourceChildId].assetId,
+    "instances keep the exact same local image asset reference");
+  assert.equal(Object.keys(history.document.assets).length, 2, "instance creation does not duplicate source bytes or asset records");
+  assert.throws(() => deleteLayerCommand(history.document, instanceChildId), /Detach the component instance before removing/);
+  assert.throws(() => addFrameAroundSelectionCommand(history.document, pageId, [instanceChildId, instanceOtherChildId]),
+    /Detach the component instance before changing its layer structure/);
+  assert.throws(() => reorderLayerCommand(history.document, pageId, instanceChildId, history.document.slides[0].nodeIds.indexOf(instanceChildId) + 1),
+    /Detach the component instance before reordering/);
+  const incomplete = structuredClone(history.document);
+  delete incomplete.nodes[instanceChildId];
+  incomplete.slides[0].nodeIds = incomplete.slides[0].nodeIds.filter((id) => id !== instanceChildId);
+  assert.throws(() => validateProject(incomplete), /must contain every definition layer exactly once/,
+    "saved instances cannot silently lose a source child");
+
+  const update = (id, patch, label) => history.apply({ type: "node", id,
+    value: { ...structuredClone(history.document.nodes[id]), ...patch } }, label);
+  update(sourceChildId, { appearance: { brightness: 1.2 } }, "Edit component master");
+  assert.deepEqual(history.document.nodes[instanceChildId].appearance, { brightness: 1.2 });
+  update(instanceChildId, { appearance: { brightness: 1.5 } }, "Override component instance");
+  assert.deepEqual(history.document.nodes[instanceChildId].componentOverrides, ["appearance"]);
+  update(sourceChildId, { appearance: { brightness: 1.8 } }, "Edit component master again");
+  assert.deepEqual(history.document.nodes[instanceChildId].appearance, { brightness: 1.5 }, "local overrides stay independent of later master edits");
+
+  const second = createComponentInstanceCommand(history.document, pageId, definitionId);
+  history.apply(second.command, "Create second component instance");
+  const secondChildId = history.document.slides[0].nodeIds.find((id) => history.document.nodes[id].componentSourceNodeId === sourceChildId
+    && history.document.nodes[id].parentId === second.id);
+  assert.deepEqual(history.document.nodes[secondChildId].appearance, { brightness: 1.8 }, "new instances use the latest master state");
+
+  const originalPlacement = structuredClone(history.document.nodes[instanceId].frame);
+  history.apply(resetComponentOverridesCommand(history.document, pageId, instanceId), "Reset instance overrides");
+  assert.deepEqual(history.document.nodes[instanceChildId].appearance, { brightness: 1.8 });
+  assert.deepEqual({ x: history.document.nodes[instanceId].frame.x, y: history.document.nodes[instanceId].frame.y },
+    { x: originalPlacement.x, y: originalPlacement.y }, "reset keeps the instance's independent placement");
+  assert.throws(() => deleteLayerCommand(history.document, definitionId), /Detach or delete linked instances/,
+    "a live instance prevents deleting its master structure");
+
+  const malformed = structuredClone(history.document);
+  delete malformed.nodes[instanceChildId].componentSourceNodeId;
+  delete malformed.nodes[instanceChildId].componentOverrides;
+  assert.throws(() => validateProject(malformed), /Every layer inside a component instance/,
+    "a partially linked subtree cannot be loaded as a valid project");
+
+  history.apply(detachComponentInstanceCommand(history.document, pageId, instanceId), "Detach instance");
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, undefined);
+  history.undo();
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, definitionId, "detach is a reversible edit");
+  history.redo();
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, undefined);
+  update(sourceChildId, { appearance: { brightness: 2 } }, "Edit detached component master");
+  assert.deepEqual(history.document.nodes[instanceChildId].appearance, { brightness: 1.8 }, "detached layers no longer follow master edits");
+  assert.doesNotThrow(() => validateProject(history.document));
 });
 
 test("pen vector layers persist closed paths and Bezier handles as one undoable page command", () => {

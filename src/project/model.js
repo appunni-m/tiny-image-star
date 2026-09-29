@@ -52,6 +52,48 @@ export function canonicalJSON(value) {
   return JSON.stringify(value);
 }
 
+const COMPONENT_SYNC_FIELDS = ["name", "visible", "locked", "assetId", "maskId", "fontId", "space", "anchorSlideId", "constraints",
+  "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "variantFrames", "gridPlacement",
+  "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color",
+  "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"];
+const COMPONENT_OVERRIDE_PATHS = new Set([...COMPONENT_SYNC_FIELDS, "frame.x", "frame.y", "frame.width", "frame.height"]);
+
+/** Keep materialized component instances linked while preserving explicitly edited instance properties. */
+export function synchronizeComponentInstances(project, { beforeProject = null, changedNodeIds = [], trackOverrides = false } = {}) {
+  if (trackOverrides) for (const id of changedNodeIds) {
+    const before = beforeProject?.nodes[id], node = project.nodes[id];
+    if (!node?.componentSourceNodeId || !before || !project.nodes[node.componentSourceNodeId]) continue;
+    const source = project.nodes[node.componentSourceNodeId], overrides = new Set(node.componentOverrides ?? []);
+    for (const field of COMPONENT_SYNC_FIELDS) {
+      if (canonicalJSON(before[field]) === canonicalJSON(node[field])) continue;
+      if (canonicalJSON(node[field]) === canonicalJSON(source[field])) overrides.delete(field);
+      else overrides.add(field);
+    }
+    for (const axis of ["x", "y", "width", "height"]) {
+      if (canonicalJSON(before.frame?.[axis]) === canonicalJSON(node.frame?.[axis])) continue;
+      const path = `frame.${axis}`;
+      if (canonicalJSON(node.frame?.[axis]) === canonicalJSON(source.frame?.[axis])) overrides.delete(path);
+      else overrides.add(path);
+    }
+    node.componentOverrides = [...overrides].sort();
+  }
+
+  for (const node of Object.values(project.nodes)) {
+    const source = node.componentSourceNodeId && project.nodes[node.componentSourceNodeId];
+    if (!source) continue;
+    const overrides = new Set(node.componentOverrides ?? []);
+    for (const field of COMPONENT_SYNC_FIELDS) {
+      if (overrides.has(field)) continue;
+      if (Object.hasOwn(source, field)) node[field] = clone(source[field]);
+      else delete node[field];
+    }
+    const frame = clone(source.frame);
+    for (const axis of ["x", "y", "width", "height"]) if (overrides.has(`frame.${axis}`)) frame[axis] = node.frame[axis];
+    node.frame = frame;
+  }
+  return project;
+}
+
 export function validateLegacyOperations(operations) {
   check(object(operations), "Missing legacy operations.");
   keys(operations, ["crop", "cropRelative", "rotation", "flipX", "flipY", "resizeWidth", "resizeHeight", "maxWidth", "maxHeight",
@@ -435,9 +477,62 @@ export function validateProject(project) {
       if (patch.text != null) check(typeof patch.text === "string" && patch.text.length <= 5000, "Invalid local caption.");
     }
   }
+  const componentDefinitions = new Map(), componentInstanceMembers = new Map();
   for (const [id, node] of Object.entries(project.nodes)) {
-      keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+      keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "gridPlacement", "gridAlignment", "componentDefinition", "componentInstanceOf", "componentSourceNodeId", "componentOverrides", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
+    if (node.componentDefinition != null) {
+      check(node.componentDefinition === true && node.space === "slide" && node.componentInstanceOf == null && node.componentSourceNodeId == null,
+        "Invalid component definition.");
+      let parentId = node.parentId;
+      while (parentId) {
+        const parent = project.nodes[parentId];
+        check(!parent.componentDefinition && !parent.componentInstanceOf, "Nested component definitions are not supported.");
+        parentId = parent.parentId;
+      }
+      componentDefinitions.set(node.id, [node.id]);
+    }
+    if (node.componentInstanceOf != null) {
+      const source = project.nodes[node.componentInstanceOf];
+      check(node.space === "slide" && source?.componentDefinition === true && node.componentSourceNodeId === source.id,
+        "Invalid component instance.");
+    }
+    let enclosingInstance = node;
+    while (enclosingInstance && enclosingInstance.componentInstanceOf == null)
+      enclosingInstance = enclosingInstance.parentId ? project.nodes[enclosingInstance.parentId] : null;
+    if (enclosingInstance && enclosingInstance.id !== node.id)
+      check(node.componentSourceNodeId != null, "Every layer inside a component instance must mirror its definition layer.");
+    if (node.componentSourceNodeId != null) {
+      const source = project.nodes[node.componentSourceNodeId];
+      check(identifier(node.componentSourceNodeId) && source && source.kind === node.kind && node.space === "slide",
+        "Invalid component source layer.");
+      let instanceRoot = node, ownerId = null;
+      while (instanceRoot) {
+        if (instanceRoot.componentInstanceOf != null) { ownerId = instanceRoot.id; break; }
+        instanceRoot = instanceRoot.parentId ? project.nodes[instanceRoot.parentId] : null;
+      }
+      let sourceParentId = source.id, sourceOwnerId = null;
+      while (sourceParentId) {
+        const sourceAncestor = project.nodes[sourceParentId];
+        if (sourceAncestor.componentDefinition === true) { sourceOwnerId = sourceAncestor.id; break; }
+        sourceParentId = sourceAncestor.parentId;
+      }
+      check(instanceRoot && sourceOwnerId === instanceRoot.componentInstanceOf,
+        "A component instance layer must belong to its referenced definition.");
+      componentInstanceMembers.set(instanceRoot.id, [...(componentInstanceMembers.get(instanceRoot.id) ?? []), node]);
+      if (node.id === instanceRoot.id) {
+        check(source.id === instanceRoot.componentInstanceOf && node.parentId === source.parentId,
+          "A component instance root must mirror its definition's parent.");
+      } else check(source.parentId != null && project.nodes[node.parentId]?.componentSourceNodeId === source.parentId,
+        "A component instance child must mirror its definition's parent.");
+      if (node.componentOverrides != null) {
+        check(Array.isArray(node.componentOverrides) && node.componentOverrides.length <= COMPONENT_OVERRIDE_PATHS.size
+          && new Set(node.componentOverrides).size === node.componentOverrides.length
+          && node.componentOverrides.every((path) => COMPONENT_OVERRIDE_PATHS.has(path)), "Invalid component overrides.");
+      }
+    } else check(node.componentOverrides == null, "Component overrides require a component source layer.");
+    if (node.componentInstanceOf == null && node.componentSourceNodeId == null)
+      check(node.componentOverrides == null, "Component overrides require a component instance.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
     if (node.locked != null) check(typeof node.locked === "boolean", "Invalid layer lock state.");
@@ -575,6 +670,24 @@ export function validateProject(project) {
       if (node.crop) validateCrop(node.crop);
       validateNodeStyle(node);
     }
+  }
+  for (const node of Object.values(project.nodes)) {
+    if (node.componentDefinition) continue;
+    let parent = node.parentId ? project.nodes[node.parentId] : null;
+    while (parent) {
+      if (parent.componentDefinition) {
+        componentDefinitions.set(parent.id, [...(componentDefinitions.get(parent.id) ?? []), node.id]);
+        break;
+      }
+      parent = parent.parentId ? project.nodes[parent.parentId] : null;
+    }
+  }
+  for (const [instanceId, members] of componentInstanceMembers) {
+    const definitionId = project.nodes[instanceId]?.componentInstanceOf, expected = componentDefinitions.get(definitionId) ?? [];
+    const sourceIds = members.map((node) => node.componentSourceNodeId);
+    check(sourceIds.length === expected.length && new Set(sourceIds).size === expected.length
+      && expected.every((sourceId) => sourceIds.includes(sourceId)),
+    "A component instance must contain every definition layer exactly once.");
   }
   for (const slide of project.slides) for (const id of slide.nodeIds) {
     const parent = project.nodes[id], layout = parent?.kind === "frame" ? parent.style?.layout : null;

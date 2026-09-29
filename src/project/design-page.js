@@ -90,6 +90,141 @@ export function appendDesignImagesCommand(project, pageId, images) {
   return { type: "group", commands: [...additions, { type: "slides", value: slides }] };
 }
 
+function componentDefinitionRootId(project, nodeId) {
+  let node = project.nodes[nodeId];
+  while (node) {
+    if (node.componentDefinition === true) return node.id;
+    node = node.parentId ? project.nodes[node.parentId] : null;
+  }
+  return null;
+}
+
+function componentInstanceRootId(project, nodeId) {
+  let node = project.nodes[nodeId];
+  while (node) {
+    if (node.componentInstanceOf != null) return node.id;
+    node = node.parentId ? project.nodes[node.parentId] : null;
+  }
+  return null;
+}
+
+function componentHasInstances(project, definitionId) {
+  return Object.values(project.nodes).some((node) => node.componentInstanceOf === definitionId);
+}
+
+function assertComponentStructureEditable(project, nodeIds) {
+  for (const id of nodeIds) {
+    const definitionId = componentDefinitionRootId(project, id);
+    if (definitionId && componentHasInstances(project, definitionId))
+      throw new Error("Detach or delete linked instances before changing component structure.");
+  }
+}
+
+function assertComponentInstanceStructureEditable(project, nodeIds) {
+  for (const id of nodeIds) if (componentInstanceRootId(project, id))
+    throw new Error("Detach the component instance before changing its layer structure.");
+}
+
+/** Turn one layer or a sibling selection into a locally linked component definition. */
+export function createComponentCommand(project, pageId, nodeIds) {
+  const page = project.slides.find((entry) => entry.id === pageId);
+  if (!page || !Array.isArray(nodeIds) || !nodeIds.length) throw new Error("Select a layer to create a component.");
+  const unique = [...new Set(nodeIds)];
+  if (unique.length !== nodeIds.length) throw new Error("A layer can only be selected once.");
+  for (const id of unique) getLayer(project, id);
+  assertComponentStructureEditable(project, unique);
+  assertComponentInstanceStructureEditable(project, unique);
+  const selected = new Set(unique), roots = unique.filter((id) => {
+    let parentId = project.nodes[id].parentId;
+    while (parentId) { if (selected.has(parentId)) return false; parentId = project.nodes[parentId]?.parentId; }
+    return true;
+  });
+  if (roots.some((id) => project.nodes[id].componentDefinition || project.nodes[id].componentInstanceOf != null
+    || project.nodes[id].componentSourceNodeId != null || componentDefinitionRootId(project, id) || componentInstanceRootId(project, id)))
+    throw new Error("Detach or select a component's main definition before creating another component.");
+  if (roots.some((id) => project.nodes[id].kind === "legacy-image" || project.nodes[id].space !== "slide"))
+    throw new Error("Components can only be created from local design layers.");
+  if (roots.length === 1) {
+    const node = project.nodes[roots[0]];
+    if (node.componentDefinition) throw new Error("This layer is already a component.");
+    return { id: node.id, command: { type: "node", id: node.id, value: { ...clone(node), componentDefinition: true } } };
+  }
+  assertComponentStructureEditable(project, roots);
+  const framed = addFrameAroundSelectionCommand(project, pageId, roots);
+  const definition = framed.command.commands.find((item) => item.type === "node" && item.id === framed.id);
+  return { id: framed.id, command: { type: "group", commands: [...framed.command.commands,
+    { type: "node", id: framed.id, value: { ...clone(definition.value), componentDefinition: true } }] } };
+}
+
+/** Add an in-page instance that shares local source references and preserves independent placement. */
+export function createComponentInstanceCommand(project, pageId, definitionId) {
+  const page = project.slides.find((entry) => entry.id === pageId), definition = project.nodes[definitionId];
+  if (!page?.nodeIds.includes(definitionId) || definition?.componentDefinition !== true)
+    throw new Error("Choose a component definition on this page.");
+  const sourceIds = page.nodeIds.filter((id) => {
+    let parentId = project.nodes[id]?.parentId;
+    while (parentId) { if (parentId === definitionId) return true; parentId = project.nodes[parentId]?.parentId; }
+    return id === definitionId;
+  });
+  if (page.nodeIds.length + sourceIds.length > MAX_DESIGN_PAGE_LAYERS)
+    throw new Error(`This page can contain up to ${MAX_DESIGN_PAGE_LAYERS} layers.`);
+  const idMap = new Map(sourceIds.map((id) => [id, newId("instance-layer")])), additions = [];
+  for (const sourceId of sourceIds) {
+    const source = project.nodes[sourceId], id = idMap.get(sourceId), value = clone(source);
+    value.id = id; value.componentSourceNodeId = sourceId; value.componentOverrides = [];
+    delete value.componentDefinition; delete value.componentInstanceOf;
+    if (sourceId === definitionId) {
+      value.componentInstanceOf = definitionId;
+      if (!source.parentId || !project.nodes[source.parentId]?.style?.layout) {
+        const offset = (position, extent) => position + .035 + extent <= 1 ? position + .035 : position - .035 >= 0 ? position - .035 : position;
+        value.frame.x = offset(source.frame.x, source.frame.width);
+        value.frame.y = offset(source.frame.y, source.frame.height);
+        if (value.frame.x !== source.frame.x) value.componentOverrides.push("frame.x");
+        if (value.frame.y !== source.frame.y) value.componentOverrides.push("frame.y");
+      }
+    } else value.parentId = idMap.get(source.parentId);
+    additions.push({ type: "node", id, value });
+  }
+  const instanceId = idMap.get(definitionId), slides = project.slides.map((entry) => entry.id === pageId
+    ? { ...clone(entry), nodeIds: [...entry.nodeIds, ...sourceIds.map((id) => idMap.get(id))] } : clone(entry));
+  additions.push({ type: "slides", value: slides });
+  return { id: instanceId, command: { type: "group", commands: additions } };
+}
+
+export function resetComponentOverridesCommand(project, pageId, instanceId) {
+  const page = project.slides.find((entry) => entry.id === pageId), root = project.nodes[instanceId];
+  if (!page?.nodeIds.includes(instanceId) || root?.componentInstanceOf == null)
+    throw new Error("Choose a component instance on this page.");
+  const members = page.nodeIds.filter((id) => componentInstanceRootId(project, id) === instanceId);
+  const commands = members.map((id) => {
+    const node = clone(project.nodes[id]), overrides = id === instanceId
+      ? (node.componentOverrides ?? []).filter((path) => path === "frame.x" || path === "frame.y") : [];
+    node.componentOverrides = overrides;
+    return { type: "node", id, value: node };
+  });
+  return { type: "group", commands };
+}
+
+export function detachComponentInstanceCommand(project, pageId, instanceId) {
+  const page = project.slides.find((entry) => entry.id === pageId), root = project.nodes[instanceId];
+  if (!page?.nodeIds.includes(instanceId) || root?.componentInstanceOf == null)
+    throw new Error("Choose a component instance on this page.");
+  const members = page.nodeIds.filter((id) => componentInstanceRootId(project, id) === instanceId);
+  return { type: "group", commands: members.map((id) => {
+    const node = clone(project.nodes[id]);
+    delete node.componentInstanceOf; delete node.componentSourceNodeId; delete node.componentOverrides;
+    return { type: "node", id, value: node };
+  }) };
+}
+
+export function removeComponentDefinitionCommand(project, definitionId) {
+  const node = getLayer(project, definitionId);
+  if (!node.componentDefinition) throw new Error("Choose a component definition.");
+  if (componentHasInstances(project, definitionId)) throw new Error("Delete or detach linked instances before removing this component.");
+  const value = clone(node); delete value.componentDefinition;
+  return { type: "node", id: definitionId, value };
+}
+
 export function addTextLayerCommand(project, pageId, text = "Add text") {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || typeof text !== "string" || text.length > 5000)
@@ -134,6 +269,8 @@ export function addFrameAroundSelectionCommand(project, pageId, nodeIds) {
   const unique = [...new Set(nodeIds)];
   if (unique.length !== nodeIds.length) throw new Error("A layer can only be selected once.");
   for (const id of unique) getLayer(project, id);
+  assertComponentStructureEditable(project, unique);
+  assertComponentInstanceStructureEditable(project, unique);
   if (page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS) throw new Error(`A page can contain up to ${MAX_DESIGN_PAGE_LAYERS} layers.`);
   const parentId = project.nodes[unique[0]].parentId ?? null;
   if (unique.some((id) => (project.nodes[id].parentId ?? null) !== parentId))
@@ -583,6 +720,12 @@ export function deleteLayersCommand(project, nodeIds) {
       removing.add(node.id); changed = true;
     }
   }
+  assertComponentStructureEditable(project, [...removing]);
+  for (const id of removing) {
+    const instanceRootId = componentInstanceRootId(project, id);
+    if (instanceRootId && !removing.has(instanceRootId))
+      throw new Error("Detach the component instance before removing one of its layers.");
+  }
   if (removing.size > MAX_DESIGN_PAGE_LAYERS) throw new Error("A page can contain up to 200 layers.");
   const commands = [...removing].map((id) => ({ type: "node", id, value: null }));
   const removedAssets = new Set([...removing].map((id) => project.nodes[id]?.assetId).filter(Boolean));
@@ -628,6 +771,10 @@ export function setLayerLockedCommand(project, nodeId, locked) {
 export function reorderLayerCommand(project, pageId, nodeId, targetIndex) {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || !page.nodeIds.includes(nodeId) || !Number.isInteger(targetIndex)) throw new Error("Choose a layer position on this page.");
+  assertComponentStructureEditable(project, [nodeId]);
+  const instanceRootId = componentInstanceRootId(project, nodeId);
+  if (instanceRootId && instanceRootId !== nodeId)
+    throw new Error("Detach the component instance before reordering one of its layers.");
   const descendants = new Set([nodeId]);
   for (const id of page.nodeIds) {
     let parentId = project.nodes[id]?.parentId;

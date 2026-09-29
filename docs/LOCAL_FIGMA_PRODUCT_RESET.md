@@ -139,10 +139,12 @@ retained by the active project.
 This is a material workspace milestone, not complete Figma parity. The app
 still keeps its older single-image, batch, and story workspaces as separate
 interaction models, and the design workspace lacks a general vector-path
-network editor, boolean path operations, SVG import/export, components/variants,
-variables, layout guides, effects and
+network editor, boolean path operations, SVG import/export, component variants
+and properties, shared libraries, variables, layout guides, effects and
 advanced fill systems, prototype interactions, and many established
-keyboard/accessibility behaviors. Grid tracks now resize and reorder directly
+keyboard/accessibility behaviors. Local component definitions and linked
+instances now support inherited layer edits, per-instance overrides, reset,
+detach, save/reload, and mouse/keyboard/touch context menus. Grid tracks now resize and reorder directly
 on the canvas. Absolute positioning, aspect-ratio controls, and several advanced
 wrap/alignment behaviors remain open.
 The supported-feature inventory and cross-device release gates below remain
@@ -159,7 +161,7 @@ open; do not describe the project as a production-ready Figma copy.
 | Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, editable polygon/star geometry, Pen paths, cubic Bézier handles, corner/smooth/mirrored behavior, and undoable anchor insertion/deletion work. Vector-network joins, boolean operations, and SVG import/export remain pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
-| Components and design systems | Pending | Components, instances, variants, properties, libraries, and variables/tokens are not implemented. |
+| Components and design systems | Partial | Local definitions and linked instances share original image assets; master edits propagate, instance appearance/frame overrides persist, and users can reset, detach, undo, and reload. Variants, component properties, shared libraries, and variables/tokens remain pending. |
 | Prototyping and interaction | Pending | Connections, triggers, transitions, overlays, and local prototype playback are not implemented. |
 | Collaboration and file history | Pending | Local undo, redo, and recovery exist; comments, multiplayer editing, shared libraries, and file/version history do not. |
 | Bulk recipes and processing bar | Partial integration | Versioned recipes can be saved from and applied to selected page images in place; legacy gallery jobs remain a separate state/workspace and need one shared document-backed job flow. |
@@ -243,10 +245,14 @@ admit. Preserve output format with the frozen job snapshot.
 ## Existing behavior relevant to the first implementation slice
 
 The app has a local page-layer editor with undoable single/multi-selection
-geometry and opacity. Page image context menus save and apply frozen recipe
+geometry and opacity. Local components can be defined from layers, instantiated
+on the same page without copying image assets, and kept in sync with explicit
+instance overrides. Mouse right-click, keyboard context-menu, and touch
+long-press expose component actions. Page image context menus save and apply frozen recipe
 revisions, and the page job panel exposes progress, scheduler mode,
 pause/resume, and cancel; the older batch gallery also has format-aware recipe
 jobs and a global processing bar. These paths still have separate document and
 job state, so unification remains required. The next major Figma gaps are
-vector-network joins, boolean operations, and SVG import/export, followed by
-layout guides, components/variables, and prototypes.
+component variants/properties, variables and shared libraries, vector-network
+joins, boolean operations, and SVG import/export, followed by layout guides
+and prototypes.

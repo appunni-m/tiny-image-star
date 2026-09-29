@@ -1104,6 +1104,87 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(reopenedStory.node.appearance.brightness, 1.25, "edits through the shared page canvas save back as a story project");
     assert.ok(reopenedStory.revision > 0, "editing the shared story advances its saved revision");
     assert.equal(reopenedStory.asset.sha256, story.sha256, "saving through the page canvas preserves the story's verified original asset");
-    console.log("  design workspace: retained sources, live image/vector previews, Pen Béziers, shape tools, Auto Layout, recipes, autosave and phone layout");
+
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Create component", exact: true }).click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentDefinition === true, story.layerId);
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Create instance", exact: true }).click();
+    await page.waitForFunction(() => Object.values(window.tinyImageStarDesign.getSnapshot().nodes).some((node) => node.componentInstanceOf));
+    let componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const componentInstanceId = Object.values(componentSnapshot.nodes).find((node) => node.componentInstanceOf === story.layerId).id;
+    assert.equal(componentSnapshot.nodes[componentInstanceId].assetId, componentSnapshot.nodes[story.layerId].assetId,
+      "component instances keep the retained original image attached");
+    assert.equal(componentSnapshot.retainedSourceBytes, image.byteLength, "component creation does not copy or release the retained source");
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).click();
+    await page.locator("#design-brightness").evaluate((input) => {
+      input.value = "1.5"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].appearance.brightness === 1.5
+      && document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"), componentInstanceId);
+    componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(componentSnapshot.nodes[componentInstanceId].appearance.brightness, 1.5, "a master edit updates its in-page preview instance");
+    await page.locator(`#design-layer-list [data-layer-id="${componentInstanceId}"] .design-layer-select`).click();
+    await page.locator("#design-brightness").evaluate((input) => {
+      input.value = "1.75"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentOverrides.includes("appearance"), componentInstanceId);
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).click();
+    await page.locator("#design-brightness").evaluate((input) => {
+      input.value = "1.6"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(({ masterId, instanceId }) => {
+      const snapshot = window.tinyImageStarDesign.getSnapshot();
+      return snapshot.nodes[masterId].appearance.brightness === 1.6
+        && snapshot.nodes[instanceId].appearance.brightness === 1.75
+        && document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready");
+    }, { masterId: story.layerId, instanceId: componentInstanceId });
+    componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(componentSnapshot.nodes[story.layerId].appearance.brightness, 1.6);
+    assert.equal(componentSnapshot.nodes[componentInstanceId].appearance.brightness, 1.75, "master edits preserve an instance override");
+    await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction((key) => window.tinyImageStarDesign.getSnapshot()?.key === key, story.key);
+    await page.locator("#mobile-more-button").click();
+    await page.locator("#design-button").click();
+    await page.waitForFunction(() => !document.querySelector("#design-view")?.hidden);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(componentSnapshot.nodes[story.layerId].componentDefinition, true, "component definitions survive local save and reload");
+    assert.equal(componentSnapshot.nodes[componentInstanceId].componentInstanceOf, story.layerId, "linked instances survive local save and reload");
+    assert.ok(componentSnapshot.nodes[componentInstanceId].componentOverrides.includes("appearance"), "instance property overrides survive local save and reload");
+    assert.ok(componentSnapshot.nodes[componentInstanceId].componentOverrides.includes("frame.x")
+      && componentSnapshot.nodes[componentInstanceId].componentOverrides.includes("frame.y"), "independent instance placement survives local save and reload");
+    await page.locator(`#design-layer-list [data-layer-id="${componentInstanceId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Reset overrides", exact: true }).click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].appearance.brightness === 1.6, componentInstanceId);
+    await page.locator(`#design-layer-list [data-layer-id="${componentInstanceId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Detach instance", exact: true }).click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf == null, componentInstanceId);
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).click();
+    await page.locator("#design-brightness").evaluate((input) => {
+      input.value = "1.9"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].appearance.brightness === 1.9, story.layerId);
+    componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(componentSnapshot.nodes[componentInstanceId].appearance.brightness, 1.6, "a detached local copy stops following master edits");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const componentRow = page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`);
+    await componentRow.evaluate((row) => {
+      const bounds = row.getBoundingClientRect();
+      row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "touch", button: 0,
+        clientX: bounds.left + bounds.width / 2, clientY: bounds.top + bounds.height / 2 }));
+    });
+    await page.waitForTimeout(600);
+    await componentRow.evaluate((row) => row.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 7, pointerType: "touch", button: 0 })));
+    assert.equal(await page.getByRole("menuitem", { name: "Create instance", exact: true }).isVisible(), true,
+      "a phone long-press opens the component menu without a mouse right-click");
+    await page.keyboard.press("Escape");
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).focus();
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"] .design-layer-select`).press("Shift+F10");
+    assert.equal(await page.getByRole("menuitem", { name: "Create instance", exact: true }).isVisible(), true,
+      "the same component menu is keyboard accessible");
+    await page.keyboard.press("Escape");
+    console.log("  design workspace: retained sources, live image/vector previews, Pen Béziers, shape tools, Auto Layout, linked components, recipes, autosave and phone layout");
   } finally { await context.close(); }
 }
