@@ -147,9 +147,10 @@ libraries, variables, layout guides, effects and advanced fill systems,
 prototype interactions, and many established keyboard/accessibility behaviors.
 Local component definitions and linked instances now support inherited layer
 edits, per-instance overrides, reset, detach, save/reload, and
-mouse/keyboard/touch context menus. Component sets support a Variant property,
-adding a sibling variant from a master, and switching instances from the
-inspector while preserving compatible overrides and the retained image source.
+mouse/keyboard/touch context menus. Component sets support multiple named
+variant properties, property and value editing, adding/removing properties,
+sibling variants, and inspector switching that preserves compatible overrides
+and the retained image source.
 Grid tracks now resize and reorder directly
 on the canvas. Absolute positioning, aspect-ratio controls, and several advanced
 wrap/alignment behaviors remain open.
@@ -167,7 +168,7 @@ open; do not describe the project as a production-ready Figma copy.
 | Shapes and vectors | Partial | Rectangle, rounded rectangle, ellipse, line, arrow, editable polygon/star geometry, Pen paths, cubic Bézier handles, corner/smooth/mirrored behavior, and undoable anchor insertion/deletion work. Vector-network joins, boolean operations, and SVG import/export remain pending. |
 | Typography | Partial | Editable text layers and bundled/device fonts exist; rich text runs, paragraph controls, OpenType controls, and complete type styles are pending. |
 | Fills, strokes, and effects | Partial | Flat fills and limited strokes/shadows exist; gradients, multiple fills/strokes, blend modes, and the full effects stack are pending. |
-| Components and design systems | Partial | Local definitions and linked instances share original image assets; master edits propagate, compatible overrides survive variant switches, and users can reset, detach, undo, and reload. Component sets support one Variant property and local instance switching. Renaming/adding variant properties, boolean/text/instance-swap/slot properties, shared libraries, and variables/tokens remain pending. |
+| Components and design systems | Partial | Local definitions and linked instances share original image assets; master edits propagate, compatible overrides survive variant switches, and users can reset, detach, undo, and reload. Component sets support multiple named variant properties with editable names and values. Boolean/text/instance-swap/slot properties, shared libraries, and variables/tokens remain pending. |
 | Prototyping and interaction | Pending | Connections, triggers, transitions, overlays, and local prototype playback are not implemented. |
 | Collaboration and file history | Pending | Local undo, redo, and recovery exist; comments, multiplayer editing, shared libraries, and file/version history do not. |
 | Bulk recipes and processing bar | Partial integration | Versioned recipes can be saved from and applied to selected page images in place; legacy gallery jobs remain a separate state/workspace and need one shared document-backed job flow. |
@@ -259,6 +260,6 @@ revisions, and the page job panel exposes progress, scheduler mode,
 pause/resume, and cancel; the older batch gallery also has format-aware recipe
 jobs and a global processing bar. These paths still have separate document and
 job state, so unification remains required. The next major Figma gaps are
-multi-property variant editing, boolean/text/instance-swap/slot properties,
+boolean/text/instance-swap/slot properties,
 variables and shared libraries, vector-network joins, boolean operations,
 and SVG import/export, followed by layout guides and prototypes.

@@ -525,6 +525,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 14px
 .design-fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
 .design-component-variants { grid-template-columns: minmax(0, 1fr); }
 .design-component-variant-controls { display: grid; gap: 8px; }
+.design-component-property-row, .design-component-property-add { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 7px; }
+.design-component-property-row > button, .design-component-property-add > button { grid-column: 1 / -1; min-height: 36px; }
 .design-layout-min-max { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #design-frame-layout-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .design-fieldset legend { padding-inline: 5px; color: var(--muted); font-size: .67rem; font-weight: 800; }

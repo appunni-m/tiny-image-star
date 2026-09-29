@@ -202,6 +202,86 @@ export function addComponentVariantCommand(project, pageId, definitionId) {
   return { id: idMap.get(definitionId), command: { type: "group", commands } };
 }
 
+function componentSetMembers(project, setId) {
+  const members = Object.values(project.nodes).filter((node) => node.componentDefinition === true && node.componentSetId === setId);
+  if (!members.length) throw new Error("Choose a component variant in a local set.");
+  return members;
+}
+
+function checkedVariantPropertyName(name) {
+  const value = typeof name === "string" ? name.trim() : "";
+  if (!/^[A-Za-z][A-Za-z0-9 _-]{0,79}$/.test(value)) throw new Error("Property names must start with a letter and use at most 80 letters, numbers, spaces, underscores, or hyphens.");
+  return value;
+}
+
+function checkedVariantPropertyValue(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text || text.length > 120) throw new Error("Variant values must contain 1–120 characters.");
+  return text;
+}
+
+function componentVariantLayerName(node, properties = node.variantProperties) {
+  const prefix = `${node.componentSetName || "Component"}/`, suffix = Object.entries(properties).map(([name, value]) => `${name}=${value}`).join(", ");
+  return `${prefix}${suffix}`.slice(0, 120);
+}
+
+/** Add a shared variant property with one starting value on every master in the set. */
+export function addComponentVariantPropertyCommand(project, definitionId, propertyName, initialValue = "Default") {
+  const definition = project.nodes[definitionId];
+  if (definition?.componentDefinition !== true || !definition.componentSetId) throw new Error("Choose a variant in a component set.");
+  const members = componentSetMembers(project, definition.componentSetId), name = checkedVariantPropertyName(propertyName), value = checkedVariantPropertyValue(initialValue);
+  if (members.some((member) => Object.hasOwn(member.variantProperties, name))) throw new Error("That variant property already exists.");
+  return { type: "group", commands: members.map((member) => {
+    const variantProperties = { ...clone(member.variantProperties), [name]: value };
+    return { type: "node", id: member.id, value: { ...clone(member), name: componentVariantLayerName(member, variantProperties), variantProperties } };
+  }) };
+}
+
+/** Rename one property consistently across every variant in a set. */
+export function renameComponentVariantPropertyCommand(project, definitionId, propertyName, nextName) {
+  const definition = project.nodes[definitionId];
+  if (definition?.componentDefinition !== true || !definition.componentSetId) throw new Error("Choose a variant in a component set.");
+  const members = componentSetMembers(project, definition.componentSetId), name = checkedVariantPropertyName(propertyName), renamed = checkedVariantPropertyName(nextName);
+  if (!Object.hasOwn(definition.variantProperties, name)) throw new Error("That variant property no longer exists.");
+  if (name === renamed) throw new Error("Enter a different variant property name.");
+  if (members.some((member) => Object.hasOwn(member.variantProperties, renamed))) throw new Error("That variant property already exists.");
+  return { type: "group", commands: members.map((member) => {
+    const properties = { ...clone(member.variantProperties) }, value = properties[name]; delete properties[name]; properties[renamed] = value;
+    return { type: "node", id: member.id, value: { ...clone(member), name: componentVariantLayerName(member, properties), variantProperties: properties } };
+  }) };
+}
+
+/** Change one variant's value; duplicate property combinations are rejected by project validation. */
+export function setComponentVariantPropertyValueCommand(project, definitionId, propertyName, nextValue) {
+  const definition = project.nodes[definitionId];
+  if (definition?.componentDefinition !== true || !definition.componentSetId) throw new Error("Choose a variant in a component set.");
+  componentSetMembers(project, definition.componentSetId);
+  const name = checkedVariantPropertyName(propertyName), value = checkedVariantPropertyValue(nextValue);
+  if (!Object.hasOwn(definition.variantProperties, name)) throw new Error("That variant property no longer exists.");
+  const variantProperties = { ...clone(definition.variantProperties), [name]: value };
+  return { type: "node", id: definitionId, value: { ...clone(definition), name: componentVariantLayerName(definition, variantProperties), variantProperties } };
+}
+
+/** Remove a shared property, dissolving its set metadata when it was the last property. */
+export function removeComponentVariantPropertyCommand(project, definitionId, propertyName) {
+  const definition = project.nodes[definitionId];
+  if (definition?.componentDefinition !== true || !definition.componentSetId) throw new Error("Choose a variant in a component set.");
+  const members = componentSetMembers(project, definition.componentSetId), name = checkedVariantPropertyName(propertyName);
+  if (!Object.hasOwn(definition.variantProperties, name)) throw new Error("That variant property no longer exists.");
+  const lastProperty = Object.keys(definition.variantProperties).length === 1;
+  return { type: "group", commands: members.map((member) => {
+    const value = clone(member);
+    if (lastProperty) {
+      value.name = `${value.componentSetName || "Component"}/${name}=${value.variantProperties[name]}`.slice(0, 120);
+      delete value.componentSetId; delete value.componentSetName; delete value.variantProperties;
+    } else {
+      const properties = { ...clone(value.variantProperties) }; delete properties[name];
+      value.name = componentVariantLayerName(value, properties); value.variantProperties = properties;
+    }
+    return { type: "node", id: member.id, value };
+  }) };
+}
+
 /** Add an in-page instance that shares local source references and preserves independent placement. */
 export function createComponentInstanceCommand(project, pageId, definitionId) {
   const page = project.slides.find((entry) => entry.id === pageId), definition = project.nodes[definitionId];

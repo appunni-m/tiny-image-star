@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addComponentVariantCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createComponentCommand,
-  createComponentInstanceCommand, createDesignPageProject, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand, switchComponentVariantCommand,
+import { addComponentVariantCommand, addComponentVariantPropertyCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createComponentCommand,
+  createComponentInstanceCommand, createDesignPageProject, detachComponentInstanceCommand, removeComponentDefinitionCommand, removeComponentVariantPropertyCommand,
+  renameComponentVariantPropertyCommand, resetComponentOverridesCommand, setComponentVariantPropertyValueCommand, switchComponentVariantCommand,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   addGridTrackCommand, deleteGridTrackCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
   setGridPlacementCommand, setLayoutPositioningCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
@@ -218,6 +219,43 @@ test("component variants switch in place, preserve compatible overrides, and kee
   history.apply(removeComponentDefinitionCommand(history.document, variantId), "Remove variant status");
   assert.equal(history.document.nodes[variantId].componentDefinition, undefined);
   assert.equal(history.document.nodes[definitionId].componentSetId, undefined, "a one-variant remainder becomes a regular component");
+  assert.doesNotThrow(() => validateProject(history.document));
+});
+
+test("component-set properties add and rename across variants, edit unique values, and dissolve cleanly", () => {
+  const project = createDesignPageProject({ images: images(1), id: "variant-properties", slideId: "variant-properties-page" });
+  const history = new ProjectHistory(project), pageId = "variant-properties-page", definitionId = project.slides[0].nodeIds[0];
+  history.apply(createComponentCommand(history.document, pageId, [definitionId]).command, "Create component");
+  const second = addComponentVariantCommand(history.document, pageId, definitionId);
+  history.apply(second.command, "Create variant");
+  const secondId = second.id;
+  history.apply(addComponentVariantPropertyCommand(history.document, definitionId, "Size", "Small"), "Add Size property");
+  assert.equal(history.document.nodes[definitionId].variantProperties.Size, "Small");
+  assert.equal(history.document.nodes[secondId].variantProperties.Size, "Small");
+  history.apply(setComponentVariantPropertyValueCommand(history.document, secondId, "Size", "Large"), "Set large size");
+  history.apply(renameComponentVariantPropertyCommand(history.document, definitionId, "Size", "Scale"), "Rename property");
+  assert.deepEqual(history.document.nodes[definitionId].variantProperties, { Variant: "Default", Scale: "Small" });
+  assert.deepEqual(history.document.nodes[secondId].variantProperties, { Variant: "Variant 2", Scale: "Large" });
+  assert.match(history.document.nodes[definitionId].name, /Scale=Small$/);
+  assert.match(history.document.nodes[secondId].name, /Scale=Large$/);
+  assert.throws(() => history.apply(addComponentVariantPropertyCommand(history.document, definitionId, "Scale", "New"), "Duplicate property"),
+    /already exists/);
+  history.undo(); assert.deepEqual(history.document.nodes[secondId].variantProperties, { Variant: "Variant 2", Size: "Large" });
+  history.redo(); assert.deepEqual(history.document.nodes[secondId].variantProperties, { Variant: "Variant 2", Scale: "Large" });
+  history.apply(setComponentVariantPropertyValueCommand(history.document, secondId, "Scale", "Small"), "Match scale value");
+  assert.throws(() => history.apply(setComponentVariantPropertyValueCommand(history.document, secondId, "Variant", "Default"), "Duplicate combination"),
+    /matching properties and unique variant combinations/);
+  assert.equal(history.document.nodes[secondId].variantProperties.Variant, "Variant 2", "a rejected duplicate combination is atomic");
+  history.undo(); assert.equal(history.document.nodes[secondId].variantProperties.Scale, "Large");
+  history.redo(); assert.equal(history.document.nodes[secondId].variantProperties.Scale, "Small");
+  history.apply(removeComponentVariantPropertyCommand(history.document, definitionId, "Scale"), "Remove Scale property");
+  assert.deepEqual(history.document.nodes[secondId].variantProperties, { Variant: "Variant 2" });
+  history.apply(removeComponentVariantPropertyCommand(history.document, definitionId, "Variant"), "Remove last property");
+  for (const id of [definitionId, secondId]) {
+    assert.equal(history.document.nodes[id].componentDefinition, true, "removing the final set property keeps both local components usable");
+    assert.equal(history.document.nodes[id].componentSetId, undefined);
+    assert.equal(history.document.nodes[id].variantProperties, undefined);
+  }
   assert.doesNotThrow(() => validateProject(history.document));
 });
 

@@ -1176,6 +1176,23 @@ export async function assertDesignWorkspace(browser, address) {
       && node.id !== story.layerId).id;
     assert.equal(variantSnapshot.nodes[story.layerId].variantProperties.Variant, "Default");
     assert.equal(variantSnapshot.nodes[secondVariantId].variantProperties.Variant, "Variant 2");
+    await page.locator("[data-component-add-variant-property-name]").fill("Size");
+    await page.locator("[data-component-add-variant-property-value]").fill("Small");
+    await page.getByRole("button", { name: "Add property", exact: true }).click();
+    await page.waitForFunction(({ ids, property }) => ids.every((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].variantProperties[property] === "Small"),
+      { ids: [story.layerId, secondVariantId], property: "Size" });
+    await page.locator('[data-component-variant-property-name="Size"]').fill("Scale");
+    await page.locator('[data-component-variant-property-name="Size"]').press("Tab");
+    await page.waitForFunction(({ ids }) => ids.every((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].variantProperties.Scale === "Small"
+      && !Object.hasOwn(window.tinyImageStarDesign.getSnapshot().nodes[id].variantProperties, "Size")), { ids: [story.layerId, secondVariantId] });
+    await page.locator(`#design-layer-list [data-layer-id="${secondVariantId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Add variant", exact: true }).click();
+    variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const thirdVariantId = Object.values(variantSnapshot.nodes).find((node) => node.componentDefinition && node.componentSetId === componentSetId
+      && node.id !== story.layerId && node.id !== secondVariantId).id;
+    await page.locator('[data-component-variant-property-value="Scale"]').fill("Large");
+    await page.locator('[data-component-variant-property-value="Scale"]').press("Tab");
+    await page.waitForFunction(({ id }) => window.tinyImageStarDesign.getSnapshot().nodes[id].variantProperties.Scale === "Large", { id: thirdVariantId });
     await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`).click({ button: "right" });
     await page.getByRole("menuitem", { name: "Create instance", exact: true }).click();
     await page.waitForFunction((definitionId) => Object.values(window.tinyImageStarDesign.getSnapshot().nodes)
@@ -1183,14 +1200,20 @@ export async function assertDesignWorkspace(browser, address) {
     variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     const variantInstanceId = Object.values(variantSnapshot.nodes).find((node) => node.componentInstanceOf === story.layerId).id;
     const sourceAssetId = variantSnapshot.nodes[variantInstanceId].assetId;
-    const variantControl = page.locator("#design-component-variant-controls select");
+    const variantControl = page.locator('#design-component-variant-controls select[data-component-variant-property="Variant"]');
+    const scaleControl = page.locator('#design-component-variant-controls select[data-component-variant-property="Scale"]');
     assert.equal(await variantControl.isVisible(), true, "the inspector exposes the selected component's variant property");
+    assert.equal(await scaleControl.isVisible(), true, "the inspector exposes additional named variant properties");
     await variantControl.selectOption("Variant 2");
     await page.waitForFunction(({ id, targetId }) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf === targetId
       && document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"), { id: variantInstanceId, targetId: secondVariantId });
+    await scaleControl.selectOption("Large");
+    await page.waitForFunction(({ id, targetId }) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf === targetId,
+      { id: variantInstanceId, targetId: thirdVariantId });
     variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(variantSnapshot.nodes[variantInstanceId].assetId, sourceAssetId, "switching a variant keeps the same retained image source");
     assert.equal(variantSnapshot.retainedSourceBytes, image.byteLength, "variant switching does not copy or release image bytes");
+    await scaleControl.selectOption("Small");
     await variantControl.selectOption("Default");
     await page.waitForFunction(({ id, targetId }) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf === targetId,
       { id: variantInstanceId, targetId: story.layerId });
@@ -1206,6 +1229,8 @@ export async function assertDesignWorkspace(browser, address) {
     variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(variantSnapshot.nodes[story.layerId].componentSetId, componentSetId, "component sets survive local save and reload");
     assert.equal(variantSnapshot.nodes[secondVariantId].variantProperties.Variant, "Variant 2", "variant values survive local save and reload");
+    assert.equal(variantSnapshot.nodes[thirdVariantId].variantProperties.Scale, "Large", "custom multi-property combinations survive local save and reload");
+    assert.equal(variantSnapshot.nodes[story.layerId].variantProperties.Scale, "Small", "renamed property metadata survives local save and reload");
     assert.equal(variantSnapshot.nodes[variantInstanceId].componentInstanceOf, story.layerId, "the selected variant survives local save and reload");
     await page.setViewportSize({ width: 390, height: 844 });
     const componentRow = page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`);

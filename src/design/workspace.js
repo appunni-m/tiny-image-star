@@ -1,6 +1,8 @@
 import { createDesignView } from "./view.js";
 import { addComponentVariantCommand, addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
-  createComponentCommand, createComponentInstanceCommand, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand, switchComponentVariantCommand,
+  addComponentVariantPropertyCommand, createComponentCommand, createComponentInstanceCommand, detachComponentInstanceCommand,
+  removeComponentDefinitionCommand, removeComponentVariantPropertyCommand, renameComponentVariantPropertyCommand, resetComponentOverridesCommand,
+  setComponentVariantPropertyValueCommand, switchComponentVariantCommand,
   addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand,
   setLayoutPositioningCommand, updatePageSelection } from "../project/design-page.js";
@@ -320,22 +322,60 @@ export function attachDesignWorkspace() {
     setField("layer-name", node.name || asset?.name || node.kind);
     const world = worldLayer(node.id) ?? node;
     const componentVariantField = get("component-variants"), componentVariantControls = get("component-variant-controls");
-    const componentDefinition = node.componentInstanceOf != null ? project.nodes[node.componentInstanceOf] : null;
+    const isComponentMaster = node.componentDefinition === true && Boolean(node.componentSetId);
+    const componentDefinition = node.componentInstanceOf != null ? project.nodes[node.componentInstanceOf] : isComponentMaster ? node : null;
     const componentVariants = componentDefinition?.componentSetId
       ? Object.values(project.nodes).filter((candidate) => candidate.componentDefinition === true && candidate.componentSetId === componentDefinition.componentSetId) : [];
     componentVariantField.hidden = componentVariants.length < 2;
     componentVariantControls.replaceChildren();
     if (componentVariants.length >= 2) {
-      componentVariantField.querySelector("legend").textContent = componentDefinition.componentSetName || "Variants";
+      componentVariantField.querySelector("legend").textContent = isComponentMaster
+        ? `${componentDefinition.componentSetName || "Component"} properties` : `${componentDefinition.componentSetName || "Component"} variants`;
       for (const property of Object.keys(componentDefinition.variantProperties)) {
-        const label = document.createElement("label"); label.className = "design-field";
-        const caption = document.createElement("span"); caption.textContent = property; label.append(caption);
-        const select = document.createElement("select"); select.dataset.componentVariantProperty = property;
-        select.setAttribute("aria-label", `${property} variant`);
-        const values = [...new Set(componentVariants.map((variant) => variant.variantProperties[property]))].sort((left, right) => left.localeCompare(right));
-        for (const value of values) { const option = document.createElement("option"); option.value = value; option.textContent = value; select.append(option); }
-        select.value = componentDefinition.variantProperties[property]; select.disabled = Boolean(world.locked);
-        label.append(select); componentVariantControls.append(label);
+        if (isComponentMaster) {
+          const row = document.createElement("div"); row.className = "design-component-property-row";
+          const nameLabel = document.createElement("label"); nameLabel.className = "design-field";
+          const nameCaption = document.createElement("span"); nameCaption.textContent = "Property name"; nameLabel.append(nameCaption);
+          const nameInput = document.createElement("input"); nameInput.type = "text"; nameInput.maxLength = 80;
+          nameInput.value = property; nameInput.dataset.componentVariantPropertyName = property;
+          nameInput.setAttribute("aria-label", `Rename ${property} property`); nameInput.disabled = Boolean(world.locked);
+          nameLabel.append(nameInput);
+          const valueLabel = document.createElement("label"); valueLabel.className = "design-field";
+          const valueCaption = document.createElement("span"); valueCaption.textContent = "This variant"; valueLabel.append(valueCaption);
+          const valueInput = document.createElement("input"); valueInput.type = "text"; valueInput.maxLength = 120;
+          valueInput.value = node.variantProperties[property]; valueInput.dataset.componentVariantPropertyValue = property;
+          valueInput.setAttribute("aria-label", `${property} value for this variant`); valueInput.disabled = Boolean(world.locked);
+          valueLabel.append(valueInput);
+          const remove = document.createElement("button"); remove.type = "button"; remove.className = "button secondary";
+          remove.textContent = "Remove property"; remove.dataset.componentRemoveVariantProperty = property;
+          remove.setAttribute("aria-label", `Remove ${property} variant property`); remove.disabled = Boolean(world.locked);
+          row.append(nameLabel, valueLabel, remove); componentVariantControls.append(row);
+        } else {
+          const label = document.createElement("label"); label.className = "design-field";
+          const caption = document.createElement("span"); caption.textContent = property; label.append(caption);
+          const select = document.createElement("select"); select.dataset.componentVariantProperty = property;
+          select.setAttribute("aria-label", `${property} variant`);
+          const values = [...new Set(componentVariants.map((variant) => variant.variantProperties[property]))].sort((left, right) => left.localeCompare(right));
+          for (const value of values) { const option = document.createElement("option"); option.value = value; option.textContent = value; select.append(option); }
+          select.value = componentDefinition.variantProperties[property]; select.disabled = Boolean(world.locked);
+          label.append(select); componentVariantControls.append(label);
+        }
+      }
+      if (isComponentMaster) {
+        const form = document.createElement("div"); form.className = "design-component-property-add";
+        const nameLabel = document.createElement("label"); nameLabel.className = "design-field";
+        const nameCaption = document.createElement("span"); nameCaption.textContent = "New property"; nameLabel.append(nameCaption);
+        const nameInput = document.createElement("input"); nameInput.type = "text"; nameInput.maxLength = 80;
+        nameInput.placeholder = "e.g. Size"; nameInput.dataset.componentAddVariantPropertyName = "";
+        nameInput.setAttribute("aria-label", "New variant property name"); nameInput.disabled = Boolean(world.locked); nameLabel.append(nameInput);
+        const valueLabel = document.createElement("label"); valueLabel.className = "design-field";
+        const valueCaption = document.createElement("span"); valueCaption.textContent = "Starting value"; valueLabel.append(valueCaption);
+        const valueInput = document.createElement("input"); valueInput.type = "text"; valueInput.maxLength = 120;
+        valueInput.value = "Default"; valueInput.dataset.componentAddVariantPropertyValue = "";
+        valueInput.setAttribute("aria-label", "Starting value for new variant property"); valueInput.disabled = Boolean(world.locked); valueLabel.append(valueInput);
+        const add = document.createElement("button"); add.type = "button"; add.className = "button secondary";
+        add.textContent = "Add property"; add.dataset.componentAddVariantProperty = ""; add.disabled = Boolean(world.locked);
+        form.append(nameLabel, valueLabel, add); componentVariantControls.append(form);
       }
     }
     const size = pageSize();
@@ -2025,15 +2065,43 @@ export function attachDesignWorkspace() {
     if (name !== history.document.name) { history.apply({ type: "name", value: name }, "Rename design"); edited("Design renamed."); }
   });
   get("component-variant-controls").addEventListener("change", (event) => {
-    const property = event.target?.dataset?.componentVariantProperty, instanceId = currentSelection()[0], instance = instanceId && layer(instanceId);
-    if (!property || !instance || instance.componentInstanceOf == null) return;
-    const definition = layer(instance.componentInstanceOf), properties = { ...definition?.variantProperties, [property]: event.target.value };
-    const target = Object.values(renderProject()?.nodes ?? {}).find((node) => node.componentDefinition === true
-      && node.componentSetId === definition?.componentSetId && canonicalJSON(node.variantProperties) === canonicalJSON(properties));
-    if (!target) { setStatus("This component set has no variant with that property combination."); renderWorkspace(); return; }
+    const input = event.target, instanceId = currentSelection()[0], instance = instanceId && layer(instanceId);
     try {
+      if (input?.dataset?.componentVariantPropertyName && instance?.componentDefinition) {
+        history.apply(renameComponentVariantPropertyCommand(history.document, instance.id,
+          input.dataset.componentVariantPropertyName, input.value), "Rename variant property");
+        edited("Variant property renamed."); return;
+      }
+      if (input?.dataset?.componentVariantPropertyValue && instance?.componentDefinition) {
+        history.apply(setComponentVariantPropertyValueCommand(history.document, instance.id,
+          input.dataset.componentVariantPropertyValue, input.value), "Edit variant property value");
+        edited("Variant value changed."); return;
+      }
+      const property = input?.dataset?.componentVariantProperty;
+      if (!property || !instance || instance.componentInstanceOf == null) return;
+      const definition = layer(instance.componentInstanceOf), properties = { ...definition?.variantProperties, [property]: input.value };
+      const target = Object.values(renderProject()?.nodes ?? {}).find((node) => node.componentDefinition === true
+        && node.componentSetId === definition?.componentSetId && canonicalJSON(node.variantProperties) === canonicalJSON(properties));
+      if (!target) throw new Error("This component set has no variant with that property combination.");
       history.apply(switchComponentVariantCommand(history.document, currentPage().id, instanceId, target.id), `Change ${property} variant`);
       selection = { ids: [instanceId], anchorId: instanceId }; edited(`${property} variant changed.`);
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
+  });
+  get("component-variant-controls").addEventListener("click", (event) => {
+    const button = event.target?.closest?.("button"), instance = layer(currentSelection()[0]);
+    if (!button || !instance?.componentDefinition) return;
+    try {
+      if (button.hasAttribute("data-component-add-variant-property")) {
+        const name = get("component-variant-controls").querySelector("[data-component-add-variant-property-name]")?.value;
+        const value = get("component-variant-controls").querySelector("[data-component-add-variant-property-value]")?.value;
+        history.apply(addComponentVariantPropertyCommand(history.document, instance.id, name, value), "Add variant property");
+        edited("Variant property added."); return;
+      }
+      const property = button.dataset.componentRemoveVariantProperty;
+      if (property) {
+        history.apply(removeComponentVariantPropertyCommand(history.document, instance.id, property), "Remove variant property");
+        edited("Variant property removed.");
+      }
     } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   get("file-input").addEventListener("change", () => { const files = [...(get("file-input").files ?? [])]; get("file-input").value = ""; void importImages(files); });
