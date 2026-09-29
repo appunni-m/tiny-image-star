@@ -476,6 +476,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .right-panel { right: 0; transform: translateX(105%); }
   .left-panel.is-open, .right-panel.is-open { transform: translateX(0); }
   .mobile-scrim.is-visible { z-index: 8; display: block; position: absolute; inset: 45px 0 0; background: rgba(0,0,0,.14); }
+  .layer-row { height: auto; min-height: 40px; max-width: 100%; overflow: hidden; }
+  .layer-chevron { width: 18px; height: 40px; flex: 0 0 18px; display: grid; place-items: center; }
+  .layer-icon { width: 18px; height: 40px; flex-basis: 18px; }
+  .layer-visibility { width: 40px; height: 40px; flex-basis: 40px; }
+  .add-fill { height: auto; min-height: 40px; font-size: 12px; }
   .bottom-toolbar { bottom: max(12px, env(safe-area-inset-bottom)); max-width: calc(100vw - 24px); overflow-x: auto; justify-content: flex-start; }
   .tool-button { width: 35px; flex: 0 0 35px; }
   .zoom-controls { right: 10px; bottom: 71px; }

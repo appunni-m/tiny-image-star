@@ -61,6 +61,12 @@ try {
   const textFit = app.querySelector('[data-prop="textFit"]');
   assert(textFit && ['fixed', 'auto-height', 'auto-width'].every(value => [...textFit.options].some(option => option.value === value)), 'text resize modes should be available on the phone');
   assert(textFit.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the text resize control should fit inside the phone inspector');
+  const phoneInspectorRight = app.querySelector('#right-panel').getBoundingClientRect().right;
+  const textCase = app.querySelector('[data-prop="textCase"]');
+  const textDecoration = app.querySelector('[data-prop="textDecoration"]');
+  assert(textCase && ['none', 'uppercase', 'lowercase', 'capitalize'].every(value => [...textCase.options].some(option => option.value === value)), 'text case options should be available on the phone');
+  assert(textDecoration && ['none', 'underline', 'line-through'].every(value => [...textDecoration.options].some(option => option.value === value)), 'text decoration options should be available on the phone');
+  assert(textCase.getBoundingClientRect().right <= phoneInspectorRight && textDecoration.getBoundingClientRect().right <= phoneInspectorRight, 'the text case and decoration controls should fit inside the phone inspector');
   const textWidth = app.querySelector('[data-prop="width"]');
   textWidth.value = '50'; textWidth.dispatchEvent(new Event('input', { bubbles: true })); textWidth.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'auto-height text');
@@ -73,6 +79,15 @@ try {
   const autoWidthRecords = await readDocuments(); autoWidthRecords.sort((a, b) => b.savedAt - a.savedAt);
   const savedAutoWidth = autoWidthRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
   assert(savedAutoWidth?.textFit === 'auto-width' && savedAutoWidth.width > 50 && savedAutoWidth.width < 160, 'auto-width text should fit its measured line and persist the selected mode');
+  const mobileTextCase = app.querySelector('[data-prop="textCase"]');
+  mobileTextCase.value = 'uppercase'; mobileTextCase.dispatchEvent(new Event('input', { bubbles: true })); mobileTextCase.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'uppercase text');
+  const mobileTextDecoration = app.querySelector('[data-prop="textDecoration"]');
+  mobileTextDecoration.value = 'underline'; mobileTextDecoration.dispatchEvent(new Event('input', { bubbles: true })); mobileTextDecoration.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'underlined text');
+  const renderedTextRecords = await readDocuments(); renderedTextRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const savedRenderedText = renderedTextRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === label.id);
+  assert(savedRenderedText?.text === 'Continue' && savedRenderedText.textCase === 'uppercase' && savedRenderedText.textDecoration === 'underline', 'mobile text rendering controls should preserve the source copy and persist display casing and decoration');
   click(app.querySelector(`[data-layer-id="${button.id}"]`));
   const limitFields = [...app.querySelectorAll('.size-limits-grid .size-limit-field')];
   assert(limitFields.length === 4 && limitFields.every(field => field.getBoundingClientRect().width >= 96), 'the four size-limit controls should remain readable in the phone inspector');

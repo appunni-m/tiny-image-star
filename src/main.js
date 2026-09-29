@@ -9,13 +9,14 @@ import { createImageFill } from './image-fills.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { SceneRenderer, hitTestPage, screenToWorld, worldToScreen } from './renderer.js';
-import { calculateTextBox } from './text-layout.js';
+import { calculateTextBox, measureTrackedText } from './text-layout.js';
 import { LocalImageEngine } from './image-engine.js';
 import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
+import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import {
@@ -329,7 +330,8 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  return section('Export', `${rows}${message}${add}`);
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG keeps vector shapes and text editable. Raster images, gradients, masks, effects, and Boolean layers are not supported yet.</div>';
+  return section('Export', `${rows}${message}${add}${svgExport}`);
 }
 function autoLayoutSection(node) {
   if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
@@ -421,7 +423,10 @@ function textSection(node) {
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
     .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
   const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
-  return section('Typography', body);
+  const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
+  const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
+  const renderingControls = `<div class="property-grid"><select class="prop-input select-field" data-prop="textCase" aria-label="Text case"><option value="none"${textCase === 'none' ? ' selected' : ''}>As typed</option><option value="uppercase"${textCase === 'uppercase' ? ' selected' : ''}>UPPERCASE</option><option value="lowercase"${textCase === 'lowercase' ? ' selected' : ''}>lowercase</option><option value="capitalize"${textCase === 'capitalize' ? ' selected' : ''}>Capitalize</option></select><select class="prop-input select-field" data-prop="textDecoration" aria-label="Text decoration"><option value="none"${textDecoration === 'none' ? ' selected' : ''}>No decoration</option><option value="underline"${textDecoration === 'underline' ? ' selected' : ''}>Underline</option><option value="line-through"${textDecoration === 'line-through' ? ' selected' : ''}>Strikethrough</option></select></div>`;
+  return section('Typography', body.replace('</div><div class="image-properties-note">', `</div>${renderingControls}<div class="image-properties-note">`));
 }
 function frameVariableModesSection(frame) {
   const collections = state.document.variableCollections || [];
@@ -763,7 +768,7 @@ function renderAssetsTab() {
   for (const style of typographyStyles) {
     const row = document.createElement('div'); row.className = 'typography-style-row';
     const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'typography-style-apply'; apply.dataset.typographyStyleId = style.id; apply.title = `Apply ${style.name} to selected text`;
-    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color;
+    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color; mark.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(style.textCase) ? style.textCase : 'none'; mark.style.textDecoration = ['underline', 'line-through'].includes(style.textDecoration) ? style.textDecoration : 'none';
     const copy = document.createElement('span'); copy.className = 'typography-style-copy';
     const name = document.createElement('span'); name.className = 'typography-style-name'; name.textContent = style.name;
     const detail = document.createElement('small'); detail.textContent = `${style.fontFamily} · ${style.fontSize}px · ${style.fontWeight}`;
@@ -1384,6 +1389,8 @@ function editTextNode(nodeId) {
   editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, entry.node.width * state.zoom)}px`;
   editor.style.minHeight = `${Math.max(28, entry.node.height * state.zoom)}px`;
   editor.style.whiteSpace = entry.node.textFit === 'auto-width' ? 'pre' : 'pre-wrap';
+  editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
+  editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
   editor.style.fontFamily = entry.node.fontFamily;
   editor.style.fontWeight = String(entry.node.fontWeight || 400);
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
@@ -1591,7 +1598,7 @@ function updateInspectorInput(event) {
     }
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
-    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'text', 'width'].includes(prop)) {
+    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
@@ -1836,7 +1843,7 @@ function applyTypographyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => node.type === 'text');
   if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'color', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
   const layoutParents = new Set();
   for (const node of compatible) {
     applyTypographyStyle(state.document, node.id, style.id);
@@ -2184,6 +2191,8 @@ function openFileMenu(x, y, commentAnchor = null) {
     { separator: true },
     { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
     { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
+    { label: 'Export selected layer as SVG', action: () => { try { exportSelectedNodeSvg(rootSelectedIds()[0]); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); } }, disabled: rootSelectedIds().length !== 1 },
+    { label: 'Export current page as SVG', action: () => { try { exportActivePageSvg(); } catch (error) { showToast(error.message || 'Could not export this page as SVG.'); } } },
     { separator: true },
     { label: `${state.showLayoutGuides ? '✓' : '○'} Layout guides`, shortcut: '⇧G', action: toggleLayoutGuides },
     { separator: true },
@@ -2628,6 +2637,43 @@ async function exportLayerWithSetting(nodeId, settingId) {
   showToast(`Downloaded ${result.filename} · ${result.width} × ${result.height} px.`);
 }
 
+function downloadSvg(markup, filename) {
+  const blob = new Blob([markup], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = Object.assign(document.createElement('a'), { href: url, download: filename });
+  anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function createSvgTextMeasurer() {
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) return undefined;
+  return (text, node) => {
+    const fontSize = getNodePropertyValue(state.document, node, 'fontSize') || 24;
+    const fontWeight = getNodePropertyValue(state.document, node, 'fontWeight') || 400;
+    const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
+    context.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${fontWeight} ${fontSize}px ${node.fontFamily || 'Arial, sans-serif'}`;
+    return measureTrackedText(context, text, letterSpacing);
+  };
+}
+
+function exportSelectedNodeSvg(nodeId) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (!node) throw new Error('The selected layer is no longer available.');
+  const markup = exportNodeToSvg(node, { document: state.document, measureText: createSvgTextMeasurer() });
+  const filename = `${safeExportName(node.name)}.svg`;
+  downloadSvg(markup, filename);
+  showToast(`Downloaded editable SVG · ${filename}.`);
+}
+
+function exportActivePageSvg() {
+  const page = activePage();
+  if (!page) throw new Error('There is no active page to export.');
+  const markup = exportPageToSvg(page, { document: state.document, measureText: createSvgTextMeasurer() });
+  const filename = `${safeExportName(page.name || 'Page')}.svg`;
+  downloadSvg(markup, filename);
+  showToast(`Downloaded editable page SVG · ${filename}.`);
+}
+
 async function exportSelectionPng() {
   const ids = orderedRootSelection();
   const names = ids.map(id => findNode(state.document, id)?.node.name).filter(Boolean);
@@ -2781,6 +2827,8 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave();
   } else if (action === 'export-setting' && node) {
     exportLayerWithSetting(node.id, details.exportId).catch(error => showToast(error.message || 'Could not export this layer.'));
+  } else if (action === 'export-svg' && node) {
+    try { exportSelectedNodeSvg(node.id); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); }
   } else if (action === 'create-component') makeComponent(node?.id);
   else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);

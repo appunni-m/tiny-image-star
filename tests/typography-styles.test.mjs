@@ -16,7 +16,9 @@ const styleValues = style => ({
   lineHeight: style.lineHeight,
   letterSpacing: style.letterSpacing,
   align: style.align,
-  color: style.color
+  color: style.color,
+  textCase: style.textCase,
+  textDecoration: style.textDecoration
 });
 
 function makeTypographyFixture() {
@@ -36,7 +38,7 @@ function makeTypographyFixture() {
   const source = createNode('text', {
     name: 'Hero heading', text: 'Source copy', x: 16, y: 24, width: 320, height: 72,
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 650,
-    fontStyle: 'italic', align: 'center'
+    fontStyle: 'italic', align: 'center', textCase: 'capitalize', textDecoration: 'underline'
   });
   addNode(document, frame);
   addNode(document, source, { parentId: frame.id });
@@ -55,7 +57,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(source.textStyleId, undefined);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f'
+    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   const id = style.id;
@@ -67,7 +69,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(getNodePropertyValue(document, source, 'fontSize'), 42);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f'
+    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   }, 'existing style values do not follow later variable edits');
 
   assert.equal(updateTypographyStyle(document, style.id, source.id), true);
@@ -75,14 +77,14 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(style.name, 'Display heading');
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0'
+    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   setColorVariableValue(document, ink.id, '#1e824c', dark.id);
   setVariableValue(document, size.id, 28, dark.id);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0'
+    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   }, 'updated values remain a snapshot');
 });
 
@@ -98,7 +100,7 @@ test('applying a typography style preserves text and geometry and clears conflic
     name: 'Keep this layer', text: 'Keep this exact copy', x: 41, y: 58, width: 287, height: 63,
     rotation: 7, fontFamily: 'Arial, sans-serif', fontSize: 12, fontWeight: 300,
     fontStyle: 'normal', lineHeight: 1, letterSpacing: -0.25, align: 'right', color: '#aabbcc',
-    textVariableId: oldInk.id, textStyleId: 'old-text-style'
+    textVariableId: oldInk.id, textStyleId: 'old-text-style', textCase: 'lowercase', textDecoration: 'line-through'
   });
   addNode(document, target, { parentId: frame.id });
   assert.equal(bindVariable(document, target.id, oldSize.id, 'fontSize'), true);
@@ -145,6 +147,20 @@ test('typography styles are deleted by identity and survive document serializati
   assert.equal(deleteTypographyStyle(document, 'missing-style'), false);
 });
 
+test('legacy typography styles without case or decoration remain valid and apply with defaults', () => {
+  const { document, source } = makeTypographyFixture();
+  const style = createTypographyStyle(document, source.id, 'Legacy style');
+  delete style.textCase;
+  delete style.textDecoration;
+  const target = createNode('text', { textCase: 'uppercase', textDecoration: 'line-through' });
+  addNode(document, target);
+
+  assert.equal(validateDocument(document), true);
+  assert.equal(applyTypographyStyle(document, target.id, style.id), true);
+  assert.equal(target.textCase, 'none');
+  assert.equal(target.textDecoration, 'none');
+});
+
 test('document validation and serialization reject malformed and duplicate typography styles', () => {
   const { document, source } = makeTypographyFixture();
   const style = createTypographyStyle(document, source.id, 'Valid style');
@@ -157,6 +173,8 @@ test('document validation and serialization reject malformed and duplicate typog
     ['non-positive line height', value => { value.lineHeight = 0; }],
     ['non-finite tracking', value => { value.letterSpacing = Infinity; }],
     ['unsupported alignment', value => { value.align = 'justify'; }],
+    ['unsupported text case', value => { value.textCase = 'title-case'; }],
+    ['unsupported text decoration', value => { value.textDecoration = 'overline'; }],
     ['invalid color', value => { value.color = 'blue'; }]
   ];
   for (const [label, mutate] of invalidValues) {

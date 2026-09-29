@@ -52,7 +52,9 @@ try {
   const design = createDocument();
   const group = createNode('group', { name: 'Red parent', x: 100, y: 80, width: 200, height: 160, rotation: 30, fill: '#ff0000' });
   const artwork = createNode('rectangle', { name: 'Artwork', x: 35, y: 42, width: 40, height: 20, rotation: 45, fill: '#0066ff' });
+  const caption = createNode('text', { name: 'Vector caption', x: 16, y: 108, width: 150, height: 30, text: 'editable vector text', textCase: 'uppercase', textDecoration: 'underline', fontSize: 16, color: '#224466' });
   addNode(design, group); addNode(design, artwork, { parentId: group.id });
+  addNode(design, caption, { parentId: group.id });
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
   transfer.items.add(new File([packageFile(design)], 'export-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(input, 'files', { configurable: true, value: transfer.files });
@@ -68,6 +70,8 @@ try {
   const mobileExportButton = row.querySelector('[data-action="export-setting"]');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(mobileSelect).height) >= 38, 'Export format control should remain finger-sized in a 390px mobile viewport.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(mobileExportButton).minHeight) >= 40, 'Export action should remain finger-sized in a 390px mobile viewport.');
+  const mobileSvgButton = app.querySelector('[data-action="export-svg"]');
+  assert(mobileSvgButton && Number.parseFloat(app.defaultView.getComputedStyle(mobileSvgButton).minHeight) >= 40, 'The editable SVG export action should remain finger-sized on mobile.');
   updateSetting(app, settingId, 'format', 'webp');
   updateSetting(app, settingId, 'scale', '2');
   updateSetting(app, settingId, 'suffix', '@2x');
@@ -129,7 +133,25 @@ try {
   bitmap = await view.createImageBitmap(downloads[3].blob);
   assert(bitmap.width === 30 && bitmap.height === 44, 'The existing one-click path should use the selected layer’s nested rotated bounds at 1×.');
   bitmap.close();
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, rasterExportUnaffectedByOutlineView: true })}`;
+  click(app.querySelector('[data-action="export-svg"]'));
+  await waitFor(() => downloads.length === 5, 'selected-layer SVG download');
+  assert(downloads[4].filename === 'Artwork.svg' && downloads[4].blob?.type.startsWith('image/svg+xml'), 'Selected-layer SVG should download with the SVG MIME type and filename.');
+  const selectedSvg = await downloads[4].blob.text();
+  assert(selectedSvg.includes(`data-tiny-image-star-node-id="${artwork.id}"`) && selectedSvg.includes('fill="#0066ff"') && !selectedSvg.includes('Red parent'), 'Selected SVG should preserve the chosen editable layer without exporting its ancestor.');
+
+  click(app.querySelector('#file-menu-button'));
+  const exportPageButton = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Export current page as SVG'));
+  click(exportPageButton);
+  await waitFor(() => downloads.length === 6, 'page SVG download');
+  assert(downloads[5].filename === 'Page 1.svg' && downloads[5].blob?.type.startsWith('image/svg+xml'), 'Page SVG should download with a local page name and SVG MIME type.');
+  const pageSvg = await downloads[5].blob.text();
+  const captionMarkup = pageSvg.match(/<text\b[^>]*>([\s\S]*?)<\/text>/)?.[1] || '';
+  assert(pageSvg.includes('fill="#ff0000"') && pageSvg.includes('fill="#0066ff"')
+    && ['EDITABLE', 'VECTOR', 'TEXT'].every(word => captionMarkup.includes(word))
+    && (captionMarkup.match(/<tspan\b/g) || []).length > 1,
+  'Page SVG should preserve nested vector geometry, case-transformed text, and canvas word wrapping.');
+  assert(pageSvg.includes('textLength=') && pageSvg.includes('stroke="#224466"'), 'Page SVG should preserve measured text widths and explicit underline geometry.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

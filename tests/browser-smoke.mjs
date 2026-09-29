@@ -801,6 +801,30 @@ try {
     'text style apply and update actions do not meet mobile touch target sizing');
   assert(mobileTypographyRow.getBoundingClientRect().right <= app.querySelector('#left-panel').getBoundingClientRect().right,
     'the text style card overflows the mobile Assets panel');
+  dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+  const mobileLeftPanel = app.querySelector('#left-panel');
+  if (!mobileLeftPanel.classList.contains('is-open')) dispatchClick(app.querySelector('#sidebar-toggle'));
+  await waitFor(() => mobileLeftPanel.getBoundingClientRect().left >= -0.5, 'mobile Layers panel opening');
+  const mobileLayersList = app.querySelector('#layers-list');
+  mobileLayersList.scrollTop = 0;
+  const firstMobileLayer = mobileLayersList.querySelector('.layer-row[data-layer-id]');
+  assert(firstMobileLayer, 'the mobile Layers panel did not contain a visible layer');
+  dispatchClick(firstMobileLayer);
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
+  const mobileLayerRow = mobileLayersList.querySelector('.layer-row.is-selected[data-layer-id]');
+  const mobileLayerVisibility = mobileLayerRow?.querySelector('.layer-visibility');
+  const mobileLayerBounds = mobileLayerRow?.getBoundingClientRect();
+  const mobileLayerVisibilityBounds = mobileLayerVisibility?.getBoundingClientRect();
+  const mobilePanelBounds = mobileLeftPanel.getBoundingClientRect();
+  const mobileLayersBounds = mobileLayersList.getBoundingClientRect();
+  assert(mobileLayerRow && app.defaultView.getComputedStyle(mobileLayerRow).display !== 'none' && mobileLayerBounds.height >= 40,
+    'a visible mobile layer row is below the 40px touch target');
+  assert(mobileLayerVisibility && app.defaultView.getComputedStyle(mobileLayerVisibility).display !== 'none' && mobileLayerVisibilityBounds.width >= 40 && mobileLayerVisibilityBounds.height >= 40,
+    'the mobile layer visibility control is not a visible 40×40px touch target');
+  assert(mobileLayerBounds.left >= mobilePanelBounds.left - 0.5 && mobileLayerBounds.right <= mobilePanelBounds.right + 0.5 &&
+    mobileLayerBounds.top >= mobileLayersBounds.top - 0.5 && mobileLayerBounds.bottom <= mobileLayersBounds.bottom + 0.5 &&
+    mobileLayerVisibilityBounds.left >= mobilePanelBounds.left - 0.5 && mobileLayerVisibilityBounds.right <= mobilePanelBounds.right + 0.5,
+  'the mobile layer row or visibility control overflows the open Layers panel');
   frame.style.width = desktopFrameSizeForTypography.width; frame.style.height = desktopFrameSizeForTypography.height;
   await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
   const deleteTypographyStyle = typographyStyleCard()?.closest('.typography-style-row')?.querySelector(`[data-text-style-action="delete"][data-text-style-id="${typographyStyleId}"]`);

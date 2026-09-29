@@ -1,7 +1,7 @@
 import { findNode, getNodeColor, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
-import { measureTrackedText, textGraphemes, wrapText } from './text-layout.js';
+import { measureTrackedText, textGraphemes, transformTextCase, wrapText } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
@@ -165,6 +165,17 @@ export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = u
     ctx.fillText(glyph, x + position, y);
     prefix += glyph;
   }
+}
+
+export function drawTextDecoration(ctx, x, y, width, fontSize, decoration) {
+  if (!width || !['underline', 'line-through'].includes(decoration)) return false;
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle;
+  ctx.lineWidth = Math.max(1, Number(fontSize) / 16 || 1);
+  const lineY = y + Number(fontSize) * (decoration === 'underline' ? 1.03 : 0.55);
+  ctx.beginPath(); ctx.moveTo(x, lineY); ctx.lineTo(x + width, lineY); ctx.stroke();
+  ctx.restore();
+  return true;
 }
 
 export class SceneRenderer {
@@ -343,7 +354,7 @@ export class SceneRenderer {
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'text') {
       ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
-      const text = getNodePropertyValue(document, node, 'text');
+      const text = transformTextCase(getNodePropertyValue(document, node, 'text'), node.textCase || 'none');
       const fontSize = getNodePropertyValue(document, node, 'fontSize');
       const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
       const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
@@ -355,6 +366,7 @@ export class SceneRenderer {
         const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
         const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
         drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
+        drawTextDecoration(ctx, x + offsetX, y + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
       });
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'network') {

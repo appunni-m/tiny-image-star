@@ -1,9 +1,25 @@
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
 
 export function textGraphemes(text) {
   const value = String(text ?? '');
   if (graphemeSegmenter) return [...graphemeSegmenter.segment(value)].map(part => part.segment);
   return Array.from(value);
+}
+
+export function transformTextCase(text, mode = 'none') {
+  const value = String(text ?? '');
+  if (mode === 'uppercase') return value.toUpperCase();
+  if (mode === 'lowercase') return value.toLowerCase();
+  if (mode !== 'capitalize') return value;
+  if (wordSegmenter) {
+    return [...wordSegmenter.segment(value)].map(part => {
+      if (!part.isWordLike) return part.segment;
+      const first = textGraphemes(part.segment)[0] || '';
+      return first.toUpperCase() + part.segment.slice(first.length);
+    }).join('');
+  }
+  return value.replace(/(^|[^\p{L}\p{N}'’])(\p{L})/gu, (_match, boundary, letter) => `${boundary}${letter.toUpperCase()}`);
 }
 
 export function measureTrackedText(ctx, text, letterSpacing = 0) {
@@ -13,13 +29,17 @@ export function measureTrackedText(ctx, text, letterSpacing = 0) {
 }
 
 export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
+  return wrapTextWithMeasure(text, maxWidth, candidate => measureTrackedText(ctx, candidate, letterSpacing));
+}
+
+export function wrapTextWithMeasure(text, maxWidth, measure) {
   const lines = [];
   for (const paragraph of String(text ?? '').split('\n')) {
     const words = paragraph.split(/\s+/);
     let line = '';
     for (const word of words) {
       const candidate = line ? `${line} ${word}` : word;
-      if (line && measureTrackedText(ctx, candidate, letterSpacing) > maxWidth) { lines.push(line); line = word; }
+      if (line && measure(candidate) > maxWidth) { lines.push(line); line = word; }
       else line = candidate;
     }
     lines.push(line);
@@ -36,7 +56,7 @@ export function calculateTextBox(ctx, node, { fontSize = node.fontSize, lineHeig
   const size = Math.max(1, Number(fontSize) || 24);
   const lineHeightPx = size * Math.max(.1, Number(lineHeight) || 1.25);
   const spacing = Number(letterSpacing) || 0;
-  const textValue = String(text ?? '');
+  const textValue = transformTextCase(text, node.textCase || 'none');
   ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
 
   if (mode === 'auto-width') {

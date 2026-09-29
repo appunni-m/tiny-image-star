@@ -119,7 +119,9 @@ function cssForEntry(document, entry) {
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
       `line-height: ${number(fontSize * lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
-      `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`
+      `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`,
+      `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
+      `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`
     );
   } else if (node.type === 'image') {
     declarations.push(`object-fit: ${node.fit === 'contain' ? 'contain' : 'cover'};`);
@@ -179,7 +181,9 @@ function summaryForEntry(document, entry) {
       fontStyle: node.fontStyle || 'normal',
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
-      align: node.align
+      align: node.align,
+      textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
+      textDecoration: ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'
     };
   }
   if (node.type === 'image') summary.image = { fileName: node.fileName, fit: node.fit, sourceWidth: node.sourceWidth, sourceHeight: node.sourceHeight };

@@ -10,7 +10,7 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   const label = createNode('text', {
     name: 'Hero title', x: 12, y: 18, width: 180, height: 40, text: 'Hello',
     fontFamily: 'Arial, sans-serif', fontSize: 24, fontWeight: 600, lineHeight: 1.5, letterSpacing: 0.5,
-    rotation: -4, color: '#112233'
+    rotation: -4, color: '#112233', textCase: 'capitalize', textDecoration: 'underline'
   });
   addNode(document, frame);
   addNode(document, label, { parentId: frame.id });
@@ -23,12 +23,16 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   assert.deepEqual(output.layers[0].position, { x: 37, y: 53 });
   assert.equal(output.layers[0].color, '#445566');
   assert.equal(output.layers[0].typography.fontSize, 24);
+  assert.equal(output.layers[0].typography.textCase, 'capitalize');
+  assert.equal(output.layers[0].typography.textDecoration, 'underline');
   assert.match(output.css, /\.hero-title-[a-z0-9_-]+ \{/);
   assert.match(output.css, /left: 37px;/);
   assert.match(output.css, /top: 53px;/);
   assert.match(output.css, /color: #445566;/);
   assert.match(output.css, /font-size: 24px;/);
   assert.match(output.css, /line-height: 36px;/);
+  assert.match(output.css, /text-transform: capitalize;/);
+  assert.match(output.css, /text-decoration: underline;/);
   assert.match(output.css, /transform: rotate\(-4deg\);/);
   assert.equal(JSON.parse(output.json).id, label.id);
 });
@@ -130,6 +134,6 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left', textCase: 'none', textDecoration: 'none'
   });
 });
