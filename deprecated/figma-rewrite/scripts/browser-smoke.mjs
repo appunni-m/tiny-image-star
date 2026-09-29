@@ -42,6 +42,18 @@ function makePhoto(width = 640, height = 480) {
     pngChunk("IHDR", header), pngChunk("IDAT", deflateSync(pixels)), pngChunk("IEND", Buffer.alloc(0)),
   ]);
 }
+async function worldToScreen(page, point) {
+  return page.evaluate(({ x, y }) => {
+    const stage = document.querySelector("#canvas-stage"); const bounds = stage.getBoundingClientRect();
+    const width = stage.clientWidth; const height = stage.clientHeight;
+    const inset = Math.min(136, Math.max(44, width * .11));
+    const scale = Math.max(.12, Math.min(.9, (width - inset) / 1440, (height - 76) / 1000));
+    return {
+      x: bounds.left + (width - 1440 * scale) / 2 + x * scale,
+      y: bounds.top + (height - 1000 * scale) / 2 + y * scale,
+    };
+  }, point);
+}
 
 const server = createServer(async (request, response) => {
   try {
@@ -107,6 +119,54 @@ try {
   await page.keyboard.press("Control+z");
   assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 26, "undo restores the original flat layer hierarchy");
 
+  await page.locator('[data-tool="pen"]').click();
+  const vectorPoints = [{ x: 1000, y: 770 }, { x: 1080, y: 720 }, { x: 1160, y: 770 }];
+  for (const point of vectorPoints) { const screen = await worldToScreen(page, point); await page.mouse.click(screen.x, screen.y); }
+  const closePoint = await worldToScreen(page, vectorPoints[0]); await page.mouse.click(closePoint.x, closePoint.y);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0]?.nodes?.some((node) => node.type === "vector"));
+  const vectorState = await page.evaluate(() => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0];
+    const node = page.nodes.find((item) => item.type === "vector");
+    return {
+      id: node.id, vertexCount: node.network.vertices.length, segmentCount: node.network.segments.length,
+      regions: node.network.regions.length,
+      points: node.network.vertices.map((vertex) => [Math.round(node.x + vertex.x), Math.round(node.y + vertex.y)]),
+    };
+  });
+  assert.deepEqual([vectorState.vertexCount, vectorState.segmentCount, vectorState.regions], [3, 3, 1], "closing a Pen drawing creates a filled vector-network region");
+  assert.deepEqual(vectorState.points, vectorPoints.map(({ x, y }) => [x, y]), "Pen anchors retain their clicked canvas coordinates after fitting local vector bounds");
+  await page.keyboard.press("Enter");
+  assert.equal((await page.locator('#inspector-content [data-action="edit-vector"]').textContent()).includes("Done editing points"), true, "Enter enters vector edit mode");
+  const firstVectorPoint = await page.evaluate((vectorId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0];
+    const node = page.nodes.find((item) => item.id === vectorId); const anchor = node.network.vertices[0];
+    return { x: node.x + anchor.x, y: node.y + anchor.y };
+  }, vectorState.id);
+  const firstVectorPointScreen = await worldToScreen(page, firstVectorPoint);
+  await page.mouse.move(firstVectorPointScreen.x, firstVectorPointScreen.y); await page.mouse.down();
+  await page.mouse.move(firstVectorPointScreen.x + 24, firstVectorPointScreen.y + 12); await page.mouse.up();
+  await page.waitForFunction((vectorId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null").pages[0];
+    const node = page.nodes.find((item) => item.id === vectorId);
+    return Math.abs(node.network.vertices[0].x) > 1 || Math.abs(node.network.vertices[0].y - 50) > 1;
+  }, vectorState.id);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+z");
+  await page.waitForFunction(({ vectorId, x, y }) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0];
+    const node = page?.nodes.find((item) => item.id === vectorId);
+    return node && Math.abs(node.x + node.network.vertices[0].x - x) < .01
+      && Math.abs(node.y + node.network.vertices[0].y - y) < .01;
+  }, { vectorId: vectorState.id, ...vectorPoints[0] });
+  const restoredVectorPoint = await page.evaluate((vectorId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0];
+    const node = page.nodes.find((item) => item.id === vectorId);
+    return { x: node.x + node.network.vertices[0].x, y: node.y + node.network.vertices[0].y };
+  }, vectorState.id);
+  assert.ok(Math.abs(restoredVectorPoint.x - vectorPoints[0].x) < .01 && Math.abs(restoredVectorPoint.y - vectorPoints[0].y) < .01,
+    `undo restores the edited point geometry and vector bounds; expected ${JSON.stringify(vectorPoints[0])}, got ${JSON.stringify(restoredVectorPoint)}`);
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 27, "the created vector remains a selectable layer after undo");
+
   await page.locator("#add-page").click();
   assert.equal(await page.locator("#page-list .page-row").count(), 2, "a design can contain multiple pages");
   assert.equal(await page.locator("#active-page-name").textContent(), "Page 2", "new page becomes active immediately");
@@ -162,7 +222,7 @@ try {
   await renameDialogPromise;
   assert.equal(await page.locator("#page-list .page-row").last().locator(".page-name").textContent(), "Layouts", "pages can be renamed locally");
   await page.locator("#page-list .page-row").first().click();
-  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 26, "switching pages restores the first page's layer tree");
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 27, "switching pages restores the first page's vector layer");
   await page.locator("#page-list .page-row").last().click();
   assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 4, "switching back restores the new page's nested auto layout tree");
   await page.locator("#page-list .page-row").first().click();
@@ -201,8 +261,9 @@ try {
   assert.equal(savedProject.assets.length, 2, "local project export carries in-memory image originals");
   assert.equal(savedProject.pages[1].nodes.filter((node) => node.autoLayout).length, 1, "project files retain auto layout settings");
   assert.equal(savedProject.pages[1].nodes.filter((node) => node.parentId).length, 3, "project files retain the frame child hierarchy");
+  assert.equal(savedProject.pages[0].nodes.filter((node) => node.type === "vector" && node.network.regions.length === 1).length, 1, "project files retain filled vector networks");
   const invalidLayers = savedProject.pages.flatMap((savedPage) => savedPage.nodes.filter((node) => !node || typeof node.id !== "string"
-    || !["text", "rect", "ellipse", "frame", "image", "landscape"].includes(node.type)
+    || !["text", "rect", "ellipse", "frame", "image", "landscape", "vector"].includes(node.type)
     || ![node.x, node.y, node.w, node.h].every(Number.isFinite) || node.w <= 0 || node.h <= 0).map((node) => ({ page: savedPage.name, id: node?.id, type: node?.type, x: node?.x, y: node?.y, w: node?.w, h: node?.h })));
   assert.deepEqual(invalidLayers, [], "project export contains only valid editable layers");
   const malformedProject = structuredClone(savedProject);

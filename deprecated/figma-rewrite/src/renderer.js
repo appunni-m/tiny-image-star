@@ -1,4 +1,5 @@
 import { selectionBounds } from "./model.js";
+import { drawPenDraft, drawVectorEditor, hitTestVectorNetwork, nearestVectorHandle, paintVectorNetwork } from "./vector.js";
 
 export function roundedRect(ctx, x, y, w, h, radius) {
   const r = Math.max(0, Math.min(radius ?? 0, Math.abs(w) / 2, Math.abs(h) / 2));
@@ -59,6 +60,8 @@ export function paintNode(ctx, node) {
     ctx.beginPath(); ctx.ellipse(node.x + node.w / 2, node.y + node.h / 2, Math.abs(node.w / 2), Math.abs(node.h / 2), 0, 0, Math.PI * 2);
     ctx.fillStyle = node.fill ?? "transparent"; ctx.fill();
     if (node.stroke && node.strokeWidth) { ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+  } else if (node.type === "vector") {
+    paintVectorNetwork(ctx, node);
   } else {
     roundedRect(ctx, node.x, node.y, node.w, node.h, node.radius ?? 0);
     ctx.fillStyle = node.fill ?? "transparent"; ctx.fill();
@@ -84,6 +87,7 @@ export class CanvasRenderer {
     this.canvas = canvas; this.stage = stage; this.doc = documentModel;
     this.ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
     this.scale = .5; this.tx = 0; this.ty = 0; this.dpr = 1;
+    this.penDraft = null; this.vectorEditId = null; this.selectedVectorVertex = -1;
     this.onResize = () => { this.resize(); this.fit(); this.draw(); };
     this.observer = new ResizeObserver(this.onResize); this.observer.observe(stage);
     this.resize(); this.fit();
@@ -140,15 +144,22 @@ export class CanvasRenderer {
     const selected = selectedIds.map((id) => this.doc.nodes.find((node) => node.id === id)).filter(Boolean);
     const bounds = selectionBounds(selected);
     if (bounds) paintSelection(ctx, bounds);
+    const editingVector = this.doc.nodes.find((node) => node.id === this.vectorEditId && node.type === "vector");
+    if (editingVector) drawVectorEditor(ctx, editingVector, this.selectedVectorVertex);
+    if (this.penDraft) drawPenDraft(ctx, this.penDraft);
     ctx.restore(); ctx.restore();
   }
   hitTest(sx, sy) {
     const { x, y } = this.toWorld(sx, sy);
     for (let i = this.doc.nodes.length - 1; i >= 0; i--) {
       const node = this.doc.nodes[i]; if (node.hidden || node.locked) continue;
+      if (node.type === "vector" && !hitTestVectorNetwork(node, { x, y }, 5 / this.scale)) continue;
       if (x >= node.x && x <= node.x + node.w && y >= node.y && y <= node.y + node.h) return node;
     }
     return null;
+  }
+  vectorHandleAt(sx, sy, node, tolerance = 10) {
+    return nearestVectorHandle(node, { x: sx, y: sy }, (x, y) => this.toScreen(x, y), tolerance);
   }
   exportBlob() {
     const output = document.createElement("canvas"); output.width = this.doc.frame.width; output.height = this.doc.frame.height;

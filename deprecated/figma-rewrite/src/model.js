@@ -1,3 +1,5 @@
+import { scaleVectorNetwork } from "./vector.js";
+
 export const FRAME = Object.freeze({ width: 1440, height: 1000, name: "Landing page" });
 
 let sequence = 0;
@@ -78,6 +80,7 @@ export function createLayer(type, x, y, overrides = {}) {
   const defaults = {
     rect: { name: "Rectangle", w: 180, h: 110, fill: "#d9d2ff", radius: 2, section: "Hero" },
     ellipse: { name: "Ellipse", w: 120, h: 120, fill: "#f2b35d", section: "Hero" },
+    vector: { name: "Vector", w: 100, h: 100, fill: "#d9d2ff", stroke: "#26262a", strokeWidth: 2, network: null, section: "Hero" },
     text: { name: "Text", text: "Type something", w: 260, h: 48, fontSize: 32, fontFamily: "Inter, sans-serif", fontWeight: 500, lineHeight: 1.2, fill: "#26262a", section: "Hero" },
     frame: { name: "Frame", w: 360, h: 240, fill: "#ffffff", stroke: "#d6d6dc", strokeWidth: 1, radius: 0, section: "Hero" },
   };
@@ -137,6 +140,7 @@ export function scaleNodesToBounds(nodes, from, to) {
   const textScale = Math.sqrt(Math.abs(sx * sy));
   for (const node of nodes) {
     if (node.locked || node.hidden) continue;
+    if (node.type === "vector" && node.network) scaleVectorNetwork(node.network, sx, sy);
     node.x = to.x + (node.x - from.x) * sx;
     node.y = to.y + (node.y - from.y) * sy;
     node.w = Math.max(1, node.w * sx);

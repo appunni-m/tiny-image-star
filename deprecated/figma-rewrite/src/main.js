@@ -2,6 +2,7 @@ import { createBlankPage, createDefaultDocument, createLayer, makeId, resizedBou
 import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoLayout, normalizeLayoutSizing } from "./layout.js";
 import { CanvasRenderer } from "./renderer.js";
 import { PillowWorkerPool } from "./image-engine.js";
+import { normalizeVectorNetwork, rebaseVectorNode, scaleVectorNetwork, vectorNetworkBounds } from "./vector.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -75,6 +76,9 @@ let activeJob = null;
 let recipeSourceIds = [];
 let outlineMode = false;
 let assetsFilter = "";
+let penDraft = null;
+let vectorEditId = null;
+let selectedVectorVertex = -1;
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -82,7 +86,13 @@ function escapeHtml(value) {
 
 function serializableNode(node) {
   const { sourceBytes, sourceBitmap, previewBitmap, renderVersion, ...plain } = node;
-  return plain;
+  return {
+    ...plain,
+    autoLayout: node.autoLayout ? structuredClone(node.autoLayout) : undefined,
+    layoutSizing: node.layoutSizing ? { ...node.layoutSizing } : undefined,
+    adjustments: node.adjustments ? { ...node.adjustments } : undefined,
+    network: node.network ? structuredClone(node.network) : undefined,
+  };
 }
 function snapshot() { return { pageId: model.id, model: { ...model, nodes: model.nodes.map(serializableNode) }, selectedIds: [...selectedIds] }; }
 function sameSnapshot(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -280,9 +290,13 @@ function renderInspector() {
     return;
   }
   const node = nodes[0];
-  const kind = node.type === "text" ? "Text" : node.type === "image" ? "Image" : node.type === "landscape" ? "Illustration" : node.type === "ellipse" ? "Ellipse" : node.type === "frame" ? "Frame" : "Rectangle";
+  const kind = node.type === "text" ? "Text" : node.type === "image" ? "Image" : node.type === "landscape" ? "Illustration" : node.type === "ellipse" ? "Ellipse" : node.type === "vector" ? "Vector" : node.type === "frame" ? "Frame" : "Rectangle";
   let html = section(kind, `<div class="prop-field full selection-name-field"><label>◩</label><input data-prop="name" value="${escapeHtml(node.name)}" aria-label="Layer name"></div><div class="inspector-grid">${propertyField("X", "x", node.x)}${propertyField("Y", "y", node.y)}${propertyField("W", "w", node.w, 1, 1)}${propertyField("H", "h", node.h, 1, 1)}</div>`);
   if (node.type === "frame") html += autoLayoutControls(node);
+  if (node.type === "vector") {
+    const actionLabel = vectorEditId === node.id ? "Done editing points" : "Edit vector points";
+    html += section("Vector network", '<div class="inspector-row"><span>Vertices</span><strong>' + node.network.vertices.length + '</strong></div><div class="inspector-row"><span>Segments</span><strong>' + node.network.segments.length + '</strong></div><div class="inspector-row"><span>Regions</span><strong>' + node.network.regions.length + '</strong></div><button type="button" class="add-fill" data-action="edit-vector">' + actionLabel + ' <kbd>↵</kbd></button><p class="inspector-note">Press Enter to edit anchors. Drag an anchor or Bézier handle to reshape the network.</p>');
+  }
   const parent = node.parentId ? nodeById(node.parentId) : null;
   if (parent?.autoLayout) {
     const sizing = node.layoutSizing ?? { primary: "fixed", counter: "fixed" };
@@ -388,6 +402,8 @@ function deletePage(pageId) {
 }
 
 function renderAll() {
+  if (vectorEditId && (selectedIds.size !== 1 || !selectedIds.has(vectorEditId))) { vectorEditId = null; selectedVectorVertex = -1; }
+  renderer.vectorEditId = vectorEditId; renderer.selectedVectorVertex = selectedVectorVertex; renderer.penDraft = penDraft;
   renderer.doc = model; renderer.draw([...selectedIds]); renderPages(); renderLayers(); renderInspector();
   $("#zoom-value").textContent = `${Math.round(renderer.scale * 100)}%`;
   const node = primaryNode();
@@ -402,11 +418,12 @@ function setSelection(ids) {
   renderAll();
 }
 function setTool(name) {
+  if (penDraft && name !== "pen") finishPenPath(false);
   activeTool = name;
   $$(".tool[data-tool]").forEach((button) => button.classList.toggle("active", button.dataset.tool === name));
   canvas.classList.toggle("canvas-hand", name === "hand");
   canvas.classList.toggle("canvas-text-tool", name === "text");
-  canvas.classList.toggle("canvas-create-tool", ["frame", "rectangle", "ellipse"].includes(name));
+  canvas.classList.toggle("canvas-create-tool", ["frame", "rectangle", "ellipse", "pen"].includes(name));
   if (name === "image") imageInput.click();
 }
 function addNode(type, x, y, parentFrame = null) {
@@ -426,6 +443,86 @@ function addNode(type, x, y, parentFrame = null) {
   }
   setTool("select"); renderAll(); scheduleSave();
   return node;
+}
+
+function finishPenPath(closed = false) {
+  const draft = penDraft;
+  penDraft = null; renderer.penDraft = null; pointerState = null;
+  if (!draft || draft.vertices.length < 2) {
+    renderer.draw([...selectedIds]); setTool("select");
+    if (draft?.vertices.length) toast("Add another point to finish a vector path");
+    return;
+  }
+  if (closed && draft.vertices.length < 3) closed = false;
+  const vertices = draft.vertices.map((vertex) => ({
+    x: vertex.x, y: vertex.y,
+    handleMirroring: vertex.handleMirroring ?? "NONE",
+  }));
+  const segmentCount = closed ? vertices.length : vertices.length - 1;
+  const segments = [];
+  for (let index = 0; index < segmentCount; index++) {
+    const next = (index + 1) % vertices.length;
+    const start = draft.vertices[index]; const end = draft.vertices[next];
+    segments.push({
+      start: index, end: next,
+      tangentStart: start.out ?? { x: 0, y: 0 },
+      tangentEnd: end.in ?? { x: 0, y: 0 },
+    });
+  }
+  const network = normalizeVectorNetwork({
+    vertices, segments,
+    regions: closed ? [{ windingRule: "NONZERO", loops: [segments.map((_, index) => index)] }] : [],
+  });
+  const bounds = vectorNetworkBounds(network);
+  const parentFrame = draft.parentFrameId ? nodeById(draft.parentFrameId) : null;
+  pushHistory();
+  const node = createLayer("vector", 0, 0, {
+    name: "Vector", w: Math.max(1, bounds.maxX - bounds.minX), h: Math.max(1, bounds.maxY - bounds.minY),
+    network, fill: closed ? "#d9d2ff" : "", stroke: "#26262a", strokeWidth: 2,
+    ...(parentFrame ? { parentId: parentFrame.id, layoutOrder: childNodes(parentFrame.id).length, section: parentFrame.section ?? "Hero" } : {}),
+  });
+  rebaseVectorNode(node);
+  model.nodes.push(node); selectedIds = new Set([node.id]);
+  if (!model.groups.some((group) => group.name === node.section)) model.groups.unshift({ id: makeId("group"), name: node.section, collapsed: false });
+  expandedGroups.add(model.groups.find((group) => group.name === node.section)?.id);
+  if (parentFrame) {
+    expandedAutoFrames.add(parentFrame.id);
+    if (parentFrame.autoLayout) layoutAutoLayoutTree(model.nodes, parentFrame);
+  }
+  setTool("select"); renderAll(); scheduleSave();
+  toast(closed ? "Vector shape created" : "Open vector path created");
+}
+
+function enterVectorEdit(node = primaryNode()) {
+  if (node?.type !== "vector") return;
+  selectedIds = new Set([node.id]); vectorEditId = node.id; selectedVectorVertex = -1;
+  setTool("select"); renderAll(); toast("Vector edit mode · drag anchors or curve handles");
+}
+function exitVectorEdit() {
+  vectorEditId = null; selectedVectorVertex = -1;
+  if (activeTool === "pen") setTool("select");
+  else renderAll();
+}
+function setVectorHandle(node, handle, world) {
+  const vertex = node.network.vertices[handle.vertexIndex];
+  const segment = node.network.segments[handle.segmentIndex];
+  const isStart = handle.endpoint === "start";
+  const tangentKey = isStart ? "tangentStart" : "tangentEnd";
+  const origin = { x: node.x + vertex.x, y: node.y + vertex.y };
+  const tangent = { x: world.x - origin.x, y: world.y - origin.y };
+  segment[tangentKey] = tangent;
+  if (vertex.handleMirroring === "NONE" || Math.hypot(tangent.x, tangent.y) < .001) return;
+  const incident = [];
+  for (const [segmentIndex, candidate] of node.network.segments.entries()) {
+    if (candidate.start === handle.vertexIndex && !(segmentIndex === handle.segmentIndex && isStart)) incident.push(candidate.tangentStart);
+    if (candidate.end === handle.vertexIndex && !(segmentIndex === handle.segmentIndex && !isStart)) incident.push(candidate.tangentEnd);
+  }
+  const other = incident[0];
+  if (!other) return;
+  const oldLength = Math.hypot(other.x, other.y);
+  const length = vertex.handleMirroring === "ANGLE_AND_LENGTH" ? Math.hypot(tangent.x, tangent.y) : oldLength;
+  const magnitude = Math.hypot(tangent.x, tangent.y);
+  other.x = -tangent.x / magnitude * length; other.y = -tangent.y / magnitude * length;
 }
 
 function downloadBlob(filename, blob) {
@@ -477,10 +574,11 @@ async function openProjectFile(file) {
       const restoredNodes = []; const nodeIds = new Set();
       for (const stored of sourcePage.nodes) {
         totalNodes += 1;
-        if (totalNodes > 20_000 || !stored || typeof stored.id !== "string" || nodeIds.has(stored.id) || projectNodeIds.has(stored.id) || !["text", "rect", "ellipse", "frame", "image", "landscape"].includes(stored.type)
+        if (totalNodes > 20_000 || !stored || typeof stored.id !== "string" || nodeIds.has(stored.id) || projectNodeIds.has(stored.id) || !["text", "rect", "ellipse", "frame", "image", "landscape", "vector"].includes(stored.type)
           || !Number.isFinite(stored.x) || !Number.isFinite(stored.y) || !Number.isFinite(stored.w) || !Number.isFinite(stored.h) || stored.w <= 0 || stored.h <= 0) throw new Error("The project contains an invalid layer");
         nodeIds.add(stored.id); projectNodeIds.add(stored.id);
         const node = { ...stored };
+        if (node.type === "vector") { node.network = normalizeVectorNetwork(node.network); rebaseVectorNode(node); }
         if (node.type === "image") {
           const asset = assets.get(`${pageId}:${node.id}`) ?? assets.get(`:${node.id}`);
           if (asset?.data) {
@@ -736,6 +834,7 @@ function duplicateSelected() {
       adjustments: node.adjustments ? { ...node.adjustments } : undefined,
       autoLayout: node.autoLayout ? structuredClone(node.autoLayout) : undefined,
       layoutSizing: node.layoutSizing ? { ...node.layoutSizing } : undefined,
+      network: node.network ? structuredClone(node.network) : undefined,
     };
     return copy;
   });
@@ -837,6 +936,11 @@ function updateProperties(event) {
   const value = target.type === "color" ? target.value : target.type === "number" || target.type === "range" ? Number(target.value) : target.value;
   for (const node of nodes) {
     if ((prop === "x" || prop === "y" || prop === "w" || prop === "h") && nodes.length > 1) continue;
+    if (node.type === "vector" && (prop === "w" || prop === "h")) {
+      const nextWidth = prop === "w" ? Number(value) : node.w;
+      const nextHeight = prop === "h" ? Number(value) : node.h;
+      scaleVectorNetwork(node.network, nextWidth / node.w, nextHeight / node.h);
+    }
     if (node.type === "frame" && node.autoLayout) pinAutoLayoutSize(node, prop === "w", prop === "h");
     node[prop] = prop === "opacity" ? Number(value) / (target.getAttribute("aria-label") === "Opacity percent" ? 100 : 100) : value;
     if (prop === "text") node.h = Math.max(node.fontSize * 1.2, node.text.split("\n").length * node.fontSize * (node.lineHeight ?? 1.2));
@@ -881,7 +985,7 @@ canvas.addEventListener("pointerdown", (event) => {
     pointerState = { kind: "pan", pointerId: event.pointerId, start: point, tx: renderer.tx, ty: renderer.ty };
     canvas.setPointerCapture(event.pointerId); canvas.classList.add("canvas-grabbing"); return;
   }
-  if (activeTool === "select" && selectedIds.size) {
+  if (activeTool === "select" && selectedIds.size && !vectorEditId) {
     const handle = renderer.selectionHandleAt(point.x, point.y, [...selectedIds], event.pointerType === "touch" ? 18 : 8);
     const nodes = selectedNodes().filter((node) => !node.hidden);
     if (handle && nodes.length && nodes.every((node) => !node.locked)) {
@@ -895,6 +999,37 @@ canvas.addEventListener("pointerdown", (event) => {
       };
       canvas.setPointerCapture(event.pointerId); canvas.classList.add("canvas-resizing"); return;
     }
+  }
+  if (vectorEditId && activeTool === "select") {
+    const node = nodeById(vectorEditId);
+    const handle = node?.type === "vector" ? renderer.vectorHandleAt(point.x, point.y, node) : null;
+    if (node && handle) {
+      pushHistory(); selectedVectorVertex = handle.vertexIndex;
+      renderer.selectedVectorVertex = selectedVectorVertex;
+      pointerState = {
+        kind: "vector-edit", pointerId: event.pointerId, nodeId: node.id, handle,
+        start: renderer.toWorld(point.x, point.y),
+        initial: { x: node.x, y: node.y, w: node.w, h: node.h, network: structuredClone(node.network) },
+      };
+      canvas.setPointerCapture(event.pointerId); renderer.draw([...selectedIds]); return;
+    }
+    vectorEditId = null; selectedVectorVertex = -1; renderer.vectorEditId = null;
+  }
+  if (activeTool === "pen") {
+    const world = renderer.toWorld(point.x, point.y);
+    if (penDraft?.vertices.length >= 3) {
+      const first = renderer.toScreen(penDraft.vertices[0].x, penDraft.vertices[0].y);
+      if (Math.hypot(first.x - point.x, first.y - point.y) <= 12) { finishPenPath(true); return; }
+    }
+    if (!penDraft) {
+      const parent = frameAtCreationPoint(world, hit);
+      penDraft = { vertices: [], cursor: world, parentFrameId: parent?.id ?? null };
+    }
+    const index = penDraft.vertices.length;
+    penDraft.vertices.push({ x: world.x, y: world.y, in: { x: 0, y: 0 }, out: { x: 0, y: 0 }, handleMirroring: "NONE" });
+    penDraft.cursor = world; renderer.penDraft = penDraft;
+    pointerState = { kind: "pen", pointerId: event.pointerId, index, start: world, dragged: false };
+    canvas.setPointerCapture(event.pointerId); renderer.draw([...selectedIds]); return;
   }
   if (["rectangle", "ellipse", "text", "frame"].includes(activeTool)) {
     const world = renderer.toWorld(point.x, point.y);
@@ -937,6 +1072,28 @@ canvas.addEventListener("pointermove", (event) => {
     scaleNodesToBounds(pointerState.initial.map((initial) => nodeById(initial.id)).filter(Boolean), pointerState.bounds, bounds);
     for (const id of selectedIds) { const node = nodeById(id); if (node?.autoLayout) layoutAutoLayoutTree(model.nodes, node); }
     renderer.draw([...selectedIds]);
+  } else if (pointerState.kind === "vector-edit") {
+    const node = nodeById(pointerState.nodeId); if (!node) return;
+    Object.assign(node, {
+      x: pointerState.initial.x, y: pointerState.initial.y, w: pointerState.initial.w, h: pointerState.initial.h,
+      network: structuredClone(pointerState.initial.network),
+    });
+    const { handle, start } = pointerState;
+    if (handle.kind === "vertex") {
+      const vertex = node.network.vertices[handle.vertexIndex];
+      vertex.x += world.x - start.x; vertex.y += world.y - start.y;
+    } else setVectorHandle(node, handle, world);
+    rebaseVectorNode(node); renderer.draw([...selectedIds]);
+  } else if (pointerState.kind === "pen") {
+    const vertex = penDraft?.vertices[pointerState.index]; if (!vertex) return;
+    penDraft.cursor = world;
+    const dx = world.x - pointerState.start.x; const dy = world.y - pointerState.start.y;
+    if (Math.hypot(dx, dy) > 2) {
+      pointerState.dragged = true;
+      vertex.out = { x: dx, y: dy }; vertex.in = { x: -dx, y: -dy };
+      vertex.handleMirroring = "ANGLE_AND_LENGTH";
+    }
+    renderer.penDraft = penDraft; renderer.draw([...selectedIds]);
   } else if (pointerState.kind === "create") {
     const node = pointerState.node; const start = pointerState.start;
     const w = Math.max(10, Math.abs(world.x - start.x)); const h = Math.max(10, Math.abs(world.y - start.y));
@@ -950,7 +1107,7 @@ canvas.addEventListener("pointerup", (event) => {
   if (pointerState.kind === "resize") canvas.classList.remove("canvas-resizing");
   if (pointerState.kind === "move") relayoutMovedSelection(pointerState.roots);
   if (pointerState.kind === "create" && pointerState.node.parentId) { const parent = nodeById(pointerState.node.parentId); if (parent) layoutAutoLayoutTree(model.nodes, parent); }
-  if (["move", "resize", "create"].includes(pointerState.kind)) { renderAll(); scheduleSave(); }
+  if (["move", "resize", "create", "vector-edit"].includes(pointerState.kind)) { renderAll(); scheduleSave(); }
   pointerState = null;
 });
 canvas.addEventListener("pointercancel", () => {
@@ -960,6 +1117,15 @@ canvas.addEventListener("pointercancel", () => {
       if (node) Object.assign(node, { x: initial.x, y: initial.y, w: initial.w, h: initial.h, fontSize: initial.fontSize, ...(initial.autoLayout ? { autoLayout: initial.autoLayout } : {}) });
     }
     canvas.classList.remove("canvas-resizing"); renderer.draw([...selectedIds]);
+  } else if (pointerState?.kind === "vector-edit") {
+    const node = nodeById(pointerState.nodeId);
+    if (node) Object.assign(node, {
+      x: pointerState.initial.x, y: pointerState.initial.y, w: pointerState.initial.w, h: pointerState.initial.h,
+      network: pointerState.initial.network,
+    });
+    renderer.draw([...selectedIds]);
+  } else if (pointerState?.kind === "pen" && penDraft) {
+    penDraft.vertices.splice(pointerState.index, 1); renderer.penDraft = penDraft; renderer.draw([...selectedIds]);
   }
   pointerState = null;
 });
@@ -1042,6 +1208,7 @@ $("#inspector-content").addEventListener("click", (event) => {
   else if (action === "create-auto-layout") createAutoLayoutFromSelection();
   else if (action === "enable-auto-layout") enableFrameAutoLayout(primaryNode());
   else if (action === "remove-auto-layout") removeFrameAutoLayout(primaryNode());
+  else if (action === "edit-vector") vectorEditId === primaryNode()?.id ? exitVectorEdit() : enterVectorEdit();
 });
 $(".inspector-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-inspector-tab]"); if (!button || button.dataset.inspectorTab === "design") return;
@@ -1062,10 +1229,16 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "d") { event.preventDefault(); duplicateSelected(); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); exportProject(); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#layer-search-box").hidden = false; $("#layer-filter").focus(); return; }
-  if (event.key === "Escape") { hideContextMenu(); app.classList.remove("presenting", "show-layers", "show-inspector"); recipeDialog.open && recipeDialog.close(); }
+  if (event.key === "Escape") {
+    hideContextMenu();
+    if (penDraft) { finishPenPath(false); return; }
+    if (vectorEditId) { exitVectorEdit(); return; }
+    app.classList.remove("presenting", "show-layers", "show-inspector"); recipeDialog.open && recipeDialog.close();
+  }
   if ((event.key === "Delete" || event.key === "Backspace") && !event.target.matches("input,textarea,select")) { event.preventDefault(); removeSelected(); }
   if (event.target.matches("input,textarea,select") || event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); createAutoLayoutFromSelection(); return; }
+  if (event.key === "Enter" && primaryNode()?.type === "vector") { event.preventDefault(); enterVectorEdit(); return; }
   const nudge = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (nudge && selectedIds.size) {
     event.preventDefault();
@@ -1074,8 +1247,12 @@ document.addEventListener("keydown", (event) => {
     for (const node of selectedNodes()) if (!node.locked) { node.x += nudge[0] * distance; node.y += nudge[1] * distance; }
     renderAll(); scheduleSave(); return;
   }
-  const keys = { v: "select", h: "hand", r: "rectangle", o: "ellipse", t: "text", f: "frame" };
+  const keys = { v: "select", h: "hand", r: "rectangle", o: "ellipse", p: "pen", t: "text", f: "frame" };
   if (keys[event.key.toLowerCase()]) setTool(keys[event.key.toLowerCase()]);
+});
+canvas.addEventListener("dblclick", (event) => {
+  const point = stagePoint(event); const node = renderer.hitTest(point.x, point.y);
+  if (node?.type === "vector") { event.preventDefault(); enterVectorEdit(node); }
 });
 document.addEventListener("keyup", (event) => { if (event.code === "Space") spaceHeld = false; });
 window.addEventListener("beforeunload", () => engine.destroy());

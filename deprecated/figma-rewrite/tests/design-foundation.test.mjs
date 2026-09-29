@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createDefaultDocument, createLayer, resizedBounds, scaleNodesToBounds, selectionBounds } from "../src/model.js";
 import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoLayout, normalizeLayoutSizing } from "../src/layout.js";
+import { hitTestVectorNetwork, normalizeVectorNetwork, rebaseVectorNode, scaleVectorNetwork, vectorNetworkBounds } from "../src/vector.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -88,6 +89,43 @@ test("imported auto layout values are bounded and unknown sizing modes fall back
   assert.equal(layout.primarySizing, "hug");
   assert.deepEqual(layout.padding, { top: 24, right: 0, bottom: 16, left: 1000 });
   assert.deepEqual(normalizeLayoutSizing({ primary: "wat", counter: "fill" }), { primary: "fixed", counter: "fill" });
+});
+
+test("vector networks preserve graph loops, cubic handles, hit testing, and local bounds", () => {
+  const triangle = normalizeVectorNetwork({
+    vertices: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 50, y: 100 }],
+    segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
+    regions: [{ windingRule: "NONZERO", loops: [[0, 1, 2]] }],
+  });
+  const node = { type: "vector", x: 20, y: 30, w: 100, h: 100, fill: "#ff0000", stroke: "#000000", strokeWidth: 2, network: triangle };
+  assert.deepEqual(vectorNetworkBounds(triangle), { minX: 0, minY: 0, maxX: 100, maxY: 100 });
+  assert.equal(hitTestVectorNetwork(node, { x: 70, y: 70 }), true, "filled vector regions select from their interior");
+  assert.equal(hitTestVectorNetwork(node, { x: 10, y: 120 }), false, "empty canvas outside a vector region stays clear");
+
+  const curve = normalizeVectorNetwork({
+    vertices: [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+    segments: [{ start: 0, end: 1, tangentStart: { x: 0, y: 100 }, tangentEnd: { x: 0, y: 100 } }],
+  });
+  const curvedNode = { ...node, x: 0, y: 0, network: curve };
+  assert.equal(hitTestVectorNetwork(curvedNode, { x: 50, y: 75 }, 2), true, "cubic segments are tested along their curve");
+  assert.equal(hitTestVectorNetwork(curvedNode, { x: 50, y: 0 }, 2), false, "a cubic segment is not treated like its bounding box");
+  const vector = { ...curvedNode, w: 100, h: 75 };
+  rebaseVectorNode(vector);
+  assert.deepEqual([vector.x, vector.y, vector.w, vector.h], [0, 0, 100, 75]);
+  scaleVectorNetwork(vector.network, 2, .5);
+  assert.deepEqual(vector.network.segments[0].tangentStart, { x: 0, y: 50 });
+});
+
+test("vector project data rejects broken edge and fill-loop references", () => {
+  assert.throws(() => normalizeVectorNetwork({
+    vertices: [{ x: 0, y: 0 }, { x: 20, y: 0 }],
+    segments: [{ start: 0, end: 2 }],
+  }), /missing vertex/);
+  assert.throws(() => normalizeVectorNetwork({
+    vertices: [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 10, y: 20 }],
+    segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
+    regions: [{ loops: [[0, 2, 1]] }],
+  }), /disconnected|open fill loop/);
 });
 
 test("design app is independent of the previous editor and loads the local WASM worker", async () => {
