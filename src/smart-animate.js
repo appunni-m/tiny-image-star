@@ -21,6 +21,7 @@ function canMatch(from, to) {
   if (from.type === 'image' && from.assetId !== to.assetId) return false;
   if (from.type === 'boolean' && from.operation !== to.operation) return false;
   if (from.type === 'path' && JSON.stringify(from.points || []) !== JSON.stringify(to.points || [])) return false;
+  if (from.type === 'network' && JSON.stringify([from.vertices || [], from.edges || [], from.faces || []]) !== JSON.stringify([to.vertices || [], to.edges || [], to.faces || []])) return false;
   return true;
 }
 

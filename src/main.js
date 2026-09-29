@@ -15,7 +15,12 @@ import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
-import { closestVectorSegment, insertVectorNodePoint, longestVectorSegment, removeVectorNodePoint, setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
+import {
+  appendVectorNetworkPath, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
+  longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
+  setVectorNetworkEdgeControlPoint, setVectorNetworkVertexPoint, setVectorNodePoint, vectorGeometryFromAnchors,
+  vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint, vectorNodePoint
+} from './vector-path.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -170,7 +175,7 @@ function renderLayers() {
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${getNodePropertyValue(state.document, node, 'visible') ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
       row.setAttribute('role', 'treeitem'); row.dataset.layerId = node.id; row.tabIndex = 0;
       row.style.paddingLeft = `${7 + depth * 13}px`;
-      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
+      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
@@ -227,12 +232,14 @@ function transformSection(node) {
   return section('Position', body);
 }
 function appearanceSection(node) {
-  const fill = colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100));
+  const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
+  const fill = hasFill ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
+  const fillVariable = hasFill ? variableBindingControl(node, 'fill') : '';
   const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>` : '';
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
-  const styleActions = node.type === 'path' ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
-  const body = `${fill}${variableBindingControl(node, 'fill')}${stroke}${styleActions}${radius}`;
+  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>`;
+  const body = `${fill}${fillVariable}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -548,6 +555,10 @@ function renderInspector() {
     body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.closed) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
+  } else if (node.type === 'network') {
+    const selectedVertex = state.selectedVectorPoint?.nodeId === node.id && state.selectedVectorPoint.vertexId;
+    body += section('Vector network', `<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point, then use Pen to branch from it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
+    body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
   if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
@@ -702,41 +713,96 @@ function localizeToParent(node, worldX, worldY, parent) {
   if (parent?.node.autoLayout) applyAutoLayout(parent.node);
 }
 
-function startPenPath(world) {
+function networkAnchorAt(world, node, pointerType = 'mouse') {
+  if (!node || node.type !== 'network' || node.locked) return null;
+  const origin = absolutePosition(node.id);
+  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+  let best = null;
+  for (const vertex of node.vertices || []) {
+    const localPoint = vectorNetworkVertexPoint(node, vertex.id, origin);
+    const screenPoint = rotatePoint(localPoint, center, node.rotation);
+    const distance = checkPointDistance(world, screenPoint);
+    const tolerance = (pointerType === 'touch' ? 22 : 12) / Math.max(.08, state.zoom);
+    if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, localPoint, distance };
+  }
+  return best;
+}
+
+function startPenPath(world, pointerType = 'mouse') {
+  const selected = selectedNodes();
+  const targetNetwork = selected.length === 1 && selected[0].type === 'network' && !selected[0].locked ? selected[0] : null;
+  const closeTolerance = 10 / Math.max(.08, state.zoom);
   const draft = state.penDraft;
   if (draft) {
+    const target = draft.networkNodeId ? findNode(state.document, draft.networkNodeId)?.node : targetNetwork;
+    const existing = target ? networkAnchorAt(world, target, pointerType) : null;
     const first = draft.anchors[0];
-    if (draft.anchors.length >= 3 && checkPointDistance(world, first) <= 10 / state.zoom) {
+    if (existing && draft.anchors.length >= 2) {
+      const existingOrigin = absolutePosition(target.id);
+      const firstWorld = rotatePoint(first, { x: existingOrigin.x + target.width / 2, y: existingOrigin.y + target.height / 2 }, target.rotation);
+      const closesAtFirst = (first.vertexId && first.vertexId === existing.vertexId)
+        || (!first.vertexId && checkPointDistance(world, firstWorld) <= closeTolerance);
+      if (closesAtFirst) {
+        if (draft.anchors.length >= 3) finishPenPath(true);
+        else showToast('Add one more point before closing a region.');
+        return;
+      }
+      const point = { ...existing.localPoint, in: { ...existing.localPoint }, out: { ...existing.localPoint }, vertexId: existing.vertexId };
+      draft.anchors.push(point);
+      finishPenPath(false);
+      return;
+    }
+    const targetOrigin = target ? absolutePosition(target.id) : null;
+    const firstWorld = target ? rotatePoint(first, { x: targetOrigin.x + target.width / 2, y: targetOrigin.y + target.height / 2 }, target.rotation) : first;
+    if (draft.anchors.length >= 3 && checkPointDistance(world, firstWorld) <= closeTolerance) {
       finishPenPath(true);
       return;
     }
-    const point = { ...world, in: { ...world }, out: { ...world } };
+    const pointPosition = target ? unrotateForPath(world, target, targetOrigin) : world;
+    const point = { ...pointPosition, in: { ...pointPosition }, out: { ...pointPosition } };
     draft.anchors.push(point);
     const pointIndex = draft.anchors.length - 1;
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false, ...(target ? { networkNodeId: target.id } : {}) };
   } else {
-    state.penDraft = { anchors: [{ ...world, in: { ...world }, out: { ...world } }] };
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false };
-    showToast('Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
+    const existing = targetNetwork ? networkAnchorAt(world, targetNetwork, pointerType) : null;
+    const origin = targetNetwork ? absolutePosition(targetNetwork.id) : null;
+    const point = existing ? existing.localPoint : targetNetwork ? unrotateForPath(world, targetNetwork, origin) : world;
+    state.penDraft = {
+      ...(targetNetwork ? { networkNodeId: targetNetwork.id } : {}),
+      anchors: [{ ...point, in: { ...point }, out: { ...point }, ...(existing ? { vertexId: existing.vertexId } : {}) }]
+    };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false, ...(targetNetwork ? { networkNodeId: targetNetwork.id } : {}) };
+    showToast(existing ? 'Starting at a shared point · add a branch, connect another point, then press Enter.' : 'Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
   }
   state.penHover = world;
-  $('#selection-status').textContent = 'Pen · click points · drag curves · Enter finish · Esc cancel';
+  $('#selection-status').textContent = 'Pen · draw connected vector networks · Enter finish · Esc cancel';
   renderer.invalidate();
 }
 
 function finishPenPath(closed = false, { selectAfter = true } = {}) {
   const draft = state.penDraft;
   if (!draft || draft.anchors.length < 2) return false;
-  const geometry = vectorGeometryFromAnchors(draft.anchors, { closed });
-  const node = createNode('path', { ...geometry, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 });
   state.penDraft = null; state.penHover = null; state.interaction = null;
-  checkpoint('Create vector path');
-  const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
-  const parent = deepestContainerAt(center);
-  localizeToParent(node, node.x, node.y, parent);
+  const existing = draft.networkNodeId ? findNode(state.document, draft.networkNodeId)?.node : null;
+  let node;
+  if (existing?.type === 'network' && !existing.locked) {
+    node = existing;
+    checkpoint('Extend vector network');
+    const origin = absolutePosition(node.id);
+    const result = appendVectorNetworkPath(node, draft.anchors, origin, { closed });
+    if (!result?.addedEdges) { showToast('Add at least two distinct points to make a vector path.'); renderer.invalidate(); return false; }
+    recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces', 'x', 'y', 'width', 'height']);
+  } else {
+    const geometry = vectorNetworkGeometryFromAnchors(draft.anchors, { closed });
+    node = createNode('network', geometry);
+    checkpoint('Create vector network');
+    const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+    const parent = deepestContainerAt(center);
+    localizeToParent(node, node.x, node.y, parent);
+  }
   if (selectAfter) setTool('select');
   setSelection([node.id]); queueSave(); renderer.invalidate();
-  showToast(`${closed ? 'Closed' : 'Open'} vector path created · drag its anchors or handles to refine it.`);
+  showToast(`${closed ? 'Closed region' : 'Vector path'} ${existing ? 'added to network' : 'created'} · select a point and use Pen to branch.`);
   return true;
 }
 
@@ -752,14 +818,32 @@ function rotatePoint(point, center, degrees) {
   return { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
 }
 
-function vectorPathControlAt(world) {
+function vectorPathControlAt(world, pointerType = 'mouse') {
   const nodes = selectedNodes();
-  const node = nodes.length === 1 && nodes[0].type === 'path' && !nodes[0].locked ? nodes[0] : null;
+  const node = nodes.length === 1 && ['path', 'network'].includes(nodes[0].type) && !nodes[0].locked ? nodes[0] : null;
   if (!node || state.tool !== 'select') return null;
   const origin = absolutePosition(node.id);
   const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
-  const tolerance = 9 / state.zoom;
+  const tolerance = (pointerType === 'touch' ? 22 : 9) / Math.max(.08, state.zoom);
   let best = null;
+  if (node.type === 'network') {
+    for (const edge of node.edges || []) {
+      const points = vectorNetworkEdgePoints(node, edge.id, origin);
+      if (!points) continue;
+      for (const [part, handle, anchor] of [['control1', points[1], points[0]], ['control2', points[2], points[3]]]) {
+        if (!edge[part]) continue;
+        const point = rotatePoint(handle, center, node.rotation);
+        const distance = checkPointDistance(world, point);
+        if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, edgeId: edge.id, part, distance };
+      }
+    }
+    for (const vertex of node.vertices || []) {
+      const point = rotatePoint(vectorNetworkVertexPoint(node, vertex.id, origin), center, node.rotation);
+      const distance = checkPointDistance(world, point);
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, part: 'anchor', distance };
+    }
+    return best;
+  }
   for (let index = 0; index < (node.points || []).length; index += 1) {
     for (const part of ['in', 'out', 'anchor']) {
       if (part !== 'anchor') {
@@ -775,11 +859,18 @@ function vectorPathControlAt(world) {
 }
 
 function insertPathPoint(node, segmentIndex, t = .5, origin = absolutePosition(node.id)) {
-  if (!node || node.type !== 'path' || node.locked) return false;
-  const pointIndex = insertVectorNodePoint(node, segmentIndex, t, origin);
-  if (pointIndex < 0) return false;
-  state.selectedVectorPoint = { nodeId: node.id, index: pointIndex };
-  recordNodeComponentOverrides(node, ['points']);
+  if (!node || !['path', 'network'].includes(node.type) || node.locked) return false;
+  if (node.type === 'network') {
+    const vertexId = insertVectorNetworkPoint(node, segmentIndex, t, origin);
+    if (!vertexId) return false;
+    state.selectedVectorPoint = { nodeId: node.id, vertexId };
+    recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces']);
+  } else {
+    const pointIndex = insertVectorNodePoint(node, segmentIndex, t, origin);
+    if (pointIndex < 0) return false;
+    state.selectedVectorPoint = { nodeId: node.id, index: pointIndex };
+    recordNodeComponentOverrides(node, ['points']);
+  }
   renderInspector(); renderer.invalidate(); queueSave();
   showToast('Vector point inserted. The Bézier curve keeps its original shape.');
   return true;
@@ -787,40 +878,46 @@ function insertPathPoint(node, segmentIndex, t = .5, origin = absolutePosition(n
 
 function insertPathPointOnLongestSegment(nodeId = selectedNodes()[0]?.id) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
-  if (!node || node.type !== 'path') return;
+  if (!node || !['path', 'network'].includes(node.type)) return;
   const origin = absolutePosition(node.id);
-  const segment = longestVectorSegment(node, origin);
-  if (!segment) { showToast('This vector path has no segment to split.'); return; }
+  const segment = node.type === 'network' ? longestVectorNetworkEdge(node, origin) : longestVectorSegment(node, origin);
+  if (!segment) { showToast('This vector shape has no segment to split.'); return; }
   checkpoint('Insert vector point');
-  insertPathPoint(node, segment.segmentIndex, segment.t, origin);
+  insertPathPoint(node, node.type === 'network' ? segment.edgeId : segment.segmentIndex, segment.t, origin);
 }
 
 function insertPathPointAtWorld(world) {
-  let node = selectedNodes().length === 1 && selectedNodes()[0].type === 'path' ? selectedNodes()[0] : null;
+  let node = selectedNodes().length === 1 && ['path', 'network'].includes(selectedNodes()[0].type) ? selectedNodes()[0] : null;
   if (!node) {
     const hit = hitTestPage(activePage(), world, null, state.document);
-    if (hit?.type !== 'path') return false;
+    if (!['path', 'network'].includes(hit?.type)) return false;
     node = hit;
     setSelection([node.id]);
   }
   if (node.locked || vectorPathControlAt(world)) return false;
   const origin = absolutePosition(node.id);
   const localWorld = unrotateForPath(world, node, origin);
-  const closest = closestVectorSegment(node, localWorld, origin);
+  const closest = node.type === 'network' ? closestVectorNetworkEdge(node, localWorld, origin) : closestVectorSegment(node, localWorld, origin);
   if (!closest || closest.distance > 12 / Math.max(.08, state.zoom)) return false;
   checkpoint('Insert vector point');
-  return insertPathPoint(node, closest.segmentIndex, closest.t, origin);
+  return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, origin);
 }
 
 function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   const index = state.selectedVectorPoint?.index;
-  if (!node || node.type !== 'path' || state.selectedVectorPoint?.nodeId !== node.id || !Number.isInteger(index)) return false;
-  if (node.points.length <= 2) { showToast('A vector path must keep at least two points.'); return false; }
+  if (!node || state.selectedVectorPoint?.nodeId !== node.id) return false;
   checkpoint('Delete vector point');
-  removeVectorNodePoint(node, index);
-  state.selectedVectorPoint.index = Math.min(index, node.points.length - 1);
-  recordNodeComponentOverrides(node, ['points']);
+  if (node.type === 'network') {
+    if (!removeVectorNetworkVertex(node, state.selectedVectorPoint.vertexId)) { showToast('That point cannot be removed without destroying the network.'); return false; }
+    state.selectedVectorPoint = null;
+    recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces']);
+  } else if (node.type === 'path' && Number.isInteger(index)) {
+    if (node.points.length <= 2) { showToast('A vector path must keep at least two points.'); return false; }
+    removeVectorNodePoint(node, index);
+    state.selectedVectorPoint.index = Math.min(index, node.points.length - 1);
+    recordNodeComponentOverrides(node, ['points']);
+  } else return false;
   renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
   showToast('Vector point deleted.');
   return true;
@@ -910,13 +1007,19 @@ function onCanvasPointerDown(event) {
     } catch (error) { showToast(error.message); }
     event.preventDefault(); return;
   }
-  if (state.tool === 'pen') { startPenPath(world); event.preventDefault(); return; }
+  if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
   if (state.tool === 'select') {
-    const vectorControl = vectorPathControlAt(world);
+    const vectorControl = vectorPathControlAt(world, event.pointerType);
     if (vectorControl) {
-      state.selectedVectorPoint = { nodeId: vectorControl.node.id, index: vectorControl.index };
-      checkpoint('Edit vector path');
-      state.interaction = { kind: 'vector-control', ...vectorControl };
+      if (vectorControl.node.type === 'network') {
+        state.selectedVectorPoint = vectorControl.part === 'anchor' ? { nodeId: vectorControl.node.id, vertexId: vectorControl.vertexId } : null;
+        checkpoint('Edit vector network');
+        state.interaction = { kind: 'network-control', ...vectorControl };
+      } else {
+        state.selectedVectorPoint = { nodeId: vectorControl.node.id, index: vectorControl.index };
+        checkpoint('Edit vector path');
+        state.interaction = { kind: 'vector-control', ...vectorControl };
+      }
       event.preventDefault(); return;
     }
     const handle = resizeHandleAt(event);
@@ -982,8 +1085,10 @@ function onCanvasPointerMove(event) {
     const point = state.penDraft?.anchors[interaction.pointIndex];
     if (!point) return;
     interaction.moved ||= checkPointDistance(world, interaction.start) > 3 / state.zoom;
-    point.out = { ...world };
-    point.in = { x: point.x - (world.x - point.x), y: point.y - (world.y - point.y) };
+    const network = interaction.networkNodeId ? findNode(state.document, interaction.networkNodeId)?.node : null;
+    const anchorWorld = network ? unrotateForPath(world, network, absolutePosition(network.id)) : world;
+    point.out = { ...anchorWorld };
+    point.in = { x: point.x - (anchorWorld.x - point.x), y: point.y - (anchorWorld.y - point.y) };
     state.penHover = world; renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-control') {
@@ -992,6 +1097,12 @@ function onCanvasPointerMove(event) {
       origin: interaction.origin,
       symmetric: interaction.part !== 'anchor' && !event.altKey
     });
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'network-control') {
+    const local = unrotateForPath(world, interaction.node, interaction.origin);
+    if (interaction.part === 'anchor') setVectorNetworkVertexPoint(interaction.node, interaction.vertexId, local, interaction.origin);
+    else setVectorNetworkEdgeControlPoint(interaction.node, interaction.edgeId, interaction.part, local, interaction.origin);
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'move') {
@@ -1065,6 +1176,10 @@ function onCanvasPointerUp(event) {
   }
   if (interaction.kind === 'vector-control') {
     recordNodeComponentOverrides(interaction.node, ['points']);
+    state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'network-control') {
+    recordNodeComponentOverrides(interaction.node, ['vertices', 'edges', 'faces']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'reorder') {
@@ -1442,7 +1557,8 @@ function saveRecipeFor(nodeId) {
 function applyStyleToSelection(styleId) {
   const style = state.document.colorStyles?.find(item => item.id === styleId);
   if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
-  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text' : !['text', 'image', 'line', 'path'].includes(node.type));
+  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text'
+    : !['text', 'image', 'line', 'path'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0));
   if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
   for (const node of compatible) {
@@ -1458,9 +1574,9 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
   if (variableId && !state.document.variables?.some(variable => variable.id === variableId && variable.type === 'color')) { showToast('This color variable no longer exists.'); return; }
   const nodes = selectedNodes();
   const changes = nodes.map(node => {
-    const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+    const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
     const compatible = kind === 'text' ? node.type === 'text'
-      : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+      : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
         : !['text', 'image', 'group', 'boolean'].includes(node.type);
     return compatible ? { node, kind } : null;
   }).filter(Boolean);
@@ -1491,9 +1607,9 @@ function applyVariablePropertyToSelection(property, variableId) {
 function createColorVariableFromSelection(kind = null) {
   const nodes = selectedNodes();
   if (!nodes.length) { showToast('Select a layer before creating a color variable.'); return; }
-  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed));
+  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0));
   if (!source) { showToast('Select a compatible color layer first.'); return; }
-  const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !source.closed) ? 'stroke' : 'fill');
+  const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !source.closed) || (source.type === 'network' && !source.faces?.length) ? 'stroke' : 'fill');
   const current = getNodeColor(state.document, source, variableKind);
   openVariableNameDialog({
     type: 'selection', colorKind: variableKind, colorValue: /^#[0-9a-f]{6}$/i.test(current) ? current : '#1e1e1e',
@@ -1504,7 +1620,7 @@ function createColorVariableFromSelection(kind = null) {
 function selectedColorForVariable() {
   const node = selectedNodes()[0];
   if (!node) return '#1e1e1e';
-  return getNodeColor(state.document, node, node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+  return getNodeColor(state.document, node, node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
 }
 
 function handleVariableAssetsAction(action, details = {}) {
@@ -1571,7 +1687,7 @@ function commitVariableNameDialog() {
       const targetCollection = collection || createVariableCollection(state.document, 'Colors');
       const variable = createColorVariable(state.document, targetCollection.id, name, pending.colorValue || '#1e1e1e');
       for (const node of nodes) {
-        const kind = pending.colorKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) ? 'stroke' : 'fill');
+        const kind = pending.colorKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
         if (!bindColorVariable(state.document, node.id, variable.id, kind)) continue;
         const instanceRoot = componentInstanceRoot(node.id);
         if (instanceRoot) recordComponentOverride(instanceRoot, node, { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind]);
@@ -1658,7 +1774,9 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
     if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
     else items.push({ label: 'Save a recipe from an edited image first', className: 'recipe-option is-empty', disabled: true });
   }
-  const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text' ? selectedNodes().some(item => item.type === 'text') : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type)));
+  const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text'
+    ? selectedNodes().some(item => item.type === 'text')
+    : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type) && (item.type !== 'network' || (item.faces || []).length > 0)));
   if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
   showMenu(items, x, y);
 }
@@ -2308,8 +2426,8 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'present') startPresentation(node?.id);
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
   else if (action === 'release-mask' && node?.type === 'group' && node.mask) releaseSelectedMask(node.id);
-  else if (action === 'insert-vector-point' && node?.type === 'path') insertPathPointOnLongestSegment(node.id);
-  else if (action === 'delete-vector-point' && node?.type === 'path') deleteSelectedVectorPoint(node.id);
+  else if (action === 'insert-vector-point' && ['path', 'network'].includes(node?.type)) insertPathPointOnLongestSegment(node.id);
+  else if (action === 'delete-vector-point' && ['path', 'network'].includes(node?.type)) deleteSelectedVectorPoint(node.id);
   else if (action === 'create-color-variable') createColorVariableFromSelection(details.kind || null);
   else if (action === 'create-color-style') {
     if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }

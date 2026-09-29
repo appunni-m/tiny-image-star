@@ -1,6 +1,6 @@
 import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
 import { SceneRenderer } from '../src/renderer.js';
-import { vectorSegmentPoint } from '../src/vector-path.js';
+import { vectorNetworkEdgePoints } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -345,7 +345,7 @@ try {
 
   const penButton = app.querySelector('.tool-button[data-tool="pen"]');
   const vectorIdsBeforePen = new Set([...app.querySelectorAll('.layer-row[data-layer-id]')]
-    .filter(row => row.textContent.trim() === 'Vector').map(row => row.dataset.layerId));
+    .filter(row => row.textContent.trim() === 'Vector network').map(row => row.dataset.layerId));
   dispatchClick(penButton);
   const penScreenPoint = ({ x, y }) => ({ x: canvasRect.left + panCenter.x + x, y: canvasRect.top + panCenter.y + y });
   const penDownUp = (world, pointerId) => {
@@ -363,62 +363,77 @@ try {
   app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }));
   await waitFor(() => {
     const row = app.querySelector('.layer-row.is-selected[data-layer-id]');
-    return row?.textContent.trim() === 'Vector' && !vectorIdsBeforePen.has(row.dataset.layerId);
-  }, 'multi-point Bézier pen path');
+    return row?.textContent.trim() === 'Vector network' && !vectorIdsBeforePen.has(row.dataset.layerId);
+  }, 'multi-point Bézier vector network');
   await new Promise(resolve => setTimeout(resolve, 450));
   let vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   let vectorDocument = vectorRecords[0]?.document;
   let vectorNodes = flattenNodes(vectorDocument?.pages.flatMap(page => page.children));
   const selectedVectorRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const vectorNode = vectorNodes.find(node => node.id === selectedVectorRow?.dataset.layerId);
-  assert(vectorNode?.points.length === 3 && vectorNode.points[1].out?.y, 'pen tool did not create and preserve a cubic Bézier segment');
-  const newlyAddedPaths = vectorNodes.filter(node => node.type === 'path' && !vectorIdsBeforePen.has(node.id));
-  assert(newlyAddedPaths.filter(node => !node.componentSourceId).length === 1, 'one pen session must create one authored path; its linked component copies may add mirrored layers');
+  assert(vectorNode?.vertices.length === 3 && vectorNode.edges.length === 2 && (vectorNode.edges[0].control2 || vectorNode.edges[1].control1), 'pen tool did not create a graph-backed cubic vector network');
+  const newlyAddedNetworks = vectorNodes.filter(node => node.type === 'network' && !vectorIdsBeforePen.has(node.id));
+  assert(newlyAddedNetworks.filter(node => !node.componentSourceId).length === 1, 'one pen session must create one authored network; its linked component copies may add mirrored layers');
 
-  const vectorLayerRow = app.querySelector(`[data-layer-id="${vectorNode.id}"]`);
-  dispatchClick(vectorLayerRow);
-  const closePath = app.querySelector('[data-prop="closed"]');
-  assert(closePath, 'selected vector did not expose its closed-path control');
-  closePath.checked = true; closePath.dispatchEvent(new Event('input', { bubbles: true })); closePath.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(penButton);
+  penDownUp({ x: -130, y: -140 }, 94);
+  penDownUp({ x: -80, y: -210 }, 95);
+  penDownUp({ x: 100, y: -130 }, 96);
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('4 edges'), 'shared-junction branch creation');
   await new Promise(resolve => setTimeout(resolve, 450));
   vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   vectorDocument = vectorRecords[0]?.document;
-  const savedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
-  assert(savedVector?.closed === true, 'closed-path fill behavior was not saved');
+  let savedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedNetwork?.vertices.length === 4 && savedNetwork.edges.length === 4, 'branch path duplicated a shared junction instead of connecting the graph');
+
+  dispatchClick(penButton);
+  penDownUp({ x: -120, y: 110 }, 97);
+  penDownUp({ x: -20, y: 110 }, 98);
+  penDownUp({ x: -70, y: 190 }, 99);
+  penDownUp({ x: -120, y: 110 }, 100);
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('1 closed regions'), 'closed network region creation');
+  await new Promise(resolve => setTimeout(resolve, 450));
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  savedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedNetwork?.faces.length === 1 && savedNetwork.edges.length === 7, 'closed network region was not persisted as a face');
 
   const positionedVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
-  const editablePoint = positionedVector.node.points[1];
-  const handleWorld = {
-    x: positionedVector.x + (editablePoint.x + editablePoint.out.x) * positionedVector.node.width,
-    y: positionedVector.y + (editablePoint.y + editablePoint.out.y) * positionedVector.node.height
-  };
+  const editableEdge = positionedVector.node.edges.find(edge => edge.control1 || edge.control2);
+  const editablePart = editableEdge.control1 ? 'control1' : 'control2';
+  const editableControl = editableEdge[editablePart];
+  const handleWorld = vectorNetworkEdgePoints(positionedVector.node, editableEdge.id, { x: positionedVector.x, y: positionedVector.y })[editablePart === 'control1' ? 1 : 2];
   const handleScreen = penScreenPoint(handleWorld);
-  dispatchCanvasPointer(app, designCanvas, 'pointerdown', handleScreen.x, handleScreen.y, 94);
-  dispatchCanvasPointer(app, designCanvas, 'pointermove', handleScreen.x + 18, handleScreen.y - 12, 94);
-  dispatchCanvasPointer(app, designCanvas, 'pointerup', handleScreen.x + 18, handleScreen.y - 12, 94);
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', handleScreen.x, handleScreen.y, 101);
+  dispatchCanvasPointer(app, designCanvas, 'pointermove', handleScreen.x + 18, handleScreen.y - 12, 101);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', handleScreen.x + 18, handleScreen.y - 12, 101);
   await new Promise(resolve => setTimeout(resolve, 450));
   vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   vectorDocument = vectorRecords[0]?.document;
-  const editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
-  assert(editedVector.points[1].out.y !== editablePoint.out.y, 'canvas Bézier handle editing did not update the path');
+  let editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(editedVector.edges.find(edge => edge.id === editableEdge.id)[editablePart].y !== editableControl.y, 'canvas Bézier handle editing did not update the network edge');
 
   const currentVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
-  const insertionWorld = vectorSegmentPoint(currentVector.node, 0, .42, { x: currentVector.x, y: currentVector.y });
+  const insertionWorld = (() => {
+    const [p0, p1, p2, p3] = vectorNetworkEdgePoints(currentVector.node, currentVector.node.edges[0].id, { x: currentVector.x, y: currentVector.y });
+    const t = .42; const inverse = 1 - t;
+    return { x: inverse ** 3 * p0.x + 3 * inverse ** 2 * t * p1.x + 3 * inverse * t ** 2 * p2.x + t ** 3 * p3.x, y: inverse ** 3 * p0.y + 3 * inverse ** 2 * t * p1.y + 3 * inverse * t ** 2 * p2.y + t ** 3 * p3.y };
+  })();
   const insertionScreen = penScreenPoint(insertionWorld);
   designCanvas.dispatchEvent(new app.defaultView.MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: insertionScreen.x, clientY: insertionScreen.y }));
-  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('4 points'), 'double-click vector point insertion');
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('8 points'), 'double-click vector network point insertion');
   assert(app.querySelector('[data-action="delete-vector-point"]') && !app.querySelector('[data-action="delete-vector-point"]').disabled, 'inserted vector point was not selected for deletion');
   dispatchClick(app.querySelector('[data-action="delete-vector-point"]'));
-  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('3 points'), 'vector point inspector deletion');
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('7 points'), 'vector network point inspector deletion');
   dispatchClick(app.querySelector('[data-action="insert-vector-point"]'));
-  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('4 points'), 'touch-friendly vector point insertion');
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('8 points'), 'touch-friendly vector network point insertion');
   app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Backspace' }));
-  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('3 points'), 'Backspace vector point deletion');
-  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'vector point edits autosave');
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('7 points'), 'Backspace vector network point deletion');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'vector network edits autosave');
   vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   vectorDocument = vectorRecords[0]?.document;
-  const savedEditedPath = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
-  assert(savedEditedPath?.points.length === 3 && savedEditedPath.closed, 'vector point edits did not preserve the closed path on disk');
+  const savedEditedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedEditedNetwork?.vertices.length === 7 && savedEditedNetwork.edges.length === 7 && savedEditedNetwork.faces.length === 1, 'network editing did not preserve the branch and closed region on disk');
 
   const variablesDocument = createDocument();
   const brandColors = createVariableCollection(variablesDocument, 'Brand colors');

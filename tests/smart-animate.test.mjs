@@ -55,22 +55,27 @@ test('smart animation matches by layer name and parent hierarchy and fades unmat
 test('smart animation crossfades incompatible content instead of morphing it', () => {
   const from = createNode('frame', { children: [
     createNode('text', { name: 'Title', text: 'Before', opacity: 0.8 }),
-    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] })
+    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }),
+    createNode('network', { name: 'Branch', vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: 1, y: 1 }], edges: [{ id: 'e1', from: 'v1', to: 'v2' }], faces: [] })
   ] });
   const to = createNode('frame', { children: [
     createNode('text', { name: 'Title', text: 'After' }),
-    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 20, y: 20 }] })
+    createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 20, y: 20 }] }),
+    createNode('network', { name: 'Branch', vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: .5, y: 1 }, { id: 'v3', x: 1, y: 0 }], edges: [{ id: 'e1', from: 'v1', to: 'v2' }, { id: 'e2', from: 'v2', to: 'v3' }], faces: [] })
   ] });
 
   const middle = interpolateSmartFrame(from, to, 0.5);
   const titles = middle.children.filter(node => node.name === 'Title');
   const icons = middle.children.filter(node => node.name === 'Icon');
+  const networks = middle.children.filter(node => node.name === 'Branch');
   assert.equal(titles.length, 2);
   assert.equal(titles.find(node => node.text === 'Before').opacity, 0.4);
   assert.equal(titles.find(node => node.text === 'After').opacity, 0.5);
   assert.equal(icons.length, 2);
   assert.equal(icons.find(node => node.points[1].x === 10).opacity, 0.5);
   assert.equal(icons.find(node => node.points[1].x === 20).opacity, 0.5);
+  assert.equal(networks.length, 2);
+  assert.deepEqual(networks.map(node => node.opacity), [0.5, 0.5]);
 });
 
 test('smart animation rejects non-frame endpoints and clamps its progress', () => {

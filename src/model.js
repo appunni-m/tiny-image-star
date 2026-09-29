@@ -73,7 +73,8 @@ const defaults = {
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
   text: { name: 'Text', width: 240, height: 48, text: 'Text', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, fit: 'cover' },
-  path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] }
+  path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
+  network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
 const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
 const prototypeTriggers = new Set(['on-click', 'while-hovering']);
@@ -82,14 +83,14 @@ const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', '
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
-const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
+const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -272,7 +273,7 @@ function visualBounds(node) {
 }
 
 function isBooleanOperand(node) {
-  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true);
+  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0);
 }
 
 /** Return whether these layers can become one live, editable Boolean group. */
@@ -321,9 +322,9 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   return group;
 }
 
-const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'boolean']);
+const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 function isMaskSource(node) {
-  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || node.closed === true));
+  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0));
 }
 
 /** Return whether selected sibling layers can become a live alpha-mask group. */
@@ -759,7 +760,7 @@ export function bindColorVariable(document, nodeId, variableId, kind = 'fill', p
   const property = properties[kind];
   if (!node || !property || (variableId && !variable)) return false;
   const compatible = kind === 'text' ? node.type === 'text'
-    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
       : !['text', 'image', 'group', 'boolean'].includes(node.type);
   if (!compatible) return false;
   if (variableId) {
@@ -784,6 +785,7 @@ export function getNodeColor(document, node, kind = node?.type === 'text' ? 'tex
 export function createColorStyle(document, nodeId, name, pageId = document.activePageId) {
   const node = findNode(document, nodeId, pageId)?.node;
   if (!node) throw new Error('Select a layer before creating a color style.');
+  if (node.type === 'network' && !(node.faces || []).length) throw new TypeError('Open vector networks use stroke styles; close a region before creating a fill style.');
   const kind = node.type === 'text' ? 'text' : 'fill';
   const value = getNodeColor(document, node, kind);
   if (!/^#[0-9a-f]{6}$/i.test(value)) throw new TypeError('Color styles require a solid six-digit color.');
@@ -800,7 +802,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   const style = document.colorStyles?.find(item => item.id === styleId);
   if (!node || !style) return false;
   if (style.kind === 'text' && node.type === 'text') { delete node.textVariableId; node.textStyleId = style.id; }
-  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type)) { delete node.fillVariableId; node.fillStyleId = style.id; }
+  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0)) { delete node.fillVariableId; node.fillStyleId = style.id; }
   else return false;
   return true;
 }
@@ -1089,6 +1091,55 @@ export function syncAllComponentInstances(document) {
 
 export function cloneDocument(document) { return clone(document); }
 
+function validNetworkGeometry(node) {
+  if (!Array.isArray(node.vertices) || node.vertices.length < 2 || !Array.isArray(node.edges) || !node.edges.length || !Array.isArray(node.faces || [])) return false;
+  const vertexIds = new Set();
+  for (const vertex of node.vertices) {
+    if (!vertex || typeof vertex.id !== 'string' || !vertex.id || vertexIds.has(vertex.id) || !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) return false;
+    if (vertex.split != null) {
+      const split = vertex.split;
+      const original = split?.originalEdge;
+      if (!split || typeof split.firstEdgeId !== 'string' || typeof split.secondEdgeId !== 'string' || split.firstEdgeId === split.secondEdgeId
+        || !original || original.id !== split.firstEdgeId || typeof original.from !== 'string' || typeof original.to !== 'string' || original.from === original.to
+        || ['control1', 'control2'].some(part => original[part] != null && (!Number.isFinite(original[part].x) || !Number.isFinite(original[part].y)))) return false;
+    }
+    vertexIds.add(vertex.id);
+  }
+  const edgeIds = new Set();
+  const connections = new Map();
+  for (const edge of node.edges) {
+    if (!edge || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id)
+      || !vertexIds.has(edge.from) || !vertexIds.has(edge.to) || edge.from === edge.to
+      || ['control1', 'control2'].some(part => edge[part] != null && (!Number.isFinite(edge[part].x) || !Number.isFinite(edge[part].y)))) return false;
+    edgeIds.add(edge.id);
+    if (!connections.has(edge.from)) connections.set(edge.from, new Set());
+    if (!connections.has(edge.to)) connections.set(edge.to, new Set());
+    connections.get(edge.from).add(edge.to);
+    connections.get(edge.to).add(edge.from);
+  }
+  for (const vertex of node.vertices) if (vertex.split) {
+    const split = vertex.split;
+    const first = node.edges.find(edge => edge.id === split.firstEdgeId);
+    const second = node.edges.find(edge => edge.id === split.secondEdgeId);
+    if (!vertexIds.has(split.originalEdge.from) || !vertexIds.has(split.originalEdge.to)
+      || !first || !second || first.from !== split.originalEdge.from || first.to !== vertex.id
+      || second.from !== vertex.id || second.to !== split.originalEdge.to) return false;
+  }
+  const faceIds = new Set();
+  for (const face of node.faces || []) {
+    if (!face || typeof face.id !== 'string' || !face.id || faceIds.has(face.id) || !Array.isArray(face.vertexIds) || face.vertexIds.length < 3
+      || face.vertexIds.some(id => !vertexIds.has(id)) || new Set(face.vertexIds).size !== face.vertexIds.length) return false;
+    for (let index = 0; index < face.vertexIds.length; index += 1) {
+      const from = face.vertexIds[index]; const to = face.vertexIds[(index + 1) % face.vertexIds.length];
+      if (!connections.get(from)?.has(to)) return false;
+    }
+    if (face.fill != null && typeof face.fill !== 'string') return false;
+    if (face.fillOpacity != null && (!Number.isFinite(face.fillOpacity) || face.fillOpacity < 0 || face.fillOpacity > 1)) return false;
+    faceIds.add(face.id);
+  }
+  return true;
+}
+
 export function validateDocument(document) {
   if (!document || document.schema !== 'figma-local/1' || !Array.isArray(document.pages) || !document.pages.length) throw new TypeError('Invalid local design file.');
   const pageIds = new Set();
@@ -1108,6 +1159,7 @@ export function validateDocument(document) {
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
+      if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
       if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
       if (node.exportSettings != null) {
@@ -1291,7 +1343,7 @@ export function validateDocument(document) {
       if (node[property] && (!variable || variable.type !== 'color')) throw new TypeError(`Missing ${kind} variable on layer ${node.name || node.id}.`);
       if (!variable) continue;
       const compatible = kind === 'text' ? node.type === 'text'
-        : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed)
+        : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
           : !['text', 'image', 'group', 'boolean'].includes(node.type);
       if (!compatible) throw new TypeError(`Incompatible ${kind} variable on layer ${node.name || node.id}.`);
     }

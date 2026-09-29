@@ -1,6 +1,6 @@
-import { getNodeColor, getNodePropertyValue } from './model.js';
+import { findNode, getNodeColor, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
-import { vectorNodePoint } from './vector-path.js';
+import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
 
 const BLUE = '#0d99ff';
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
@@ -83,6 +83,44 @@ function traceVectorPath(ctx, node, x, y) {
     }
     ctx.closePath();
   }
+}
+
+function traceVectorNetworkEdges(ctx, node, x, y) {
+  for (const edge of node.edges || []) {
+    const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
+    if (!points) continue;
+    const [start, control1, control2, end] = points;
+    ctx.moveTo(start.x, start.y);
+    if (edge.control1 || edge.control2) ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+    else ctx.lineTo(end.x, end.y);
+  }
+}
+
+function traceVectorNetworkFace(ctx, node, face, x, y) {
+  const ids = face?.vertexIds || [];
+  if (ids.length < 3) return false;
+  const edgesByPair = new Map();
+  for (const edge of node.edges || []) {
+    const forward = `${edge.from}\0${edge.to}`; const reverse = `${edge.to}\0${edge.from}`;
+    if (!edgesByPair.has(forward)) edgesByPair.set(forward, edge);
+    if (!edgesByPair.has(reverse)) edgesByPair.set(reverse, edge);
+  }
+  const first = vectorNetworkVertexPoint(node, ids[0], { x, y });
+  if (!first) return false;
+  ctx.moveTo(first.x, first.y);
+  for (let index = 0; index < ids.length; index += 1) {
+    const fromId = ids[index]; const toId = ids[(index + 1) % ids.length];
+    const edge = edgesByPair.get(`${fromId}\0${toId}`);
+    const end = vectorNetworkVertexPoint(node, toId, { x, y });
+    if (!edge || !end) return false;
+    const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
+    const reversed = edge.from !== fromId;
+    const control1 = points[reversed ? 2 : 1]; const control2 = points[reversed ? 1 : 2];
+    if (edge.control1 || edge.control2) ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+    else ctx.lineTo(end.x, end.y);
+  }
+  ctx.closePath();
+  return true;
 }
 
 function textGraphemes(text) {
@@ -180,7 +218,21 @@ export class SceneRenderer {
     if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);
     if (state.draftNode) this.drawNode(ctx, state.draftNode, 0, 0, state.assets, true);
-    if (state.penDraft) this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom);
+    if (state.penDraft) {
+      let transform = null;
+      const entry = state.penDraft.networkNodeId ? findNode(state.document, state.penDraft.networkNodeId) : null;
+      if (entry) {
+        const node = entry.node;
+        const origin = entry.parents.reduce((point, parent) => ({ x: point.x + parent.x, y: point.y + parent.y }), { x: node.x, y: node.y });
+        const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+        const angle = (node.rotation || 0) * Math.PI / 180;
+        transform = point => {
+          const dx = point.x - center.x; const dy = point.y - center.y;
+          return { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+        };
+      }
+      this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom, transform);
+    }
     if (state.marquee) {
       const x = Math.min(state.marquee.x1, state.marquee.x2);
       const y = Math.min(state.marquee.y1, state.marquee.y2);
@@ -244,6 +296,9 @@ export class SceneRenderer {
       case 'path':
         traceVectorPath(ctx, node, x, y);
         break;
+      case 'network':
+        traceVectorNetworkEdges(ctx, node, x, y);
+        break;
       default:
         ctx.rect(x, y, width, height);
     }
@@ -251,6 +306,11 @@ export class SceneRenderer {
     if (maskMode) {
       ctx.globalAlpha *= node.fillOpacity ?? 1;
       ctx.fillStyle = '#fff';
+      if (node.type === 'network') {
+        for (const face of node.faces || []) { ctx.beginPath(); if (traceVectorNetworkFace(ctx, node, face, x, y)) ctx.fill(); }
+        ctx.restore();
+        return;
+      }
       if (node.type !== 'line' && (node.type !== 'path' || node.closed)) ctx.fill();
       ctx.restore();
       return;
@@ -290,6 +350,15 @@ export class SceneRenderer {
         drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
       });
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
+    } else if (node.type === 'network') {
+      const fill = getNodeColor(document, node, 'fill');
+      if (fill && fill !== 'transparent') {
+        for (const face of node.faces || []) {
+          ctx.beginPath();
+          if (traceVectorNetworkFace(ctx, node, face, x, y)) { ctx.fillStyle = rgba(face.fill || fill, (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1)); ctx.fill(); }
+        }
+      }
+      if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
       const fill = getNodeColor(document, node, 'fill');
       if (fill && fill !== 'transparent' && node.type !== 'line' && (node.type !== 'path' || node.closed)) { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
@@ -339,6 +408,9 @@ export class SceneRenderer {
           break;
         case 'path':
           traceVectorPath(ctx, node, x, y);
+          break;
+        case 'network':
+          traceVectorNetworkEdges(ctx, node, x, y);
           break;
         case 'image':
           roundedRect(ctx, x, y, width, height, radius);
@@ -489,8 +561,12 @@ export class SceneRenderer {
     return surface.getContext('2d').getImageData(pixelX, pixelY, 1, 1).data[3] > 8;
   }
 
-  drawPenDraft(ctx, draft, hover, zoom = 1) {
-    const points = draft.anchors || [];
+  drawPenDraft(ctx, draft, hover, zoom = 1, transform = null) {
+    const points = (draft.anchors || []).map(point => transform ? {
+      ...point,
+      ...transform(point),
+      in: transform(point.in), out: transform(point.out)
+    } : point);
     if (!points.length) return;
     const scale = 1 / Math.max(.08, zoom || 1);
     ctx.save();
@@ -557,6 +633,25 @@ export class SceneRenderer {
             ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           }
           ctx.fillStyle = selectedPointIndex === index ? BLUE : '#ffffff';
+          ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = '#ffffff';
+        }
+      } else if (node.type === 'network') {
+        const selectedVertexId = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.vertexId : null;
+        for (const edge of node.edges || []) {
+          const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
+          if (!points) continue;
+          const from = points[0]; const to = points[3];
+          for (const [part, handle, anchor] of [['control1', points[1], from], ['control2', points[2], to]]) {
+            if (!edge[part]) continue;
+            ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(handle.x, handle.y); ctx.stroke();
+            ctx.beginPath(); ctx.arc(handle.x, handle.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          }
+        }
+        for (const vertex of node.vertices || []) {
+          const anchor = vectorNetworkVertexPoint(node, vertex.id, { x, y });
+          if (!anchor) continue;
+          ctx.fillStyle = selectedVertexId === vertex.id ? BLUE : '#ffffff';
           ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ffffff';
         }

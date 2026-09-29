@@ -128,7 +128,7 @@ function cssForEntry(document, entry) {
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');
   if (node.visible === false) declarations.push('display: none;');
   declarations.push(...autoLayoutDeclarations(node.autoLayout));
-  if (node.type === 'path' || node.type === 'boolean' || node.mask) declarations.push('/* Vector, Boolean, and mask geometry is retained in layer JSON. */');
+  if (node.type === 'path' || node.type === 'network' || node.type === 'boolean' || node.mask) declarations.push('/* Vector, Boolean, and mask geometry is retained in layer JSON. */');
   return `${selector} {\n${declarations.map(declaration => `  ${declaration}`).join('\n')}\n}`;
 }
 
