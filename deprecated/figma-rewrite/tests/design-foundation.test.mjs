@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createDefaultDocument, createLayer, resizedBounds, scaleNodesToBounds, selectionBounds } from "../src/model.js";
-import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree } from "../src/layout.js";
+import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoLayout, normalizeLayoutSizing } from "../src/layout.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -76,7 +76,21 @@ test("auto layout direction and initial order follow the selected layers' spatia
   assert.equal(result.spacing, 40);
 });
 
-test("fresh root is independent of the archived editor and loads the local WASM worker", async () => {
+test("imported auto layout values are bounded and unknown sizing modes fall back safely", () => {
+  const layout = normalizeAutoLayout({
+    direction: "diagonal", spacing: -4, align: "outside", justify: "random", primarySizing: "fluid",
+    counterSizing: "hug", padding: { top: 24, right: -5, bottom: "invalid", left: 9000 },
+  });
+  assert.equal(layout.direction, "vertical");
+  assert.equal(layout.spacing, 0);
+  assert.equal(layout.align, "start");
+  assert.equal(layout.justify, "start");
+  assert.equal(layout.primarySizing, "hug");
+  assert.deepEqual(layout.padding, { top: 24, right: 0, bottom: 16, left: 1000 });
+  assert.deepEqual(normalizeLayoutSizing({ primary: "wat", counter: "fill" }), { primary: "fixed", counter: "fill" });
+});
+
+test("design app is independent of the previous editor and loads the local WASM worker", async () => {
   const [html, main, worker, packageJson, oldIndex] = await Promise.all([
     readFile(new URL("index.html", root), "utf8"),
     readFile(new URL("src/main.js", root), "utf8"),

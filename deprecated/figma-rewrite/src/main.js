@@ -1,5 +1,5 @@
-import { createBlankPage, createDefaultDocument, createLayer, makeId, resizedBounds, scaleNodesToBounds } from "./model.js";
-import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree } from "./layout.js";
+import { createBlankPage, createDefaultDocument, createLayer, makeId, resizedBounds, scaleNodesToBounds, selectionBounds } from "./model.js";
+import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoLayout, normalizeLayoutSizing } from "./layout.js";
 import { CanvasRenderer } from "./renderer.js";
 import { PillowWorkerPool } from "./image-engine.js";
 
@@ -148,10 +148,35 @@ function relayoutMovedSelection(rootIds) {
   for (const frameId of frameIds) { const frame = nodeById(frameId); if (frame) layoutAutoLayoutTree(model.nodes, frame); }
 }
 
+function containsPoint(frame, point) {
+  return frame?.type === "frame" && point.x >= frame.x && point.x <= frame.x + frame.w
+    && point.y >= frame.y && point.y <= frame.y + frame.h;
+}
+function frameForNode(node) {
+  let current = node;
+  while (current && current.type !== "frame") current = current.parentId ? nodeById(current.parentId) : null;
+  return current ?? null;
+}
+function frameAtCreationPoint(point, hit) {
+  const selected = selectedNodes();
+  const selectedFrame = selected.length === 1 ? frameForNode(selected[0]) : null;
+  const hitFrame = frameForNode(hit);
+  return [selectedFrame, hitFrame].find((frame) => frame && !frame.locked && containsPoint(frame, point)) ?? null;
+}
+
 function createAutoLayoutFromSelection() {
   const selected = selectedNodes().filter((node) => !node.hidden);
   if (selected.length < 2) { toast("Select at least two layers to create auto layout"); return; }
   if (selected.some((node) => node.locked)) { toast("Unlock selected layers before adding auto layout"); return; }
+  const selectedIdsForLayout = new Set(selected.map((node) => node.id));
+  if (selected.some((node) => {
+    let parent = node.parentId ? nodeById(node.parentId) : null;
+    while (parent) {
+      if (selectedIdsForLayout.has(parent.id)) return true;
+      parent = parent.parentId ? nodeById(parent.parentId) : null;
+    }
+    return false;
+  })) { toast("Select either a frame or its children, not both"); return; }
   pushHistory();
   const bounds = selectionBounds(selected); const inferred = inferAutoLayout(selected);
   const layout = createAutoLayout(inferred.direction); layout.spacing = inferred.spacing;
@@ -187,7 +212,19 @@ function enableFrameAutoLayout(frame) {
   frame.autoLayout = layout;
   const children = childNodes(frame.id);
   children.forEach((node, index) => { node.layoutSizing ??= { primary: "fixed", counter: "fixed" }; node.layoutOrder ??= index; });
-  layoutAutoLayoutTree(model.nodes, frame); renderAll(); scheduleSave();
+  layoutAutoLayoutTree(model.nodes, frame); expandedAutoFrames.add(frame.id); renderAll(); scheduleSave(); toast("Auto layout added");
+}
+
+function removeFrameAutoLayout(frame) {
+  if (!frame?.autoLayout) return;
+  pushHistory();
+  delete frame.autoLayout;
+  for (const child of childNodes(frame.id)) { delete child.layoutOrder; delete child.layoutSizing; }
+  if (frame.parentId) {
+    const parent = nodeById(frame.parentId);
+    if (parent?.autoLayout) layoutAutoLayoutTree(model.nodes, parent);
+  }
+  renderAll(); scheduleSave(); toast("Auto layout removed");
 }
 
 function toast(message, duration = 2200) {
@@ -229,7 +266,7 @@ function autoLayoutControls(node) {
   if (!node.autoLayout) return `<button type="button" class="add-fill" data-action="enable-auto-layout">＋ Add auto layout</button>`;
   const layout = node.autoLayout;
   const numeric = (label, key, value) => `<div class="prop-field"><label>${label}</label><input type="number" min="0" max="1000" step="1" data-layout-prop="${key}" value="${Number(value) || 0}" aria-label="${label}"></div>`;
-  return `${section("Auto layout", `${inspectorSelect("Flow", "direction", layout.direction, [["horizontal", "Horizontal"], ["vertical", "Vertical"]])}${inspectorSelect("Align", "align", layout.align, [["start", "Start"], ["center", "Center"], ["end", "End"], ["stretch", "Stretch"]])}${inspectorSelect("Distribute", "justify", layout.justify, [["start", "Start"], ["center", "Center"], ["end", "End"], ["space-between", "Space between"]])}${inspectorSelect("Primary sizing", "primarySizing", layout.primarySizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}${inspectorSelect("Counter sizing", "counterSizing", layout.counterSizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}<div class="inspector-grid">${numeric("Spacing", "spacing", layout.spacing)}${numeric("Top padding", "padding.top", layout.padding.top)}${numeric("Right padding", "padding.right", layout.padding.right)}${numeric("Bottom padding", "padding.bottom", layout.padding.bottom)}${numeric("Left padding", "padding.left", layout.padding.left)}</div>`)}`;
+  return `${section("Auto layout", `${inspectorSelect("Flow", "direction", layout.direction, [["horizontal", "Horizontal"], ["vertical", "Vertical"]])}${inspectorSelect("Align", "align", layout.align, [["start", "Start"], ["center", "Center"], ["end", "End"], ["stretch", "Stretch"]])}${inspectorSelect("Distribute", "justify", layout.justify, [["start", "Start"], ["center", "Center"], ["end", "End"], ["space-between", "Space between"]])}${inspectorSelect("Primary sizing", "primarySizing", layout.primarySizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}${inspectorSelect("Counter sizing", "counterSizing", layout.counterSizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}<div class="inspector-grid">${numeric("Spacing", "spacing", layout.spacing)}${numeric("Top padding", "padding.top", layout.padding.top)}${numeric("Right padding", "padding.right", layout.padding.right)}${numeric("Bottom padding", "padding.bottom", layout.padding.bottom)}${numeric("Left padding", "padding.left", layout.padding.left)}</div>`)}<button type="button" class="add-fill remove-auto-layout" data-action="remove-auto-layout">Remove auto layout</button>`;
 }
 function renderInspector() {
   const nodes = selectedNodes();
@@ -246,7 +283,8 @@ function renderInspector() {
   const kind = node.type === "text" ? "Text" : node.type === "image" ? "Image" : node.type === "landscape" ? "Illustration" : node.type === "ellipse" ? "Ellipse" : node.type === "frame" ? "Frame" : "Rectangle";
   let html = section(kind, `<div class="prop-field full selection-name-field"><label>◩</label><input data-prop="name" value="${escapeHtml(node.name)}" aria-label="Layer name"></div><div class="inspector-grid">${propertyField("X", "x", node.x)}${propertyField("Y", "y", node.y)}${propertyField("W", "w", node.w, 1, 1)}${propertyField("H", "h", node.h, 1, 1)}</div>`);
   if (node.type === "frame") html += autoLayoutControls(node);
-  if (node.parentId) {
+  const parent = node.parentId ? nodeById(node.parentId) : null;
+  if (parent?.autoLayout) {
     const sizing = node.layoutSizing ?? { primary: "fixed", counter: "fixed" };
     html += section("Auto layout child", `${inspectorSelect("Primary axis", "primary", sizing.primary, [["fixed", "Fixed"], ["fill", "Fill container"]], "layout-sizing")}${inspectorSelect("Counter axis", "counter", sizing.counter, [["fixed", "Fixed"], ["fill", "Fill container"]], "layout-sizing")}`);
   }
@@ -371,17 +409,21 @@ function setTool(name) {
   canvas.classList.toggle("canvas-create-tool", ["frame", "rectangle", "ellipse"].includes(name));
   if (name === "image") imageInput.click();
 }
-function addNode(type, x, y) {
+function addNode(type, x, y, parentFrame = null) {
   pushHistory();
   const position = renderer.toWorld(x, y);
   const nx = Math.round(Math.max(0, Math.min(model.frame.width - 10, position.x)));
   const ny = Math.round(Math.max(0, Math.min(model.frame.height - 10, position.y)));
   const layerType = type === "rectangle" ? "rect" : type;
-  const node = createLayer(layerType, nx, ny);
-  if (layerType === "frame") { node.section = "Hero"; node.name = "Frame"; }
+  const node = createLayer(layerType, nx, ny, parentFrame ? { parentId: parentFrame.id, layoutOrder: childNodes(parentFrame.id).length, section: parentFrame.section ?? "Hero" } : {});
+  if (layerType === "frame") { node.section = parentFrame?.section ?? "Hero"; node.name = "Frame"; }
   model.nodes.push(node); selectedIds = new Set([node.id]);
   if (!model.groups.some((group) => group.name === node.section)) model.groups.unshift({ id: makeId("group"), name: node.section, collapsed: false });
   expandedGroups.add(model.groups.find((group) => group.name === node.section)?.id);
+  if (parentFrame) {
+    expandedAutoFrames.add(parentFrame.id);
+    if (parentFrame.autoLayout) layoutAutoLayoutTree(model.nodes, parentFrame);
+  }
   setTool("select"); renderAll(); scheduleSave();
   return node;
 }
@@ -454,6 +496,32 @@ async function openProjectFile(file) {
         }
         restoredNodes.push(node);
       }
+      const restoredById = new Map(restoredNodes.map((node) => [node.id, node]));
+      for (let index = 0; index < restoredNodes.length; index++) {
+        const node = restoredNodes[index];
+        if (node.autoLayout != null) {
+          if (node.type !== "frame") throw new Error("Only frames can own auto layout");
+          node.autoLayout = normalizeAutoLayout(node.autoLayout);
+        }
+        if (node.parentId != null) {
+          if (typeof node.parentId !== "string" || node.parentId.length > 200) throw new Error("The project contains an invalid layer parent");
+          const parent = restoredById.get(node.parentId);
+          if (!parent || parent.type !== "frame" || parent.id === node.id) throw new Error("The project contains an invalid frame hierarchy");
+          node.layoutOrder = Number.isFinite(Number(node.layoutOrder)) ? Math.max(0, Math.min(20_000, Math.trunc(Number(node.layoutOrder)))) : index;
+          node.layoutSizing = normalizeLayoutSizing(node.layoutSizing);
+        } else {
+          delete node.layoutOrder;
+          delete node.layoutSizing;
+        }
+      }
+      for (const node of restoredNodes) {
+        const seen = new Set([node.id]); let parent = node.parentId ? restoredById.get(node.parentId) : null;
+        while (parent) {
+          if (seen.has(parent.id)) throw new Error("The project contains a circular frame hierarchy");
+          seen.add(parent.id); parent = parent.parentId ? restoredById.get(parent.parentId) : null;
+        }
+      }
+      for (const frame of restoredNodes.filter((node) => node.autoLayout)) layoutAutoLayoutTree(restoredNodes, frame);
       restoredPages.push({
         id: pageId, name: String(sourcePage.name ?? `Page ${pageIndex + 1}`).slice(0, 80),
         frame: { width: Math.min(16_000, Math.max(1, Number(sourcePage.frame.width) || 1440)), height: Math.min(16_000, Math.max(1, Number(sourcePage.frame.height) || 1000)), name: String(sourcePage.frame.name ?? "Frame").slice(0, 80) },
@@ -613,6 +681,7 @@ function showContextMenu(x, y, targetNode) {
   }
   if (selected.length > 1) list.push({ label: "Create auto layout", action: "create-auto-layout", icon: "▦" });
   else if (targetNode?.type === "frame" && !targetNode.autoLayout && childNodes(targetNode.id).length) list.push({ label: "Add auto layout to frame", action: "enable-auto-layout", icon: "▦" });
+  else if (targetNode?.type === "frame" && targetNode.autoLayout) list.push({ label: "Remove auto layout", action: "remove-auto-layout", icon: "▦" });
   if (images.length) {
     if (images.length === 1) list.push({ label: "Save edits as a recipe…", action: "save-recipe", icon: "✦" });
     list.push({ label: `Apply a recipe to ${images.length} selected image${images.length === 1 ? "" : "s"}`, action: "recipe-heading", disabled: true });
@@ -637,19 +706,62 @@ function showPageContextMenu(pageId) {
 function removeSelected() {
   if (!selectedIds.size) return;
   pushHistory();
-  const removed = model.nodes.filter((node) => selectedIds.has(node.id));
-  const remaining = model.nodes.filter((node) => !selectedIds.has(node.id));
+  const removed = descendantsOf(selectedNodes());
+  const removedIds = new Set(removed.map((node) => node.id));
+  const parentIds = new Set(removed.map((node) => node.parentId).filter((id) => id && !removedIds.has(id)));
+  const remaining = model.nodes.filter((node) => !removedIds.has(node.id));
   for (const node of removed) {
     engine.dispose(node.id);
     if (node.previewBitmap && node.previewBitmap !== node.sourceBitmap && !remaining.some((other) => other.previewBitmap === node.previewBitmap)) node.previewBitmap.close?.();
     if (node.sourceBitmap && !remaining.some((other) => other.sourceBitmap === node.sourceBitmap)) node.sourceBitmap.close?.();
   }
-  model.nodes = model.nodes.filter((node) => !selectedIds.has(node.id)); selectedIds.clear(); renderAll(); scheduleSave();
+  model.nodes = remaining;
+  for (const parentId of parentIds) { const parent = nodeById(parentId); if (parent?.autoLayout) layoutAutoLayoutTree(model.nodes, parent); }
+  selectedIds.clear(); renderAll(); scheduleSave();
 }
 function duplicateSelected() {
-  const sources = selectedNodes(); if (!sources.length) return;
-  pushHistory(); const copies = sources.map((node) => ({ ...node, id: makeId(node.type), name: `${node.name} copy`, x: node.x + 24, y: node.y + 24, sourceBytes: node.sourceBytes?.slice(), sourceBitmap: node.sourceBitmap, previewBitmap: node.previewBitmap, adjustments: node.adjustments ? { ...node.adjustments } : undefined }));
-  model.nodes.push(...copies); selectedIds = new Set(copies.map((node) => node.id)); renderAll(); scheduleSave();
+  const selected = selectedNodes(); if (!selected.length) return;
+  const selectedSet = new Set(selected.map((node) => node.id));
+  const roots = selected.filter((node) => !node.parentId || !selectedSet.has(node.parentId));
+  const sources = descendantsOf(roots);
+  const idMap = new Map(sources.map((node) => [node.id, makeId(node.type)]));
+  pushHistory();
+  const copies = sources.map((node) => {
+    const isRoot = roots.some((root) => root.id === node.id);
+    const parentId = node.parentId && idMap.has(node.parentId) ? idMap.get(node.parentId) : node.parentId;
+    const copy = {
+      ...node, id: idMap.get(node.id), name: isRoot ? `${node.name} copy` : node.name,
+      parentId, x: node.x + (isRoot ? 24 : 0), y: node.y + (isRoot ? 24 : 0),
+      sourceBytes: node.sourceBytes?.slice(), sourceBitmap: node.sourceBitmap, previewBitmap: node.previewBitmap,
+      adjustments: node.adjustments ? { ...node.adjustments } : undefined,
+      autoLayout: node.autoLayout ? structuredClone(node.autoLayout) : undefined,
+      layoutSizing: node.layoutSizing ? { ...node.layoutSizing } : undefined,
+    };
+    return copy;
+  });
+  const copiesByOriginalParent = new Map();
+  for (const node of sources) {
+    if (node.parentId && !idMap.has(node.parentId)) {
+      if (!copiesByOriginalParent.has(node.parentId)) copiesByOriginalParent.set(node.parentId, []);
+      copiesByOriginalParent.get(node.parentId).push(node);
+    }
+  }
+  for (const [parentId, originals] of copiesByOriginalParent) {
+    const parent = nodeById(parentId); if (!parent) continue;
+    const nextOrder = childNodes(parentId).reduce((max, child) => Math.max(max, child.layoutOrder ?? 0), -1) + 1;
+    originals.forEach((original, index) => {
+      const copy = copies.find((candidate) => candidate.id === idMap.get(original.id));
+      if (copy) copy.layoutOrder = nextOrder + index;
+    });
+  }
+  model.nodes.push(...copies);
+  const copiedRoots = roots.map((node) => idMap.get(node.id));
+  for (const parentId of new Set(copies.map((node) => node.parentId).filter((id) => id && !idMap.has(id)))) {
+    const parent = nodeById(parentId); if (parent?.autoLayout) layoutAutoLayoutTree(model.nodes, parent);
+    expandedAutoFrames.add(parentId);
+  }
+  for (const frame of copies.filter((node) => node.autoLayout)) expandedAutoFrames.add(frame.id);
+  selectedIds = new Set(copiedRoots); renderAll(); scheduleSave();
 }
 function contextAction(event) {
   const button = event.target.closest("button[data-action]"); if (!button) return;
@@ -667,6 +779,7 @@ function contextAction(event) {
   }
   if (action === "create-auto-layout") createAutoLayoutFromSelection();
   else if (action === "enable-auto-layout") enableFrameAutoLayout(target);
+  else if (action === "remove-auto-layout") removeFrameAutoLayout(target);
   else if (action === "save-recipe") openRecipeDialog(selectedImageNodes());
   else if (action === "apply-recipe") { const recipe = recipes().find((item) => item.id === button.dataset.recipeId); if (recipe) applyRecipe(recipe); }
   else if (action === "duplicate") duplicateSelected();
@@ -693,6 +806,7 @@ function updateProperties(event) {
   if (layoutProp) {
     const node = nodes[0];
     if (!node?.autoLayout) return;
+    node.autoLayout = normalizeAutoLayout(node.autoLayout);
     const value = target.type === "number" ? Number(target.value) : target.value;
     if (layoutProp.startsWith("padding.")) node.autoLayout.padding[layoutProp.slice("padding.".length)] = Math.max(0, Math.min(1000, value));
     else node.autoLayout[layoutProp] = value;
@@ -703,7 +817,7 @@ function updateProperties(event) {
   if (layoutSizing) {
     const parentIds = new Set();
     for (const node of nodes) {
-      node.layoutSizing ??= { primary: "fixed", counter: "fixed" };
+      node.layoutSizing = normalizeLayoutSizing(node.layoutSizing);
       node.layoutSizing[layoutSizing] = target.value;
       if (node.parentId) parentIds.add(node.parentId);
     }
@@ -783,7 +897,8 @@ canvas.addEventListener("pointerdown", (event) => {
     }
   }
   if (["rectangle", "ellipse", "text", "frame"].includes(activeTool)) {
-    const node = addNode(activeTool, point.x, point.y);
+    const world = renderer.toWorld(point.x, point.y);
+    const node = addNode(activeTool, point.x, point.y, frameAtCreationPoint(world, hit));
     if (activeTool === "text") { renderInspector(); const input = inspector.querySelector('[data-prop="text"]'); input?.focus(); input?.select(); }
     pointerState = { kind: "create", pointerId: event.pointerId, node, start: renderer.toWorld(point.x, point.y) };
     canvas.setPointerCapture(event.pointerId); return;
@@ -921,7 +1036,13 @@ $("#job-pause").addEventListener("click", () => {
   if (!activeJob) return; activeJob.paused = !activeJob.paused; $("#job-pause").textContent = activeJob.paused ? "Resume" : "Pause"; updateJobView(); if (!activeJob.paused) pumpJob(activeJob);
 });
 $("#job-stop").addEventListener("click", () => { if (activeJob) { activeJob.stopped = true; pumpJob(activeJob); } });
-$("#inspector-content").addEventListener("click", (event) => { if (event.target.closest('[data-action="save-recipe"]')) openRecipeDialog(selectedImageNodes()); });
+$("#inspector-content").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (action === "save-recipe") openRecipeDialog(selectedImageNodes());
+  else if (action === "create-auto-layout") createAutoLayoutFromSelection();
+  else if (action === "enable-auto-layout") enableFrameAutoLayout(primaryNode());
+  else if (action === "remove-auto-layout") removeFrameAutoLayout(primaryNode());
+});
 $(".inspector-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-inspector-tab]"); if (!button || button.dataset.inspectorTab === "design") return;
   toast("Prototype connections need a local interaction model; they are part of the next implementation slice.");
@@ -944,6 +1065,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") { hideContextMenu(); app.classList.remove("presenting", "show-layers", "show-inspector"); recipeDialog.open && recipeDialog.close(); }
   if ((event.key === "Delete" || event.key === "Backspace") && !event.target.matches("input,textarea,select")) { event.preventDefault(); removeSelected(); }
   if (event.target.matches("input,textarea,select") || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); createAutoLayoutFromSelection(); return; }
   const nudge = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
   if (nudge && selectedIds.size) {
     event.preventDefault();

@@ -90,6 +90,23 @@ try {
   await page.keyboard.press("ArrowRight");
   assert.equal(Number(await page.locator('[data-prop="x"]').inputValue()), originalX + 1, "arrow key nudges the selected layer by one design pixel");
 
+  await page.locator('#layer-tree .layer-row[data-id="hero-kicker"]').click();
+  await page.locator('#layer-tree .layer-row[data-id="hero-heading"]').click({ modifiers: ["Meta"] });
+  assert.equal(await page.locator("#layer-tree .layer-row.selected").count(), 2, "multiple design layers can be selected for auto layout");
+  await page.locator('#inspector-content [data-action="create-auto-layout"]').click();
+  assert.equal(await page.locator('[data-layout-prop="direction"]').count(), 1, "the inspector creates a real auto layout frame; " + await page.locator("#inspector-content").innerText() + "; toast: " + await page.locator("#toast").textContent() + "; errors: " + errors.join(" | "));
+  await page.locator('[data-layout-prop="spacing"]').fill("32");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0]?.nodes?.some((node) => node.autoLayout?.spacing === 32));
+  const inspectorLayout = await page.evaluate(() => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0];
+    const frame = page.nodes.find((node) => node.autoLayout?.spacing === 32);
+    return { direction: frame.autoLayout.direction, children: page.nodes.filter((node) => node.parentId === frame.id).length };
+  });
+  assert.equal(inspectorLayout.children, 2, "creating auto layout reparents its selected children");
+  assert.ok(["horizontal", "vertical"].includes(inspectorLayout.direction));
+  await page.keyboard.press("Control+z");
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 26, "undo restores the original flat layer hierarchy");
+
   await page.locator("#add-page").click();
   assert.equal(await page.locator("#page-list .page-row").count(), 2, "a design can contain multiple pages");
   assert.equal(await page.locator("#active-page-name").textContent(), "Page 2", "new page becomes active immediately");
@@ -97,6 +114,48 @@ try {
   const stageBox = await page.locator("#design-canvas").boundingBox();
   await page.mouse.click(stageBox.x + stageBox.width / 2, stageBox.y + stageBox.height / 2);
   assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 1, "new page layers are independent");
+  await page.locator('[data-tool="ellipse"]').click();
+  await page.mouse.click(stageBox.x + stageBox.width / 2 + 90, stageBox.y + stageBox.height / 2 + 45);
+  const pageTwoRows = page.locator("#layer-tree .layer-row[data-id]");
+  await pageTwoRows.nth(0).click();
+  await pageTwoRows.nth(1).click({ modifiers: ["Meta"] });
+  await page.keyboard.press("Shift+a");
+  assert.equal(await page.locator('[data-layout-prop="direction"]').count(), 1, "Shift+A creates auto layout from the current multi-selection");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[1]?.nodes?.some((node) => node.autoLayout));
+  const pageTwoId = await page.locator("#page-list .page-row").last().getAttribute("data-page-id");
+  const autoFrame = await page.evaluate((pageId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages.find((item) => item.id === pageId);
+    const frame = page.nodes.find((node) => node.autoLayout);
+    return { id: frame.id, x: frame.x, y: frame.y, w: frame.w, h: frame.h };
+  }, pageTwoId);
+  const childPoint = {
+    x: stageBox.x + (stageBox.width - 1440 * .5) / 2 + (autoFrame.x + autoFrame.w / 2) * .5,
+    y: stageBox.y + (stageBox.height - 1000 * .5) / 2 + (autoFrame.y + autoFrame.h / 2) * .5,
+  };
+  await page.locator('[data-tool="rectangle"]').click();
+  await page.mouse.click(childPoint.x, childPoint.y);
+  await page.waitForFunction((pageId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.find((item) => item.id === pageId);
+    const frame = page?.nodes?.find((node) => node.autoLayout);
+    return frame && page.nodes.filter((node) => node.parentId === frame.id).length === 3;
+  }, pageTwoId);
+  await page.locator("#layer-tree .layer-row[data-id]").evaluateAll((rows, id) => rows.find((row) => row.dataset.id === id)?.click(), autoFrame.id);
+  await page.locator('#inspector-content [data-action="remove-auto-layout"]').click();
+  assert.equal(await page.locator('#inspector-content [data-action="enable-auto-layout"]').count(), 1, "auto layout can be removed from its frame");
+  await page.locator('#inspector-content [data-action="enable-auto-layout"]').click();
+  assert.equal(await page.locator('[data-layout-prop="direction"]').count(), 1, "the inspector can add auto layout to an existing frame");
+  await page.keyboard.press("Control+d");
+  await page.waitForFunction((pageId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.find((item) => item.id === pageId);
+    return page?.nodes?.filter((node) => node.autoLayout).length === 2;
+  }, pageTwoId);
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 8, "duplicating an auto layout frame duplicates its complete child tree");
+  await page.keyboard.press("Delete");
+  await page.waitForFunction((pageId) => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.find((item) => item.id === pageId);
+    return page?.nodes?.filter((node) => node.autoLayout).length === 1;
+  }, pageTwoId);
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 4, "deleting a frame removes its duplicated child tree");
   await page.locator("#page-list .page-row").last().click({ button: "right" });
   const renameDialogPromise = page.waitForEvent("dialog").then(async (dialog) => { assert.equal(dialog.type(), "prompt"); await dialog.accept("Layouts"); });
   await page.locator('#context-menu [data-action="rename-page"]').click();
@@ -105,7 +164,7 @@ try {
   await page.locator("#page-list .page-row").first().click();
   assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 26, "switching pages restores the first page's layer tree");
   await page.locator("#page-list .page-row").last().click();
-  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 1, "switching back restores the new page's own layers");
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 4, "switching back restores the new page's nested auto layout tree");
   await page.locator("#page-list .page-row").first().click();
 
   const photo = makePhoto();
@@ -140,24 +199,33 @@ try {
   const savedProject = JSON.parse(await readFile(await download.path(), "utf8"));
   assert.equal(savedProject.pages.length, 2, "local project export keeps every design page");
   assert.equal(savedProject.assets.length, 2, "local project export carries in-memory image originals");
+  assert.equal(savedProject.pages[1].nodes.filter((node) => node.autoLayout).length, 1, "project files retain auto layout settings");
+  assert.equal(savedProject.pages[1].nodes.filter((node) => node.parentId).length, 3, "project files retain the frame child hierarchy");
   const invalidLayers = savedProject.pages.flatMap((savedPage) => savedPage.nodes.filter((node) => !node || typeof node.id !== "string"
     || !["text", "rect", "ellipse", "frame", "image", "landscape"].includes(node.type)
     || ![node.x, node.y, node.w, node.h].every(Number.isFinite) || node.w <= 0 || node.h <= 0).map((node) => ({ page: savedPage.name, id: node?.id, type: node?.type, x: node?.x, y: node?.y, w: node?.w, h: node?.h })));
   assert.deepEqual(invalidLayers, [], "project export contains only valid editable layers");
+  const malformedProject = structuredClone(savedProject);
+  const malformedFrame = malformedProject.pages[1].nodes.find((node) => node.autoLayout);
+  malformedFrame.parentId = malformedProject.pages[1].nodes.find((node) => node.parentId === malformedFrame.id).id;
+  await page.evaluate(() => document.querySelector("#toast").classList.remove("visible"));
+  await page.locator("#project-input").setInputFiles({ name: "malformed-hierarchy.tstar", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(malformedProject)) });
+  await page.waitForFunction(() => document.querySelector("#toast")?.textContent.includes("invalid frame hierarchy"), null, { timeout: 10_000 });
+  assert.equal(await page.locator("#page-list .page-row").count(), 2, "a malformed nested project is rejected without replacing the current design");
   await page.evaluate(() => document.querySelector("#toast").classList.remove("visible"));
   await page.locator("#project-input").setInputFiles({ name: "round-trip.tstar", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(savedProject)) });
   await page.waitForFunction(() => document.querySelector("#toast")?.classList.contains("visible"), null, { timeout: 10_000 });
   assert.equal(await page.locator("#toast").textContent(), "Local project opened", "project round-trip reports successful open");
   assert.equal(await page.locator("#page-list .page-row").count(), 2, "multi-page local project opens with both pages");
   await page.locator("#page-list .page-row").last().click();
-  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 1, "local project round-trip retains each page's content");
+  assert.equal(await page.locator("#layer-tree .layer-row[data-id]").count(), 4, "local project round-trip restores nested auto layout children");
   await page.locator("#page-list .page-row").last().click({ button: "right" });
   const deleteDialogPromise = page.waitForEvent("dialog").then(async (dialog) => { assert.equal(dialog.type(), "confirm"); await dialog.accept(); });
   await page.locator('#context-menu [data-action="delete-page"]').click();
   await deleteDialogPromise;
   assert.equal(await page.locator("#page-list .page-row").count(), 1, "a page can be removed without deleting another page");
   assert.deepEqual(errors, [], "desktop editor has no console or runtime errors");
-  console.log("  design workspace: canvas transforms and keyboard nudging; independent pages with image-inclusive local project round-trip; WASM edits and multi-image recipe bar");
+  console.log("  design workspace: auto layout hierarchy, canvas transforms, local project integrity, WASM edits and multi-image recipe bar");
   await page.close();
 
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });

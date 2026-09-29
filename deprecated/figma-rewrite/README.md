@@ -1,8 +1,8 @@
 # Tiny Image Star Design
 
-A local-first, Figma-inspired design workspace. The new app is being built from
-scratch; the previous image-editor implementation is preserved under
-[`deprecated/`](deprecated/).
+A local-first, Figma-inspired design workspace. This prototype is archived in
+`deprecated/figma-rewrite/`; the previous image-editor implementation is in
+the parent `deprecated/` folder.
 
 The current foundation has an in-memory canvas document, independent pages,
 editable layers, touch-sized resize handles, keyboard nudging, vector/text
