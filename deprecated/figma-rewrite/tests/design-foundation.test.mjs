@@ -4,6 +4,7 @@ import test from "node:test";
 import { createDefaultDocument, createLayer, resizedBounds, scaleNodesToBounds, selectionBounds } from "../src/model.js";
 import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoLayout, normalizeLayoutSizing } from "../src/layout.js";
 import { hitTestVectorNetwork, normalizeVectorNetwork, rebaseVectorNode, scaleVectorNetwork, vectorNetworkBounds } from "../src/vector.js";
+import { normalizePrototypeInteractions } from "../src/prototype.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -126,6 +127,24 @@ test("vector project data rejects broken edge and fill-loop references", () => {
     segments: [{ start: 0, end: 1 }, { start: 1, end: 2 }, { start: 2, end: 0 }],
     regions: [{ loops: [[0, 2, 1]] }],
   }), /disconnected|open fill loop/);
+});
+
+test("prototype links preserve local navigation and reject missing destinations", () => {
+  const frames = new Set(["home", "details"]);
+  const interactions = normalizePrototypeInteractions([
+    { id: "open-details", trigger: "click", action: "navigate", destinationId: "details" },
+    { id: "go-back", trigger: "hover", action: "back", destinationId: "ignored" },
+  ], frames);
+  assert.deepEqual(interactions, [
+    { id: "open-details", trigger: "click", action: "navigate", destinationId: "details" },
+    { id: "go-back", trigger: "hover", action: "back" },
+  ]);
+  assert.throws(() => normalizePrototypeInteractions([
+    { id: "lost", trigger: "click", action: "navigate", destinationId: "missing" },
+  ], frames), /missing frame/);
+  assert.throws(() => normalizePrototypeInteractions([
+    { id: "broken", trigger: "press", action: "navigate", destinationId: "details" },
+  ], frames), /invalid prototype interaction/);
 });
 
 test("design app is independent of the previous editor and loads the local WASM worker", async () => {

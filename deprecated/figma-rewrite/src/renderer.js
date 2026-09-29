@@ -88,6 +88,7 @@ export class CanvasRenderer {
     this.ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
     this.scale = .5; this.tx = 0; this.ty = 0; this.dpr = 1;
     this.penDraft = null; this.vectorEditId = null; this.selectedVectorVertex = -1;
+    this.previewFrameId = null; this.previewNodeIds = null;
     this.onResize = () => { this.resize(); this.fit(); this.draw(); };
     this.observer = new ResizeObserver(this.onResize); this.observer.observe(stage);
     this.resize(); this.fit();
@@ -129,6 +130,11 @@ export class CanvasRenderer {
   }
   draw(selectedIds = []) {
     const { ctx, width, height, dpr } = this; if (!ctx) return;
+    if (this.previewFrameId) {
+      const frame = this.doc.nodes.find((node) => node.id === this.previewFrameId && node.type === "frame");
+      if (frame) { this.drawPrototypeFrame(frame); return; }
+      this.previewFrameId = null; this.previewNodeIds = null;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
     const { frame } = this.doc;
     ctx.save(); ctx.shadowColor = "#1b1b2424"; ctx.shadowBlur = 22; ctx.shadowOffsetY = 6; ctx.fillStyle = "#fff"; ctx.fillRect(this.tx, this.ty, frame.width * this.scale, frame.height * this.scale); ctx.restore();
@@ -149,10 +155,40 @@ export class CanvasRenderer {
     if (this.penDraft) drawPenDraft(ctx, this.penDraft);
     ctx.restore(); ctx.restore();
   }
+  drawPrototypeFrame(frame) {
+    const { ctx, width, height, dpr } = this;
+    const ids = new Set([frame.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of this.doc.nodes) {
+        if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) { ids.add(node.id); changed = true; }
+      }
+    }
+    this.previewNodeIds = ids;
+    this.scale = Math.max(.01, Math.min(width / Math.max(1, frame.w), height / Math.max(1, frame.h)));
+    this.tx = (width - frame.w * this.scale) / 2 - frame.x * this.scale;
+    this.ty = (height - frame.h * this.scale) / 2 - frame.y * this.scale;
+    this.canvas.dataset.presentationFrame = frame.id;
+    this.canvas.setAttribute("aria-label", `Prototype preview — ${frame.name}. Press Escape to exit.`);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#202127"; ctx.fillRect(0, 0, width, height);
+    ctx.save(); ctx.translate(this.tx, this.ty); ctx.scale(this.scale, this.scale);
+    ctx.save(); ctx.shadowColor = "#0004"; ctx.shadowBlur = Math.min(28, 28 / this.scale); ctx.shadowOffsetY = 8;
+    ctx.fillStyle = "#fff"; ctx.fillRect(frame.x, frame.y, frame.w, frame.h); ctx.restore();
+    paintNode(ctx, frame);
+    ctx.save(); ctx.beginPath(); ctx.rect(frame.x, frame.y, frame.w, frame.h); ctx.clip();
+    for (const node of this.doc.nodes) if (node.id !== frame.id && ids.has(node.id)) paintNode(ctx, node);
+    ctx.restore(); ctx.restore();
+  }
   hitTest(sx, sy) {
     const { x, y } = this.toWorld(sx, sy);
+    if (this.previewFrameId) {
+      const frame = this.doc.nodes.find((node) => node.id === this.previewFrameId && node.type === "frame");
+      if (!frame || x < frame.x || x > frame.x + frame.w || y < frame.y || y > frame.y + frame.h) return null;
+    }
     for (let i = this.doc.nodes.length - 1; i >= 0; i--) {
-      const node = this.doc.nodes[i]; if (node.hidden || node.locked) continue;
+      const node = this.doc.nodes[i]; if (node.hidden || node.locked || (this.previewNodeIds && !this.previewNodeIds.has(node.id))) continue;
       if (node.type === "vector" && !hitTestVectorNetwork(node, { x, y }, 5 / this.scale)) continue;
       if (x >= node.x && x <= node.x + node.w && y >= node.y && y <= node.y + node.h) return node;
     }

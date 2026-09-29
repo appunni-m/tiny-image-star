@@ -1030,6 +1030,50 @@ button:disabled
 {
   background:#f5f5f7
 }
+.add-fill:disabled
+{
+  opacity:.45;
+  cursor:not-allowed
+}
+.prototype-interaction
+{
+  margin:8px 0;
+  padding:7px 6px;
+  border:1px solid #ececf0;
+  border-radius:6px;
+  background:#fafafd
+}
+.prototype-interaction .inspector-row
+{
+  min-height:31px
+}
+.prototype-interaction select
+{
+  max-width:145px;
+  min-width:105px;
+  height:24px;
+  padding:0 5px;
+  border:1px solid #e3e3e8;
+  border-radius:4px;
+  background:#fff;
+  color:#303038;
+  font-size:10px
+}
+.text-button
+{
+  min-height:24px;
+  padding:0 5px;
+  background:transparent;
+  color:#7044ed;
+  font-size:10px
+}
+.prototype-remove
+{
+  width:100%;
+  margin-top:3px;
+  text-align:right;
+  color:#8c8c94
+}
 .fill-color-row
 {
   display:flex;

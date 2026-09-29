@@ -300,6 +300,89 @@ try {
   await phone.locator("#mobile-inspector").click();
   assert.equal(await phone.locator(".app").evaluate((element) => element.classList.contains("show-inspector")), true, "phone can open the design inspector");
   console.log("  mobile workspace: phone-width canvas with reachable layers and inspector panels");
+
+  const prototypePage = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const prototypeProject = {
+    version: 2, title: "Local prototype", activePageId: "prototype-page",
+    pages: [{
+      id: "prototype-page", name: "Prototype", frame: { width: 1440, height: 1000, name: "Page" }, groups: [],
+      nodes: [
+        { id: "screen-a", name: "Screen A", type: "frame", x: 100, y: 100, w: 360, h: 500, fill: "#ffffff", stroke: "#d6d6dc", strokeWidth: 1, opacity: 1, hidden: false, locked: false, flowStartingPoint: true },
+        { id: "home-button", name: "Open details", type: "rect", x: 150, y: 200, w: 180, h: 60, fill: "#744bff", radius: 8, stroke: "", strokeWidth: 0, parentId: "screen-a", opacity: 1, hidden: false, locked: false },
+        { id: "screen-b", name: "Screen B", type: "frame", x: 600, y: 100, w: 360, h: 500, fill: "#f8f1de", stroke: "#d6d6dc", strokeWidth: 1, opacity: 1, hidden: false, locked: false },
+        { id: "details-content", name: "Details content", type: "rect", x: 650, y: 250, w: 200, h: 100, fill: "#66704a", radius: 8, stroke: "", strokeWidth: 0, parentId: "screen-b", opacity: 1, hidden: false, locked: false, prototypeInteractions: [{ id: "details-back", trigger: "click", action: "back" }] },
+      ],
+  }],
+  };
+  prototypePage.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  prototypePage.on("pageerror", (error) => errors.push(error.message));
+  await prototypePage.addInitScript((seed) => localStorage.setItem("tiny-image-star-design-document-v1", JSON.stringify(seed)), prototypeProject);
+  await prototypePage.goto(origin, { waitUntil: "networkidle" });
+  await prototypePage.locator('#layer-tree [data-toggle-node="screen-a"]').click();
+  await prototypePage.locator('#layer-tree .layer-row[data-id="home-button"]').click();
+  await prototypePage.locator('[data-inspector-tab="prototype"]').click();
+  await prototypePage.locator('#inspector-content [data-action="add-prototype-interaction"]').click();
+  await prototypePage.locator('#inspector-content [data-prototype-field="destinationId"]').selectOption("screen-b");
+  await prototypePage.waitForFunction(() => {
+    const page = JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0];
+    return page?.nodes.find((node) => node.id === "home-button")?.prototypeInteractions?.[0]?.destinationId === "screen-b";
+  });
+  await prototypePage.locator("#present-button").click();
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-a");
+  const prototypeHotspot = await prototypePage.evaluate(() => {
+    const stage = document.querySelector("#canvas-stage"); const bounds = stage.getBoundingClientRect();
+    const scale = Math.min(stage.clientWidth / 360, stage.clientHeight / 500);
+    const tx = (stage.clientWidth - 360 * scale) / 2 - 100 * scale;
+    const ty = (stage.clientHeight - 500 * scale) / 2 - 100 * scale;
+    return { x: bounds.left + tx + 240 * scale, y: bounds.top + ty + 230 * scale };
+  });
+  await prototypePage.mouse.click(prototypeHotspot.x, prototypeHotspot.y);
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-b");
+  const detailsHotspot = await prototypePage.evaluate(() => {
+    const stage = document.querySelector("#canvas-stage"); const bounds = stage.getBoundingClientRect();
+    const scale = Math.min(stage.clientWidth / 360, stage.clientHeight / 500);
+    const tx = (stage.clientWidth - 360 * scale) / 2 - 600 * scale;
+    const ty = (stage.clientHeight - 500 * scale) / 2 - 100 * scale;
+    return { x: bounds.left + tx + 750 * scale, y: bounds.top + ty + 300 * scale };
+  });
+  await prototypePage.mouse.click(detailsHotspot.x, detailsHotspot.y);
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-a");
+  await prototypePage.keyboard.press("Escape");
+  await prototypePage.locator('#layer-tree .layer-row[data-id="home-button"]').click();
+  await prototypePage.locator('#inspector-content [data-prototype-field="trigger"]').selectOption("hover");
+  await prototypePage.waitForFunction(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0]?.nodes.find((node) => node.id === "home-button")?.prototypeInteractions?.[0]?.trigger === "hover");
+  await prototypePage.locator("#present-button").click();
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-a");
+  await prototypePage.mouse.move(prototypeHotspot.x, prototypeHotspot.y);
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-b");
+  await prototypePage.mouse.click(detailsHotspot.x, detailsHotspot.y);
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-a");
+  await prototypePage.keyboard.press("Escape");
+  await prototypePage.locator('#layer-tree .layer-row[data-id="screen-b"]').click();
+  await prototypePage.locator('#inspector-content [data-action="set-flow-start"]').click();
+  await prototypePage.waitForFunction(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1") ?? "null")?.pages?.[0]?.nodes.find((node) => node.id === "screen-b")?.flowStartingPoint === true);
+  await prototypePage.locator("#present-button").click();
+  await prototypePage.waitForFunction(() => document.querySelector("#design-canvas").dataset.presentationFrame === "screen-b");
+  await prototypePage.keyboard.press("Escape");
+  assert.equal(await prototypePage.locator(".app").evaluate((element) => element.classList.contains("presenting")), false, "Escape exits local prototype presentation");
+  assert.deepEqual(await prototypePage.evaluate(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0].nodes.find((node) => node.id === "home-button").prototypeInteractions.map(({ trigger, action, destinationId }) => ({ trigger, action, destinationId }))), [
+    { trigger: "hover", action: "navigate", destinationId: "screen-b" },
+  ], "local click connections persist in the design");
+  assert.deepEqual(errors, [], "prototype editor and preview have no runtime errors");
+  console.log("  local prototyping: frame interactions persist and navigate in presentation mode");
+  await prototypePage.locator("#file-menu-button").click();
+  const prototypeDownloadPromise = prototypePage.waitForEvent("download");
+  await prototypePage.locator('#file-menu [data-action="save-file"]').click();
+  const prototypeDownload = await prototypeDownloadPromise;
+  const savedPrototype = JSON.parse(await readFile(await prototypeDownload.path(), "utf8"));
+  assert.equal(savedPrototype.pages[0].nodes.find((node) => node.id === "home-button").prototypeInteractions[0].destinationId, "screen-b", "project export includes local prototype connections");
+  const invalidPrototype = structuredClone(savedPrototype);
+  invalidPrototype.pages[0].nodes.find((node) => node.id === "home-button").prototypeInteractions[0].destinationId = "missing-screen";
+  await prototypePage.evaluate(() => document.querySelector("#toast").classList.remove("visible"));
+  await prototypePage.locator("#project-input").setInputFiles({ name: "invalid-prototype.tstar", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(invalidPrototype)) });
+  await prototypePage.waitForFunction(() => document.querySelector("#toast")?.textContent.includes("missing frame"));
+  assert.equal(await prototypePage.evaluate(() => JSON.parse(localStorage.getItem("tiny-image-star-design-document-v1")).pages[0].nodes.find((node) => node.id === "home-button").prototypeInteractions[0].destinationId), "screen-b", "a broken imported connection is rejected without replacing the current design");
+  await prototypePage.close();
 } finally {
   await browser.close();
   await new Promise((resolveClose) => server.close(resolveClose));

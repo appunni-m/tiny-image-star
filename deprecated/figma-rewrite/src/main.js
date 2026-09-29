@@ -3,6 +3,7 @@ import { createAutoLayout, inferAutoLayout, layoutAutoLayoutTree, normalizeAutoL
 import { CanvasRenderer } from "./renderer.js";
 import { PillowWorkerPool } from "./image-engine.js";
 import { normalizeVectorNetwork, rebaseVectorNode, scaleVectorNetwork, vectorNetworkBounds } from "./vector.js";
+import { normalizePrototypeInteractions } from "./prototype.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -59,6 +60,7 @@ const renderer = new CanvasRenderer(canvas, stage, model);
 let selectedIds = new Set(model.nodes.some((node) => node.id === "hero-heading") ? ["hero-heading"] : []);
 let activeTool = "select";
 let activeLeftTab = "layers";
+let activeInspectorTab = "design";
 let frameExpanded = true;
 let expandedGroups = new Set(model.groups.map((group) => group.id));
 let expandedAutoFrames = new Set();
@@ -79,6 +81,8 @@ let assetsFilter = "";
 let penDraft = null;
 let vectorEditId = null;
 let selectedVectorVertex = -1;
+let presentationHistory = [];
+let lastPrototypeHoverId = null;
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -278,7 +282,38 @@ function autoLayoutControls(node) {
   const numeric = (label, key, value) => `<div class="prop-field"><label>${label}</label><input type="number" min="0" max="1000" step="1" data-layout-prop="${key}" value="${Number(value) || 0}" aria-label="${label}"></div>`;
   return `${section("Auto layout", `${inspectorSelect("Flow", "direction", layout.direction, [["horizontal", "Horizontal"], ["vertical", "Vertical"]])}${inspectorSelect("Align", "align", layout.align, [["start", "Start"], ["center", "Center"], ["end", "End"], ["stretch", "Stretch"]])}${inspectorSelect("Distribute", "justify", layout.justify, [["start", "Start"], ["center", "Center"], ["end", "End"], ["space-between", "Space between"]])}${inspectorSelect("Primary sizing", "primarySizing", layout.primarySizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}${inspectorSelect("Counter sizing", "counterSizing", layout.counterSizing, [["hug", "Hug contents"], ["fixed", "Fixed"]])}<div class="inspector-grid">${numeric("Spacing", "spacing", layout.spacing)}${numeric("Top padding", "padding.top", layout.padding.top)}${numeric("Right padding", "padding.right", layout.padding.right)}${numeric("Bottom padding", "padding.bottom", layout.padding.bottom)}${numeric("Left padding", "padding.left", layout.padding.left)}</div>`)}<button type="button" class="add-fill remove-auto-layout" data-action="remove-auto-layout">Remove auto layout</button>`;
 }
+function renderPrototypeInspector() {
+  const nodes = selectedNodes();
+  if (nodes.length !== 1) {
+    inspector.innerHTML = '<div class="inspector-empty"><div><strong>Prototype interactions</strong>Select one layer to add a click or hover transition. Connections stay in this local design file.</div></div>';
+    return;
+  }
+  const node = nodes[0];
+  const frames = model.nodes.filter((item) => item.type === "frame" && !item.hidden);
+  const sourceFrame = node.type === "frame" ? node : frameForNode(node);
+  const destinations = frames.filter((item) => item.id !== sourceFrame?.id);
+  const interactions = Array.isArray(node.prototypeInteractions) ? node.prototypeInteractions : [];
+  const startingFrame = frames.find((frame) => frame.flowStartingPoint) ?? frames[0];
+  const flow = node.type === "frame"
+    ? '<div class="inspector-row"><span>' + (startingFrame?.id === node.id ? "Starting frame" : "Flow") + '</span><button type="button" class="text-button" data-action="set-flow-start">' + (startingFrame?.id === node.id ? "Starting point ✓" : "Set as starting point") + '</button></div>'
+    : '<p class="inspector-note">In Present, this layer can open another frame. The flow starts at “' + escapeHtml(startingFrame?.name ?? "Page") + '”.</p>';
+  const rows = interactions.map((interaction, index) => {
+    const destinationOptions = destinations.map((frame) => '<option value="' + escapeHtml(frame.id) + '" ' + (interaction.destinationId === frame.id ? "selected" : "") + ">" + escapeHtml(frame.name) + "</option>").join("");
+    return '<div class="prototype-interaction">'
+      + '<div class="inspector-row"><span>Trigger</span><select data-prototype-field="trigger" data-prototype-index="' + index + '" aria-label="Interaction trigger"><option value="click" ' + (interaction.trigger === "click" ? "selected" : "") + '>On click</option><option value="hover" ' + (interaction.trigger === "hover" ? "selected" : "") + '>On hover</option></select></div>'
+      + '<div class="inspector-row"><span>Action</span><select data-prototype-field="action" data-prototype-index="' + index + '" aria-label="Interaction action"><option value="navigate" ' + (interaction.action === "navigate" ? "selected" : "") + '>Navigate to</option><option value="back" ' + (interaction.action === "back" ? "selected" : "") + '>Back</option></select></div>'
+      + (interaction.action === "navigate" ? '<div class="inspector-row"><span>Destination</span><select data-prototype-field="destinationId" data-prototype-index="' + index + '" aria-label="Interaction destination"><option value="">Choose a frame</option>' + destinationOptions + "</select></div>" : "")
+      + '<button type="button" class="prototype-remove text-button" data-action="remove-prototype-interaction" data-prototype-index="' + index + '">Remove interaction</button></div>';
+  }).join("");
+  const emptyHint = destinations.length
+    ? '<p class="inspector-note">Add a connection, then click this layer in Present to follow it.</p>'
+    : '<p class="inspector-note">Create another frame before adding a navigation destination.</p>';
+  const addButton = '<button type="button" class="add-fill" data-action="add-prototype-interaction" ' + (destinations.length ? "" : "disabled") + '>＋ Add interaction</button>';
+  inspector.innerHTML = section("Flow", flow) + section("Interactions", (rows || emptyHint) + addButton);
+}
 function renderInspector() {
+  $$("[data-inspector-tab]").forEach((button) => button.classList.toggle("active", button.dataset.inspectorTab === activeInspectorTab));
+  if (activeInspectorTab === "prototype") { renderPrototypeInspector(); return; }
   const nodes = selectedNodes();
   if (!nodes.length) {
     inspector.innerHTML = `<div class="inspector-empty"><div><strong>Nothing selected</strong>Select a layer on the canvas or in the left panel to edit its design properties.</div></div>`;
@@ -318,6 +353,73 @@ function renderInspector() {
   const opacity = Math.round((node.opacity ?? 1) * 100);
   html += section("Layer", `<div class="inspector-inline"><label>Opacity</label><input type="range" data-prop="opacity" min="0" max="100" value="${opacity}" aria-label="Opacity"><output>${opacity}%</output></div><div class="inspector-row"><span>Blend mode</span><select data-prop="blendMode" aria-label="Blend mode"><option value="normal">Normal</option><option value="multiply" ${node.blendMode === "multiply" ? "selected" : ""}>Multiply</option><option value="screen" ${node.blendMode === "screen" ? "selected" : ""}>Screen</option></select></div>`);
   inspector.innerHTML = html;
+}
+
+function addPrototypeInteraction() {
+  const node = primaryNode();
+  const sourceFrame = node?.type === "frame" ? node : node ? frameForNode(node) : null;
+  const destination = model.nodes.find((item) => item.type === "frame" && !item.hidden && item.id !== sourceFrame?.id);
+  if (!node || !destination) { toast("Create another frame before adding a navigation interaction"); return; }
+  pushHistory();
+  node.prototypeInteractions ??= [];
+  node.prototypeInteractions.push({ id: makeId("interaction"), trigger: "click", action: "navigate", destinationId: destination.id });
+  renderInspector(); scheduleSave();
+}
+function updatePrototypeInteraction(event) {
+  const field = event.target.dataset.prototypeField;
+  if (!field) return;
+  const node = primaryNode(); const index = Number(event.target.dataset.prototypeIndex);
+  const interaction = node?.prototypeInteractions?.[index];
+  if (!interaction || !["trigger", "action", "destinationId"].includes(field)) return;
+  pushHistory(); interaction[field] = event.target.value; renderInspector(); scheduleSave();
+}
+function setFlowStartingPoint(frame) {
+  if (frame?.type !== "frame") return;
+  pushHistory();
+  for (const candidate of model.nodes) if (candidate.type === "frame") candidate.flowStartingPoint = candidate.id === frame.id;
+  renderAll(); scheduleSave();
+}
+function stopPresentation() {
+  app.classList.remove("presenting");
+  renderer.previewFrameId = null; renderer.previewNodeIds = null;
+  delete canvas.dataset.presentationFrame;
+  canvas.setAttribute("aria-label", "Interactive design canvas");
+  renderer.fit(); renderer.draw([...selectedIds]);
+}
+function startPresentation() {
+  if (app.classList.contains("presenting")) { stopPresentation(); return; }
+  const frame = model.nodes.find((node) => node.type === "frame" && !node.hidden && !node.locked && node.flowStartingPoint)
+    ?? model.nodes.find((node) => node.type === "frame" && !node.hidden);
+  presentationHistory = []; lastPrototypeHoverId = null;
+  vectorEditId = null; selectedVectorVertex = -1; renderer.vectorEditId = null;
+  renderer.previewFrameId = frame?.id ?? null; renderer.previewNodeIds = null;
+  app.classList.add("presenting");
+  requestAnimationFrame(() => { renderer.resize(); if (!frame) renderer.fit(); renderer.draw([]); });
+}
+function followPrototype(target, trigger) {
+  let node = target;
+  while (node) {
+    const interaction = (node.prototypeInteractions ?? []).find((item) => item.trigger === trigger);
+    if (interaction) {
+      if (interaction.action === "back") {
+        const previous = presentationHistory.pop();
+        if (previous === null) {
+          renderer.previewFrameId = null; renderer.previewNodeIds = null; renderer.fit(); renderer.draw([]);
+        } else if (previous && model.nodes.some((item) => item.id === previous && item.type === "frame")) {
+          renderer.previewFrameId = previous; renderer.draw([]);
+        }
+      } else if (interaction.action === "navigate") {
+        const destination = nodeById(interaction.destinationId);
+        if (destination?.type === "frame" && !destination.hidden) {
+          presentationHistory.push(renderer.previewFrameId);
+          renderer.previewFrameId = destination.id; renderer.draw([]);
+        }
+      }
+      return true;
+    }
+    node = node.parentId ? nodeById(node.parentId) : null;
+  }
+  return false;
 }
 
 function renderLayers() {
@@ -612,11 +714,18 @@ async function openProjectFile(file) {
           delete node.layoutSizing;
         }
       }
+      const frameIds = new Set(restoredNodes.filter((item) => item.type === "frame").map((item) => item.id));
       for (const node of restoredNodes) {
         const seen = new Set([node.id]); let parent = node.parentId ? restoredById.get(node.parentId) : null;
         while (parent) {
           if (seen.has(parent.id)) throw new Error("The project contains a circular frame hierarchy");
           seen.add(parent.id); parent = parent.parentId ? restoredById.get(parent.parentId) : null;
+        }
+        if (node.prototypeInteractions != null) {
+          node.prototypeInteractions = normalizePrototypeInteractions(node.prototypeInteractions, frameIds);
+        }
+        if (node.flowStartingPoint != null && (typeof node.flowStartingPoint !== "boolean" || (node.flowStartingPoint && node.type !== "frame"))) {
+          throw new Error("The project contains an invalid prototype starting point");
         }
       }
       for (const frame of restoredNodes.filter((node) => node.autoLayout)) layoutAutoLayoutTree(restoredNodes, frame);
@@ -980,7 +1089,12 @@ function selectLayerFromTarget(target, event) {
 function stagePoint(event) { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; }
 canvas.addEventListener("pointerdown", (event) => {
   if (event.button !== 0 && event.button !== 1) return;
-  const point = stagePoint(event); const hit = renderer.hitTest(point.x, point.y);
+  const point = stagePoint(event);
+  if (app.classList.contains("presenting")) {
+    if (event.button === 0) followPrototype(renderer.hitTest(point.x, point.y), "click");
+    return;
+  }
+  const hit = renderer.hitTest(point.x, point.y);
   if (spaceHeld || activeTool === "hand" || event.button === 1) {
     pointerState = { kind: "pan", pointerId: event.pointerId, start: point, tx: renderer.tx, ty: renderer.ty };
     canvas.setPointerCapture(event.pointerId); canvas.classList.add("canvas-grabbing"); return;
@@ -1055,6 +1169,14 @@ canvas.addEventListener("pointerdown", (event) => {
 canvas.addEventListener("pointermove", (event) => {
   const point = stagePoint(event); const world = renderer.toWorld(point.x, point.y);
   $("#cursor-position").textContent = `X ${Math.round(world.x)}   Y ${Math.round(world.y)}`;
+  if (app.classList.contains("presenting")) {
+    const target = renderer.hitTest(point.x, point.y);
+    if ((target?.id ?? null) !== lastPrototypeHoverId) {
+      lastPrototypeHoverId = target?.id ?? null;
+      if (target) followPrototype(target, "hover");
+    }
+    return;
+  }
   if (!pointerState || pointerState.pointerId !== event.pointerId) return;
   if (pointerState.kind === "pan") { renderer.tx = pointerState.tx + point.x - pointerState.start.x; renderer.ty = pointerState.ty + point.y - pointerState.start.y; renderer.draw([...selectedIds]); }
   else if (pointerState.kind === "move") {
@@ -1101,6 +1223,7 @@ canvas.addEventListener("pointermove", (event) => {
     renderer.draw([...selectedIds]);
   }
 });
+canvas.addEventListener("pointerleave", () => { lastPrototypeHoverId = null; });
 canvas.addEventListener("pointerup", (event) => {
   if (!pointerState || pointerState.pointerId !== event.pointerId) return;
   if (pointerState.kind === "pan") canvas.classList.remove("canvas-grabbing");
@@ -1130,6 +1253,7 @@ canvas.addEventListener("pointercancel", () => {
   pointerState = null;
 });
 canvas.addEventListener("contextmenu", (event) => {
+  if (app.classList.contains("presenting")) { event.preventDefault(); return; }
   event.preventDefault(); const point = stagePoint(event); const hit = renderer.hitTest(point.x, point.y); showContextMenu(event.clientX, event.clientY, hit);
 });
 canvas.addEventListener("wheel", (event) => {
@@ -1148,10 +1272,13 @@ $("#page-list").addEventListener("contextmenu", (event) => {
   const button = event.target.closest(".page-row[data-page-id]"); if (!button) return;
   event.preventDefault(); showPageContextMenu(button.dataset.pageId);
 });
-inspector.addEventListener("focusin", beginInspectorEdit);
+inspector.addEventListener("focusin", () => { if (activeInspectorTab === "design") beginInspectorEdit(); });
 inspector.addEventListener("input", updateProperties);
-inspector.addEventListener("change", (event) => { updateProperties(event); commitInspectorEdit(); });
-inspector.addEventListener("focusout", (event) => { if (event.target.matches("input,textarea,select")) setTimeout(commitInspectorEdit, 0); });
+inspector.addEventListener("change", (event) => {
+  if (activeInspectorTab === "prototype") { updatePrototypeInteraction(event); return; }
+  updateProperties(event); commitInspectorEdit();
+});
+inspector.addEventListener("focusout", (event) => { if (activeInspectorTab === "design" && event.target.matches("input,textarea,select")) setTimeout(commitInspectorEdit, 0); });
 contextMenu.addEventListener("click", contextAction);
 imageInput.addEventListener("change", () => { placeImageFiles(imageInput.files); imageInput.value = ""; });
 $("#doc-title").addEventListener("input", () => { project.title = $("#doc-title").value; scheduleSave(); document.title = `${project.title} — Tiny Image Star`; });
@@ -1178,7 +1305,7 @@ $("#file-menu").addEventListener("click", async (event) => {
 });
 $("#project-input").addEventListener("change", () => { const file = $("#project-input").files?.[0]; if (file) openProjectFile(file); $("#project-input").value = ""; });
 $("#export-button").addEventListener("click", exportFrame);
-$("#present-button").addEventListener("click", () => { app.classList.toggle("presenting"); renderer.fit(); renderer.draw([...selectedIds]); });
+$("#present-button").addEventListener("click", startPresentation);
 $("#zoom-in").addEventListener("click", () => { renderer.zoomAt(1.2); renderAll(); });
 $("#zoom-out").addEventListener("click", () => { renderer.zoomAt(.83); renderAll(); });
 $("#fit-canvas").addEventListener("click", () => { renderer.fit(); renderAll(); });
@@ -1209,10 +1336,16 @@ $("#inspector-content").addEventListener("click", (event) => {
   else if (action === "enable-auto-layout") enableFrameAutoLayout(primaryNode());
   else if (action === "remove-auto-layout") removeFrameAutoLayout(primaryNode());
   else if (action === "edit-vector") vectorEditId === primaryNode()?.id ? exitVectorEdit() : enterVectorEdit();
+  else if (action === "add-prototype-interaction") addPrototypeInteraction();
+  else if (action === "remove-prototype-interaction") {
+    const node = primaryNode(); const index = Number(event.target.closest("[data-prototype-index]")?.dataset.prototypeIndex);
+    if (!node || !Number.isInteger(index) || !node.prototypeInteractions?.[index]) return;
+    pushHistory(); node.prototypeInteractions.splice(index, 1); renderInspector(); scheduleSave();
+  } else if (action === "set-flow-start") setFlowStartingPoint(primaryNode());
 });
 $(".inspector-tabs").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-inspector-tab]"); if (!button || button.dataset.inspectorTab === "design") return;
-  toast("Prototype connections need a local interaction model; they are part of the next implementation slice.");
+  const button = event.target.closest("[data-inspector-tab]"); if (!button) return;
+  activeInspectorTab = button.dataset.inspectorTab; renderInspector();
 });
 $("#search-button").addEventListener("click", () => { $("#layer-search-box").hidden = false; $("#layer-filter").focus(); });
 $("#local-status").addEventListener("click", () => toast("This workspace stores the design locally. Image decoding and adjustment run in local WebAssembly."));
@@ -1223,6 +1356,10 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".file-menu-wrap")) { $("#file-menu").hidden = true; $("#file-menu-button").setAttribute("aria-expanded", "false"); }
 });
 document.addEventListener("keydown", (event) => {
+  if (app.classList.contains("presenting")) {
+    if (event.key === "Escape") { event.preventDefault(); stopPresentation(); }
+    return;
+  }
   if (event.code === "Space" && !event.target.matches("input,textarea,select")) { spaceHeld = true; event.preventDefault(); }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") { event.preventDefault(); redo(); return; }
@@ -1231,6 +1368,7 @@ document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#layer-search-box").hidden = false; $("#layer-filter").focus(); return; }
   if (event.key === "Escape") {
     hideContextMenu();
+    if (app.classList.contains("presenting")) { stopPresentation(); return; }
     if (penDraft) { finishPenPath(false); return; }
     if (vectorEditId) { exitVectorEdit(); return; }
     app.classList.remove("presenting", "show-layers", "show-inspector"); recipeDialog.open && recipeDialog.close();
@@ -1251,6 +1389,7 @@ document.addEventListener("keydown", (event) => {
   if (keys[event.key.toLowerCase()]) setTool(keys[event.key.toLowerCase()]);
 });
 canvas.addEventListener("dblclick", (event) => {
+  if (app.classList.contains("presenting")) return;
   const point = stagePoint(event); const node = renderer.hitTest(point.x, point.y);
   if (node?.type === "vector") { event.preventDefault(); enterVectorEdit(node); }
 });
