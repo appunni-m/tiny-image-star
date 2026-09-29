@@ -414,7 +414,13 @@ function textSection(node) {
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
   const textFit = node.textFit || 'auto-height';
-  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div class="image-properties-note">Auto height wraps to the box width. Auto width expands to fit each line.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const fontFamilies = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Georgia, serif', 'monospace', 'system-ui, sans-serif', 'Verdana, sans-serif', 'Trebuchet MS, sans-serif', 'Times New Roman, serif', 'Courier New, monospace'];
+  const familyOptions = fontFamilies.map(family => `<option value="${escapeHtml(family)}"></option>`).join('');
+  const weightOptions = [[100, 'Thin'], [200, 'Extra light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi bold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']]
+    .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
+  const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
+    .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   return section('Typography', body);
 }
 function frameVariableModesSection(frame) {
@@ -1483,9 +1489,13 @@ function updateImageFillInput(input) {
 function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
   if (!input || !selectedNodes().length) return;
-  if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const prop = input.dataset.prop;
-  const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' ? Number(input.value) : input.value;
+  if (prop === 'fontFamily' && !input.value.trim()) {
+    if (event.type === 'change') input.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
+    return;
+  }
+  if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
+  const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
   const propertyValue = prop === 'opacity' ? value / 100 : value;
   if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
@@ -1561,7 +1571,7 @@ function updateInspectorInput(event) {
     }
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
-    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'text', 'width'].includes(prop)) {
+    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'text', 'width'].includes(prop)) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
@@ -2866,6 +2876,11 @@ function initEvents() {
     if (guideField) { updateLayoutGuide(guideField, true); return; }
     const exportField = event.target.closest('[data-export-field]');
     if (exportField) { updateExportSetting(exportField); return; }
+    if (event.target.matches('[data-prop="fontFamily"]') && !event.target.value.trim()) {
+      event.target.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
+      finishInspectorInput();
+      return;
+    }
     if (event.target.matches('[data-prop]')) finishInspectorInput();
     if (event.target.matches('[data-variable-binding]')) applyColorVariableToSelection(event.target.value, event.target.dataset.variableBinding);
     if (event.target.matches('[data-variable-property-binding]')) applyVariablePropertyToSelection(event.target.dataset.variablePropertyBinding, event.target.value);

@@ -683,6 +683,25 @@ try {
 
   dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
   dispatchClick(app.querySelector(`[data-layer-id="${variableHeading.id}"]`));
+  const familyControl = app.querySelector('[data-prop="fontFamily"]');
+  const weightControl = app.querySelector('[data-prop="fontWeight"]');
+  const styleControl = app.querySelector('[data-prop="fontStyle"]');
+  assert(familyControl?.tagName === 'INPUT' && familyControl.list?.options.length >= 8, 'the text Inspector did not offer an editable font family with useful presets');
+  assert(weightControl && [100, 200, 300, 400, 500, 600, 700, 800, 900].every(weight => [...weightControl.options].some(option => Number(option.value) === weight)), 'the text Inspector did not offer the complete font-weight scale');
+  assert(styleControl && [...styleControl.options].some(option => option.value === 'italic'), 'the text Inspector did not offer italic styling');
+  const textInspector = app.querySelector('#right-panel').getBoundingClientRect();
+  assert(familyControl.getBoundingClientRect().right <= textInspector.right, 'the custom font family control overflowed the Inspector');
+  if (app.defaultView.matchMedia('(max-width: 820px)').matches) assert(familyControl.getBoundingClientRect().height >= 40, 'the phone font-family field is below the 40px touch target');
+  const originalFamily = familyControl.value;
+  familyControl.value = ''; familyControl.dispatchEvent(new Event('input', { bubbles: true })); familyControl.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(familyControl.value === originalFamily, 'clearing the font field should restore its previous valid family');
+  familyControl.value = 'Georgia, serif'; familyControl.dispatchEvent(new Event('input', { bubbles: true })); familyControl.dispatchEvent(new Event('change', { bubbles: true }));
+  weightControl.value = '800'; weightControl.dispatchEvent(new Event('input', { bubbles: true })); weightControl.dispatchEvent(new Event('change', { bubbles: true }));
+  styleControl.value = 'italic'; styleControl.dispatchEvent(new Event('input', { bubbles: true })); styleControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'expanded typography controls');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableHeading = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
+  assert(savedVariableHeading.fontFamily === 'Georgia, serif' && savedVariableHeading.fontWeight === 800 && savedVariableHeading.fontStyle === 'italic', 'custom family, heavy weight, or italic style did not persist');
   const textBinding = app.querySelector('[data-variable-property-binding="text"]');
   textBinding.value = actionText.id; textBinding.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'text variable binding autosave');

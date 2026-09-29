@@ -40,6 +40,20 @@ test('component blend-mode overrides validate with the component property schema
   assert.throws(() => validateDocument(document), /Invalid component blend mode override/);
 });
 
+test('component text typography overrides validate with the component property schema', () => {
+  const document = createDocument();
+  const main = createNode('text', { text: 'Label' });
+  addNode(document, main);
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  const sourceId = instanceNode.componentSourceId;
+  instanceNode.componentOverrides[sourceId] = { fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic' };
+  assert.equal(validateDocument(document), true);
+  instanceNode.componentOverrides[sourceId].fontStyle = 'oblique';
+  assert.throws(() => validateDocument(document), /Invalid component font style override/);
+});
+
 test('main component edits synchronize while preserving instance placement and stable layer identities', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Card', width: 220, height: 120 });

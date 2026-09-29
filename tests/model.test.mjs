@@ -85,6 +85,29 @@ test('layer blend modes validate and survive local design serialization', () => 
   assert.throws(() => validateDocument(reopened), /Invalid blend mode/);
 });
 
+test('text typography supports system font names, the full weight range, and italic style', () => {
+  const document = createDocument();
+  const text = createNode('text', { text: 'Readable design', fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic' });
+  addNode(document, text);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reopened), true);
+  assert.deepEqual(
+    (({ fontFamily, fontWeight, fontStyle }) => ({ fontFamily, fontWeight, fontStyle }))(reopened.pages[0].children[0]),
+    { fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic' }
+  );
+  reopened.pages[0].children[0].fontWeight = 1001;
+  assert.throws(() => validateDocument(reopened), /Invalid font weight/);
+  reopened.pages[0].children[0].fontWeight = 800;
+  reopened.pages[0].children[0].fontStyle = 'oblique';
+  assert.throws(() => validateDocument(reopened), /Invalid font style/);
+  reopened.pages[0].children[0].fontStyle = 'italic';
+  reopened.pages[0].children[0].fontFamily = '   ';
+  assert.throws(() => validateDocument(reopened), /Invalid font family/);
+  const legacy = createDocument();
+  addNode(legacy, createNode('text', { fontWeight: '600' }));
+  assert.equal(validateDocument(legacy), true, 'previous saves stored select values as numeric strings');
+});
+
 test('history restores both document direction and redo state', () => {
   const document = createDocument();
   const history = new History();

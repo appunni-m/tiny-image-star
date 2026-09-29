@@ -120,3 +120,16 @@ test('Inspect output exposes blend modes in generated CSS and structured layer d
   assert.match(output.css, /mix-blend-mode: soft-light;/);
   assert.equal(output.layers[0].blendMode, 'soft-light');
 });
+
+test('Inspect output exports custom font fallbacks, weights, and italic text style', () => {
+  const document = createDocument();
+  const node = createNode('text', { text: 'Readable', fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic' });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.match(output.css, /font-family: "Atkinson Hyperlegible", sans-serif;/);
+  assert.match(output.css, /font-weight: 800;/);
+  assert.match(output.css, /font-style: italic;/);
+  assert.deepEqual(output.layers[0].typography, {
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left'
+  });
+});

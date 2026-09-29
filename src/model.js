@@ -41,6 +41,11 @@ function isVariableBindingValue(property, value) {
   return true;
 }
 
+function isValidFontWeight(value) {
+  const weight = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
+}
+
 export function createId(prefix = 'id') {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${id}`;
@@ -76,7 +81,7 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
@@ -93,7 +98,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'color', 'textStyleId', 'align', 'textFit', 'fit', 'adjustments', 'constraints', 'autoLayout',
+  'letterSpacing', 'fontStyle', 'color', 'textStyleId', 'align', 'textFit', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -1319,6 +1324,9 @@ export function validateDocument(document) {
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
+      if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
+      if (node.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(node.fontWeight))) throw new TypeError(`Invalid font weight on layer ${node.name || node.id}.`);
+      if (node.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(node.fontStyle))) throw new TypeError(`Invalid font style on layer ${node.name || node.id}.`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
@@ -1408,6 +1416,9 @@ export function validateDocument(document) {
           if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
           if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
+          if (overrides.fontFamily != null && (node.type !== 'text' || typeof overrides.fontFamily !== 'string' || !overrides.fontFamily.trim() || overrides.fontFamily.length > 160 || /[\x00-\x1f]/.test(overrides.fontFamily))) throw new TypeError(`Invalid component font family override on ${node.name || node.id}.`);
+          if (overrides.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(overrides.fontWeight))) throw new TypeError(`Invalid component font weight override on ${node.name || node.id}.`);
+          if (overrides.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(overrides.fontStyle))) throw new TypeError(`Invalid component font style override on ${node.name || node.id}.`);
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
         }
       }

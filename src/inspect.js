@@ -15,6 +15,16 @@ function cssString(value) {
   })}"`;
 }
 
+const genericFontFamilies = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'emoji', 'math', 'fangsong']);
+
+function cssFontFamily(value) {
+  return String(value || 'Arial, sans-serif').split(',').map(entry => {
+    const family = entry.trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (!family) return '';
+    return genericFontFamilies.has(family.toLowerCase()) ? family.toLowerCase() : cssString(family);
+  }).filter(Boolean).join(', ');
+}
+
 function cssIdentifier(value) {
   const token = String(value || 'layer').normalize('NFKD').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
   return token || 'layer';
@@ -103,9 +113,10 @@ function cssForEntry(document, entry) {
     const color = cssColor(getNodeColor(document, node, 'text'));
     if (color) declarations.push(`color: ${color};`);
     declarations.push(
-      `font-family: ${cssString(node.fontFamily || 'Arial, sans-serif')};`,
+      `font-family: ${cssFontFamily(node.fontFamily)};`,
       `font-size: ${number(fontSize)}px;`,
       `font-weight: ${number(node.fontWeight || 400)};`,
+      `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
       `line-height: ${number(fontSize * lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`
@@ -165,6 +176,7 @@ function summaryForEntry(document, entry) {
       fontFamily: node.fontFamily,
       fontSize: getNodePropertyValue(document, node, 'fontSize'),
       fontWeight: node.fontWeight,
+      fontStyle: node.fontStyle || 'normal',
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
       align: node.align
