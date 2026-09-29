@@ -63,6 +63,7 @@ export function synchronizeComponentInstances(project, { beforeProject = null, c
   if (trackOverrides) for (const id of changedNodeIds) {
     const before = beforeProject?.nodes[id], node = project.nodes[id];
     if (!node?.componentSourceNodeId || !before || !project.nodes[node.componentSourceNodeId]) continue;
+    if (before.componentSourceNodeId !== node.componentSourceNodeId || before.componentInstanceOf !== node.componentInstanceOf) continue;
     const source = project.nodes[node.componentSourceNodeId], overrides = new Set(node.componentOverrides ?? []);
     for (const field of COMPONENT_SYNC_FIELDS) {
       if (canonicalJSON(before[field]) === canonicalJSON(node[field])) continue;
@@ -477,10 +478,10 @@ export function validateProject(project) {
       if (patch.text != null) check(typeof patch.text === "string" && patch.text.length <= 5000, "Invalid local caption.");
     }
   }
-  const componentDefinitions = new Map(), componentInstanceMembers = new Map();
+  const componentDefinitions = new Map(), componentInstanceMembers = new Map(), componentSets = new Map();
   for (const [id, node] of Object.entries(project.nodes)) {
-      keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "gridPlacement", "gridAlignment", "componentDefinition", "componentInstanceOf", "componentSourceNodeId", "componentOverrides", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
-    check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
+      keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "layoutMinMax", "gridPlacement", "gridAlignment", "componentDefinition", "componentInstanceOf", "componentSourceNodeId", "componentOverrides", "componentSetId", "componentSetName", "variantProperties", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+      check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.componentDefinition != null) {
       check(node.componentDefinition === true && node.space === "slide" && node.componentInstanceOf == null && node.componentSourceNodeId == null,
         "Invalid component definition.");
@@ -492,6 +493,16 @@ export function validateProject(project) {
       }
       componentDefinitions.set(node.id, [node.id]);
     }
+    if (node.componentSetId != null) {
+      check(node.componentDefinition === true && identifier(node.componentSetId) && typeof node.componentSetName === "string"
+        && Boolean(node.componentSetName.trim()) && node.componentSetName.length <= 120, "Invalid component set.");
+      check(object(node.variantProperties) && Object.keys(node.variantProperties).length > 0 && Object.keys(node.variantProperties).length <= 20,
+        "A component variant needs bounded properties.");
+      for (const [name, value] of Object.entries(node.variantProperties))
+        check(/^[A-Za-z][A-Za-z0-9 _-]{0,79}$/.test(name) && typeof value === "string" && Boolean(value.trim()) && value.length <= 120,
+          "Invalid component variant property.");
+      componentSets.set(node.componentSetId, [...(componentSets.get(node.componentSetId) ?? []), node]);
+    } else check(node.componentSetName == null && node.variantProperties == null, "Variant properties require a component set.");
     if (node.componentInstanceOf != null) {
       const source = project.nodes[node.componentInstanceOf];
       check(node.space === "slide" && source?.componentDefinition === true && node.componentSourceNodeId === source.id,
@@ -688,6 +699,13 @@ export function validateProject(project) {
     check(sourceIds.length === expected.length && new Set(sourceIds).size === expected.length
       && expected.every((sourceId) => sourceIds.includes(sourceId)),
     "A component instance must contain every definition layer exactly once.");
+  }
+  for (const variants of componentSets.values()) {
+    const first = variants[0], propertyNames = Object.keys(first.variantProperties).sort(), combinations = variants.map((node) => canonicalJSON(node.variantProperties));
+    check(variants.length >= 2 && new Set(combinations).size === variants.length
+      && variants.every((node) => node.componentSetName === first.componentSetName
+        && canonicalJSON(Object.keys(node.variantProperties).sort()) === canonicalJSON(propertyNames)),
+    "A component set needs matching properties and unique variant combinations.");
   }
   for (const slide of project.slides) for (const id of slide.nodeIds) {
     const parent = project.nodes[id], layout = parent?.kind === "frame" ? parent.style?.layout : null;

@@ -68,6 +68,7 @@ export function createDesignView() {
         </div>
         <div id="design-inspector-content" class="design-inspector-content" hidden>
           <label class="design-field"><span>Name</span><input id="design-layer-name" type="text" maxlength="120" autocomplete="off" /></label>
+          <fieldset id="design-component-variants" class="design-fieldset design-component-variants" hidden><legend>Variants</legend><div id="design-component-variant-controls" class="design-component-variant-controls"></div></fieldset>
           <fieldset class="design-fieldset"><legend>Position</legend>
             <label class="design-field"><span>X (px)</span><input id="design-x" type="number" step="0.1" inputmode="decimal" aria-label="X position in pixels" /></label>
             <label class="design-field"><span>Y (px)</span><input id="design-y" type="number" step="0.1" inputmode="decimal" aria-label="Y position in pixels" /></label>

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createComponentCommand,
-  createComponentInstanceCommand, createDesignPageProject, detachComponentInstanceCommand, resetComponentOverridesCommand,
+import { addComponentVariantCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createComponentCommand,
+  createComponentInstanceCommand, createDesignPageProject, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand, switchComponentVariantCommand,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   addGridTrackCommand, deleteGridTrackCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
   setGridPlacementCommand, setLayoutPositioningCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
@@ -174,6 +174,50 @@ test("component instances share local sources, inherit master edits, preserve ov
   assert.equal(history.document.nodes[instanceId].componentInstanceOf, undefined);
   update(sourceChildId, { appearance: { brightness: 2 } }, "Edit detached component master");
   assert.deepEqual(history.document.nodes[instanceChildId].appearance, { brightness: 1.8 }, "detached layers no longer follow master edits");
+  assert.doesNotThrow(() => validateProject(history.document));
+});
+
+test("component variants switch in place, preserve compatible overrides, and keep one local source asset", () => {
+  const project = createDesignPageProject({ images: images(1), id: "variant-design", slideId: "variant-page" });
+  const history = new ProjectHistory(project), pageId = "variant-page", definitionId = project.slides[0].nodeIds[0];
+  history.apply(createComponentCommand(history.document, pageId, [definitionId]).command, "Create component");
+  const variant = addComponentVariantCommand(history.document, pageId, definitionId);
+  history.apply(variant.command, "Add variant");
+  const variantId = variant.id, setId = history.document.nodes[definitionId].componentSetId;
+  assert.ok(setId);
+  assert.deepEqual(history.document.nodes[definitionId].variantProperties, { Variant: "Default" });
+  assert.deepEqual(history.document.nodes[variantId].variantProperties, { Variant: "Variant 2" });
+  assert.equal(Object.keys(history.document.assets).length, 1, "duplicating a variant does not duplicate source assets");
+  const invalid = structuredClone(history.document);
+  invalid.nodes[variantId].variantProperties.Variant = "Default";
+  assert.throws(() => validateProject(invalid), /matching properties and unique variant combinations/);
+
+  const instance = createComponentInstanceCommand(history.document, pageId, definitionId);
+  history.apply(instance.command, "Create instance");
+  const instanceId = instance.id, sourceAssetId = history.document.nodes[instanceId].assetId;
+  history.apply(switchComponentVariantCommand(history.document, pageId, instanceId, variantId), "Switch variant");
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, variantId);
+  assert.equal(history.document.nodes[instanceId].assetId, sourceAssetId);
+  assert.equal(history.document.nodes[instanceId].frame.x, project.nodes[definitionId].frame.x + .035,
+    "switching variants leaves the instance at its existing placement");
+  history.apply({ type: "node", id: variantId,
+    value: { ...structuredClone(history.document.nodes[variantId]), appearance: { brightness: 1.4 } } }, "Edit second variant");
+  assert.deepEqual(history.document.nodes[instanceId].appearance, { brightness: 1.4 });
+  history.apply({ type: "node", id: instanceId,
+    value: { ...structuredClone(history.document.nodes[instanceId]), appearance: { brightness: 1.7 } } }, "Override variant instance");
+  history.apply({ type: "node", id: variantId,
+    value: { ...structuredClone(history.document.nodes[variantId]), appearance: { brightness: 1.8 } } }, "Edit variant master again");
+  assert.deepEqual(history.document.nodes[instanceId].appearance, { brightness: 1.7 });
+
+  history.apply(switchComponentVariantCommand(history.document, pageId, instanceId, definitionId), "Switch to default variant");
+  assert.equal(history.document.nodes[instanceId].componentInstanceOf, definitionId);
+  assert.deepEqual(history.document.nodes[instanceId].appearance, { brightness: 1.7 }, "compatible local overrides survive variant changes");
+  history.undo(); assert.equal(history.document.nodes[instanceId].componentInstanceOf, variantId);
+  history.redo(); assert.equal(history.document.nodes[instanceId].componentInstanceOf, definitionId);
+  history.apply(detachComponentInstanceCommand(history.document, pageId, instanceId), "Detach variant instance");
+  history.apply(removeComponentDefinitionCommand(history.document, variantId), "Remove variant status");
+  assert.equal(history.document.nodes[variantId].componentDefinition, undefined);
+  assert.equal(history.document.nodes[definitionId].componentSetId, undefined, "a one-variant remainder becomes a regular component");
   assert.doesNotThrow(() => validateProject(history.document));
 });
 

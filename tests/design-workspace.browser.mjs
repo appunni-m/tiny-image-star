@@ -1168,6 +1168,45 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].appearance.brightness === 1.9, story.layerId);
     componentSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(componentSnapshot.nodes[componentInstanceId].appearance.brightness, 1.6, "a detached local copy stops following master edits");
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Add variant", exact: true }).click();
+    let variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const componentSetId = variantSnapshot.nodes[story.layerId].componentSetId;
+    const secondVariantId = Object.values(variantSnapshot.nodes).find((node) => node.componentDefinition && node.componentSetId === componentSetId
+      && node.id !== story.layerId).id;
+    assert.equal(variantSnapshot.nodes[story.layerId].variantProperties.Variant, "Default");
+    assert.equal(variantSnapshot.nodes[secondVariantId].variantProperties.Variant, "Variant 2");
+    await page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Create instance", exact: true }).click();
+    await page.waitForFunction((definitionId) => Object.values(window.tinyImageStarDesign.getSnapshot().nodes)
+      .some((node) => node.componentInstanceOf === definitionId), story.layerId);
+    variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    const variantInstanceId = Object.values(variantSnapshot.nodes).find((node) => node.componentInstanceOf === story.layerId).id;
+    const sourceAssetId = variantSnapshot.nodes[variantInstanceId].assetId;
+    const variantControl = page.locator("#design-component-variant-controls select");
+    assert.equal(await variantControl.isVisible(), true, "the inspector exposes the selected component's variant property");
+    await variantControl.selectOption("Variant 2");
+    await page.waitForFunction(({ id, targetId }) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf === targetId
+      && document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"), { id: variantInstanceId, targetId: secondVariantId });
+    variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(variantSnapshot.nodes[variantInstanceId].assetId, sourceAssetId, "switching a variant keeps the same retained image source");
+    assert.equal(variantSnapshot.retainedSourceBytes, image.byteLength, "variant switching does not copy or release image bytes");
+    await variantControl.selectOption("Default");
+    await page.waitForFunction(({ id, targetId }) => window.tinyImageStarDesign.getSnapshot().nodes[id].componentInstanceOf === targetId,
+      { id: variantInstanceId, targetId: story.layerId });
+    variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(variantSnapshot.nodes[variantInstanceId].assetId, sourceAssetId);
+    await page.waitForFunction(() => document.querySelector("#design-save-status")?.textContent === "Saved on this device");
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction((key) => window.tinyImageStarDesign.getSnapshot()?.key === key, story.key);
+    await page.locator("#mobile-more-button").click();
+    await page.locator("#design-button").click();
+    await page.waitForFunction(() => !document.querySelector("#design-view")?.hidden);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    variantSnapshot = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(variantSnapshot.nodes[story.layerId].componentSetId, componentSetId, "component sets survive local save and reload");
+    assert.equal(variantSnapshot.nodes[secondVariantId].variantProperties.Variant, "Variant 2", "variant values survive local save and reload");
+    assert.equal(variantSnapshot.nodes[variantInstanceId].componentInstanceOf, story.layerId, "the selected variant survives local save and reload");
     await page.setViewportSize({ width: 390, height: 844 });
     const componentRow = page.locator(`#design-layer-list [data-layer-id="${story.layerId}"]`);
     await componentRow.evaluate((row) => {

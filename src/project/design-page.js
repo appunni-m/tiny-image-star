@@ -156,6 +156,52 @@ export function createComponentCommand(project, pageId, nodeIds) {
     { type: "node", id: framed.id, value: { ...clone(definition.value), componentDefinition: true } }] } };
 }
 
+/** Duplicate a local component as a new variant in a validated component set. */
+export function addComponentVariantCommand(project, pageId, definitionId) {
+  const page = project.slides.find((entry) => entry.id === pageId), definition = project.nodes[definitionId];
+  if (!page?.nodeIds.includes(definitionId) || definition?.componentDefinition !== true)
+    throw new Error("Choose a component definition on this page.");
+  const sourceIds = page.nodeIds.filter((id) => {
+    let parentId = project.nodes[id]?.parentId;
+    while (parentId) { if (parentId === definitionId) return true; parentId = project.nodes[parentId]?.parentId; }
+    return id === definitionId;
+  });
+  if (page.nodeIds.length + sourceIds.length > MAX_DESIGN_PAGE_LAYERS)
+    throw new Error(`This page can contain up to ${MAX_DESIGN_PAGE_LAYERS} layers.`);
+  const setId = definition.componentSetId ?? newId("component-set"), setName = definition.componentSetName ?? definition.name ?? "Component";
+  const members = definition.componentSetId ? Object.values(project.nodes).filter((node) => node.componentSetId === setId) : [definition];
+  const propertyNames = Object.keys(definition.variantProperties ?? { Variant: "Default" });
+  const property = propertyNames.at(-1) ?? "Variant";
+  const currentProperties = clone(definition.variantProperties ?? { Variant: "Default" });
+  let value = `Variant ${members.length + 1}`;
+  while (members.some((member) => member.variantProperties?.[property] === value)) value = `Variant ${members.length + 2}`;
+  const newProperties = { ...currentProperties, [property]: value };
+  const idMap = new Map(sourceIds.map((id) => [id, newId("variant-layer")])), commands = [];
+  if (!definition.componentSetId) {
+    const base = clone(definition), originalProperties = { Variant: "Default" };
+    base.componentSetId = setId; base.componentSetName = setName; base.variantProperties = originalProperties;
+    base.name = `${setName}/Variant=Default`;
+    commands.push({ type: "node", id: definitionId, value: base });
+  }
+  for (const sourceId of sourceIds) {
+    const source = project.nodes[sourceId], id = idMap.get(sourceId), node = clone(source);
+    node.id = id;
+    if (sourceId === definitionId) {
+      node.componentDefinition = true; node.componentSetId = setId; node.componentSetName = setName;
+      node.variantProperties = newProperties; node.name = `${setName}/${property}=${value}`;
+      if (!source.parentId || !project.nodes[source.parentId]?.style?.layout) {
+        const offset = (position, extent) => position + .035 + extent <= 1 ? position + .035 : position - .035 >= 0 ? position - .035 : position;
+        node.frame.x = offset(source.frame.x, source.frame.width); node.frame.y = offset(source.frame.y, source.frame.height);
+      }
+    } else node.parentId = idMap.get(source.parentId);
+    commands.push({ type: "node", id, value: node });
+  }
+  const slides = project.slides.map((entry) => entry.id === pageId
+    ? { ...clone(entry), nodeIds: [...entry.nodeIds, ...sourceIds.map((id) => idMap.get(id))] } : clone(entry));
+  commands.push({ type: "slides", value: slides });
+  return { id: idMap.get(definitionId), command: { type: "group", commands } };
+}
+
 /** Add an in-page instance that shares local source references and preserves independent placement. */
 export function createComponentInstanceCommand(project, pageId, definitionId) {
   const page = project.slides.find((entry) => entry.id === pageId), definition = project.nodes[definitionId];
@@ -175,6 +221,7 @@ export function createComponentInstanceCommand(project, pageId, definitionId) {
     delete value.componentDefinition; delete value.componentInstanceOf;
     if (sourceId === definitionId) {
       value.componentInstanceOf = definitionId;
+      delete value.componentSetId; delete value.componentSetName; delete value.variantProperties;
       if (!source.parentId || !project.nodes[source.parentId]?.style?.layout) {
         const offset = (position, extent) => position + .035 + extent <= 1 ? position + .035 : position - .035 >= 0 ? position - .035 : position;
         value.frame.x = offset(source.frame.x, source.frame.width);
@@ -189,6 +236,75 @@ export function createComponentInstanceCommand(project, pageId, definitionId) {
     ? { ...clone(entry), nodeIds: [...entry.nodeIds, ...sourceIds.map((id) => idMap.get(id))] } : clone(entry));
   additions.push({ type: "slides", value: slides });
   return { id: instanceId, command: { type: "group", commands: additions } };
+}
+
+function componentTreePath(project, page, nodeId, rootId) {
+  const segments = [];
+  let node = project.nodes[nodeId];
+  while (node && node.id !== rootId) {
+    if (!node.parentId) return null;
+    const siblings = page.nodeIds.filter((id) => project.nodes[id]?.parentId === node.parentId);
+    const index = siblings.indexOf(node.id);
+    if (index < 0) return null;
+    segments.unshift(`${node.kind}:${index}`);
+    node = project.nodes[node.parentId];
+  }
+  return node?.id === rootId ? segments.join("/") : null;
+}
+
+/** Switch a materialized instance to another variant, preserving matching layer IDs and overrides. */
+export function switchComponentVariantCommand(project, pageId, instanceId, targetDefinitionId) {
+  const page = project.slides.find((entry) => entry.id === pageId), root = project.nodes[instanceId];
+  const currentDefinition = root?.componentInstanceOf && project.nodes[root.componentInstanceOf], target = project.nodes[targetDefinitionId];
+  if (!page?.nodeIds.includes(instanceId) || !currentDefinition?.componentSetId || target?.componentSetId !== currentDefinition.componentSetId
+    || target.kind !== currentDefinition.kind || target.componentDefinition !== true)
+    throw new Error("Choose another variant from this component set.");
+  if ((root.parentId ?? null) !== (target.parentId ?? null)) throw new Error("Variants must share a component placement frame.");
+  const oldMembers = page.nodeIds.filter((id) => componentInstanceRootId(project, id) === instanceId);
+  const targetSourceIds = page.nodeIds.filter((id) => {
+    let parentId = project.nodes[id]?.parentId;
+    while (parentId) { if (parentId === targetDefinitionId) return true; parentId = project.nodes[parentId]?.parentId; }
+    return id === targetDefinitionId;
+  });
+  if (page.nodeIds.length - oldMembers.length + targetSourceIds.length > MAX_DESIGN_PAGE_LAYERS)
+    throw new Error(`This page can contain up to ${MAX_DESIGN_PAGE_LAYERS} layers.`);
+  const oldByPath = new Map();
+  for (const id of oldMembers) {
+    const cloneNode = project.nodes[id], source = project.nodes[cloneNode.componentSourceNodeId];
+    const path = source && componentTreePath(project, page, source.id, currentDefinition.id);
+    if (path != null) oldByPath.set(path, cloneNode);
+  }
+  const targetByPath = targetSourceIds.map((sourceId) => ({ sourceId,
+    path: componentTreePath(project, page, sourceId, targetDefinitionId) }));
+  if (targetByPath.some((entry) => entry.path == null) || oldByPath.size !== oldMembers.length)
+    throw new Error("This component instance has an invalid layer structure. Detach it and try again.");
+  const idMap = new Map(targetByPath.map(({ sourceId, path }) => [sourceId,
+    sourceId === targetDefinitionId ? instanceId : oldByPath.get(path)?.id ?? newId("instance-layer")]));
+  const reused = new Set(idMap.values()), commands = [];
+  for (const id of oldMembers) if (!reused.has(id)) commands.push({ type: "node", id, value: null });
+  for (const { sourceId, path } of targetByPath) {
+    const source = project.nodes[sourceId], id = idMap.get(sourceId), previous = oldByPath.get(path), value = clone(source);
+    value.id = id; value.componentSourceNodeId = sourceId; value.componentOverrides = previous?.componentOverrides ?? [];
+    delete value.componentDefinition; delete value.componentSetId; delete value.componentSetName; delete value.variantProperties; delete value.componentInstanceOf;
+    for (const override of value.componentOverrides) {
+      if (override.startsWith("frame.")) {
+        const axis = override.slice("frame.".length); value.frame[axis] = previous.frame[axis];
+      } else if (previous && Object.hasOwn(previous, override)) value[override] = clone(previous[override]);
+      else delete value[override];
+    }
+    if (sourceId === targetDefinitionId) {
+      value.componentInstanceOf = targetDefinitionId;
+      value.frame.x = previous?.componentOverrides?.includes("frame.x") ? previous.frame.x : source.frame.x;
+      value.frame.y = previous?.componentOverrides?.includes("frame.y") ? previous.frame.y : source.frame.y;
+    } else value.parentId = idMap.get(source.parentId);
+    commands.push({ type: "node", id, value });
+  }
+  const oldSet = new Set(oldMembers), before = page.nodeIds, oldIndex = before.indexOf(instanceId);
+  const nodeIds = before.filter((id) => !oldSet.has(id));
+  const insertionIndex = before.slice(0, oldIndex).filter((id) => !oldSet.has(id)).length;
+  nodeIds.splice(insertionIndex, 0, ...targetSourceIds.map((id) => idMap.get(id)));
+  commands.push({ type: "slides", value: project.slides.map((entry) => entry.id === pageId ? { ...clone(entry), nodeIds } : clone(entry)) });
+  return { type: "group", commands };
 }
 
 export function resetComponentOverridesCommand(project, pageId, instanceId) {
@@ -221,8 +337,16 @@ export function removeComponentDefinitionCommand(project, definitionId) {
   const node = getLayer(project, definitionId);
   if (!node.componentDefinition) throw new Error("Choose a component definition.");
   if (componentHasInstances(project, definitionId)) throw new Error("Delete or detach linked instances before removing this component.");
-  const value = clone(node); delete value.componentDefinition;
-  return { type: "node", id: definitionId, value };
+  const value = clone(node); delete value.componentDefinition; delete value.componentSetId; delete value.componentSetName; delete value.variantProperties;
+  const commands = [{ type: "node", id: definitionId, value }];
+  if (node.componentSetId) {
+    const remaining = Object.values(project.nodes).filter((candidate) => candidate.componentSetId === node.componentSetId && candidate.id !== definitionId);
+    if (remaining.length === 1) {
+      const last = clone(remaining[0]); delete last.componentSetId; delete last.componentSetName; delete last.variantProperties;
+      commands.push({ type: "node", id: last.id, value: last });
+    }
+  }
+  return commands.length === 1 ? commands[0] : { type: "group", commands };
 }
 
 export function addTextLayerCommand(project, pageId, text = "Add text") {

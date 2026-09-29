@@ -1,6 +1,6 @@
 import { createDesignView } from "./view.js";
-import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
-  createComponentCommand, createComponentInstanceCommand, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand,
+import { addComponentVariantCommand, addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
+  createComponentCommand, createComponentInstanceCommand, detachComponentInstanceCommand, removeComponentDefinitionCommand, resetComponentOverridesCommand, switchComponentVariantCommand,
   addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
   reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand,
   setLayoutPositioningCommand, updatePageSelection } from "../project/design-page.js";
@@ -319,6 +319,25 @@ export function attachDesignWorkspace() {
     const asset = node.assetId ? project.assets[node.assetId] : null;
     setField("layer-name", node.name || asset?.name || node.kind);
     const world = worldLayer(node.id) ?? node;
+    const componentVariantField = get("component-variants"), componentVariantControls = get("component-variant-controls");
+    const componentDefinition = node.componentInstanceOf != null ? project.nodes[node.componentInstanceOf] : null;
+    const componentVariants = componentDefinition?.componentSetId
+      ? Object.values(project.nodes).filter((candidate) => candidate.componentDefinition === true && candidate.componentSetId === componentDefinition.componentSetId) : [];
+    componentVariantField.hidden = componentVariants.length < 2;
+    componentVariantControls.replaceChildren();
+    if (componentVariants.length >= 2) {
+      componentVariantField.querySelector("legend").textContent = componentDefinition.componentSetName || "Variants";
+      for (const property of Object.keys(componentDefinition.variantProperties)) {
+        const label = document.createElement("label"); label.className = "design-field";
+        const caption = document.createElement("span"); caption.textContent = property; label.append(caption);
+        const select = document.createElement("select"); select.dataset.componentVariantProperty = property;
+        select.setAttribute("aria-label", `${property} variant`);
+        const values = [...new Set(componentVariants.map((variant) => variant.variantProperties[property]))].sort((left, right) => left.localeCompare(right));
+        for (const value of values) { const option = document.createElement("option"); option.value = value; option.textContent = value; select.append(option); }
+        select.value = componentDefinition.variantProperties[property]; select.disabled = Boolean(world.locked);
+        label.append(select); componentVariantControls.append(label);
+      }
+    }
     const size = pageSize();
     for (const key of ["x", "y", "width", "height"]) {
       const dimension = ["x", "width"].includes(key) ? size?.width : size?.height;
@@ -1639,6 +1658,7 @@ export function attachDesignWorkspace() {
     const componentItems = node?.componentDefinition ? [
       { type: "separator" }, { type: "heading", label: "Component" },
       { label: "Create instance", disabled: Boolean(recipeJob), action: () => createComponentInstance(id) },
+      { label: "Add variant", disabled: Boolean(recipeJob), action: () => addComponentVariant(id) },
       { label: "Remove component status", disabled: componentHasInstances(id), action: () => removeComponentStatus(id) },
     ] : instanceRoot ? [
       { type: "separator" }, { type: "heading", label: "Component instance" },
@@ -1713,6 +1733,15 @@ export function attachDesignWorkspace() {
       const created = createComponentInstanceCommand(history.document, currentPage().id, definitionId);
       history.apply(created.command, "Create component instance"); selection = { ids: [created.id], anchorId: created.id };
       edited("Component instance created.");
+    } catch (error) { setStatus(error.message); }
+  }
+
+  function addComponentVariant(definitionId) {
+    if (!history || !currentPage()) return;
+    try {
+      const created = addComponentVariantCommand(history.document, currentPage().id, definitionId);
+      history.apply(created.command, "Add component variant"); selection = { ids: [created.id], anchorId: created.id };
+      edited("Component variant added.");
     } catch (error) { setStatus(error.message); }
   }
 
@@ -1994,6 +2023,18 @@ export function attachDesignWorkspace() {
     const name = get("document-name").value.trim();
     if (!name || name.length > 120) { get("document-name").value = history.document.name; setStatus("Design names must contain 1–120 characters."); return; }
     if (name !== history.document.name) { history.apply({ type: "name", value: name }, "Rename design"); edited("Design renamed."); }
+  });
+  get("component-variant-controls").addEventListener("change", (event) => {
+    const property = event.target?.dataset?.componentVariantProperty, instanceId = currentSelection()[0], instance = instanceId && layer(instanceId);
+    if (!property || !instance || instance.componentInstanceOf == null) return;
+    const definition = layer(instance.componentInstanceOf), properties = { ...definition?.variantProperties, [property]: event.target.value };
+    const target = Object.values(renderProject()?.nodes ?? {}).find((node) => node.componentDefinition === true
+      && node.componentSetId === definition?.componentSetId && canonicalJSON(node.variantProperties) === canonicalJSON(properties));
+    if (!target) { setStatus("This component set has no variant with that property combination."); renderWorkspace(); return; }
+    try {
+      history.apply(switchComponentVariantCommand(history.document, currentPage().id, instanceId, target.id), `Change ${property} variant`);
+      selection = { ids: [instanceId], anchorId: instanceId }; edited(`${property} variant changed.`);
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
   });
   get("file-input").addEventListener("change", () => { const files = [...(get("file-input").files ?? [])]; get("file-input").value = ""; void importImages(files); });
   get("add-text").addEventListener("click", addText); get("add-shape").addEventListener("click", addShape);
