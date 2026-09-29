@@ -222,8 +222,9 @@ legacy image, batch, and story workspaces.
 Image context menu: “Save edits as recipe.” Multi-selection context menu:
 “Apply recipe…” with versioned local recipe choices. Freeze the chosen recipe
 revision and target IDs when the job starts. Each completed image updates its
-own canvas object in place; failures leave original image data and other
-completed objects intact.
+own canvas object in the live page preview before the remaining queue finishes;
+failures and cancellation leave completed objects intact and preserve originals.
+Final successful targets commit as one reversible page edit.
 
 ### 5. Add the processing bar on the canvas page — initial slice delivered
 
@@ -256,8 +257,9 @@ geometry and opacity. Local components can be defined from layers, instantiated
 on the same page without copying image assets, and kept in sync with explicit
 instance overrides. Mouse right-click, keyboard context-menu, and touch
 long-press expose component actions. Page image context menus save and apply frozen recipe
-revisions, and the page job panel exposes progress, scheduler mode,
-pause/resume, and cancel; the older batch gallery also has format-aware recipe
+revisions, and the page job panel exposes progress, work shown in place, live
+rate/ETA, scheduler mode, pause/resume, and cancel. Completed images stay in the
+page if the user cancels; the remaining queue stops. The older batch gallery also has format-aware recipe
 jobs and a global processing bar. These paths still have separate document and
 job state, so unification remains required. The next major Figma gaps are
 boolean/text/instance-swap/slot properties,

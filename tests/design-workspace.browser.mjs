@@ -749,6 +749,15 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#preset-name-input").fill("Design recipe smoke");
     await page.locator("#preset-save-button").click();
     await page.waitForFunction(() => !document.querySelector("#preset-dialog")?.open);
+    for (const id of [selectedId, otherImageId]) {
+      await page.locator(`#design-layer-list [data-layer-id="${id}"] .design-layer-select`).click();
+      await page.locator("#design-brightness").evaluate((input) => {
+        input.value = "1"; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await page.waitForFunction((imageId) => window.tinyImageStarDesign.getSnapshot().nodes[imageId].appearance.brightness === 1
+        && document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"), id);
+    }
+    const beforeRecipeProcessing = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
     await page.evaluate(() => {
       window.__tinystarTestDelayWorkers = true;
       const mode = document.querySelector("#processing-mode-select");
@@ -760,6 +769,11 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator("#design-recipe-job").waitFor({ state: "visible" });
     await page.locator("#design-recipe-job-pause").click();
     await page.waitForFunction(() => document.querySelector("#design-recipe-job-pause")?.textContent === "Resume");
+    await page.waitForFunction(() => window.tinyImageStarDesign.getSnapshot().recipeJob?.previewed > 0);
+    const liveRecipePreview = await page.locator("#design-canvas").evaluate((canvas) => canvas.toDataURL());
+    assert.notEqual(liveRecipePreview, beforeRecipeProcessing, "a completed recipe image redraws in place while the batch remains paused");
+    assert.match(await page.locator("#design-recipe-job-metrics").textContent(), /shown in place/,
+      "the processing bar reports how many completed images are visible on the page");
     await page.locator("#design-recipe-job-speed").selectOption("max-speed");
     await page.waitForFunction(() => document.querySelector("#batch-job-speed")?.value === "max-speed");
 
@@ -823,13 +837,23 @@ export async function assertDesignWorkspace(browser, address) {
     });
     assert.ok(mobileJob.left >= 0 && mobileJob.right <= mobileJob.width, "the in-place recipe bar fits a phone viewport");
     assert.ok(mobileJob.controls.every((control) => control.left >= 0 && control.right <= mobileJob.width && control.height >= 40), "recipe controls remain usable by touch");
-    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
-    await page.locator("#design-recipe-job-pause").click();
+    await page.locator("#design-recipe-job-cancel").click();
     await page.locator("#design-recipe-job").waitFor({ state: "hidden" });
-    const recipeApplied = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
-    const imageNodes = recipeApplied.pages[0].nodeIds.map((id) => recipeApplied.nodes[id]).filter((node) => node.kind === "image");
+    let recipeApplied = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    let imageNodes = recipeApplied.pages[0].nodeIds.map((id) => recipeApplied.nodes[id]).filter((node) => node.kind === "image");
     assert.equal(imageNodes.length, 2);
-    assert.ok(imageNodes.every((node) => node.appearance.brightness === 1.5), "saved photo recipe applies to the selected image layers in place");
+    assert.equal(imageNodes.filter((node) => node.appearance.brightness === 1.5).length, 1,
+      "cancelling a paused job keeps its completed in-place image and stops pending targets");
+    const pendingRecipeImage = imageNodes.find((node) => node.appearance.brightness !== 1.5);
+    assert.ok(pendingRecipeImage, "the queued image remains untouched after cancellation");
+    await page.evaluate(() => { window.__tinystarTestDelayWorkers = false; });
+    await page.locator(`#design-layer-list [data-layer-id="${pendingRecipeImage.id}"]`).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Design recipe smoke", exact: true }).click();
+    await page.locator("#design-recipe-job").waitFor({ state: "visible" });
+    await page.locator("#design-recipe-job").waitFor({ state: "hidden" });
+    recipeApplied = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    imageNodes = recipeApplied.pages[0].nodeIds.map((id) => recipeApplied.nodes[id]).filter((node) => node.kind === "image");
+    assert.ok(imageNodes.every((node) => node.appearance.brightness === 1.5), "saved photo recipes update each original image layer in place");
 
     await page.locator("#mobile-more-button").click();
     await page.locator("#design-button").click();

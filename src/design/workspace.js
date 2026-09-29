@@ -1532,6 +1532,9 @@ export function attachDesignWorkspace() {
     clearTimeout(previewTimer); previewTask?.cancel(); previewTask = null;
     if (root.hidden || !history || !currentPage()) return;
     const epoch = ++previewEpoch, project = clone(history.document), selectedPage = currentPage().id, sourceSnapshot = sources;
+    const recipePreviewJob = recipeJob, recipePatchCount = recipePreviewJob?.completedPatches.size ?? 0;
+    if (recipePreviewJob) for (const [id, patch] of recipePreviewJob.completedPatches)
+      if (project.nodes[id]) project.nodes[id] = { ...project.nodes[id], ...clone(patch) };
     if (cropModeId && project.nodes[cropModeId]?.kind === "image") {
       project.nodes[cropModeId] = { ...project.nodes[cropModeId], crop: null, fit: "contain" };
       for (const page of project.slides) {
@@ -1554,8 +1557,12 @@ export function attachDesignWorkspace() {
         if (epoch !== previewEpoch || root.hidden) { bitmap.close(); return; }
         previewBitmap?.close(); previewBitmap = bitmap; ledger(); drawCanvas();
         setStatus("Preview ready · edits remain attached to their layers.");
+        if (recipePreviewJob) settleRecipePreview(recipePreviewJob, recipePatchCount);
       } catch (error) {
-        if (error?.name !== "AbortError" && epoch === previewEpoch) setStatus(error?.userMessage ?? error.message ?? "The page preview could not be updated.");
+        if (error?.name !== "AbortError" && epoch === previewEpoch) {
+          setStatus(error?.userMessage ?? error.message ?? "The page preview could not be updated.");
+          if (recipePreviewJob) settleRecipePreview(recipePreviewJob, recipePatchCount, error);
+        }
       } finally { if (previewTask === nextTask) previewTask = null; }
     }, delay);
   }
@@ -1570,20 +1577,34 @@ export function attachDesignWorkspace() {
   function designRecipeJobStatus(job) {
     if (job.cancelled) return job.active ? `Stopping ${job.active} active image${job.active === 1 ? "" : "s"}…` : "Recipe job cancelled.";
     if (job.paused) return job.active ? `Finishing ${job.active} active image${job.active === 1 ? "" : "s"} before pausing.` : "Paused · no new images will start.";
-    return job.active ? `Processing ${job.active} image${job.active === 1 ? "" : "s"}; ${job.queue.length} waiting.` : "Preparing the next image…";
+    return job.active ? `Processing ${job.active} image${job.active === 1 ? "" : "s"}; ${job.queue.length} waiting · target ${job.desiredWorkers} workers.` : "Preparing the next image…";
   }
 
   function renderDesignRecipeJob() {
     const job = recipeJob, bar = get("recipe-job"); bar.hidden = !job;
     if (!job) return;
     const elapsed = Math.max(.001, (performance.now() - job.startedAt) / 1000), rate = job.completed / elapsed;
+    const remaining = Math.max(0, job.total - job.completed), eta = rate > 0 && job.completed > 0 ? ` · ~${Math.ceil(remaining / rate)}s left` : " · estimating time";
     get("recipe-job-title").textContent = `Applying ${job.recipe.name}`;
     get("recipe-job-status").textContent = designRecipeJobStatus(job);
     get("recipe-job-progress").max = Math.max(1, job.total); get("recipe-job-progress").value = job.completed;
-    get("recipe-job-metrics").textContent = `${job.completed} of ${job.total} · ${rate < 1 ? "<1" : rate.toFixed(1)} images/s`;
+    get("recipe-job-metrics").textContent = `${job.completed} of ${job.total} · ${job.previewed} shown in place · ${rate < 1 ? "<1" : rate.toFixed(1)} images/s${eta}`;
     get("recipe-job-pause").textContent = job.paused ? job.active ? "Pausing…" : "Resume" : "Pause";
     get("recipe-job-pause").disabled = job.cancelled || job.active === 0 && job.queue.length === 0;
     get("recipe-job-cancel").disabled = job.cancelled;
+  }
+
+  function settleRecipePreview(job, patchCount, error = null) {
+    if (recipeJob !== job) return;
+    job.previewSettled = Math.max(job.previewSettled, patchCount);
+    if (error) job.previewError = error?.userMessage ?? error.message ?? "The page preview could not be updated.";
+    else { job.previewed = Math.max(job.previewed, patchCount); job.previewError = null; }
+    job.awaitFirstPreview = false;
+    renderDesignRecipeJob();
+    if (job.active > 0) return;
+    if (job.cancelled) finishDesignRecipeJob(job);
+    else if (job.queue.length && !job.paused) pumpDesignRecipeJob(job);
+    else if (!job.queue.length && job.previewSettled >= job.completedPatches.size) finishDesignRecipeJob(job);
   }
 
   function renderRecipeTarget(job, nodeId) {
@@ -1602,44 +1623,57 @@ export function attachDesignWorkspace() {
   function finishDesignRecipeJob(job) {
     if (recipeJob !== job || job.finishing) return;
     job.finishing = true; job.unsubscribe?.(); job.unsubscribe = null;
-    if (!job.cancelled) {
-      const commands = [];
-      for (const id of job.succeeded) {
-        const current = renderProject()?.nodes[id], before = job.project.nodes[id];
-        if (!current || canonicalJSON(current) !== canonicalJSON(before)) { job.failures.push({ id, message: "This layer changed while the recipe was rendering." }); continue; }
-        commands.push({ type: "node", id, value: { ...clone(current), ...job.patches.get(id) } });
+    if (history.base) history.commit("Finish concurrent image edit");
+    const commands = [];
+    for (const id of job.succeeded) {
+      const current = renderProject()?.nodes[id], before = job.project.nodes[id];
+      if (!current || canonicalJSON(current) !== canonicalJSON(before)) {
+        job.failures.push({ id, message: "This layer changed while the recipe was rendering." }); job.completedPatches.delete(id); continue;
       }
-      job.applied = 0;
-      if (commands.length) {
-        try {
-          history.apply({ type: "group", commands }, `Apply ${job.recipe.name}`);
-          job.applied = commands.length;
-          selection = { ids: currentPage()?.nodeIds.filter((id) => job.targetIds.includes(id)) ?? [], anchorId: job.targetIds[0] ?? null };
-          renderWorkspace(); schedulePreview(0); saveSoon();
-        } catch (error) { job.failures.push({ id: "", message: error.message }); }
-      }
+      commands.push({ type: "node", id, value: { ...clone(current), ...job.patches.get(id) } });
+    }
+    job.applied = 0;
+    if (commands.length) {
+      try {
+        history.apply({ type: "group", commands }, `Apply ${job.recipe.name}`);
+        job.applied = commands.length;
+        selection = { ids: currentPage()?.nodeIds.filter((id) => job.succeeded.includes(id)) ?? [], anchorId: job.succeeded[0] ?? null };
+        renderWorkspace(); saveSoon();
+      } catch (error) { job.failures.push({ id: "", message: error.message }); }
     }
     recipeJob = null; ledger(); renderDesignRecipeJob();
-    if (job.cancelled) setStatus("Recipe job cancelled · the page remains unchanged.");
+    schedulePreview(0);
+    if (job.cancelled) setStatus(job.applied
+      ? `Recipe job cancelled · kept ${job.applied} completed image${job.applied === 1 ? "" : "s"}; pending images stopped.`
+      : "Recipe job cancelled · no completed image edits were kept.");
     else if (job.failures.length) setStatus(`${job.applied} image${job.applied === 1 ? "" : "s"} updated; ${job.failures.length} need attention.`);
     else setStatus(`Applied ${job.recipe.name} to ${job.applied} image layer${job.applied === 1 ? "" : "s"}.`);
   }
 
   function pumpDesignRecipeJob(job) {
     if (recipeJob !== job || job.cancelled || job.paused) { renderDesignRecipeJob(); return; }
+    if (job.awaitFirstPreview && job.succeeded.length > 0 && job.active === 0) { renderDesignRecipeJob(); return; }
     while (job.active < job.desiredWorkers && job.queue.length) {
       const id = job.queue.shift(); job.active += 1; renderDesignRecipeJob();
       let task;
       try { task = renderRecipeTarget(job, id); }
       catch (error) { task = { promise: Promise.reject(error), cancel: () => {} }; task.promise.catch(() => {}); }
-      task.promise.then(() => job.succeeded.push(id)).catch((error) => {
+      task.promise.then(() => {
+        const current = renderProject()?.nodes[id], before = job.project.nodes[id];
+        if (!current || canonicalJSON(current) !== canonicalJSON(before)) {
+          job.failures.push({ id, message: "This layer changed while the recipe was rendering." }); return;
+        }
+        job.succeeded.push(id); job.completedPatches.set(id, clone(job.patches.get(id))); schedulePreview(0);
+      }).catch((error) => {
         if (!job.cancelled) job.failures.push({ id, message: error?.userMessage ?? error?.message ?? "This image could not be updated." });
       }).finally(() => {
         job.requests.delete(id); job.active = Math.max(0, job.active - 1); job.completed += 1;
         if (recipeJob !== job) return;
         renderDesignRecipeJob();
-        if (job.active === 0 && (job.cancelled || !job.queue.length)) finishDesignRecipeJob(job);
-        else if (!job.paused && !job.cancelled) pumpDesignRecipeJob(job);
+        if (job.active === 0 && (job.cancelled || !job.queue.length)) {
+          if (root.hidden || job.previewSettled >= job.completedPatches.size) finishDesignRecipeJob(job);
+          else renderDesignRecipeJob();
+        } else if (!job.paused && !job.cancelled && (!job.awaitFirstPreview || job.active > 0)) pumpDesignRecipeJob(job);
       });
     }
     if (job.active === 0 && !job.queue.length) finishDesignRecipeJob(job);
@@ -1660,7 +1694,8 @@ export function attachDesignWorkspace() {
     }, 0);
     recipeJob = { recipe: clone(recipe), targetIds: ids, queue: [...ids], succeeded: [], failures: [], requests: new Map(), active: 0,
       completed: 0, total: ids.length, paused: false, cancelled: false, project, pageId: page.id, patches, sources: sourcesForJob,
-      retainedBytes, desiredWorkers: pool.snapshot().limit, startedAt: performance.now(), unsubscribe: null };
+      retainedBytes, desiredWorkers: pool.snapshot().limit, startedAt: performance.now(), completedPatches: new Map(),
+      previewed: 0, previewSettled: 0, awaitFirstPreview: true, previewError: null, unsubscribe: null };
     const job = recipeJob;
     get("recipe-job-speed").value = pool.mode; ledger();
     job.unsubscribe = pool.subscribe((snapshot) => { job.desiredWorkers = Math.max(1, snapshot.limit); pumpDesignRecipeJob(job); });
@@ -2456,7 +2491,8 @@ export function attachDesignWorkspace() {
             handleOut: point.handleOut ? vectorPointOnCanvas(vectorNode, point.handleOut) : null,
           })) } : null,
         gridTracks: selectedGridFrameId() ? clone(gridGeometryFor()) : null,
-        recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
+        recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, succeeded: recipeJob.succeeded.length,
+          previewed: recipeJob.previewed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },
   };
   renderWorkspace();
