@@ -89,6 +89,7 @@ export function gridPlacementsForChildren(childIds, nodes, layout) {
   const columns = layout.columns ?? 2, fixedRows = layout.rows ?? 0;
   check(Number.isInteger(columns) && columns >= 1 && columns <= 24, "Grid columns must be between 1 and 24.");
   check(Number.isInteger(fixedRows) && fixedRows >= 0 && fixedRows <= 24, "Grid rows must be between 0 and 24.");
+  childIds = childIds.filter((id) => nodes[id]?.layoutPositioning !== "absolute");
   const placements = new Map(), occupied = new Set();
   let rowCount = Math.max(1, fixedRows);
   const cellsFor = (placement) => {
@@ -170,7 +171,8 @@ export function resolveGridTrackGeometry(project, slideId, frameId, variantId = 
     throw new Error("Choose a grid frame to inspect its tracks.");
   const { variant, frames } = layerFrameMap(project, slideId, variantId), resolved = frames.get(frameId);
   if (!resolved) throw new Error("The grid frame is unavailable on this page.");
-  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === frameId && project.nodes[id]?.visible !== false);
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === frameId && project.nodes[id]?.visible !== false
+    && project.nodes[id]?.layoutPositioning !== "absolute");
   const { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout);
   const parentWidth = resolved.frame.width * variant.width, parentHeight = resolved.frame.height * variant.height;
   const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
@@ -404,7 +406,7 @@ export function validateProject(project) {
     }
   }
   for (const [id, node] of Object.entries(project.nodes)) {
-    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutSizing", "layoutSize", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
+    keys(node, ["id", "kind", "name", "visible", "locked", "assetId", "maskId", "fontId", "order", "operations", "frame", "variantFrames", "space", "anchorSlideId", "parentId", "constraints", "layoutPositioning", "flowGrid", "flowSizing", "layoutSizing", "layoutSize", "gridPlacement", "gridAlignment", "opacity", "rotation", "flipX", "flipY", "appearance", "appearanceBase", "crop", "text", "style", "color", "fit", "focal", "depthTextId", "depthBackground", "connection", "cutoutEffects", "attachment"]);
     check(identifier(id) && node.id === id && ["legacy-image", "image", "text", "shape", "frame"].includes(node.kind), "Unsupported layer kind.");
     if (node.name != null) check(typeof node.name === "string" && node.name.trim().length > 0 && node.name.length <= 120, "Invalid layer name.");
     if (node.visible != null) check(typeof node.visible === "boolean", "Invalid layer visibility.");
@@ -461,9 +463,39 @@ export function validateProject(project) {
         check(["left", "right", "left-right", "center", "scale"].includes(node.constraints.horizontal)
           && ["top", "bottom", "top-bottom", "center", "scale"].includes(node.constraints.vertical), "Invalid frame constraints.");
       } else check(node.constraints == null, "Frame constraints require a parent frame.");
+      if (node.layoutPositioning != null)
+        check(node.layoutPositioning === "absolute" && node.parentId != null && Boolean(project.nodes[node.parentId]?.style?.layout),
+          "Absolute positioning requires a child of an Auto Layout frame.");
+      if (node.flowGrid != null) {
+        check(node.layoutPositioning === "absolute" && project.nodes[node.parentId]?.style?.layout?.direction === "grid"
+          && object(node.flowGrid), "Saved grid placement requires an absolute child of a grid frame.");
+        keys(node.flowGrid, ["placement", "alignment"]);
+        if (node.flowGrid.placement != null) {
+          const placement = node.flowGrid.placement;
+          check(object(placement), "Invalid saved grid placement.");
+          keys(placement, ["row", "column", "rowSpan", "columnSpan"]);
+          check(Number.isInteger(placement.row) && placement.row >= 1 && placement.row <= 200
+            && Number.isInteger(placement.column) && placement.column >= 1 && placement.column <= 24
+            && Number.isInteger(placement.rowSpan) && placement.rowSpan >= 1 && placement.rowSpan <= 200
+            && Number.isInteger(placement.columnSpan) && placement.columnSpan >= 1 && placement.columnSpan <= 24,
+          "Invalid saved grid placement.");
+        }
+        if (node.flowGrid.alignment != null) {
+          check(object(node.flowGrid.alignment), "Invalid saved grid alignment.");
+          keys(node.flowGrid.alignment, ["horizontal", "vertical"]);
+          check(Object.keys(node.flowGrid.alignment).length > 0
+            && Object.values(node.flowGrid.alignment).every((alignment) => ["start", "center", "end"].includes(alignment)),
+          "Invalid saved grid alignment.");
+        }
+      }
+      if (node.flowSizing != null) {
+        check(node.layoutPositioning === "absolute" && object(node.flowSizing), "Saved Auto Layout sizing requires an absolute child.");
+        keys(node.flowSizing, ["width", "height"]);
+        check(Object.values(node.flowSizing).every((mode) => ["fixed", "fill", "hug"].includes(mode)), "Invalid saved Auto Layout sizing.");
+      }
       if (node.gridPlacement != null) {
         const parentLayout = project.nodes[node.parentId]?.style?.layout;
-        check(node.parentId != null && parentLayout?.direction === "grid" && object(node.gridPlacement), "Grid placement requires a child of a grid frame.");
+        check(node.layoutPositioning !== "absolute" && node.parentId != null && parentLayout?.direction === "grid" && object(node.gridPlacement), "Grid placement requires a flow child of a grid frame.");
         keys(node.gridPlacement, ["row", "column", "rowSpan", "columnSpan"]);
         check(Number.isInteger(node.gridPlacement.row) && node.gridPlacement.row >= 1 && node.gridPlacement.row <= 200
           && Number.isInteger(node.gridPlacement.column) && node.gridPlacement.column >= 1 && node.gridPlacement.column <= (parentLayout?.columns ?? 0)
@@ -476,7 +508,7 @@ export function validateProject(project) {
       }
       if (node.gridAlignment != null) {
         const parentLayout = project.nodes[node.parentId]?.style?.layout;
-        check(node.parentId != null && parentLayout?.direction === "grid" && object(node.gridAlignment), "Grid alignment requires a child of a grid frame.");
+        check(node.layoutPositioning !== "absolute" && node.parentId != null && parentLayout?.direction === "grid" && object(node.gridAlignment), "Grid alignment requires a flow child of a grid frame.");
         keys(node.gridAlignment, ["horizontal", "vertical"]);
         check(Object.keys(node.gridAlignment).length > 0
           && Object.values(node.gridAlignment).every((alignment) => ["start", "center", "end"].includes(alignment)), "Invalid grid alignment.");
@@ -553,7 +585,8 @@ function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) 
     height: node?.layoutSize?.height ?? (node?.frame?.height ?? 0) * variant.height };
   if (!layout || stack.has(nodeId)) return fallback;
   const nextStack = new Set(stack); nextStack.add(nodeId);
-  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === nodeId && project.nodes[id]?.visible !== false);
+  const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === nodeId && project.nodes[id]?.visible !== false
+    && project.nodes[id]?.layoutPositioning !== "absolute");
   const children = childIds.map((id) => {
     const child = project.nodes[id], patch = slide.overrides[id] ?? {};
     const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? child.variantFrames?.[variant.id] ?? child.frame;
@@ -611,15 +644,31 @@ function intrinsicFrameSize(project, slide, nodeId, variant, stack = new Set()) 
 
 function layoutChildren(project, slide, parentId, parentFrame, variant, layout) {
   const childIds = slide.nodeIds.filter((id) => project.nodes[id]?.parentId === parentId && project.nodes[id]?.visible !== false), result = new Map();
+  const flowChildIds = childIds.filter((id) => project.nodes[id]?.layoutPositioning !== "absolute");
+  const absoluteChildIds = childIds.filter((id) => project.nodes[id]?.layoutPositioning === "absolute");
   const parentWidth = parentFrame.width * variant.width, parentHeight = parentFrame.height * variant.height;
   if (!childIds.length || parentWidth <= 0 || parentHeight <= 0) return result;
+  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+  for (const id of absoluteChildIds) {
+    const node = project.nodes[id], patch = slide.overrides[id] ?? {};
+    const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
+    const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
+    const widthMode = node.layoutSizing?.width ?? "fixed", heightMode = node.layoutSizing?.height ?? "fixed";
+    const width = widthMode === "hug" ? intrinsic.width
+      : widthMode === "fill" ? Math.max(.01, parentWidth * (1 - frame.x) - padding.right)
+        : node.layoutSize?.width ?? frame.width * parentWidth;
+    const height = heightMode === "hug" ? intrinsic.height
+      : heightMode === "fill" ? Math.max(.01, parentHeight * (1 - frame.y) - padding.bottom)
+        : node.layoutSize?.height ?? frame.height * parentHeight;
+    result.set(id, { x: frame.x, y: frame.y, width: width / parentWidth, height: height / parentHeight });
+  }
+  if (!flowChildIds.length) return result;
   if (layout.direction === "grid") {
-    const columns = layout.columns, { placements, rows } = gridPlacementsForChildren(childIds, project.nodes, layout);
-    const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
+    const columns = layout.columns, { placements, rows } = gridPlacementsForChildren(flowChildIds, project.nodes, layout);
     const rowGap = layout.rowGap ?? layout.gap ?? 0, columnGap = layout.columnGap ?? layout.gap ?? 0;
     const availableWidth = Math.max(0, parentWidth - padding.left - padding.right - columnGap * (columns - 1));
     const availableHeight = Math.max(0, parentHeight - padding.top - padding.bottom - rowGap * (rows - 1));
-    const children = childIds.map((id) => {
+    const children = flowChildIds.map((id) => {
       const node = project.nodes[id], patch = slide.overrides[id] ?? {};
       const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
       const intrinsic = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant) : { width: 0, height: 0 };
@@ -629,7 +678,7 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     const childrenById = new Map(children.map((child) => [child.id, child]));
     const widths = gridTrackSizes(layout, "columns", columns, availableWidth, children, placements, columnGap);
     const heights = gridTrackSizes(layout, "rows", rows, availableHeight, children, placements, rowGap);
-    for (const id of childIds) {
+    for (const id of flowChildIds) {
       const node = project.nodes[id], child = childrenById.get(id), placement = placements.get(id);
       const cellWidth = widths.slice(placement.column - 1, placement.column - 1 + placement.columnSpan).reduce((sum, size) => sum + size, 0)
         + columnGap * (placement.columnSpan - 1);
@@ -654,13 +703,12 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
   }
   const horizontal = layout.direction === "horizontal", mainExtent = horizontal ? parentWidth : parentHeight;
   const crossExtent = horizontal ? parentHeight : parentWidth;
-  const padding = { top: 0, right: 0, bottom: 0, left: 0, ...layout.padding };
   const mainStart = horizontal ? padding.left : padding.top, mainEnd = horizontal ? padding.right : padding.bottom;
   const crossStart = horizontal ? padding.top : padding.left, crossEnd = horizontal ? padding.bottom : padding.right;
   const mainAvailable = Math.max(0, mainExtent - mainStart - mainEnd), crossAvailable = Math.max(0, crossExtent - crossStart - crossEnd);
   const mainGap = horizontal ? (layout.columnGap ?? layout.gap ?? 0) : (layout.rowGap ?? layout.gap ?? 0);
   const crossGap = horizontal ? (layout.rowGap ?? layout.gap ?? 0) : (layout.columnGap ?? layout.gap ?? 0);
-  const records = childIds.map((id) => {
+  const records = flowChildIds.map((id) => {
     const node = project.nodes[id], patch = slide.overrides[id] ?? {};
     const frame = patch.variantFrames?.[variant.id] ?? patch.frame ?? node.variantFrames?.[variant.id] ?? node.frame;
     const size = node.kind === "frame" && node.style?.layout ? intrinsicFrameSize(project, slide, id, variant)
@@ -759,8 +807,10 @@ function layerFrameMap(project, slideId, variantId) {
     if (source.kind === "frame" && source.style?.layout) {
       const intrinsic = intrinsicFrameSize(project, slide, id, variant), hasFillWidth = slide.nodeIds.some((childId) => project.nodes[childId]?.parentId === id
         && project.nodes[childId].visible !== false
+        && project.nodes[childId].layoutPositioning !== "absolute"
         && project.nodes[childId].layoutSizing?.width === "fill"), hasFillHeight = slide.nodeIds.some((childId) => project.nodes[childId]?.parentId === id
         && project.nodes[childId].visible !== false
+        && project.nodes[childId].layoutPositioning !== "absolute"
         && project.nodes[childId].layoutSizing?.height === "fill");
       const widthMode = source.layoutSizing?.width ?? "fixed", heightMode = source.layoutSizing?.height ?? "fixed";
       if (widthMode === "hug" && !hasFillWidth) frame.width = intrinsic.width / variant.width;

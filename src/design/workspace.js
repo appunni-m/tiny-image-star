@@ -1,7 +1,8 @@
 import { createDesignView } from "./view.js";
 import { addDesignPageCommand, addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   addGridTrackCommand, deleteGridTrackCommand, deleteLayersCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, renameLayerCommand, setLayerLockedCommand, setLayerVisibilityCommand, snapshotPageSelection,
-  reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand, updatePageSelection } from "../project/design-page.js";
+  reorderLayerCommand, resizeFrameChildren, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand, setGridPlacementCommand,
+  setLayoutPositioningCommand, updatePageSelection } from "../project/design-page.js";
 import { canonicalJSON, clone, gridPlacementsForChildren, gridTrackDefinitions, newId, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide } from "../project/model.js";
 import { imagePlacement } from "../compositor/scene-spec.js";
 import { ProjectHistory } from "../project/history.js";
@@ -48,7 +49,7 @@ export function attachDesignWorkspace() {
     const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
     return node && resolved ? { ...clone(node), frame: clone(resolved.frame), rotation: resolved.rotation,
       visible: resolved.visible, locked: resolved.locked,
-      layoutManaged: Boolean(node.parentId && project.nodes[node.parentId]?.style?.layout) } : node ? clone(node) : null;
+      layoutManaged: Boolean(node.parentId && node.layoutPositioning !== "absolute" && project.nodes[node.parentId]?.style?.layout) } : node ? clone(node) : null;
   }
   function storeWorldGeometry(id, world) {
     const node = layer(id), resolved = resolvedLayerMap().get(id), project = renderProject();
@@ -69,7 +70,7 @@ export function attachDesignWorkspace() {
     const parent = resolvedLayerMap().get(node.parentId);
     if (!resolved || !parent || parent.frame.width <= 0 || parent.frame.height <= 0) return null;
     const localWidth = world.frame.width / parent.frame.width, localHeight = world.frame.height / parent.frame.height;
-    if (project.nodes[node.parentId]?.style?.layout) {
+    if (project.nodes[node.parentId]?.style?.layout && node.layoutPositioning !== "absolute") {
       next.frame = { ...clone(node.frame), width: localWidth, height: localHeight };
       next.rotation = (world.rotation ?? resolved.rotation) - parent.rotation;
       return next;
@@ -314,6 +315,8 @@ export function attachDesignWorkspace() {
     get("frame-layout-options").hidden = node.kind !== "frame" || !node.style?.layout;
     const parentLayout = node.parentId ? project.nodes[node.parentId]?.style?.layout : null;
     const parentHasLayout = Boolean(parentLayout), parentHasGrid = parentLayout?.direction === "grid";
+    get("layout-positioning-field").hidden = !parentHasLayout;
+    get("layout-positioning").value = node.layoutPositioning ?? "auto";
     const canHug = node.kind === "frame" && Boolean(node.style?.layout);
     get("resizing-options").hidden = !parentHasLayout && !canHug;
     for (const axis of ["width", "height"]) {
@@ -323,9 +326,9 @@ export function attachDesignWorkspace() {
       control.querySelector('option[value="fill"]').disabled = !parentHasLayout;
     }
     get("constraints-field").hidden = !node.parentId || world.layoutManaged;
-    get("grid-placement").hidden = !parentHasGrid;
-    get("grid-alignment").hidden = !parentHasGrid;
-    if (parentHasGrid) {
+    get("grid-placement").hidden = !parentHasGrid || node.layoutPositioning === "absolute";
+    get("grid-alignment").hidden = !parentHasGrid || node.layoutPositioning === "absolute";
+    if (parentHasGrid && node.layoutPositioning !== "absolute") {
       const parent = project.nodes[node.parentId], parentChildren = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === parent.id
         && project.nodes[id]?.visible !== false);
       const placement = gridPlacementsForChildren(parentChildren, project.nodes, parent.style.layout).placements.get(node.id);
@@ -1992,6 +1995,14 @@ export function attachDesignWorkspace() {
     try { history.apply(setFrameLayoutCommand(history.document, currentPage().id, id, get("frame-layout").value), "Change frame layout"); edited("Auto Layout updated."); }
     catch (error) { setStatus(error.message); }
   });
+  get("layout-positioning").addEventListener("change", () => {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (!node || !node.parentId) return;
+    try {
+      history.apply(setLayoutPositioningCommand(history.document, currentPage().id, id, get("layout-positioning").value), "Change Auto Layout positioning");
+      edited("Layer positioning updated.");
+    } catch (error) { setStatus(error.message); renderWorkspace(); }
+  });
   function updateFrameLayout(key, value) {
     const id = currentSelection()[0], node = id && layer(id); if (!node || node.kind !== "frame" || !node.style?.layout) return;
     if (node.style.layout.direction === "grid" && ["columns", "rows"].includes(key)) {
@@ -2102,7 +2113,9 @@ export function attachDesignWorkspace() {
       height: node.layoutSize?.height ?? world.frame.height * variant.height };
     layoutSize[axis] = world.frame[axis] * variant[axis];
     const layoutSizing = { width: "fixed", height: "fixed", ...node.layoutSizing, [axis]: mode };
-    history.apply({ type: "node", id, value: { ...clone(node), layoutSizing, layoutSize } }, "Change layer resizing");
+    const value = { ...clone(node), layoutSizing, layoutSize };
+    if (value.flowSizing) value.flowSizing = { ...value.flowSizing, [axis]: mode };
+    history.apply({ type: "node", id, value }, "Change layer resizing");
     edited("Layer resizing updated.");
   });
   for (const [field, axis] of [["constraint-horizontal", "horizontal"], ["constraint-vertical", "vertical"]]) {

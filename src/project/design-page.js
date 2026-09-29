@@ -185,9 +185,9 @@ export function resizeFrameChildren(project, pageId, frameId, nextFrame) {
   if (!page || !parent || parent.kind !== "frame" || !nextFrame) throw new Error("Choose a frame and a new frame size.");
   const commands = [];
   const resizeChildren = (container, oldFrame, newFrame) => {
-    if (container.style?.layout) return;
     for (const id of page.nodeIds) {
-      const child = project.nodes[id]; if (child.parentId !== container.id) continue;
+      const child = project.nodes[id];
+      if (child.parentId !== container.id || container.style?.layout && child.layoutPositioning !== "absolute") continue;
       const constraints = child.constraints ?? { horizontal: "left", vertical: "top" };
       const horizontal = constrainedAxis(child.frame.x, child.frame.width, oldFrame.width, newFrame.width, constraints.horizontal);
       const vertical = constrainedAxis(child.frame.y, child.frame.height, oldFrame.height, newFrame.height, constraints.vertical);
@@ -278,12 +278,80 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
     if (direction === "manual") {
       child.layoutSize = size;
       for (const axis of ["width", "height"]) if (child.layoutSizing[axis] === "fill") child.layoutSizing[axis] = "fixed";
+      delete child.layoutPositioning;
+      delete child.flowGrid;
+      delete child.flowSizing;
       storeManualFrame(id, child);
     }
-    if (direction !== "grid") { delete child.gridPlacement; delete child.gridAlignment; }
+    if (direction !== "grid") {
+      delete child.gridPlacement; delete child.gridAlignment; delete child.flowGrid;
+    }
     commands.push({ type: "node", id, value: child });
   }
   return { type: "group", commands };
+}
+
+/** Toggle a nested layer between Auto Layout flow and its saved absolute frame. */
+export function setLayoutPositioningCommand(project, pageId, nodeId, positioning) {
+  const page = project.slides.find((entry) => entry.id === pageId), node = project.nodes[nodeId];
+  const parent = node?.parentId && project.nodes[node.parentId];
+  if (!page?.nodeIds.includes(nodeId) || !parent || parent.kind !== "frame" || !parent.style?.layout
+    || !["auto", "absolute"].includes(positioning)) throw new Error("Choose a child of an Auto Layout frame.");
+  const value = clone(node);
+  if (positioning === "auto") {
+    delete value.layoutPositioning;
+    if (value.flowSizing) { value.layoutSizing = clone(value.flowSizing); delete value.flowSizing; }
+    if (value.flowGrid) {
+      if (value.flowGrid.placement) value.gridPlacement = clone(value.flowGrid.placement);
+      if (value.flowGrid.alignment) value.gridAlignment = clone(value.flowGrid.alignment);
+      delete value.flowGrid;
+      const nodes = { ...project.nodes, [nodeId]: value };
+      const flowChildren = page.nodeIds.filter((id) => project.nodes[id]?.parentId === parent.id && project.nodes[id]?.visible !== false);
+      try { gridPlacementsForChildren(flowChildren, nodes, parent.style.layout); }
+      catch {
+        delete value.gridPlacement; delete value.gridAlignment;
+        gridPlacementsForChildren(flowChildren, nodes, parent.style.layout);
+      }
+    }
+    return { type: "node", id: nodeId, value };
+  }
+  if (node.layoutPositioning === "absolute") return { type: "node", id: nodeId, value };
+
+  const resolvedByVariant = new Map(project.variants.map((variant) =>
+    [variant.id, resolveLayerFrames(project, pageId, variant.id)]));
+  const localFrame = (variantId) => {
+    const variant = project.variants.find((entry) => entry.id === variantId);
+    const child = resolvedByVariant.get(variantId)?.get(nodeId), container = resolvedByVariant.get(variantId)?.get(parent.id);
+    if (!variant || !child || !container || container.frame.width <= 0 || container.frame.height <= 0) return null;
+    const width = child.frame.width / container.frame.width, height = child.frame.height / container.frame.height;
+    const dx = (child.frame.x + child.frame.width / 2 - container.frame.x - container.frame.width / 2) * variant.width;
+    const dy = (child.frame.y + child.frame.height / 2 - container.frame.y - container.frame.height / 2) * variant.height;
+    const angle = -container.rotation * Math.PI / 180;
+    const xOffset = dx * Math.cos(angle) - dy * Math.sin(angle), yOffset = dx * Math.sin(angle) + dy * Math.cos(angle);
+    return { x: .5 + xOffset / (container.frame.width * variant.width) - width / 2,
+      y: .5 + yOffset / (container.frame.height * variant.height) - height / 2, width, height };
+  };
+  const baseVariant = project.variants[0], baseWorld = resolvedByVariant.get(baseVariant.id)?.get(nodeId);
+  const baseFrame = localFrame(baseVariant.id);
+  if (!baseFrame || !baseWorld) throw new Error("The layer is not available in this output size.");
+  value.frame = baseFrame;
+  const variantFrames = Object.fromEntries(project.variants.slice(1).map((variant) => [variant.id, localFrame(variant.id) ?? baseFrame]));
+  if (Object.keys(variantFrames).length) value.variantFrames = variantFrames;
+  else delete value.variantFrames;
+  value.layoutPositioning = "absolute";
+  value.layoutSize = { width: baseWorld.frame.width * baseVariant.width, height: baseWorld.frame.height * baseVariant.height };
+  value.layoutSizing = { width: "fixed", height: "fixed", ...value.layoutSizing };
+  if (Object.values(value.layoutSizing).includes("fill")) value.flowSizing = clone(value.layoutSizing);
+  for (const axis of ["width", "height"]) if (value.layoutSizing[axis] === "fill") value.layoutSizing[axis] = "fixed";
+  if (parent.style.layout.direction === "grid") {
+    const flowGrid = {};
+    if (value.gridPlacement) flowGrid.placement = clone(value.gridPlacement);
+    if (value.gridAlignment) flowGrid.alignment = clone(value.gridAlignment);
+    if (Object.keys(flowGrid).length) value.flowGrid = flowGrid;
+  }
+  delete value.gridPlacement;
+  delete value.gridAlignment;
+  return { type: "node", id: nodeId, value };
 }
 
 /** Place a child layer in a grid frame cell, with project validation fencing overlaps and bounds. */

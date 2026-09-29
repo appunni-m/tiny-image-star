@@ -634,6 +634,36 @@ export async function assertDesignWorkspace(browser, address) {
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
     gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.deepEqual(gridState.nodes[gridOtherId].gridAlignment, { vertical: "center" }, "Auto removes one axis override while preserving the other");
+    const gridFrameBeforeAbsolute = gridState.resolvedFrames[shapeId].frame;
+    await page.locator(`#design-layer-list [data-layer-id="${shapeId}"] .design-layer-select`).click();
+    assert.equal(await page.locator("#design-layout-positioning-field").isVisible(), true, "Auto Layout children expose flow/absolute positioning");
+    const mobilePositionControl = await page.locator("#design-layout-positioning").evaluate((control) => control.getBoundingClientRect().toJSON());
+    assert.ok(mobilePositionControl.height >= 43 && mobilePositionControl.left >= 0 && mobilePositionControl.right <= 390,
+      `the positioning control remains touch-sized on a phone: ${JSON.stringify(mobilePositionControl)}`);
+    await page.locator("#design-layout-positioning").selectOption("absolute");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(gridState.nodes[shapeId].layoutPositioning, "absolute");
+    assert.deepEqual(gridState.nodes[shapeId].flowGrid?.placement, { row: 1, column: 1, rowSpan: 1, columnSpan: 2 },
+      "the previous cell placement is retained while the child is absolute");
+    for (const key of ["x", "y", "width", "height"])
+      assert.ok(Math.abs(gridState.resolvedFrames[shapeId].frame[key] - gridFrameBeforeAbsolute[key]) < 1e-8,
+        `switching to absolute preserves the live grid child's ${key}`);
+    assert.equal(await page.locator("#design-x").isDisabled(), false, "absolute Auto Layout children can edit X position");
+    assert.equal(await page.locator("#design-grid-placement").isVisible(), false, "absolute children hide flow-only grid controls");
+    const absoluteX = gridState.resolvedFrames[shapeId].frame.x, pageWidth = gridState.variant.width;
+    await page.locator("#design-x").fill(String((absoluteX + 18 / pageWidth) * pageWidth));
+    await page.locator("#design-x").press("Tab");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.ok(Math.abs(gridState.resolvedFrames[shapeId].frame.x - absoluteX - 18 / pageWidth) < 1e-6,
+      "an absolute child's position edit updates the live page preview");
+    await page.locator("#design-layout-positioning").selectOption("auto");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(gridState.nodes[shapeId].layoutPositioning, undefined);
+    assert.deepEqual(gridState.nodes[shapeId].gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 2 },
+      "returning to flow restores the saved grid cell");
     await page.setViewportSize({ width: 1280, height: 850 });
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     await page.locator("#design-layout-columns").fill("2");

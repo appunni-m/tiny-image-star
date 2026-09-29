@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { addFrameAroundSelectionCommand, addShapeLayerCommand, addTextLayerCommand, addVectorLayerCommand, appendDesignImagesCommand, createDesignPageProject,
   deleteLayerCommand, deleteLayersCommand, renameLayerCommand, reorderLayerCommand, resizeFrameChildren, setLayerLockedCommand,
   addGridTrackCommand, deleteGridTrackCommand, gridTrackGroupBounds, moveGridTrackCommand, reorderGridTrackCommand, resizeGridTrackCountCommand, setFrameLayoutCommand, setGridAlignmentCommand,
-  setGridPlacementCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
+  setGridPlacementCommand, setLayoutPositioningCommand, setLayerVisibilityCommand, snapshotPageSelection, updatePageSelection } from "../src/project/design-page.js";
 import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
@@ -531,6 +531,84 @@ test("Auto Layout Hug sizes a frame around fixed children and Fill makes the par
     "hidden Fill children no longer reserve Auto Layout space or force the parent to Fixed");
   const invalid = structuredClone(project); invalid.nodes.first.layoutSizing.width = "fill"; invalid.nodes.frame.style.layout = null;
   assert.throws(() => validateProject(invalid), /Auto Layout/);
+});
+
+test("absolute Auto Layout children keep their current output frames and leave flow until restored", () => {
+  const project = createSceneProject({ id: "layout-absolute", variants: [{ id: "page", width: 400, height: 300 }, { id: "wide", width: 800, height: 600 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "overlay", "last"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: .1, y: .1, width: .5, height: .5 },
+        layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 200, height: 150 },
+        style: { layout: { direction: "horizontal", gap: 10, padding: { top: 10, right: 10, bottom: 10, left: 10 }, justify: "start", align: "start" } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .15, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 60, height: 30 } },
+      overlay: { id: "overlay", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "right", vertical: "bottom" },
+        frame: { x: 0, y: 0, width: .1, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 40, height: 20 } },
+      last: { id: "last", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .125, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 50, height: 30 } },
+    } });
+  const before = new Map(project.variants.map((variant) => [variant.id, resolveLayerFrames(project, "page-one", variant.id)]));
+  const history = new ProjectHistory(project);
+  history.apply(setLayoutPositioningCommand(history.document, "page-one", "overlay", "absolute"), "Position absolutely");
+  const absolute = new Map(project.variants.map((variant) => [variant.id, resolveLayerFrames(history.document, "page-one", variant.id)]));
+  assert.equal(history.document.nodes.overlay.layoutPositioning, "absolute");
+  for (const variant of project.variants) for (const key of ["x", "y", "width", "height"])
+    assert.ok(Math.abs(absolute.get(variant.id).get("overlay").frame[key] - before.get(variant.id).get("overlay").frame[key]) < 1e-9,
+      `${variant.id} preserves the selected overlay's ${key} when leaving flow`);
+  assert.ok(Math.abs(absolute.get("page").get("last").frame.x - before.get("page").get("last").frame.x) > .05,
+    "flow siblings close the gap left by the absolute child");
+  assert.ok(Math.abs(absolute.get("page").get("first").frame.x - before.get("page").get("first").frame.x) < 1e-9,
+    "earlier flow siblings keep their positions");
+
+  history.apply(setLayoutPositioningCommand(history.document, "page-one", "overlay", "auto"), "Restore flow");
+  assert.equal(history.document.nodes.overlay.layoutPositioning, undefined);
+  const restored = resolveLayerFrames(history.document, "page-one");
+  assert.ok(Math.abs(restored.get("overlay").frame.x - before.get("page").get("overlay").frame.x) < 1e-9,
+    "restoring Auto Layout flow returns the child to its original position");
+  assert.ok(Math.abs(restored.get("last").frame.x - before.get("page").get("last").frame.x) < 1e-9,
+    "restoring flow also restores the sibling positions");
+});
+
+test("absolute grid children vacate and restore their saved cell and cell alignment", () => {
+  const project = createSceneProject({ id: "grid-absolute", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "first", "second"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: 1, height: 1 },
+        style: { layout: { direction: "grid", columns: 2, rows: 0, gap: 10, justify: "start", align: "start" } } },
+      first: { id: "first", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .25, height: .2 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 80, height: 50 },
+        gridPlacement: { row: 1, column: 1, rowSpan: 1, columnSpan: 2 }, gridAlignment: { vertical: "center" } },
+      second: { id: "second", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .2, height: .2 }, layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 60, height: 50 } },
+    } });
+  const original = resolveLayerFrames(project, "page-one"), history = new ProjectHistory(project);
+  history.apply(setLayoutPositioningCommand(history.document, "page-one", "first", "absolute"), "Position grid child absolutely");
+  assert.equal(history.document.nodes.first.layoutPositioning, "absolute");
+  assert.deepEqual(history.document.nodes.first.flowGrid, { placement: { row: 1, column: 1, rowSpan: 1, columnSpan: 2 }, alignment: { vertical: "center" } });
+  assert.ok(Math.abs(resolveLayerFrames(history.document, "page-one").get("first").frame.x - original.get("first").frame.x) < 1e-9);
+  assert.ok(Math.abs(resolveLayerFrames(history.document, "page-one").get("second").frame.y - original.get("second").frame.y) > .05,
+    "the flow sibling uses the grid cell vacated by the absolute child");
+
+  history.apply(setLayoutPositioningCommand(history.document, "page-one", "first", "auto"), "Restore grid child");
+  assert.equal(history.document.nodes.first.flowGrid, undefined);
+  assert.deepEqual(history.document.nodes.first.gridPlacement, { row: 1, column: 1, rowSpan: 1, columnSpan: 2 });
+  assert.deepEqual(history.document.nodes.first.gridAlignment, { vertical: "center" });
+  assert.ok(Math.abs(resolveLayerFrames(history.document, "page-one").get("first").frame.x - original.get("first").frame.x) < 1e-9);
+});
+
+test("frame constraints resize absolute children in an Auto Layout frame", () => {
+  const project = createSceneProject({ id: "absolute-constraints", variants: [{ id: "page", width: 400, height: 300 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "flow", "overlay"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: .5, height: .5 },
+        layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 200, height: 150 },
+        style: { layout: { direction: "horizontal", gap: 8 } } },
+      flow: { id: "flow", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .1, height: .1 }, layoutSize: { width: 40, height: 30 } },
+      overlay: { id: "overlay", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "right", vertical: "bottom" },
+        layoutPositioning: "absolute", frame: { x: .8, y: .7, width: .1, height: .1 }, layoutSize: { width: 20, height: 15 } },
+    } });
+  const [command] = resizeFrameChildren(project, "page-one", "frame", { ...project.nodes.frame.frame, width: .75 });
+  assert.equal(command.id, "overlay", "flow-managed siblings do not receive manual constraint edits");
+  assert.ok(Math.abs(command.value.frame.x - 13 / 15) < 1e-8, "Right anchoring carries the saved edge gap into the wider container");
+  assert.ok(Math.abs(command.value.frame.width - 1 / 15) < 1e-8, "Fixed absolute width stays constant in output pixels");
 });
 
 test("a nested Hug frame resolves its content size inside a manually positioned parent", () => {
