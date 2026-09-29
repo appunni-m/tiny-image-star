@@ -205,6 +205,15 @@ function colorField(label, prop, value, opacity = 100) {
   const safe = /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#ffffff';
   return `<div class="fill-row"><label class="color-swatch" title="${label}"><input class="prop-input" data-prop="${prop}" type="color" value="${safe}" aria-label="${label} color"/></label><input class="prop-input color-value" data-prop="${prop}" type="text" value="${safe}" maxlength="7" aria-label="${label} color value"/><input class="prop-input fill-opacity" data-prop="fillOpacity" type="number" min="0" max="100" value="${opacity}" title="Opacity percent"/></div>`;
 }
+function networkFaceControls(node) {
+  return (node.faces || []).map((face, index) => {
+    const color = /^#[0-9a-f]{6}$/i.test(face.fill || '') ? face.fill : getNodeColor(state.document, node, 'fill');
+    const safeColor = /^#[0-9a-f]{6}$/i.test(color || '') ? color : '#ffffff';
+    const opacity = Math.round((face.fillOpacity ?? 1) * 100);
+    const label = `Region ${index + 1}`;
+    return `<div class="network-face-control"><div class="network-face-heading"><span>${label}</span><output>${opacity}%</output></div><div class="network-face-fields"><label class="color-swatch" title="${label} fill"><input type="color" data-network-face-fill="${escapeHtml(face.id)}" value="${safeColor}" aria-label="${label} fill color"${node.locked ? ' disabled' : ''}/></label><input type="range" min="0" max="100" value="${opacity}" data-network-face-opacity="${escapeHtml(face.id)}" aria-label="${label} opacity"${node.locked ? ' disabled' : ''}/></div></div>`;
+  }).join('');
+}
 function variableBindingControl(node, kind) {
   const property = { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind];
   const variables = state.document.variables || [];
@@ -558,6 +567,7 @@ function renderInspector() {
   } else if (node.type === 'network') {
     const selectedVertex = state.selectedVectorPoint?.nodeId === node.id && state.selectedVectorPoint.vertexId;
     body += section('Vector network', `<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point, then use Pen to branch from it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
+    if (node.faces.length) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button><div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
@@ -1388,6 +1398,21 @@ function updateInspectorInput(event) {
   }
   renderer.invalidate();
 }
+
+function updateNetworkFaceInput(input) {
+  const node = selectedNodes().length === 1 && selectedNodes()[0].type === 'network' ? selectedNodes()[0] : null;
+  const face = node?.faces?.find(item => item.id === input.dataset.networkFaceFill || item.id === input.dataset.networkFaceOpacity);
+  if (!node || node.locked || !face) return;
+  if (!state.controlEdit) { checkpoint('Edit vector region'); state.controlEdit = true; }
+  if (input.matches('[data-network-face-fill]')) face.fill = input.value;
+  else {
+    face.fillOpacity = Number(input.value) / 100;
+    input.parentElement.parentElement.querySelector('output').value = `${input.value}%`;
+  }
+  recordNodeComponentOverrides(node, ['faces']);
+  renderer.invalidate();
+}
+
 function finishInspectorInput() {
   if (!state.controlEdit) return;
   clearTimeout(state.statusTimer);
@@ -2529,6 +2554,8 @@ function initEvents() {
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
+    const networkFace = event.target.closest('[data-network-face-fill], [data-network-face-opacity]');
+    if (networkFace) { updateNetworkFaceInput(networkFace); return; }
     const quality = event.target.closest('[data-export-field="quality"]');
     if (quality) { quality.parentElement.querySelector('output').value = `${quality.value}%`; return; }
     const guideField = event.target.closest('[data-guide-field]');
@@ -2545,6 +2572,7 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
+    if (event.target.matches('[data-network-face-fill], [data-network-face-opacity]')) { finishInspectorInput(); return; }
     const guideField = event.target.closest('[data-guide-field]');
     if (guideField) { updateLayoutGuide(guideField, true); return; }
     const exportField = event.target.closest('[data-export-field]');

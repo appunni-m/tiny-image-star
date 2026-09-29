@@ -244,6 +244,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .vector-point-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .vector-point-actions .add-fill { margin: 0; }
 .vector-point-actions .add-fill:disabled { color: #bbb; cursor: default; }
+.network-face-control { display: grid; gap: 5px; margin-top: 8px; }
+.network-face-heading { display: flex; align-items: center; justify-content: space-between; color: #707070; font-size: 10px; }
+.network-face-heading output { color: #888; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.network-face-fields { display: grid; grid-template-columns: 29px minmax(0, 1fr); align-items: center; gap: 8px; }
+.network-face-fields input[type=range] { width: 100%; accent-color: var(--blue); }
 .slider-row { display: grid; grid-template-columns: 74px 1fr 33px; align-items: center; gap: 7px; margin: 8px 0; }
 .slider-row label { color: #666; font-size: 10px; }
 .slider-row input[type=range] { width: 100%; accent-color: #0d99ff; }

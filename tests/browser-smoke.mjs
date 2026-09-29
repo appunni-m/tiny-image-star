@@ -397,6 +397,18 @@ try {
   vectorDocument = vectorRecords[0]?.document;
   savedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(savedNetwork?.faces.length === 1 && savedNetwork.edges.length === 7, 'closed network region was not persisted as a face');
+  const faceFillInput = app.querySelector('[data-network-face-fill]');
+  const faceOpacityInput = app.querySelector('[data-network-face-opacity]');
+  assert(faceFillInput && faceOpacityInput, 'closed vector regions did not expose independent fill controls');
+  faceFillInput.value = '#e14a6d'; faceFillInput.dispatchEvent(new Event('input', { bubbles: true }));
+  faceOpacityInput.value = '62'; faceOpacityInput.dispatchEvent(new Event('input', { bubbles: true }));
+  faceFillInput.dispatchEvent(new Event('change', { bubbles: true }));
+  faceOpacityInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  savedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedNetwork.faces[0].fill === '#e14a6d' && savedNetwork.faces[0].fillOpacity === .62, 'region fill color and opacity did not autosave independently');
 
   const positionedVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
   const editableEdge = positionedVector.node.edges.find(edge => edge.control1 || edge.control2);
@@ -433,7 +445,8 @@ try {
   vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
   vectorDocument = vectorRecords[0]?.document;
   const savedEditedNetwork = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
-  assert(savedEditedNetwork?.vertices.length === 7 && savedEditedNetwork.edges.length === 7 && savedEditedNetwork.faces.length === 1, 'network editing did not preserve the branch and closed region on disk');
+  assert(savedEditedNetwork?.vertices.length === 7 && savedEditedNetwork.edges.length === 7 && savedEditedNetwork.faces.length === 1
+    && savedEditedNetwork.faces[0].fill === '#e14a6d' && savedEditedNetwork.faces[0].fillOpacity === .62, 'network editing did not preserve the branch, region paint, and closed region on disk');
 
   const variablesDocument = createDocument();
   const brandColors = createVariableCollection(variablesDocument, 'Brand colors');
@@ -721,7 +734,7 @@ try {
   const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
   assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
