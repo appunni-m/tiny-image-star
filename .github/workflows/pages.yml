@@ -49,6 +49,7 @@ jobs:
       - uses: actions/configure-pages@v6
       - run: npm ci
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
       - run: TINY_STAR_BROWSER_ROOT=_site npm run verify:browser
       - uses: actions/upload-pages-artifact@v5
         with:
