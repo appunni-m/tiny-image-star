@@ -11,7 +11,7 @@ import { LocalImageEngine } from './image-engine.js';
 import { downloadLocalPackage, loadImageAsset, loadLatestDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
-import { addPrototypeInteraction, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
 
@@ -26,7 +26,9 @@ const state = {
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
   bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '',
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
-  prototypeSourceId: null, prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
+  prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
+  prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
+  prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
   presenting: null
 };
 const history = new History(120);
@@ -249,12 +251,16 @@ function prototypeInspector() {
     ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start">${state.document.prototypeStartPoint?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
     : `<p class="prototype-hint">${start ? `Present starts at “${escapeHtml(start.frame.name)}”.` : 'Create a frame to make a prototype.'}</p>`;
   const interactions = (node?.interactions || []).map(interaction => {
-    const target = findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node;
-    const targetPage = state.document.pages.find(page => page.id === interaction.destinationPageId);
-    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">↗</span><span class="prototype-interaction-copy"><strong>${escapeHtml(interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap')}</strong><small>${escapeHtml(target?.name || 'Missing frame')} · ${escapeHtml(targetPage?.name || 'Page')}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    const target = interaction.destinationId ? findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node : null;
+    const targetPage = interaction.destinationPageId ? state.document.pages.find(page => page.id === interaction.destinationPageId) : null;
+    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'close-overlay' ? 'Close overlay' : 'Navigate to';
+    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap';
+    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : 'Missing frame';
+    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'open-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
-  const connectState = state.prototypeSourceId === node?.id ? '<div class="prototype-connect-hint">Click a destination frame on the canvas. Press Escape to cancel.</div>' : '';
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Transition<select id="prototype-transition" class="select-field"><option value="instant"${state.prototypeTransition === 'instant' ? ' selected' : ''}>Instant</option><option value="dissolve"${state.prototypeTransition === 'dissolve' ? ' selected' : ''}>Dissolve</option><option value="move-left"${state.prototypeTransition === 'move-left' ? ' selected' : ''}>Move in · left</option><option value="move-right"${state.prototypeTransition === 'move-right' ? ' selected' : ''}>Move in · right</option></select></label><label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label><button class="primary-button prototype-add-link" data-action="prototype-connect">＋ Add interaction</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
+  const overlayControls = state.prototypeAction === 'open-overlay' ? `<label>Position<select id="prototype-overlay-position" class="select-field">${[['center','Center'],['top-left','Top left'],['top-center','Top center'],['top-right','Top right'],['left-center','Left center'],['right-center','Right center'],['bottom-left','Bottom left'],['bottom-center','Bottom center'],['bottom-right','Bottom right']].map(([value, label]) => `<option value="${value}"${state.prototypeOverlayPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label><span>Dismiss on outside click</span><input id="prototype-overlay-outside" type="checkbox"${state.prototypeOverlayOutsideClick ? ' checked' : ''}/></label><label><span>Show background</span><input id="prototype-overlay-background" type="checkbox"${state.prototypeOverlayBackground ? ' checked' : ''}/></label>${state.prototypeOverlayBackground ? `<label>Background<input id="prototype-overlay-color" type="color" value="${state.prototypeOverlayBackgroundColor}"/><input id="prototype-overlay-opacity" type="range" min="0" max="100" value="${Math.round(state.prototypeOverlayBackgroundOpacity * 100)}" aria-label="Overlay background opacity"/></label>` : ''}` : '';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option></select></label>${state.prototypeAction !== 'close-overlay' ? `<label>Transition<select id="prototype-transition" class="select-field"><option value="instant"${state.prototypeTransition === 'instant' ? ' selected' : ''}>Instant</option><option value="dissolve"${state.prototypeTransition === 'dissolve' ? ' selected' : ''}>Dissolve</option><option value="move-left"${state.prototypeTransition === 'move-left' ? ' selected' : ''}>Move in · left</option><option value="move-right"${state.prototypeTransition === 'move-right' ? ' selected' : ''}>Move in · right</option></select></label><label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect">${state.prototypeAction === 'close-overlay' ? '＋ Add close overlay' : '＋ Add interaction'}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow.</span></section></div>`;
 }
@@ -508,13 +514,19 @@ function onCanvasPointerDown(event) {
     try {
       checkpoint('Add prototype interaction');
       addPrototypeInteraction(state.document, state.prototypeSourceId, target.id, {
+        action: state.prototypeAction,
         trigger: state.prototypeTrigger,
         transition: state.prototypeTransition,
-        duration: state.prototypeDuration
+        duration: state.prototypeDuration,
+        overlayPosition: state.prototypeOverlayPosition,
+        overlayOutsideClick: state.prototypeOverlayOutsideClick,
+        overlayBackground: state.prototypeOverlayBackground,
+        overlayBackgroundColor: state.prototypeOverlayBackgroundColor,
+        overlayBackgroundOpacity: state.prototypeOverlayBackgroundOpacity
       });
       state.prototypeSourceId = null;
       renderInspector(); queueSave(); renderer.invalidate();
-      showToast(`Connected to “${target.name}”.`);
+      showToast(state.prototypeAction === 'open-overlay' ? `Overlay “${target.name}” added.` : `Connected to “${target.name}”.`);
     } catch (error) { showToast(error.message); }
     event.preventDefault(); return;
   }
@@ -1209,13 +1221,44 @@ function renamePage(pageId) {
   checkpoint('Rename page'); page.name = name.trim() || page.name; renderUI(); queueSave();
 }
 
+function overlayPositionInFrame(position, frame, overlay) {
+  if (position === 'center') return { x: (frame.width - overlay.width) / 2, y: (frame.height - overlay.height) / 2 };
+  const xSide = position.endsWith('left') ? 'left' : position.endsWith('right') ? 'right' : 'center';
+  const ySide = position.startsWith('top') ? 'top' : position.startsWith('bottom') ? 'bottom' : 'center';
+  const gap = 16;
+  return {
+    x: xSide === 'left' ? gap : xSide === 'right' ? frame.width - overlay.width - gap : (frame.width - overlay.width) / 2,
+    y: ySide === 'top' ? gap : ySide === 'bottom' ? frame.height - overlay.height - gap : (frame.height - overlay.height) / 2
+  };
+}
+
+function isNodeInSubtree(root, nodeId) {
+  let found = false;
+  walkNodes([root], ({ node }) => { if (node.id === nodeId) found = true; });
+  return found;
+}
+
 function renderPresentationFrame(interaction = null) {
   if (!state.presenting || !presentRenderState) return;
   const target = findNodeAcrossPages(state.document, state.presenting.frameId);
   if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); $('#present-dialog').close(); return; }
   const displayFrame = structuredClone(target.node);
   displayFrame.x = 0; displayFrame.y = 0;
-  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: [displayFrame] }], colorStyles: state.document.colorStyles || [] };
+  const sceneChildren = [displayFrame];
+  for (const [index, overlayState] of state.presenting.overlays.entries()) {
+    const overlayTarget = findNode(state.document, overlayState.frameId, overlayState.pageId) || findNodeAcrossPages(state.document, overlayState.frameId);
+    if (!overlayTarget || overlayTarget.node.type !== 'frame') continue;
+    if (overlayState.background) sceneChildren.push({
+      id: `presentation-overlay-backdrop-${index}`, type: 'rectangle', name: 'Overlay background',
+      x: 0, y: 0, width: displayFrame.width, height: displayFrame.height, rotation: 0,
+      opacity: overlayState.backgroundOpacity, visible: true, fill: overlayState.backgroundColor,
+      fillOpacity: 1, stroke: null, strokeWidth: 0, radius: 0, clip: false, children: []
+    });
+    const displayOverlay = structuredClone(overlayTarget.node);
+    Object.assign(displayOverlay, overlayPositionInFrame(overlayState.position, displayFrame, displayOverlay));
+    sceneChildren.push(displayOverlay);
+  }
+  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: sceneChildren }], colorStyles: state.document.colorStyles || [] };
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
   const rect = $('#present-canvas').getBoundingClientRect();
@@ -1225,7 +1268,10 @@ function renderPresentationFrame(interaction = null) {
   presentRenderState.panX = (width - displayFrame.width * presentRenderState.zoom) / 2;
   presentRenderState.panY = (height - displayFrame.height * presentRenderState.zoom) / 2;
   $('#present-title').textContent = target.node.name;
-  $('#present-back').disabled = state.presenting.stack.length === 0;
+  $('#present-back').disabled = state.presenting.stack.length === 0 && state.presenting.overlays.length === 0;
+  $('#present-dialog').dataset.frameId = state.presenting.frameId;
+  $('#present-dialog').dataset.overlayDepth = String(state.presenting.overlays.length);
+  $('#present-dialog').dataset.navigationDepth = String(state.presenting.stack.length);
   $('#present-dialog').style.setProperty('--present-duration', `${Math.max(0, interaction?.duration ?? 240)}ms`);
   if (interaction?.transition && interaction.transition !== 'instant' && interaction.duration > 0) {
     const enterFrom = interaction.transition === 'move-left' ? 'translateX(22px)' : interaction.transition === 'move-right' ? 'translateX(-22px)' : 'translateX(0)';
@@ -1247,7 +1293,7 @@ function startPresentation(selectedId = null) {
   const start = getPrototypeStartFrame(state.document, selectedId);
   if (!start) { showToast('Create a frame before presenting this design.'); return; }
   const dialog = $('#present-dialog');
-  state.presenting = { pageId: start.page.id, frameId: start.frame.id, stack: [], lastHoverInteractionId: null };
+  state.presenting = createPrototypeSession(start);
   presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
   dialog.showModal();
   requestAnimationFrame(() => {
@@ -1257,13 +1303,9 @@ function startPresentation(selectedId = null) {
 }
 
 function navigatePresentation(interaction) {
-  if (!state.presenting || interaction.action !== 'navigate') return;
-  const target = findNode(state.document, interaction.destinationId, interaction.destinationPageId);
-  if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); return; }
-  state.presenting.stack.push({ pageId: state.presenting.pageId, frameId: state.presenting.frameId });
-  state.presenting.pageId = interaction.destinationPageId;
-  state.presenting.frameId = interaction.destinationId;
-  state.presenting.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+  if (!state.presenting) return;
+  const result = applyPrototypeInteraction(state.document, state.presenting, interaction);
+  if (!result) { showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.'); return; }
   renderPresentationFrame(interaction);
 }
 
@@ -1271,6 +1313,17 @@ function handlePresentationPointer(event, trigger) {
   if (!state.presenting || !presentRenderState?.document) return;
   const page = presentRenderState.document.pages[0];
   const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState));
+  const topOverlayState = state.presenting.overlays.at(-1);
+  if (trigger === 'on-click' && topOverlayState) {
+    const overlayTarget = findNode(state.document, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(state.document, topOverlayState.frameId);
+    const insideOverlay = hit && overlayTarget && isNodeInSubtree(overlayTarget.node, hit.id);
+    if (!insideOverlay && topOverlayState.outsideClick) {
+      state.presenting.overlays.pop();
+      state.presenting.lastHoverInteractionId = null;
+      renderPresentationFrame();
+      return;
+    }
+  }
   if (!hit) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
   const found = findClickableInteraction(state.document, state.presenting.pageId, hit.id, trigger);
   if (!found) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
@@ -1279,11 +1332,7 @@ function handlePresentationPointer(event, trigger) {
 }
 
 function backPresentation() {
-  if (!state.presenting?.stack.length) return;
-  const previous = state.presenting.stack.pop();
-  state.presenting.pageId = previous.pageId;
-  state.presenting.frameId = previous.frameId;
-  state.presenting.lastHoverInteractionId = null;
+  if (!backPrototypeSession(state.presenting)) return;
   renderPresentationFrame();
 }
 
@@ -1334,6 +1383,17 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
   } else if (action === 'prototype-connect') {
     if (!node) { showToast('Select a layer to add an interaction.'); return; }
+    if (state.prototypeAction === 'close-overlay') {
+      try {
+        checkpoint('Add close overlay interaction');
+        addPrototypeInteraction(state.document, node.id, null, {
+          action: 'close-overlay', trigger: state.prototypeTrigger,
+          transition: state.prototypeTransition, duration: state.prototypeDuration
+        });
+        renderInspector(); queueSave(); renderer.invalidate(); showToast('Close overlay interaction added.');
+      } catch (error) { showToast(error.message); }
+      return;
+    }
     state.prototypeSourceId = node.id;
     state.inspectorTab = 'prototype';
     $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === 'prototype'); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === 'prototype')); });
@@ -1445,14 +1505,21 @@ function initEvents() {
       state.prototypeDuration = Number(event.target.value);
       $('#prototype-duration-value').textContent = `${(state.prototypeDuration / 1000).toFixed(1)} s`;
     }
+    if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('change', event => {
     if (event.target.matches('[data-prop]')) finishInspectorInput();
     if (event.target.matches('[data-variant-property]')) changeInstanceVariant(event.target.dataset.instanceId, event.target.dataset.variantProperty, event.target.value);
     if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
+    if (event.target.id === 'prototype-action') { state.prototypeAction = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
     if (event.target.id === 'prototype-transition') state.prototypeTransition = event.target.value;
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
+    if (event.target.id === 'prototype-overlay-position') state.prototypeOverlayPosition = event.target.value;
+    if (event.target.id === 'prototype-overlay-outside') state.prototypeOverlayOutsideClick = event.target.checked;
+    if (event.target.id === 'prototype-overlay-background') { state.prototypeOverlayBackground = event.target.checked; renderInspector(); }
+    if (event.target.id === 'prototype-overlay-color') state.prototypeOverlayBackgroundColor = event.target.value;
+    if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => { const button = event.target.closest('[data-action]'); if (button) applyInspectorAction(button.dataset.action, button.dataset); });
@@ -1517,6 +1584,7 @@ function onKeyDown(event) {
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
+  if (key === 'escape' && state.presenting?.overlays.length) { event.preventDefault(); backPresentation(); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
   if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }

@@ -171,6 +171,34 @@ try {
   dispatchCanvasPointer(app, designCanvas, 'pointerup', targetX, targetY, 83);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes(destinationFrame.name), 'frame interaction connection');
 
+  dispatchClick(app.querySelector('.tool-button[data-tool="frame"]'));
+  const overlayX = canvasRect.left + panCenter.x - 550;
+  const overlayY = canvasRect.top + panCenter.y;
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 84);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 84);
+  await waitFor(() => app.querySelectorAll('.layer-row').length === 6, 'prototype overlay frame');
+  await new Promise(resolve => setTimeout(resolve, 350));
+  const overlayRecords = await readStore('documents'); overlayRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const overlayDocument = overlayRecords[0]?.document;
+  const overlayFrame = overlayDocument?.pages[0]?.children.find(node => node.type === 'frame' && node.id !== sourceFrame.id && node.id !== destinationFrame.id);
+  assert(overlayFrame, 'the overlay destination frame was not saved');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
+  let actionSelect = app.querySelector('#prototype-action');
+  actionSelect.value = 'open-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  const overlayPosition = app.querySelector('#prototype-overlay-position');
+  overlayPosition.value = 'center'; overlayPosition.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 85);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 85);
+  await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Open overlay'), 'prototype overlay connection');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${overlayFrame.id}"]`));
+  actionSelect = app.querySelector('#prototype-action');
+  actionSelect.value = 'close-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes('Close overlay'), 'close overlay interaction');
+
   app.defaultView.prompt = () => 'Smoke white';
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
   dispatchClick(app.querySelector('[data-action="create-color-style"]'));
@@ -201,7 +229,7 @@ try {
   const instanceButton = app.querySelector('[data-action="create-component-instance"]');
   assert(instanceButton?.dataset.componentId === componentId, 'component inspector did not expose instance creation');
   dispatchClick(instanceButton);
-  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 6, 'component instance creation');
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 7, 'component instance creation');
   const instanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const instanceId = instanceRow?.dataset.layerId;
   assert(instanceId && instanceId !== destinationFrame.id, 'the component instance has no independent layer identity');
@@ -260,7 +288,7 @@ try {
   await waitFor(() => app.querySelector('#components-list [data-component-set-id]'), 'component set creation');
   const componentSetCard = app.querySelector('#components-list [data-component-set-id]');
   dispatchClick(componentSetCard);
-  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 7, 'variant set instance creation');
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 8, 'variant set instance creation');
   const variantInstanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const variantInstanceId = variantInstanceRow?.dataset.layerId;
   const variantSelect = app.querySelector('[data-variant-property="State"]');
@@ -278,8 +306,20 @@ try {
   const presentCanvas = app.querySelector('#present-canvas');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 84);
   await waitFor(() => !app.querySelector('#present-back')?.disabled, 'prototype navigation and history');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'prototype destination frame');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 86);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'prototype overlay presentation');
+  assert(app.querySelector('#present-dialog').dataset.frameId === destinationFrame.id, 'opening an overlay replaced the underlying frame');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 87);
+  assert(!app.querySelector('#present-back').disabled, 'opening an overlay disabled presentation history');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '0', 'close overlay interaction');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 89);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'overlay reopen for outside dismissal');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + 2, presentCanvas.getBoundingClientRect().top + 2, 90);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '0', 'outside click overlay dismissal');
   dispatchClick(app.querySelector('#present-back'));
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
 
@@ -342,7 +382,7 @@ try {
   const editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(editedVector.points[1].out.y !== editablePoint.out.y, 'canvas Bézier handle editing did not update the path');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

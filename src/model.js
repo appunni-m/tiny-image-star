@@ -35,6 +35,10 @@ const defaults = {
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] }
 };
+const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
+const prototypeTriggers = new Set(['on-click', 'while-hovering']);
+const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
+const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
@@ -509,7 +513,21 @@ export function validateDocument(document) {
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
       if (node.autoLayout && (node.type !== 'frame' || !['horizontal', 'vertical'].includes(node.autoLayout.axis) || !Number.isFinite(Number(node.autoLayout.gap)))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);
-      if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => !item || typeof item.id !== 'string' || item.action !== 'navigate' || typeof item.destinationId !== 'string'))) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
+      if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => {
+        if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
+        if (item.action === 'close-overlay' ? item.destinationId != null : typeof item.destinationId !== 'string') return true;
+        if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
+        if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
+        if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
+        if (item.action === 'open-overlay') {
+          if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;
+          if (item.overlayOutsideClick != null && typeof item.overlayOutsideClick !== 'boolean') return true;
+          if (item.overlayBackground != null && typeof item.overlayBackground !== 'boolean') return true;
+          if (item.overlayBackgroundColor != null && !/^#[0-9a-f]{6}$/i.test(item.overlayBackgroundColor)) return true;
+          if (item.overlayBackgroundOpacity != null && (!Number.isFinite(Number(item.overlayBackgroundOpacity)) || Number(item.overlayBackgroundOpacity) < 0 || Number(item.overlayBackgroundOpacity) > 1)) return true;
+        }
+        return false;
+      }))) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
       if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
       if (node.componentSourceKey != null && typeof node.componentSourceKey !== 'string') throw new TypeError(`Invalid component source key on ${node.name || node.id}.`);

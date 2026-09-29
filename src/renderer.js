@@ -317,7 +317,7 @@ export class SceneRenderer {
     const destinationIds = new Set();
     for (const source of positions.values()) {
       for (const interaction of source.node.interactions || []) {
-        if (interaction.action !== 'navigate' || (interaction.destinationPageId && interaction.destinationPageId !== page.id)) continue;
+        if (!['navigate', 'open-overlay'].includes(interaction.action) || (interaction.destinationPageId && interaction.destinationPageId !== page.id)) continue;
         const destination = positions.get(interaction.destinationId);
         if (!destination) continue;
         destinationIds.add(interaction.destinationId);
