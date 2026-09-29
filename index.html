@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8f8fa" />
+    <title>Design — Local Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <button class="brand-mark" aria-label="Main menu" title="Main menu"><span></span><span></span><span></span><span></span></button>
+        <div class="file-title"><input id="file-name" aria-label="File name" value="Untitled" /><span id="save-state">Saved locally</span></div>
+        <nav class="menu-row" aria-label="Main menu">
+          <button data-menu="File">File</button><button data-menu="Edit">Edit</button><button data-menu="View">View</button>
+          <button data-menu="Object">Object</button><button data-menu="Text">Text</button><button data-menu="Arrange">Arrange</button>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-button" id="undo" title="Undo (⌘Z)" aria-label="Undo">↶</button>
+          <button class="icon-button" id="redo" title="Redo (⇧⌘Z)" aria-label="Redo">↷</button>
+          <button class="avatar" title="Local file">L</button>
+          <button class="share-button" id="share">Share</button>
+          <button class="present-button" id="present"><span>▶</span> Present</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="left-panel" aria-label="Pages and layers">
+          <div class="file-panel-head"><span class="crumb">Drafts</span><span class="crumb-sep">/</span><span class="crumb active">Untitled</span><button class="more-button" aria-label="File options">•••</button></div>
+          <section class="pages-section">
+            <div class="panel-section-title"><span>Pages</span><button class="tiny-button" id="add-page" title="Add page">＋</button></div>
+            <div class="page-row selected"><span class="page-glyph">▧</span><span id="page-name">Page 1</span><button class="row-more" aria-label="Page options">•••</button></div>
+          </section>
+          <section class="layers-section">
+            <div class="panel-section-title"><span>Layers</span><div><button class="tiny-button" id="search-layers" title="Search layers">⌕</button><button class="tiny-button" id="layer-options" title="Layer options">☷</button></div></div>
+            <div class="layer-list" id="layer-list" role="tree" aria-label="Layers"></div>
+          </section>
+          <div class="left-panel-footer"><span class="green-dot"></span> Saved on this device</div>
+        </aside>
+
+        <main class="canvas-area" id="canvas-area" aria-label="Design canvas">
+          <div class="canvas-top-controls">
+            <button class="canvas-control" id="toggle-left" title="Show or hide layers">☰</button>
+            <div class="breadcrumb-canvas"><span>Page 1</span><span>›</span><strong>Design</strong></div>
+            <div class="canvas-top-right"><button class="canvas-control" title="Resources">◈</button><button class="canvas-control" title="Comments">▤</button></div>
+          </div>
+          <canvas id="design-canvas" aria-label="Design canvas. Use the toolbar to add frames and shapes."></canvas>
+          <div class="canvas-hint" id="canvas-hint">Choose a tool, then drag on the canvas to create. Hold <kbd>Space</kbd> to pan.</div>
+          <div class="bottom-toolbar" role="toolbar" aria-label="Design tools">
+            <button class="tool-button active" data-tool="select" title="Move (V)" aria-label="Move tool"><span class="cursor-icon">↖</span></button>
+            <button class="tool-button" data-tool="frame" title="Frame (F)" aria-label="Frame tool"><span>▣</span><small>▾</small></button>
+            <button class="tool-button" data-tool="rect" title="Rectangle (R)" aria-label="Rectangle tool"><span>▱</span><small>▾</small></button>
+            <button class="tool-button" data-tool="ellipse" title="Ellipse (O)" aria-label="Ellipse tool"><span>◯</span></button>
+            <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text tool"><span>T</span></button>
+            <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen tool"><span>⌁</span></button>
+            <span class="tool-divider"></span>
+            <button class="tool-button" data-tool="hand" title="Hand (H)" aria-label="Hand tool"><span>✋</span></button>
+            <button class="tool-button" data-tool="comment" title="Comment (C)" aria-label="Comment tool"><span>▢</span></button>
+          </div>
+          <div class="zoom-control"><button id="zoom-out" aria-label="Zoom out">−</button><button id="zoom-value">Fit</button><button id="zoom-in" aria-label="Zoom in">＋</button></div>
+          <div class="canvas-status"><span class="status-icon">⌘</span><span id="selection-status">No selection</span></div>
+        </main>
+
+        <aside class="right-panel" aria-label="Design properties">
+          <div class="right-tabs"><button class="right-tab active">Design</button><button class="right-tab">Prototype</button><button class="right-tab">Inspect</button><button class="right-tab more-tab">•••</button></div>
+          <div class="right-panel-content" id="inspector">
+            <section class="inspector-section selection-summary"><div class="section-heading"><span id="selection-name">Canvas</span><button class="tiny-button" title="More options">•••</button></div><p id="selection-description">Select a layer or create a frame to start designing.</p></section>
+            <section class="inspector-section dimensions-section" id="dimensions-section">
+              <div class="section-heading"><span>Position</span><button class="tiny-button lock-button" id="lock-ratio" title="Lock aspect ratio">♧</button></div>
+              <div class="property-grid">
+                <label class="property-field"><span>X</span><input id="prop-x" type="number" /></label><label class="property-field"><span>Y</span><input id="prop-y" type="number" /></label>
+                <label class="property-field"><span>W</span><input id="prop-w" type="number" min="1" /></label><label class="property-field"><span>H</span><input id="prop-h" type="number" min="1" /></label>
+              </div>
+            </section>
+            <section class="inspector-section appearance-section" id="appearance-section">
+              <div class="section-heading"><span>Appearance</span><button class="tiny-button" title="Add appearance property">＋</button></div>
+              <label class="property-field fill-field"><span>Fill</span><input id="prop-fill" type="color" value="#d9d9d9" /><input id="fill-hex" value="#D9D9D9" maxlength="7" aria-label="Fill color hex" /><span class="field-percent">100%</span></label>
+              <label class="property-field stroke-field"><span>Stroke</span><input id="prop-stroke" type="color" value="#000000" /><input id="stroke-hex" value="#000000" maxlength="7" aria-label="Stroke color hex" /><span class="field-percent">0%</span></label>
+              <div class="property-grid"><label class="property-field"><span>Corner radius</span><input id="prop-radius" type="number" min="0" value="0" /></label><label class="property-field"><span>Opacity</span><input id="prop-opacity" type="number" min="0" max="100" value="100" /></label></div>
+            </section>
+            <section class="inspector-section text-section" id="text-section" hidden>
+              <div class="section-heading"><span>Text</span></div>
+              <textarea id="prop-text" rows="3" aria-label="Text content"></textarea>
+              <div class="property-grid"><label class="property-field"><span>Font size</span><input id="prop-font-size" type="number" min="1" /></label><label class="property-field"><span>Weight</span><select id="prop-font-weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semibold</option><option value="700">Bold</option></select></label></div>
+            </section>
+            <section class="inspector-section export-section"><div class="section-heading"><span>Export</span><button class="tiny-button" id="export-add">＋</button></div><button class="export-button" id="export-selection">Export selection <span>↗</span></button></section>
+          </div>
+          <div class="properties-footer"><span>Local design file</span><button id="help-button">?</button></div>
+        </aside>
+      </div>
+      <input id="import-file" type="file" accept="application/json,.json,.localdesign" hidden />
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
