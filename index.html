@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#ffffff" />
-    <meta name="description" content="A local-first design editor. Your files stay on this device." />
+    <meta name="description" content="Tiny Image Star is a local-first visual design editor. Your files stay on this device." />
     <title>Tiny Image Star</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -94,6 +94,8 @@
             <button class="tool-button" data-tool="image" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button hand-tool" data-tool="hand" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
+            <span class="toolbar-separator"></span>
+            <button class="tool-button" data-tool="comment" title="Comment (C)" aria-label="Comment"><span data-icon="comment"></span><kbd>C</kbd></button>
           </div>
           <div class="canvas-status"><span id="selection-status">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
         </main>
@@ -103,6 +105,7 @@
             <button class="inspector-tab is-active" data-inspector-tab="design" role="tab" aria-selected="true">Design</button>
             <button class="inspector-tab" data-inspector-tab="prototype" role="tab" aria-selected="false">Prototype</button>
             <button class="inspector-tab" data-inspector-tab="inspect" role="tab" aria-selected="false">Inspect</button>
+            <button class="inspector-tab" data-inspector-tab="comments" role="tab" aria-selected="false">Comments</button>
           </div>
           <div class="inspector-content" id="inspector-content"></div>
           <div class="inspector-footer"><button id="export-selection" class="export-button" title="Export selected layer">Export</button><span class="export-hint">Local export</span></div>

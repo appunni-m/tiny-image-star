@@ -177,6 +177,7 @@ export class SceneRenderer {
     ctx.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
     this.drawSelection(ctx, page.children, state.selectedIds, 0, 0);
+    if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);
     if (state.draftNode) this.drawNode(ctx, state.draftNode, 0, 0, state.assets, true);
     if (state.penDraft) this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom);
@@ -560,6 +561,34 @@ export class SceneRenderer {
           ctx.fillStyle = '#ffffff';
         }
       }
+    }
+    ctx.restore();
+  }
+
+  drawCommentPins(ctx, page, state, width, height) {
+    const comments = [...(state.document.comments || [])]
+      .filter(comment => comment.pageId === page.id)
+      .sort((a, b) => a.createdAt - b.createdAt);
+    if (!comments.length) return;
+    const zoom = Math.max(.08, state.zoom || 1);
+    const minX = -state.panX / zoom - 24 / zoom;
+    const minY = -state.panY / zoom - 24 / zoom;
+    const maxX = (width - state.panX) / zoom + 24 / zoom;
+    const maxY = (height - state.panY) / zoom + 24 / zoom;
+    const radius = 10 / zoom;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = `600 ${9 / zoom}px Inter, Arial, sans-serif`;
+    for (let index = 0; index < comments.length; index += 1) {
+      const comment = comments[index];
+      if (comment.x < minX || comment.x > maxX || comment.y < minY || comment.y > maxY) continue;
+      ctx.beginPath(); ctx.arc(comment.x, comment.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = comment.resolved ? '#76818c' : '#0d99ff'; ctx.fill();
+      ctx.lineWidth = 2 / zoom; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+      if (comment.id === state.activeCommentId) {
+        ctx.beginPath(); ctx.arc(comment.x, comment.y, 13 / zoom, 0, Math.PI * 2);
+        ctx.lineWidth = 2 / zoom; ctx.strokeStyle = '#1e1e1e'; ctx.stroke();
+      }
+      ctx.fillStyle = '#ffffff'; ctx.fillText(index < 99 ? String(index + 1) : '•', comment.x, comment.y + .5 / zoom);
     }
     ctx.restore();
   }

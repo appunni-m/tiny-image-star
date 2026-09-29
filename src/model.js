@@ -55,6 +55,7 @@ export function createDocument() {
     colorStyles: [],
     variableCollections: [],
     variables: [],
+    comments: [],
     prototypeStartPoint: null,
     settings: { unit: 'px', grid: 8, snap: true }
   };
@@ -123,6 +124,51 @@ export function createLayoutGuide(type = 'grid', overrides = {}) {
     size: 10, count: 4, alignment: 'stretch', gutter: 20, margin: 20, bandSize: 80, offset: 0,
     ...overrides
   };
+}
+
+function normalizeCommentText(text) {
+  const value = String(text ?? '').trim();
+  if (!value || value.length > 4000) throw new TypeError('A comment must contain 1–4000 characters.');
+  return value;
+}
+
+export function createCommentThread(document, { pageId = document.activePageId, x, y, text, author = 'You' } = {}) {
+  if (!document.pages.some(page => page.id === pageId)) throw new TypeError('The comment page does not exist.');
+  if (![x, y].every(value => Number.isFinite(value) && Math.abs(value) <= 100_000_000)) throw new TypeError('A comment needs a valid canvas position.');
+  if ((document.comments || []).length >= 10_000) throw new TypeError('A design can have up to 10,000 comment threads.');
+  const message = { id: createId('message'), author: String(author).trim().slice(0, 40) || 'You', text: normalizeCommentText(text), createdAt: Date.now() };
+  const thread = { id: createId('comment'), pageId, x, y, resolved: false, createdAt: message.createdAt, updatedAt: message.createdAt, messages: [message] };
+  document.comments ||= [];
+  document.comments.push(thread);
+  return thread;
+}
+
+export function addCommentReply(document, threadId, text, author = 'You') {
+  const thread = (document.comments || []).find(item => item.id === threadId);
+  if (!thread) throw new TypeError('The comment thread does not exist.');
+  if (thread.messages.length >= 100) throw new TypeError('A comment thread can have up to 100 messages.');
+  const message = { id: createId('message'), author: String(author).trim().slice(0, 40) || 'You', text: normalizeCommentText(text), createdAt: Date.now() };
+  thread.messages.push(message);
+  thread.updatedAt = message.createdAt;
+  thread.resolved = false;
+  return message;
+}
+
+export function setCommentResolved(document, threadId, resolved) {
+  const thread = (document.comments || []).find(item => item.id === threadId);
+  if (!thread) return false;
+  if (typeof resolved !== 'boolean') throw new TypeError('Comment resolution state must be boolean.');
+  thread.resolved = resolved;
+  thread.updatedAt = Date.now();
+  return true;
+}
+
+export function removeCommentThread(document, threadId) {
+  const comments = document.comments || [];
+  const index = comments.findIndex(item => item.id === threadId);
+  if (index < 0) return false;
+  comments.splice(index, 1);
+  return true;
 }
 
 export function getActivePage(document) {
@@ -1136,6 +1182,26 @@ export function validateDocument(document) {
     });
   }
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
+  if (document.comments != null) {
+    if (!Array.isArray(document.comments) || document.comments.length > 10_000) throw new TypeError('Comments must be a list of up to 10,000 threads.');
+    const threadIds = new Set();
+    const messageIds = new Set();
+    for (const thread of document.comments) {
+      if (!thread || typeof thread.id !== 'string' || !thread.id || threadIds.has(thread.id)
+        || !pageIds.has(thread.pageId) || !Number.isFinite(thread.x) || !Number.isFinite(thread.y)
+        || Math.abs(thread.x) > 100_000_000 || Math.abs(thread.y) > 100_000_000
+        || typeof thread.resolved !== 'boolean' || !Number.isFinite(thread.createdAt) || !Number.isFinite(thread.updatedAt)
+        || !Array.isArray(thread.messages) || thread.messages.length < 1 || thread.messages.length > 100) throw new TypeError('Invalid comment thread.');
+      threadIds.add(thread.id);
+      for (const message of thread.messages) {
+        if (!message || typeof message.id !== 'string' || !message.id || messageIds.has(message.id)
+          || typeof message.author !== 'string' || !message.author.trim() || message.author.length > 40
+          || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 4000
+          || !Number.isFinite(message.createdAt)) throw new TypeError('Invalid comment message.');
+        messageIds.add(message.id);
+      }
+    }
+  }
   if (document.components != null) {
     if (!Array.isArray(document.components)) throw new TypeError('Components must be a list.');
     const componentIds = new Set();

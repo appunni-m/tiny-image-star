@@ -1,8 +1,8 @@
 import {
-  addNode, addVariableMode, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet,
+  addNode, addVariableMode, addCommentReply, applyColorStyle, bindColorVariable, bindVariable, canBindVariable, applyImageRecipe, canCombineBoolean, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createDocument, createExportSetting, createId, createImageRecipe, createLayoutGuide, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
-  canCreateMaskGroup, createMaskGroup, releaseMaskGroup, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
+  canCreateMaskGroup, createMaskGroup, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -27,7 +27,7 @@ const state = {
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
   bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
-  pendingVariableDialog: null,
+  pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
@@ -133,6 +133,7 @@ function showToast(message, duration = 2500) {
 }
 function setTool(tool) {
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
+  if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
   state.tool = tool;
   $$('.tool-button').forEach(button => button.classList.toggle('is-selected', button.dataset.tool === tool));
   canvas.className = `tool-${tool}`;
@@ -387,11 +388,122 @@ function prototypeInspector() {
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow.</span></section></div>`;
 }
 
+function pageComments(pageId = activePage()?.id) {
+  return (state.document.comments || []).filter(comment => comment.pageId === pageId);
+}
+
+function commentTimestamp(timestamp) {
+  try { return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(timestamp); }
+  catch { return 'Saved locally'; }
+}
+
+function commentPanel() {
+  const comments = pageComments();
+  const active = comments.find(comment => comment.id === state.activeCommentId);
+  const ordered = [...comments].sort((a, b) => a.createdAt - b.createdAt);
+  const numberById = new Map(ordered.map((comment, index) => [comment.id, index + 1]));
+  const composer = (replyTo = null) => `<form class="comment-compose" data-comment-form="${replyTo ? 'reply' : 'new'}"${replyTo ? ` data-thread-id="${escapeHtml(replyTo)}"` : ''}><label for="comment-draft">${replyTo ? 'Write a reply' : 'Add a comment'}</label><textarea id="comment-draft" maxlength="4000" rows="3" placeholder="Share a clear note…" required></textarea><div class="comment-compose-actions"><span>Saved with this design</span><div>${replyTo ? '' : '<button class="secondary-button" type="button" data-comment-action="cancel">Cancel</button>'}<button class="primary-button" type="submit">${replyTo ? 'Reply' : 'Post comment'}</button></div></div></form>`;
+  const newDraft = state.pendingCommentAnchor ? `<div class="comment-anchor-hint">New comment at ${Math.round(state.pendingCommentAnchor.x)}, ${Math.round(state.pendingCommentAnchor.y)} px</div>${composer()}` : '';
+  if (active) {
+    const messages = active.messages.map(message => `<article class="comment-message"><header><strong>${escapeHtml(message.author)}</strong><time>${escapeHtml(commentTimestamp(message.createdAt))}</time></header><p>${escapeHtml(message.text)}</p></article>`).join('');
+    return `<div class="comments-panel"><header class="comments-panel-header"><div><strong>Comment ${numberById.get(active.id)}</strong><span>${active.resolved ? 'Resolved · saved in this file' : 'Saved in this file on this device'}</span></div><button class="comment-text-button" data-comment-action="back">All comments</button></header>${messages}<div class="comment-thread-actions"><button class="secondary-button" data-comment-action="resolve" data-thread-id="${escapeHtml(active.id)}">${active.resolved ? 'Reopen thread' : 'Resolve thread'}</button><button class="comment-delete-button" data-comment-action="delete" data-thread-id="${escapeHtml(active.id)}" aria-label="Delete comment thread">Delete</button></div>${composer(active.id)}</div>`;
+  }
+  const visible = [...comments].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 100);
+  const rows = visible.map(comment => {
+    const first = comment.messages[0];
+    const preview = first.text.length > 82 ? `${first.text.slice(0, 79)}…` : first.text;
+    return `<button class="comment-thread-row${comment.resolved ? ' is-resolved' : ''}" data-comment-action="open" data-thread-id="${escapeHtml(comment.id)}"><span class="comment-mini-pin">${numberById.get(comment.id)}</span><span class="comment-row-copy"><strong>${escapeHtml(preview)}</strong><small>${comment.messages.length} message${comment.messages.length === 1 ? '' : 's'} · ${comment.resolved ? 'Resolved' : commentTimestamp(comment.updatedAt)}</small></span><span class="comment-row-arrow">›</span></button>`;
+  }).join('');
+  const overflow = comments.length > visible.length ? `<p class="comment-list-limit">Showing the latest 100 of ${comments.length} threads on this page.</p>` : '';
+  const empty = comments.length || state.pendingCommentAnchor ? '' : '<div class="comments-empty"><span>◌</span><strong>No comments on this page</strong><p>Choose Comment, then tap a spot on the canvas to leave a note.</p></div>';
+  return `<div class="comments-panel"><header class="comments-panel-header"><div><strong>Review notes</strong><span>Stored locally with this design</span></div><button class="comment-new-button" data-comment-action="new">＋ Comment</button></header>${newDraft}${empty}<div class="comment-thread-list">${rows}</div>${overflow}</div>`;
+}
+
+function setInspectorTab(tab) {
+  state.inspectorTab = tab;
+  if (tab !== 'prototype') state.prototypeSourceId = null;
+  $$('.inspector-tab').forEach(item => {
+    item.classList.toggle('is-active', item.dataset.inspectorTab === tab);
+    item.setAttribute('aria-selected', String(item.dataset.inspectorTab === tab));
+  });
+  renderInspector();
+  renderer?.invalidate();
+}
+
+function beginCommentAt(point) {
+  const page = activePage();
+  if (!page) return;
+  state.pendingCommentAnchor = { pageId: page.id, x: point.x, y: point.y };
+  state.activeCommentId = null;
+  setInspectorTab('comments');
+  if (innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) toggleMobilePanel('right');
+  requestAnimationFrame(() => $('#comment-draft')?.focus());
+}
+
+function openCommentThread(threadId) {
+  const comment = pageComments().find(item => item.id === threadId);
+  if (!comment) return;
+  state.pendingCommentAnchor = null;
+  state.activeCommentId = threadId;
+  state.panX = canvas.clientWidth / 2 - comment.x * state.zoom;
+  state.panY = canvas.clientHeight / 2 - comment.y * state.zoom;
+  setInspectorTab('comments');
+  if (innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) toggleMobilePanel('right');
+}
+
+function handleCommentAction(button) {
+  const action = button.dataset.commentAction;
+  const threadId = button.dataset.threadId;
+  if (action === 'new') {
+    state.pendingCommentAnchor = null;
+    state.activeCommentId = null;
+    setTool('comment');
+    setInspectorTab('comments');
+    showToast('Tap a point on the canvas to add a comment.');
+  } else if (action === 'open') openCommentThread(threadId);
+  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; renderInspector(); }
+  else if (action === 'cancel') { state.pendingCommentAnchor = null; renderInspector(); }
+  else if (action === 'resolve') {
+    const comment = pageComments().find(item => item.id === threadId);
+    if (!comment) return;
+    checkpoint(comment.resolved ? 'Reopen comment thread' : 'Resolve comment thread');
+    setCommentResolved(state.document, threadId, !comment.resolved);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'delete') {
+    if (!pageComments().some(item => item.id === threadId)) return;
+    if (!confirm('Delete this comment thread from the local design?')) return;
+    checkpoint('Delete comment thread'); removeCommentThread(state.document, threadId);
+    state.activeCommentId = null; renderInspector(); queueSave(); renderer.invalidate();
+  }
+}
+
+function submitCommentForm(form) {
+  const textarea = form.querySelector('textarea');
+  const text = textarea?.value.trim();
+  if (!text) { textarea?.focus(); return; }
+  try {
+    if (form.dataset.commentForm === 'new') {
+      if ((state.document.comments || []).length >= 10_000) { showToast('This design has reached the 10,000 comment thread limit.'); return; }
+      const anchor = state.pendingCommentAnchor;
+      if (!anchor || !state.document.pages.some(page => page.id === anchor.pageId)) { showToast('Choose a point on the canvas before posting.'); return; }
+      checkpoint('Add comment');
+      const thread = createCommentThread(state.document, { ...anchor, text });
+      state.pendingCommentAnchor = null; state.activeCommentId = thread.id;
+    } else {
+      const threadId = form.dataset.threadId;
+      checkpoint('Reply to comment');
+      addCommentReply(state.document, threadId, text);
+    }
+    renderInspector(); queueSave(); renderer.invalidate();
+  } catch (error) { showToast(error.message || 'Could not save this comment.'); }
+}
+
 function renderInspector() {
   const content = $('#inspector-content');
   if (state.inspectorTab !== 'design') {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
     if (state.inspectorTab === 'inspect') { content.innerHTML = inspectPanel(); return; }
+    if (state.inspectorTab === 'comments') { content.innerHTML = commentPanel(); return; }
     content.innerHTML = '<div class="prototype-placeholder">Choose a properties tab.</div>';
     return;
   }
@@ -707,6 +819,13 @@ function unrotateForPath(world, node, origin) {
 }
 
 function checkPointDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function commentPinAt(world) {
+  const comments = [...pageComments()].sort((a, b) => a.createdAt - b.createdAt);
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    if (checkPointDistance(world, comments[index]) <= 12 / Math.max(.08, state.zoom)) return comments[index];
+  }
+  return null;
+}
 function resizeHandleAt(event) {
   const nodes = selectedNodes();
   if (nodes.length !== 1 || nodes[0].locked) return null;
@@ -752,6 +871,9 @@ function onCanvasPointerDown(event) {
     canvas.classList.add('is-panning'); event.preventDefault(); return;
   }
   const world = screenToWorld(event, canvas, state);
+  const commentPin = commentPinAt(world);
+  if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
+  if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
   if (state.prototypeSourceId) {
     const target = findFrameAtPoint(activePage(), world);
     if (!target) { showToast('Choose a frame as the interaction destination.'); return; }
@@ -1453,12 +1575,16 @@ function showMenu(items, x, y) {
 }
 function closeMenu() { $('#context-menu').hidden = true; }
 
-function openNodeMenu(nodeId, x, y) {
+function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   const node = findNode(state.document, nodeId)?.node;
   const linkedInstance = componentInstanceRoot(nodeId);
+  const nodePosition = absolutePosition(nodeId);
+  const commentPoint = commentAnchor || { x: nodePosition.x + (node?.width || 0) / 2, y: nodePosition.y + (node?.height || 0) / 2 };
   if (!state.selectedIds.includes(nodeId)) setSelection([nodeId]);
   const images = selectedNodes().filter(item => item.type === 'image');
   const items = [
+    { label: 'Add comment here', action: () => beginCommentAt(commentPoint) },
+    { separator: true },
     { label: 'Duplicate', shortcut: '⌘D', action: duplicateSelected },
     { label: 'Rename', shortcut: '↵', action: () => renameSelected() },
     { label: 'Bring to front', action: () => reorderSelected('front') },
@@ -1558,8 +1684,9 @@ function separateSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
   } catch (error) { showToast(error.message); }
 }
 
-function openFileMenu(x, y) {
+function openFileMenu(x, y, commentAnchor = null) {
   showMenu([
+    ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
     { label: 'New design', shortcut: '⌘N', action: newDesign },
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { separator: true },
@@ -1693,12 +1820,12 @@ function reorderSelected(direction) {
 function undo() { const next = history.undo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
 function redo() { const next = history.redo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
 function newDesign() {
-  state.document = createDocument(); state.selectedIds = []; state.selectedVectorPoint = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+  state.document = createDocument(); state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); showToast('New local design created.');
 }
 function addPage() {
   const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
-  checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
+  checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); queueSave();
 }
 function renamePage(pageId) {
   const page = state.document.pages.find(item => item.id === pageId); if (!page) return;
@@ -2168,9 +2295,9 @@ function initEvents() {
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
     const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document);
-    if (hit) openNodeMenu(hit.id, event.clientX, event.clientY);
-    else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY);
-    else openFileMenu(event.clientX, event.clientY);
+    if (hit) openNodeMenu(hit.id, event.clientX, event.clientY, world);
+    else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY, world);
+    else openFileMenu(event.clientX, event.clientY, world);
   });
   canvasScroll.addEventListener('dragover', event => { event.preventDefault(); $('#canvas-drop-overlay').classList.add('is-visible'); });
   canvasScroll.addEventListener('dragleave', event => { if (!canvasScroll.contains(event.relatedTarget)) $('#canvas-drop-overlay').classList.remove('is-visible'); });
@@ -2186,7 +2313,7 @@ function initEvents() {
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
       const importedDocument = parseDocument(packageData.document);
       for (const asset of packageData.assets) await saveImageAssetBytes(asset.id, asset.name, asset.type, asset.bytes);
-      state.document = importedDocument; state.selectedIds = []; state.selectedVectorPoint = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+      state.document = importedDocument; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
       history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); await restoreImageAssets(); showToast('Local design opened on this device.');
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
     input.value = '';
@@ -2194,7 +2321,7 @@ function initEvents() {
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
   $('#add-page').addEventListener('click', addPage);
-  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); });
+  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
@@ -2258,10 +2385,17 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => {
+    const commentAction = event.target.closest('[data-comment-action]');
+    if (commentAction) { handleCommentAction(commentAction); return; }
     const copy = event.target.closest('[data-inspect-copy]');
     if (copy) { copyInspectText(copy.dataset.inspectCopy); return; }
     const button = event.target.closest('[data-action]');
     if (button) applyInspectorAction(button.dataset.action, button.dataset);
+  });
+  $('#inspector-content').addEventListener('submit', event => {
+    const form = event.target.closest('[data-comment-form]');
+    if (!form) return;
+    event.preventDefault(); submitCommentForm(form);
   });
   $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
   $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
@@ -2326,7 +2460,7 @@ function initEvents() {
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50));
   $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
   $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; state.prototypeSourceId = null; $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
-  $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => { state.inspectorTab = tab.dataset.inspectorTab; if (state.inspectorTab !== 'prototype') state.prototypeSourceId = null; $$('.inspector-tab').forEach(item => { item.classList.toggle('is-active', item === tab); item.setAttribute('aria-selected', String(item === tab)); }); renderInspector(); renderer.invalidate(); }));
+  $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
   $('#present-button').addEventListener('click', () => startPresentation());
   $('#present-back').addEventListener('click', backPresentation);
   $('#present-exit').addEventListener('click', () => $('#present-dialog').close());
@@ -2389,7 +2523,7 @@ function onKeyDown(event) {
   }
   if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
   if (key === 'escape') { closeMenu(); if (state.bulk && !state.bulk.done) { state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; renderBulkBar(); } setSelection([]); return; }
-  const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text' };
+  const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;
   if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key) && selectedNodes().length) {

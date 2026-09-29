@@ -164,6 +164,44 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .inspector-tabs { flex: 0 0 43px; display: flex; align-items: stretch; justify-content: space-around; border-bottom: 1px solid var(--border); }
 .inspector-tab { padding: 0 7px; font-size: 11px; }
 .inspector-content { flex: 1; min-height: 0; overflow: auto; padding: 0 0 12px; }
+.comments-panel { display: grid; align-content: start; gap: 12px; padding: 12px; }
+.comments-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 39px; }
+.comments-panel-header > div { min-width: 0; display: grid; gap: 4px; }
+.comments-panel-header strong { font-size: 12px; font-weight: 600; }
+.comments-panel-header span { color: #888; font-size: 9px; }
+.comment-new-button { min-height: 32px; flex: 0 0 auto; padding: 0 9px; border: 1px solid #dcecf8; border-radius: 6px; background: #f3faff; color: #0879c8; font-size: 10px; font-weight: 550; }
+.comment-text-button { min-height: 32px; flex: 0 0 auto; padding: 0 8px; border: 1px solid #e5e5e5; border-radius: 6px; font-size: 10px; }
+.comment-anchor-hint { padding: 8px 9px; border-radius: 6px; background: #f1f8fd; color: #4a6a80; font-size: 10px; }
+.comment-compose { display: grid; gap: 7px; padding: 10px; border: 1px solid #e6e6e6; border-radius: 8px; background: #fafafa; }
+.comment-compose > label { color: #555; font-size: 10px; font-weight: 550; }
+.comment-compose textarea { width: 100%; min-height: 78px; resize: vertical; padding: 9px; border: 1px solid #dedede; border-radius: 6px; outline: 0; background: #fff; font-family: inherit; font-size: 11px; line-height: 1.45; user-select: text; }
+.comment-compose textarea:focus { border-color: #83c7f4; box-shadow: 0 0 0 2px rgba(13,153,255,.12); }
+.comment-compose-actions { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.comment-compose-actions > span { color: #999; font-size: 9px; }
+.comment-compose-actions > div { display: flex; gap: 5px; }
+.comment-compose-actions .primary-button, .comment-compose-actions .secondary-button { min-height: 32px; }
+.comment-thread-list { display: grid; gap: 6px; }
+.comment-thread-row { display: flex; align-items: center; gap: 9px; min-height: 58px; padding: 8px; border: 1px solid #ededed; border-radius: 7px; background: #fff; text-align: left; }
+.comment-thread-row:hover { border-color: #c9e6f8; background: #f8fcff; }
+.comment-mini-pin { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; border-radius: 50%; background: #0d99ff; color: #fff; font-size: 9px; font-weight: 650; }
+.comment-thread-row.is-resolved .comment-mini-pin { background: #76818c; }
+.comment-row-copy { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.comment-row-copy strong { overflow: hidden; color: #444; font-size: 10px; font-weight: 500; line-height: 1.35; text-overflow: ellipsis; }
+.comment-row-copy small { color: #929292; font-size: 9px; }
+.comment-row-arrow { color: #999; font-size: 18px; }
+.comment-list-limit { margin: 0; color: #888; font-size: 9px; line-height: 1.45; }
+.comments-empty { display: grid; justify-items: center; gap: 7px; padding: 38px 15px; color: #929292; text-align: center; }
+.comments-empty > span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #f4f6f7; color: #70808c; font-size: 19px; }
+.comments-empty strong { color: #555; font-size: 11px; font-weight: 550; }
+.comments-empty p { max-width: 190px; margin: 0; font-size: 10px; line-height: 1.5; }
+.comment-message { padding: 10px; border: 1px solid #ececec; border-radius: 8px; background: #fff; }
+.comment-message header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.comment-message header strong { font-size: 10px; font-weight: 600; }
+.comment-message time { color: #999; font-size: 9px; }
+.comment-message p { margin: 7px 0 0; color: #444; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.comment-thread-actions { display: flex; align-items: center; justify-content: space-between; }
+.comment-thread-actions .secondary-button, .comment-delete-button { min-height: 32px; }
+.comment-delete-button { padding: 0 8px; border: 1px solid #eee; border-radius: 6px; color: #a33a3a; font-size: 10px; }
 .inspector-footer { height: 50px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 16px; border-top: 1px solid var(--border); }
 .export-button { height: 29px; padding: 0 12px; border: 1px solid #e2e2e2; border-radius: 5px; background: #fff; font-size: 11px; font-weight: 550; }
 .export-button:hover { background: #f7f7f7; }
@@ -422,6 +460,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layout-guide-opacity { grid-template-columns: 46px minmax(0, 1fr) 38px; }
   .layout-guide-opacity input { min-height: 28px; }
   .inspect-panel { gap: 10px; padding: 10px; }
+  .inspector-tabs { justify-content: space-between; }
+  .inspector-tab { min-width: 0; padding: 0 4px; font-size: 10px; }
+  .comments-panel { gap: 11px; padding: 10px; }
+  .comment-new-button, .comment-text-button { min-height: 40px; }
+  .comment-compose { gap: 9px; padding: 10px; }
+  .comment-compose textarea { min-height: 88px; padding: 10px; font-size: 13px; }
+  .comment-compose-actions .primary-button, .comment-compose-actions .secondary-button, .comment-thread-actions .secondary-button, .comment-delete-button { min-height: 40px; }
+  .comment-thread-row { min-height: 64px; padding: 10px; }
+  .comment-mini-pin { width: 26px; height: 26px; flex-basis: 26px; }
+  .comment-row-copy strong { font-size: 11px; }
+  .comment-row-copy small { font-size: 10px; }
   .inspect-code-card > header { min-height: 56px; padding: 8px 9px; }
   .inspect-copy { min-height: 40px; padding: 0 11px; font-size: 11px; }
   .inspect-code-card pre { max-height: 280px; padding: 10px; font-size: 10px; }
