@@ -1,5 +1,5 @@
 import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue, setVariableValue } from '../src/model.js';
-import { SceneRenderer } from '../src/renderer.js';
+import { SceneRenderer, worldToScreen } from '../src/renderer.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 import { createImageFill } from '../src/image-fills.js';
 import { createAutoLayout } from '../src/layout-engine.js';
@@ -442,7 +442,21 @@ try {
     ? ['Smoke button / State=Default', 'Smoke button / State=Hover'][componentPrompt++] || initial
     : initial;
   const mainFrameRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
-  dispatchClick(mainFrameRow);
+  // Create a nested component target inside the frame that will become the
+  // main component so the slot control exercises the full authoring flow.
+  const sceneCanvas = app.querySelector('#scene-canvas');
+  const canvasPan = { zoom: 1, panX: sceneCanvas.clientWidth / 2, panY: sceneCanvas.clientHeight / 2 };
+  const slotStart = worldToScreen({ x: destinationFrame.x + destinationFrame.width / 2 - 22, y: destinationFrame.y + destinationFrame.height / 2 - 22 }, sceneCanvas, canvasPan);
+  const slotEnd = worldToScreen({ x: destinationFrame.x + destinationFrame.width / 2 + 22, y: destinationFrame.y + destinationFrame.height / 2 + 22 }, sceneCanvas, canvasPan);
+  dispatchClick(app.querySelector('.tool-button[data-tool="frame"]'));
+  dispatchCanvasPointer(app, sceneCanvas, 'pointerdown', slotStart.x, slotStart.y, 91);
+  dispatchCanvasPointer(app, sceneCanvas, 'pointermove', slotEnd.x, slotEnd.y, 91);
+  dispatchCanvasPointer(app, sceneCanvas, 'pointerup', slotEnd.x, slotEnd.y, 91);
+  await waitFor(() => app.querySelector('.layer-row.is-selected[data-layer-id]'), 'nested component slot frame creation');
+  const nestedSlotId = app.querySelector('.layer-row.is-selected[data-layer-id]').dataset.layerId;
+  const refreshedMainFrameRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
+  assert(refreshedMainFrameRow, 'the main component frame disappeared after creating a nested frame');
+  dispatchClick(refreshedMainFrameRow);
   dispatchClick(app.querySelector('[data-action="create-component"]'));
   await waitFor(() => app.querySelector('#components-list [data-component-id]'), 'component creation and asset listing');
   const componentId = app.querySelector('#components-list [data-component-id]').dataset.componentId;
@@ -454,16 +468,82 @@ try {
   await waitFor(() => app.querySelector('.component-property-definition')?.textContent.includes('Enabled') || app.querySelector('#toast-region .toast'), 'BOOLEAN component property creation or error');
   assert(app.querySelector('.component-property-definition')?.textContent.includes('Enabled'), `BOOLEAN component property creation failed: ${app.querySelector('#toast-region .toast')?.textContent || 'the Inspector did not refresh'}`);
   await waitForSaveCycle(app, 'BOOLEAN component property definition');
+  const slotTarget = app.querySelector('#component-property-target');
+  assert([...slotTarget.options].some(option => option.value === nestedSlotId), 'the main component property target list omitted its nested frame');
+  slotTarget.value = nestedSlotId; slotTarget.dispatchEvent(new Event('change', { bubbles: true }));
+  const slotType = app.querySelector('#component-property-type');
+  assert([...slotType.options].some(option => option.value === 'SLOT'), 'a nested frame did not offer a content slot property');
+  slotType.value = 'SLOT'; slotType.dispatchEvent(new Event('change', { bubbles: true }));
+  const slotPropertyName = app.querySelector('#component-property-name');
+  slotPropertyName.value = 'Content';
+  dispatchClick(app.querySelector('[data-action="create-component-property"]'));
+  await waitFor(() => [...app.querySelectorAll('.component-property-definition')].some(item => item.querySelector('strong')?.textContent === 'Content' && item.querySelector('small')?.textContent.includes('Flexible slot')),
+    'content slot property creation');
+  await waitForSaveCycle(app, 'content slot property definition');
   let definitionRecords = await readStore('documents'); definitionRecords.sort((a, b) => b.savedAt - a.savedAt);
   const componentPropertyId = definitionRecords[0]?.document?.components?.find(component => component.id === componentId)?.componentProperties?.find(property => property.name === 'Enabled')?.id;
   assert(componentPropertyId, 'the BOOLEAN component property definition was not persisted');
+  const slotPropertyId = definitionRecords[0]?.document?.components?.find(component => component.id === componentId)?.componentProperties?.find(property => property.name === 'Content')?.id;
+  assert(slotPropertyId, 'the SLOT component property definition was not persisted');
   const instanceButton = app.querySelector('[data-action="create-component-instance"]');
   assert(instanceButton?.dataset.componentId === componentId, 'component inspector did not expose instance creation');
   dispatchClick(instanceButton);
-  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 7, 'component instance creation');
+  await waitFor(() => app.querySelector('.layer-row.is-selected[data-layer-id]')
+    && app.querySelector(`[data-action="choose-component-slot-content"][data-property-id="${slotPropertyId}"]`), 'component instance creation');
   const instanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const instanceId = instanceRow?.dataset.layerId;
   assert(instanceId && instanceId !== destinationFrame.id, 'the component instance has no independent layer identity');
+  const chooseSlot = app.querySelector(`[data-action="choose-component-slot-content"][data-instance-id="${instanceId}"][data-property-id="${slotPropertyId}"]`);
+  assert(chooseSlot, 'the linked component Inspector did not expose the slot picker');
+  dispatchClick(chooseSlot);
+  const slotDialog = app.querySelector('#component-slot-dialog');
+  assert(slotDialog.open, 'the component slot picker did not open');
+  const sourceLayerId = originalClipboardIds[0];
+  const sourceLayerName = clipboardImages.find(node => node.id === sourceLayerId)?.name;
+  assert(sourceLayerName, 'the slot picker test could not resolve the original source layer name');
+  const slotSearch = app.querySelector('#component-slot-search');
+  slotSearch.value = sourceLayerName; slotSearch.dispatchEvent(new Event('input', { bubbles: true }));
+  let slotCandidate = app.querySelector(`[data-slot-candidate="${sourceLayerId}"]`);
+  assert(slotCandidate, 'the slot picker search did not find an existing page layer');
+  const desktopEditorSize = { width: frame.style.width, height: frame.style.height };
+  frame.style.width = '390px'; frame.style.height = '844px';
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(() => app.defaultView.requestAnimationFrame(resolve)));
+  const mobileSlotRow = slotCandidate.closest('.slot-picker-row');
+  const mobileSlotApply = app.querySelector('#component-slot-form [value="apply"]');
+  assert(mobileSlotRow.getBoundingClientRect().height >= 44 && mobileSlotApply.getBoundingClientRect().height >= 44,
+    'component slot choices and apply controls must remain touch-sized on a phone');
+  frame.style.width = desktopEditorSize.width; frame.style.height = desktopEditorSize.height;
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
+  dispatchClick(app.querySelector('#component-slot-form [value="cancel"]'));
+  await waitFor(() => !slotDialog.open, 'component slot picker cancel');
+  assert(!app.querySelector(`[data-action="reset-component-slot"][data-instance-id="${instanceId}"][data-property-id="${slotPropertyId}"]`),
+    'canceling the slot picker changed the component instance');
+  dispatchClick(app.querySelector(`[data-action="choose-component-slot-content"][data-instance-id="${instanceId}"][data-property-id="${slotPropertyId}"]`));
+  await waitFor(() => slotDialog.open, 'reopen component slot picker after cancel');
+  slotSearch.value = sourceLayerName; slotSearch.dispatchEvent(new Event('input', { bubbles: true }));
+  slotCandidate = app.querySelector(`[data-slot-candidate="${sourceLayerId}"]`);
+  assert(slotCandidate, 'reopened slot picker did not retain searchable current-page layers');
+  slotCandidate.checked = true; slotCandidate.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('#component-slot-form [value="apply"]'));
+  await waitFor(() => !slotDialog.open, 'component slot picker apply');
+  await waitForSaveCycle(app, 'component slot content copy');
+  let slotRecords = await readStore('documents'); slotRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let slotDocument = slotRecords[0]?.document;
+  let slotNodes = flattenNodes(slotDocument?.pages.flatMap(page => page.children));
+  const slotInstance = slotNodes.find(node => node.id === instanceId);
+  const installedSlotContentId = slotInstance?.componentPropertyValues?.[slotPropertyId]?.[0];
+  const slotHost = flattenNodes([slotInstance]).find(node => node.componentSourceId === nestedSlotId);
+  assert(installedSlotContentId && installedSlotContentId !== sourceLayerId && slotHost?.children?.some(node => node.id === installedSlotContentId),
+    'the slot picker did not copy selected page content into the instance slot with a fresh ID');
+  assert(slotNodes.some(node => node.id === sourceLayerId), 'applying component slot content removed its original layer');
+  const resetSlot = app.querySelector(`[data-action="reset-component-slot"][data-instance-id="${instanceId}"][data-property-id="${slotPropertyId}"]`);
+  assert(resetSlot, 'the slot Inspector did not expose reset-to-default');
+  dispatchClick(resetSlot);
+  await waitForSaveCycle(app, 'component slot reset');
+  slotRecords = await readStore('documents'); slotRecords.sort((a, b) => b.savedAt - a.savedAt);
+  slotDocument = slotRecords[0]?.document;
+  slotNodes = flattenNodes(slotDocument?.pages.flatMap(page => page.children));
+  assert(!slotNodes.find(node => node.id === instanceId)?.componentPropertyValues?.[slotPropertyId], 'resetting a component slot left its custom content override attached');
   const componentPropertyCheckbox = app.querySelector(`[data-instance-id="${instanceId}"][data-component-property-value="${componentPropertyId}"]`);
   assert(componentPropertyCheckbox?.checked, 'the Boolean property did not initialize to the component default');
   componentPropertyCheckbox.checked = false; componentPropertyCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
@@ -534,7 +614,7 @@ try {
   await waitFor(() => app.querySelector('#components-list [data-component-set-id]'), 'component set creation');
   const componentSetCard = app.querySelector('#components-list [data-component-set-id]');
   dispatchClick(componentSetCard);
-  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 8, 'variant set instance creation');
+  await waitFor(() => app.querySelector('[data-variant-property="State"]'), 'variant set instance creation');
   const variantInstanceRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   const variantInstanceId = variantInstanceRow?.dataset.layerId;
   const variantSelect = app.querySelector('[data-variant-property="State"]');
@@ -1331,7 +1411,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP'], componentPropertyInspector: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

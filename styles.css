@@ -150,6 +150,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .component-property-value { display: grid; grid-template-columns: minmax(0, 1fr) minmax(70px, 1.2fr); align-items: center; gap: 8px; min-height: 42px; color: #555; font-size: 10px; }
 .component-property-value input[type="text"], .component-property-value .select-field { width: 100%; min-width: 0; min-height: 38px; }
 .component-property-value input[type="checkbox"] { justify-self: end; width: 22px; height: 22px; }
+.component-slot-value { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 5px; min-height: 44px; }
+.component-slot-copy { display: grid; min-width: 0; gap: 3px; }
+.component-slot-copy strong { overflow: hidden; color: #555; font-size: 10px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.component-slot-copy small { color: #888; font-size: 9px; }
+.component-slot-value .secondary-button { min-height: 38px; padding-inline: 9px; }
+.component-slot-reset { width: 38px; height: 38px; border: 1px solid #e2e5e9; }
 .variant-control { min-width: 0; display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; gap: 6px; color: #777; font-size: 9px; }
 .variant-control .prop-input { min-width: 0; width: 100%; height: 27px; }
 .color-style-card { min-width: 0; height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 1px solid #ededed; border-radius: 5px; text-align: left; }
@@ -465,6 +471,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .modal { width: min(420px, calc(100vw - 30px)); border: 1px solid #ddd; border-radius: 12px; padding: 0; box-shadow: 0 18px 54px rgba(0,0,0,.22); }
 .modal::backdrop { background: rgba(20,20,20,.25); backdrop-filter: blur(2px); }
 .modal form { padding: 22px; }
+.component-slot-dialog { width: min(560px, calc(100vw - 24px)); }
+.slot-picker-count { min-height: 30px; display: flex; align-items: center; color: #777; font-size: 10px; }
+.slot-picker-list { max-height: min(420px, 48dvh); overflow: auto; overscroll-behavior: contain; border: 1px solid #e5e8ed; border-radius: 8px; background: #fff; }
+.slot-picker-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 42px; padding: 3px 10px; border-bottom: 1px solid #f0f1f3; cursor: pointer; }
+.slot-picker-row:last-child { border-bottom: 0; }
+.slot-picker-row:hover { background: #f7faff; }
+.slot-picker-row input { width: 18px; height: 18px; accent-color: #0d99ff; }
+.slot-picker-name { min-width: 0; overflow: hidden; color: #303641; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.slot-picker-row small { color: #818895; font-size: 9px; }
+.slot-picker-empty { padding: 24px 12px; color: #808692; text-align: center; font-size: 11px; }
 .design-library-dialog { width: min(720px, calc(100vw - 24px)); max-height: min(720px, calc(100dvh - 32px)); overflow: auto; }
 .design-library-content { padding: 22px; }
 .design-library-list { display: grid; gap: 8px; max-height: min(440px, 52dvh); overflow: auto; overscroll-behavior: contain; }
@@ -811,6 +827,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .canvas-status { bottom: max(22px, env(safe-area-inset-bottom)); }
   .bulk-bar { bottom: calc(72px + env(safe-area-inset-bottom)); }
   .modal { max-height: calc(100dvh - 24px - env(safe-area-inset-top)); overflow: auto; }
+  .component-slot-dialog form { padding: 16px; }
+  .slot-picker-list { max-height: min(48dvh, 400px); }
+  .slot-picker-row { min-height: 44px; }
+  .component-slot-value { grid-template-columns: minmax(0, 1fr) auto; }
+  .component-slot-copy { grid-column: 1 / -1; }
+  .component-slot-value .secondary-button { min-height: 42px; }
+  .component-slot-reset { width: 42px; height: 42px; }
+  .component-slot-dialog .dialog-actions > button { min-height: 44px; }
 }
 @media (max-width: 420px) {
   .topbar { padding-inline: max(5px, env(safe-area-inset-left)) max(5px, env(safe-area-inset-right)); }
@@ -836,6 +860,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .image-transform-controls .property-field input { min-height: 38px; font-size: 16px; }
   .image-transform-controls .property-inline .add-fill { width: auto; min-width: 0; min-height: 44px; flex: 1 1 0; text-align: center; }
   .image-transform-controls > .add-fill { min-height: 44px; text-align: center; }
+  .variable-mode-add { min-height: 40px; padding-inline: 9px; font-size: 11px; }
+  .variable-apply { height: auto; min-height: 40px; }
+  .variable-alias, .variable-value { height: 40px; min-height: 40px; font-size: 16px; }
+  .variable-value[type="checkbox"] { width: 22px; height: 22px; }
+  .variable-remove { width: 40px; height: 40px; flex: 0 0 40px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }

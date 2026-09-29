@@ -104,6 +104,80 @@ test('smart animation interpolates numeric font weight and snaps categorical tex
   assert.equal(to.children[0].fontWeight, 700, 'interpolation leaves the destination unchanged');
 });
 
+test('smart animation interpolates compatible gradient angles, stop positions, and colors with exact endpoints', () => {
+  const fromGradient = {
+    type: 'linear', angle: 350,
+    stops: [
+      { id: 'from-start', position: 0, color: '#000000' },
+      { id: 'from-end', position: .75, color: '#ff0000' }
+    ]
+  };
+  const toGradient = {
+    type: 'linear', angle: 10,
+    stops: [
+      { id: 'to-start', position: .5, color: '#ffffff' },
+      { id: 'to-end', position: 1, color: '#0000ff' }
+    ]
+  };
+  const from = createNode('frame', { fillGradient: fromGradient, children: [
+    createNode('rectangle', { name: 'Card', fillGradient: fromGradient })
+  ] });
+  const to = createNode('frame', { fillGradient: toGradient, children: [
+    createNode('rectangle', { name: 'Card', fillGradient: toGradient })
+  ] });
+  const originals = [structuredClone(from), structuredClone(to)];
+
+  const middle = interpolateSmartFrame(from, to, .5);
+  const expected = {
+    type: 'linear', angle: 0,
+    stops: [
+      { id: 'to-start', position: .25, color: '#808080' },
+      { id: 'to-end', position: .875, color: '#800080' }
+    ]
+  };
+  assert.deepEqual(middle.fillGradient, expected);
+  assert.deepEqual(middle.children[0].fillGradient, expected);
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).fillGradient, fromGradient);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).fillGradient, toGradient);
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].fillGradient, fromGradient);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].fillGradient, toGradient);
+  assert.deepEqual(from, originals[0], 'interpolation does not mutate the source gradient');
+  assert.deepEqual(to, originals[1], 'interpolation does not mutate the destination gradient');
+
+  const wrappedFrom = createNode('frame', { fillGradient: { ...fromGradient, angle: 0 } });
+  const wrappedTo = createNode('frame', { fillGradient: { ...toGradient, angle: 270 } });
+  assert.equal(interpolateSmartFrame(wrappedFrom, wrappedTo, .5).fillGradient.angle, 315, 'wrapped angles stay normalized in the 0–360 range');
+});
+
+test('smart animation snaps incompatible and variable-bound gradients at the midpoint', () => {
+  const linear = { type: 'linear', angle: 0, stops: [
+    { id: 'a', position: 0, color: '#000000' }, { id: 'b', position: 1, color: '#ffffff' }
+  ] };
+  const radial = { type: 'radial', angle: 90, stops: [
+    { id: 'c', position: 0, color: '#ff0000' }, { id: 'd', position: 1, color: '#0000ff' }
+  ] };
+  const moreStops = { type: 'linear', angle: 180, stops: [
+    { id: 'e', position: 0, color: '#ff0000' },
+    { id: 'f', position: .5, color: '#00ff00' },
+    { id: 'g', position: 1, color: '#0000ff' }
+  ] };
+  const from = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Type change', fillGradient: linear }),
+    createNode('rectangle', { name: 'Topology change', fillGradient: linear }),
+    createNode('rectangle', { name: 'Bound', fillGradient: linear, fillVariableId: 'surface' })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Type change', fillGradient: radial }),
+    createNode('rectangle', { name: 'Topology change', fillGradient: moreStops }),
+    createNode('rectangle', { name: 'Bound', fillGradient: radial, fillVariableId: 'surface-dark' })
+  ] });
+  const beforeMidpoint = interpolateSmartFrame(from, to, .499).children;
+  const atMidpoint = interpolateSmartFrame(from, to, .5).children;
+
+  assert.deepEqual(beforeMidpoint.map(node => node.fillGradient), [linear, linear, linear]);
+  assert.deepEqual(atMidpoint.map(node => node.fillGradient), [radial, moreStops, radial]);
+});
+
 test('smart animation matches by layer name and parent hierarchy and fades unmatched layers', () => {
   const from = createNode('frame', { children: [
     createNode('group', { name: 'Card', children: [

@@ -1,3 +1,5 @@
+import { isValidGradientFill } from './fills.js';
+
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
@@ -19,6 +21,29 @@ function interpolateColor(from, to, progress) {
     return Math.round(start + (end - start) * progress).toString(16).padStart(2, '0');
   });
   return `#${channels.join('')}`;
+}
+
+function canInterpolateGradient(from, to) {
+  return isValidGradientFill(from) && isValidGradientFill(to)
+    && from.type === to.type && from.stops.length === to.stops.length;
+}
+
+function interpolateGradient(from, to, progress) {
+  if (progress === 0) return structuredClone(from);
+  if (progress === 1) return structuredClone(to);
+  const angle = interpolateRotation(from.angle, to.angle, progress);
+  return {
+    ...structuredClone(to),
+    angle: ((angle % 360) + 360) % 360,
+    stops: to.stops.map((stop, index) => {
+      const start = from.stops[index];
+      return {
+        ...structuredClone(stop),
+        position: start.position + (stop.position - start.position) * progress,
+        color: interpolateColor(start.color, stop.color, progress) || stop.color
+      };
+    })
+  };
 }
 
 function canMatch(from, to) {
@@ -129,6 +154,9 @@ function interpolateLayer(from, to, progress) {
     const color = interpolateColor(from[property], to[property], progress);
     if (color) copy[property] = color;
   }
+  if (!from.fillVariableId && !to.fillVariableId && canInterpolateGradient(from.fillGradient, to.fillGradient)) {
+    copy.fillGradient = interpolateGradient(from.fillGradient, to.fillGradient, progress);
+  }
   if (from.visible === false && to.visible !== false) {
     copy.visible = true;
     copy.opacity = layerOpacity(to) * progress;
@@ -226,6 +254,9 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress) {
   }
   const fill = interpolateColor(fromFrame.fill, toFrame.fill, amount);
   if (fill && !fromFrame.fillVariableId && !toFrame.fillVariableId) frame.fill = fill;
+  if (!fromFrame.fillVariableId && !toFrame.fillVariableId && canInterpolateGradient(fromFrame.fillGradient, toFrame.fillGradient)) {
+    frame.fillGradient = interpolateGradient(fromFrame.fillGradient, toFrame.fillGradient, amount);
+  }
   frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount);
   return frame;
 }

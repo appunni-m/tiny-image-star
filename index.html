@@ -146,6 +146,17 @@
         </form>
       </dialog>
 
+      <dialog class="modal component-slot-dialog" id="component-slot-dialog" aria-labelledby="component-slot-dialog-title">
+        <form method="dialog" id="component-slot-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">COMPONENT CONTENT SLOT</span><h2 id="component-slot-dialog-title">Choose slot content</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <p class="modal-copy">Choose layers from this page. Tiny Image Star copies them into the slot and leaves the originals in place.</p>
+          <label class="field-label" for="component-slot-search">Find a layer</label><input id="component-slot-search" class="text-field" type="search" placeholder="Search layer names or groups" autocomplete="off" />
+          <div class="slot-picker-count" id="component-slot-count" aria-live="polite"></div>
+          <div class="slot-picker-list" id="component-slot-candidates" role="group" aria-label="Layers to copy into this component slot"></div>
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" value="apply">Apply to slot</button></div>
+        </form>
+      </dialog>
+
       <dialog class="modal design-library-dialog" id="design-library-dialog" aria-labelledby="design-library-title">
         <section class="design-library-content">
           <div class="modal-title-row">

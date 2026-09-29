@@ -188,7 +188,7 @@ const componentOverrideProperties = new Set([
   'blendMode',
   'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
 ]);
-const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP']);
+const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
 export function createNode(type, overrides = {}) {
   const preset = defaults[type];
@@ -317,23 +317,75 @@ export function findNodeAcrossPages(document, nodeId) {
   return null;
 }
 
+function componentSlotMutationContext(document, entry) {
+  if (!entry?.node) return null;
+  const ancestry = [...(entry.parents || []), entry.node];
+  let best = null;
+  for (let instanceDepth = 0; instanceDepth < ancestry.length; instanceDepth += 1) {
+    const instance = ancestry[instanceDepth];
+    if (!instance.isInstance) continue;
+    const component = document.components?.find(item => item.id === instance.componentId);
+    if (!component) continue;
+    for (const property of component.componentProperties || []) {
+      if (property.type !== 'SLOT') continue;
+      const target = findInstancePropertyTarget(instance, property.targetSourceId);
+      const targetDepth = ancestry.indexOf(target);
+      if (!target || targetDepth < 0 || targetDepth > ancestry.length - 1) continue;
+      if (best && (instanceDepth < best.instanceDepth || (instanceDepth === best.instanceDepth && targetDepth <= best.targetDepth))) continue;
+      best = {
+        instance, component, property, target, instanceDepth, targetDepth,
+        overridden: Object.hasOwn(instance.componentPropertyValues || {}, property.id)
+      };
+    }
+  }
+  return best;
+}
+
+function requireOverriddenSlotForMutation(context, action) {
+  if (context && !context.overridden) {
+    throw new Error(`Cannot ${action} inherited slot content. Set a slot override before editing it.`);
+  }
+}
+
+function syncSlotChildOrder(context, children) {
+  if (!context?.overridden || context.target.children !== children) return;
+  context.instance.componentPropertyValues[context.property.id] = children.map(node => node.id);
+}
+
+function slotAwareSiblingMutation(document, entries) {
+  if (!entries.some(entry => entry.parents.some(parent => parent.isInstance))) return { allowed: true, context: null };
+  const contexts = entries.map(entry => componentSlotMutationContext(document, entry));
+  const context = contexts[0];
+  const allowed = Boolean(context?.overridden && contexts.every(candidate => candidate?.overridden
+    && candidate.instance === context.instance && candidate.property === context.property && candidate.target === context.target));
+  return { allowed, context: allowed ? context : null };
+}
+
 export function addNode(document, node, { parentId = null, pageId = document.activePageId, index } = {}) {
   const page = document.pages.find(item => item.id === pageId);
   if (!page) throw new Error('The target page no longer exists.');
-  const parent = parentId ? findNode(document, parentId, pageId)?.node : null;
+  const parentEntry = parentId ? findNode(document, parentId, pageId) : null;
+  const parent = parentEntry?.node || null;
   if (parentId && !parent) throw new Error('The target parent layer no longer exists.');
-  if (parent && !['frame', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
+  if (parent && !['frame', 'section', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
+  const slotContext = componentSlotMutationContext(document, parentEntry);
+  requireOverriddenSlotForMutation(slotContext, 'add layers to');
   const list = parent ? parent.children : page.children;
   const insertAt = index == null ? list.length : Math.max(0, Math.min(index, list.length));
   list.splice(insertAt, 0, node);
+  if (parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return node;
 }
 
 export function removeNode(document, nodeId, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return null;
+  const slotContext = componentSlotMutationContext(document, entry);
+  requireOverriddenSlotForMutation(slotContext, 'remove');
+  if (slotContext && entry.node === slotContext.target) throw new Error('Cannot remove a component slot target from its instance.');
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);
+  if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   const removedComponents = [];
   const removedNodeIds = new Set();
   walkNodes([removed], ({ node }) => {
@@ -352,7 +404,14 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
 export function updateNode(document, nodeId, patch, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return false;
-  Object.assign(entry.node, typeof patch === 'function' ? patch(entry.node) : patch);
+  const changes = typeof patch === 'function' ? patch(entry.node) : patch;
+  let slotContext = null;
+  if (changes && Object.hasOwn(changes, 'children')) {
+    slotContext = componentSlotMutationContext(document, entry);
+    requireOverriddenSlotForMutation(slotContext, 'replace children in');
+  }
+  Object.assign(entry.node, changes);
+  if (slotContext && entry.node === slotContext.target) syncSlotChildOrder(slotContext, entry.node.children || []);
   return true;
 }
 
@@ -379,6 +438,9 @@ export function absoluteBounds(document, nodeId, pageId = document.activePageId)
 export function duplicateNode(document, nodeId, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return null;
+  const slotContext = componentSlotMutationContext(document, entry);
+  requireOverriddenSlotForMutation(slotContext, 'duplicate');
+  if (slotContext && entry.node === slotContext.target) throw new Error('Cannot duplicate a component slot target from its instance.');
   const duplicate = clone(entry.node);
   const renew = node => { node.id = createId(node.type); node.name = node.name.endsWith(' copy') ? `${node.name.slice(0, -5)} copy 2` : `${node.name} copy`; for (const child of node.children ?? []) renew(child); };
   renew(duplicate);
@@ -386,7 +448,58 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
   duplicate.y += 16;
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
   list.splice(entry.index + 1, 0, duplicate);
+  if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return duplicate;
+}
+
+/** Move a layer to another container, updating any overridden slot root order atomically. */
+export function moveNode(document, nodeId, { parentId = null, index, pageId = document.activePageId } = {}) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry) return false;
+  if (parentId === nodeId) throw new Error('A layer cannot be moved into itself.');
+  const page = document.pages.find(item => item.id === pageId);
+  if (!page) throw new Error('The target page no longer exists.');
+  const parentEntry = parentId ? findNode(document, parentId, pageId) : null;
+  const parent = parentEntry?.node || null;
+  if (parentId && !parent) throw new Error('The target parent layer no longer exists.');
+  if (parent && !['frame', 'section', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
+  let parentInsideNode = false;
+  walkNodes([entry.node], ({ node }) => { if (node.id === parentId) parentInsideNode = true; });
+  if (parentInsideNode) throw new Error('A layer cannot be moved into one of its descendants.');
+
+  const sourceContext = componentSlotMutationContext(document, entry);
+  const destinationContext = componentSlotMutationContext(document, parentEntry);
+  if (entry.parent === parent) return reorderNode(document, nodeId, index ?? entry.index, pageId);
+  requireOverriddenSlotForMutation(sourceContext, 'move');
+  requireOverriddenSlotForMutation(destinationContext, 'move layers into');
+  if (sourceContext && entry.node === sourceContext.target) throw new Error('Cannot move a component slot target from its instance.');
+
+  const sourceList = entry.parent ? entry.parent.children : page.children;
+  const targetList = parent ? parent.children : page.children;
+  const numericIndex = index == null ? targetList.length : Number(index);
+  if (!Number.isInteger(numericIndex)) throw new TypeError('The layer order index must be an integer.');
+  const insertAt = Math.max(0, Math.min(numericIndex, targetList.length));
+  const [moving] = sourceList.splice(entry.index, 1);
+  targetList.splice(insertAt, 0, moving);
+  if (entry.parent === sourceContext?.target) syncSlotChildOrder(sourceContext, sourceList);
+  if (parent === destinationContext?.target) syncSlotChildOrder(destinationContext, targetList);
+  return true;
+}
+
+/** Reorder a layer among its siblings using its final zero-based index. */
+export function reorderNode(document, nodeId, index, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry) return false;
+  if (!Number.isInteger(index)) throw new TypeError('The layer order index must be an integer.');
+  const slotContext = componentSlotMutationContext(document, entry);
+  const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId)?.children;
+  if (!list?.length) return false;
+  const nextIndex = Math.max(0, Math.min(index, list.length - 1));
+  if (nextIndex === entry.index) return false;
+  const [moving] = list.splice(entry.index, 1);
+  list.splice(nextIndex, 0, moving);
+  if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
+  return true;
 }
 
 function visualBounds(node) {
@@ -402,7 +515,7 @@ function visualBounds(node) {
 export function canGroupLayers(document, nodeIds, pageId = document.activePageId) {
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
-  if (entries.some(entry => !entry || entry.node.locked || entry.parents.some(parent => parent.isInstance))) return false;
+  if (entries.some(entry => !entry || entry.node.locked) || !slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   if (parent?.locked || parent?.type === 'boolean') return false;
   if (!entries.every(entry => entry.parent === parent)) return false;
@@ -438,15 +551,17 @@ export function groupLayers(document, nodeIds, pageId = document.activePageId) {
   const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
   list.splice(insertionIndex, 0, group);
+  syncSlotChildOrder(slotAwareSiblingMutation(document, entries).context, list);
   return group;
 }
 
 /** Return whether a regular, editable group can be expanded into its siblings. */
 export function canUngroupLayers(document, groupId, pageId = document.activePageId) {
   const entry = findNode(document, groupId, pageId);
+  const slotMutation = entry && slotAwareSiblingMutation(document, [entry]);
   return Boolean(entry && entry.node.type === 'group' && !entry.node.mask && !entry.node.isComponent && !entry.node.isInstance
     && !entry.node.locked && entry.node.children?.length && entry.parent?.type !== 'boolean' && !entry.parent?.locked
-    && !entry.parents.some(parent => parent.isInstance));
+    && slotMutation?.allowed);
 }
 
 /** Ungroup layers, applying the group's rotation before promoting its children. */
@@ -469,9 +584,11 @@ export function ungroupLayers(document, groupId, pageId = document.activePageId)
     if (group.opacity !== 1) child.opacity *= group.opacity;
   }
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
+  const slotContext = slotAwareSiblingMutation(document, [entry]).context;
   const children = group.children;
   list.splice(entry.index, 1, ...children);
   group.children = [];
+  syncSlotChildOrder(slotContext, list);
   return children;
 }
 
@@ -539,6 +656,7 @@ export function canCombineBoolean(document, nodeIds, pageId = document.activePag
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   if (entries.some(entry => !entry || !isBooleanOperand(entry.node) || entry.node.locked)) return false;
+  if (!slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   return entries.every(entry => entry.parent === parent);
 }
@@ -577,6 +695,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   const insertionIndex = list.slice(0, frontmostIndex).filter(node => !selectedIds.has(node.id)).length;
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
   list.splice(insertionIndex, 0, group);
+  syncSlotChildOrder(slotAwareSiblingMutation(document, entries).context, list);
   return group;
 }
 
@@ -590,6 +709,7 @@ export function canCreateMaskGroup(document, nodeIds, pageId = document.activePa
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   if (entries.some(entry => !entry || entry.node.locked)) return false;
+  if (!slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   if (!entries.every(entry => entry.parent === parent)) return false;
   const frontmost = entries.reduce((top, entry) => entry.index > top.index ? entry : top);
@@ -624,6 +744,7 @@ export function createMaskGroup(document, nodeIds, pageId = document.activePageI
   const insertionIndex = list.slice(0, maskEntry.index).filter(node => !selectedIds.has(node.id)).length;
   for (const entry of selectedEntries.slice().reverse()) list.splice(entry.index, 1);
   list.splice(insertionIndex, 0, group);
+  syncSlotChildOrder(slotAwareSiblingMutation(document, entries).context, list);
   return group;
 }
 
@@ -631,6 +752,9 @@ export function createMaskGroup(document, nodeIds, pageId = document.activePageI
 export function releaseMaskGroup(document, groupId, pageId = document.activePageId) {
   const entry = findNode(document, groupId, pageId);
   if (!entry || entry.node.type !== 'group' || !entry.node.mask || entry.node.children.length < 2) throw new Error('Select a valid mask group to release.');
+  const slotContext = componentSlotMutationContext(document, entry);
+  requireOverriddenSlotForMutation(slotContext, 'release');
+  if (slotContext && entry.node === slotContext.target) throw new Error('Cannot replace a component slot target from its instance.');
   const group = entry.node;
   const children = group.children;
   const angle = (group.rotation || 0) * Math.PI / 180;
@@ -648,6 +772,7 @@ export function releaseMaskGroup(document, groupId, pageId = document.activePage
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
   list.splice(entry.index, 1, ...children);
   group.children = [];
+  if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return children;
 }
 
@@ -655,6 +780,9 @@ export function releaseMaskGroup(document, groupId, pageId = document.activePage
 export function separateBoolean(document, nodeId, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry || entry.node.type !== 'boolean') throw new Error('Select a Boolean group to separate.');
+  const slotContext = componentSlotMutationContext(document, entry);
+  requireOverriddenSlotForMutation(slotContext, 'separate');
+  if (slotContext && entry.node === slotContext.target) throw new Error('Cannot replace a component slot target from its instance.');
   const group = entry.node;
   const children = group.children || [];
   if (children.length < 2) throw new Error('This Boolean group has no source shapes to separate.');
@@ -685,6 +813,7 @@ export function separateBoolean(document, nodeId, pageId = document.activePageId
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
   list.splice(entry.index, 1, ...children);
   group.children = [];
+  if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return children;
 }
 
@@ -1185,9 +1314,27 @@ export function canSwapComponentTo(document, ownerComponentId, targetComponentId
 function componentPropertyValueIsValid(document, component, property, value) {
   if (property.type === 'BOOLEAN') return typeof value === 'boolean';
   if (property.type === 'TEXT') return typeof value === 'string' && value.length <= 1_000_000;
+  if (property.type === 'SLOT') return Array.isArray(value) && new Set(value).size === value.length && value.every(id => typeof id === 'string' && id.length > 0);
   if (property.type !== 'INSTANCE_SWAP' || typeof value !== 'string') return false;
   return Boolean(document.components?.some(item => item.id === value)
     && canSwapComponentTo(document, component.id, value));
+}
+
+function componentSlotValueIsValidForInstance(document, instance, component, property, value) {
+  if (property.type !== 'SLOT' || !isComponentSlotTarget(findComponentPropertyTarget(document, component, property.targetSourceId), component)
+    || !componentPropertyValueIsValid(document, component, property, value) || value.length > 10_000) return false;
+  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+  if (!isComponentSlotTarget(target)) return false;
+  const children = target.children || [];
+  if (value.length !== children.length || value.some((id, index) => id !== children[index].id)) return false;
+  const sourceTarget = findComponentPropertyTarget(document, component, property.targetSourceId);
+  const inheritedIds = new Set((sourceTarget.children || []).map(child => child.id));
+  if (children.some(child => inheritedIds.has(child.componentSourceId))) return false;
+  let safe = true;
+  walkNodes(children, ({ node }) => {
+    if (node.isComponent || (node.isInstance && !canSwapComponentTo(document, component.id, node.componentId))) safe = false;
+  });
+  return safe;
 }
 
 /** Add a stable, typed property to a component definition. */
@@ -1196,6 +1343,7 @@ export function createComponentProperty(document, componentId, { id = null, name
   const target = component && findComponentPropertyTarget(document, component, targetNodeId);
   const propertyName = String(name || '').trim();
   if (!component || !target || !propertyName || propertyName.length > 80 || !componentPropertyTypes.has(type)) throw new Error('Choose a component, property name, supported type, and target layer.');
+  if (type === 'SLOT' && !isComponentSlotTarget(target, component)) throw new Error('A slot must target a nested frame, group, or section inside the component.');
   component.componentProperties ||= [];
   if (component.componentProperties.length >= 100) throw new Error('A component can have at most 100 component properties.');
   if (component.componentProperties.some(property => property.name.toLocaleLowerCase() === propertyName.toLocaleLowerCase())) throw new Error('Component property names must be unique.');
@@ -1205,6 +1353,7 @@ export function createComponentProperty(document, componentId, { id = null, name
   if (type === 'BOOLEAN' && typeof getNodePropertyValue(document, target, 'visible') === 'boolean') defaultValue = getNodePropertyValue(document, target, 'visible');
   else if (type === 'TEXT' && target.type === 'text' && typeof getNodePropertyValue(document, target, 'text') === 'string') defaultValue = getNodePropertyValue(document, target, 'text');
   else if (type === 'INSTANCE_SWAP' && target.isInstance && typeof target.componentId === 'string') defaultValue = target.componentId;
+  else if (type === 'SLOT' && isComponentSlotTarget(target, component)) defaultValue = [];
   else throw new Error(`The ${type} property is not supported by the selected layer.`);
 
   const property = {
@@ -1233,6 +1382,46 @@ function findInstancePropertyTarget(instance, targetSourceId) {
   return found;
 }
 
+function isComponentSlotTarget(node, component = null) {
+  return Boolean(node && ['frame', 'group', 'section'].includes(node.type)
+    && (!component || node.id !== component.rootNodeId));
+}
+
+function componentSlotContentKey(instanceId, targetSourceId) {
+  return `${instanceId}\u0000${targetSourceId}`;
+}
+
+function instanceSlotContent(document, instance, component, property) {
+  const ids = instance.componentPropertyValues?.[property.id];
+  if (!Array.isArray(ids)) return [];
+  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+  if (!isComponentSlotTarget(target, component)) throw new TypeError(`Missing slot target for ${property.name}.`);
+  const byId = new Map((target.children || []).map(child => [child.id, child]));
+  const nodes = ids.map(id => byId.get(id));
+  if (nodes.some(node => !node)) throw new TypeError(`Missing layer content for slot ${property.name}.`);
+  return nodes;
+}
+
+function collectInstanceSlotContents(document, instance, component) {
+  const contents = new Map();
+  if (!instance?.isInstance || !component) return contents;
+  for (const property of component.componentProperties || []) {
+    if (property.type !== 'SLOT' || !Object.hasOwn(instance.componentPropertyValues || {}, property.id)) continue;
+    contents.set(componentSlotContentKey(instance.id, property.targetSourceId), instanceSlotContent(document, instance, component, property));
+  }
+  return contents;
+}
+
+function collectNestedInstanceSlotContents(document, rootInstance) {
+  const contents = new Map();
+  walkNodes([rootInstance], ({ node }) => {
+    if (!node.isInstance) return;
+    const component = document.components?.find(item => item.id === node.componentId);
+    for (const [sourceId, slotNodes] of collectInstanceSlotContents(document, node, component)) contents.set(sourceId, slotNodes);
+  });
+  return contents;
+}
+
 function assignComponentPropertyValue(document, component, instance, property, value) {
   const target = findInstancePropertyTarget(instance, property.targetSourceId);
   if (!target) return false;
@@ -1249,6 +1438,11 @@ function assignComponentPropertyValue(document, component, instance, property, v
       delete target.variableBindings.text;
       if (!Object.keys(target.variableBindings).length) delete target.variableBindings;
     }
+  } else if (property.type === 'SLOT') {
+    // Slot children are real layer nodes installed by setComponentSlotContent.
+    // The ID list is metadata used by validation and synchronization, not a
+    // serialized copy of those nodes.
+    return true;
   } else {
     if (target.componentId !== value) {
       const swapComponent = document.components?.find(item => item.id === value);
@@ -1307,12 +1501,130 @@ export function setComponentPropertyValue(document, instanceId, propertyId, valu
   const component = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
   const property = component?.componentProperties?.find(item => item.id === propertyId);
   if (!instance || !component || !property) return false;
+  if (property.type === 'SLOT') {
+    if (value === undefined) return resetComponentSlotContent(document, instanceId, propertyId, pageId);
+    throw new TypeError(`Use setComponentSlotContent to change slot ${property.name}.`);
+  }
   if (value !== undefined && !componentPropertyValueIsValid(document, component, property, value)) throw new TypeError(`Invalid value for component property ${property.name}.`);
   instance.componentPropertyValues ||= {};
   if (value === undefined || Object.is(value, property.defaultValue)) delete instance.componentPropertyValues[property.id];
   else instance.componentPropertyValues[property.id] = value;
   if (!Object.keys(instance.componentPropertyValues).length) delete instance.componentPropertyValues;
   applyComponentPropertyValues(document, instance);
+  return true;
+}
+
+function cloneSlotContentTrees(document, nodes) {
+  if (!Array.isArray(nodes)) throw new TypeError('Slot content must be a list of layer trees.');
+  const sourceIds = new Set();
+  const sourceObjects = new Set();
+  let count = 0;
+  const inspect = node => {
+    if (!node || typeof node !== 'object' || Array.isArray(node) || sourceObjects.has(node)) throw new TypeError('Slot content must be a tree of layer objects.');
+    sourceObjects.add(node);
+    if (typeof node.id !== 'string' || !node.id || sourceIds.has(node.id)) throw new TypeError('Slot content layers need unique IDs.');
+    if (node.isComponent) throw new TypeError('A main component cannot be inserted as slot content; create an instance first.');
+    if (node.children != null && !Array.isArray(node.children)) throw new TypeError('Slot content children must be a list.');
+    sourceIds.add(node.id);
+    count += 1;
+    if (count > 10_000) throw new RangeError('A slot can receive at most 10,000 layer nodes at once.');
+    for (const child of node.children || []) inspect(child);
+  };
+  for (const node of nodes) inspect(node);
+
+  const usedIds = new Set();
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node }) => usedIds.add(node.id));
+  const idMap = new Map();
+  for (const sourceId of sourceIds) {
+    let nextId;
+    do { nextId = createId('slot-layer'); } while (usedIds.has(nextId));
+    usedIds.add(nextId);
+    idMap.set(sourceId, nextId);
+  }
+  const copies = clone(nodes);
+  const remap = (node, insideLinkedInstance = false) => {
+    const wasInstance = node.isInstance === true;
+    node.id = idMap.get(node.id);
+    if (!insideLinkedInstance) {
+      delete node.componentSourceId;
+      delete node.componentSourceKey;
+      delete node.variantNodeKey;
+    }
+    if (node.maskSourceId && idMap.has(node.maskSourceId)) node.maskSourceId = idMap.get(node.maskSourceId);
+    for (const interaction of node.interactions || []) {
+      if (interaction.destinationId && idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
+    }
+    if (node.isInstance && node.componentPropertyValues) {
+      const component = document.components?.find(item => item.id === node.componentId);
+      const propertiesById = new Map((component?.componentProperties || []).map(property => [property.id, property]));
+      for (const [propertyId, value] of Object.entries(node.componentPropertyValues)) {
+        if (propertiesById.get(propertyId)?.type === 'SLOT' && Array.isArray(value)) {
+          node.componentPropertyValues[propertyId] = value.map(id => idMap.get(id) || id);
+        }
+      }
+    }
+    for (const child of node.children || []) remap(child, insideLinkedInstance || wasInstance);
+  };
+  for (const node of copies) remap(node);
+  return copies;
+}
+
+function validateSlotSubtreeDependencies(document, ownerComponentId, nodes) {
+  let invalidMainComponent = false;
+  let cyclicInstance = false;
+  walkNodes(nodes, ({ node }) => {
+    if (node.isComponent) invalidMainComponent = true;
+    if (node.isInstance && !canSwapComponentTo(document, ownerComponentId, node.componentId)) cyclicInstance = true;
+  });
+  if (invalidMainComponent) throw new TypeError('Slot content cannot contain a main component.');
+  if (cyclicInstance) throw new TypeError('Slot content would create a recursive component dependency.');
+}
+
+/**
+ * Replace a component instance's named SLOT contents with cloned layer trees.
+ * The supplied roots and descendants receive fresh IDs; their original objects
+ * are not attached or mutated. The resulting roots are ordinary children of
+ * the slot's frame, group, or section, and their layer order follows `nodes`.
+ * An empty list installs an explicit empty override; call resetComponentSlotContent
+ * to restore the current master content.
+ */
+export function setComponentSlotContent(document, instanceId, propertyId, nodes, pageId = document.activePageId) {
+  const instance = findNode(document, instanceId, pageId)?.node;
+  const component = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
+  const property = component?.componentProperties?.find(item => item.id === propertyId);
+  if (!instance || !component || property?.type !== 'SLOT') return false;
+  if (!Array.isArray(nodes)) throw new TypeError('Slot content must be a list of layer trees.');
+  const target = findInstancePropertyTarget(instance, property.targetSourceId);
+  if (!isComponentSlotTarget(target)) throw new TypeError(`Missing slot target for ${property.name}.`);
+
+  const content = cloneSlotContentTrees(document, nodes);
+  validateSlotSubtreeDependencies(document, component.id, content);
+  const candidate = clone(document);
+  const candidateInstance = findNode(candidate, instanceId, pageId)?.node;
+  const candidateTarget = candidateInstance && findInstancePropertyTarget(candidateInstance, property.targetSourceId);
+  if (!candidateTarget) throw new TypeError(`Missing slot target for ${property.name}.`);
+  candidateTarget.children = clone(content);
+  candidateInstance.componentPropertyValues ||= {};
+  candidateInstance.componentPropertyValues[property.id] = content.map(node => node.id);
+  validateDocument(candidate);
+
+  target.children = content;
+  instance.componentPropertyValues ||= {};
+  instance.componentPropertyValues[property.id] = content.map(node => node.id);
+  return content;
+}
+
+/** Restore a component instance's slot to the current main-component children. */
+export function resetComponentSlotContent(document, instanceId, propertyId, pageId = document.activePageId) {
+  const instance = findNode(document, instanceId, pageId)?.node;
+  const component = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
+  const property = component?.componentProperties?.find(item => item.id === propertyId);
+  if (!instance || !component || property?.type !== 'SLOT') return false;
+  if (instance.componentPropertyValues) {
+    delete instance.componentPropertyValues[property.id];
+    if (!Object.keys(instance.componentPropertyValues).length) delete instance.componentPropertyValues;
+  }
+  syncSingleComponentInstance(document, instance, component);
   return true;
 }
 
@@ -1422,6 +1734,27 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
   if (currentComponent.id === targetComponent.id) return false;
   const targetMaster = findNodeAcrossPages(document, targetComponent.rootNodeId)?.node;
   if (!targetMaster?.isComponent) throw new Error('The selected variant no longer exists.');
+  const slotContentsByInstanceAndSourceId = collectNestedInstanceSlotContents(document, instance);
+  const nextPropertyValues = {};
+  const targetProperties = targetComponent.componentProperties || [];
+  const currentPropertiesById = new Map((currentComponent.componentProperties || []).map(property => [property.id, property]));
+  for (const [propertyId, value] of Object.entries(instance.componentPropertyValues || {})) {
+    const currentProperty = currentPropertiesById.get(propertyId);
+    if (currentProperty?.type === 'SLOT') continue;
+    if (targetProperties.some(property => property.id === propertyId)) nextPropertyValues[propertyId] = clone(value);
+  }
+  for (const currentProperty of currentComponent.componentProperties || []) {
+    const contentIds = instance.componentPropertyValues?.[currentProperty.id];
+    if (currentProperty.type !== 'SLOT' || !Array.isArray(contentIds) || !Object.hasOwn(instance.componentPropertyValues || {}, currentProperty.id)) continue;
+    const targetProperty = targetProperties.find(property => property.name.trim().toLocaleLowerCase() === currentProperty.name.trim().toLocaleLowerCase());
+    if (!targetProperty || targetProperty.type !== 'SLOT') throw new Error(`Cannot switch variants because slot “${currentProperty.name}” has no matching target slot.`);
+    const currentTarget = findInstancePropertyTarget(instance, currentProperty.targetSourceId);
+    const content = instanceSlotContent(document, instance, currentComponent, currentProperty);
+    slotContentsByInstanceAndSourceId.delete(componentSlotContentKey(instance.id, currentProperty.targetSourceId));
+    slotContentsByInstanceAndSourceId.set(componentSlotContentKey(instance.id, targetProperty.targetSourceId), content);
+    nextPropertyValues[targetProperty.id] = clone(contentIds);
+    if (!isComponentSlotTarget(currentTarget)) throw new Error(`Cannot switch variants because slot “${currentProperty.name}” no longer exists.`);
+  }
   const overridesByKey = new Map();
   for (const [sourceId, overrides] of Object.entries(instance.componentOverrides || {})) {
     const source = findNodeAcrossPages(document, sourceId)?.node;
@@ -1442,11 +1775,10 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
   }
   instance.componentId = targetComponent.id;
   instance.componentOverrides = nextOverrides;
-  const targetPropertyIds = new Set((targetComponent.componentProperties || []).map(property => property.id));
-  for (const propertyId of Object.keys(instance.componentPropertyValues || {})) if (!targetPropertyIds.has(propertyId)) delete instance.componentPropertyValues[propertyId];
-  if (!Object.keys(instance.componentPropertyValues || {}).length) delete instance.componentPropertyValues;
+  instance.componentPropertyValues = nextPropertyValues;
+  if (!Object.keys(instance.componentPropertyValues).length) delete instance.componentPropertyValues;
   if (instance.componentNameIsInherited !== false) instance.name = `${targetComponent.name} instance`;
-  syncInstanceNode(instance, targetMaster, targetComponent.id, nextOverrides, true);
+  syncInstanceNode(instance, targetMaster, targetComponent.id, nextOverrides, true, slotContentsByInstanceAndSourceId);
   applyComponentPropertyValues(document, instance);
   return true;
 }
@@ -1486,6 +1818,7 @@ function removeDanglingComponentProperties(document, removedNodeIds, removedComp
     for (const [propertyId, value] of Object.entries(node.componentPropertyValues)) {
       const property = definitions.get(propertyId);
       if (removedPropertyIds.has(propertyId) || (property?.type === 'INSTANCE_SWAP' && removedComponentIds.has(value))) delete node.componentPropertyValues[propertyId];
+      else if (property?.type === 'SLOT' && Array.isArray(value)) node.componentPropertyValues[propertyId] = value.filter(id => !removedNodeIds.has(id));
     }
     if (!Object.keys(node.componentPropertyValues).length) delete node.componentPropertyValues;
   });
@@ -1549,7 +1882,7 @@ export function detachComponentInstance(document, nodeId, pageId = document.acti
   return true;
 }
 
-function syncInstanceNode(instance, master, componentId, overrides, isRoot = false) {
+function syncInstanceNode(instance, master, componentId, overrides, isRoot = false, slotContentsBySourceId = new Map(), ownerInstanceId = instance?.id) {
   const stableId = instance?.id || createId(master.type);
   const rootX = instance?.x ?? master.x;
   const rootY = instance?.y ?? master.y;
@@ -1561,12 +1894,15 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
   const copy = clone(master);
-  let children = (master.children || []).map((child, index) => {
+  const slotContentKey = componentSlotContentKey(ownerInstanceId, master.id);
+  const hasSlotContent = slotContentsBySourceId.has(slotContentKey);
+  const childOwnerInstanceId = master.isInstance && !isRoot ? (instance?.id || master.id) : ownerInstanceId;
+  let children = hasSlotContent ? slotContentsBySourceId.get(slotContentKey).slice() : (master.children || []).map((child, index) => {
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
-    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, overrides);
+    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, overrides, false, slotContentsBySourceId, childOwnerInstanceId);
   });
   const nodeOverrides = overrides?.[master.id];
-  if (Array.isArray(nodeOverrides?.__childOrder)) {
+  if (!hasSlotContent && Array.isArray(nodeOverrides?.__childOrder)) {
     const masterOrder = new Map((master.children || []).map((child, index) => [child.id, index]));
     const requestedOrder = new Map(nodeOverrides.__childOrder.map((id, index) => [id, index]));
     children = children.map((child, index) => ({ child, index })).sort((a, b) => {
@@ -1621,11 +1957,19 @@ export function syncComponentInstances(document, componentId) {
     if (node.isInstance && node.componentId === componentId) instances.push(node);
   });
   for (const instance of instances) {
-    syncInstanceNode(instance, master, componentId, instance.componentOverrides || {}, true);
-    if (instance.componentNameIsInherited !== false) instance.name = `${component.name} instance`;
-    applyComponentPropertyValues(document, instance);
+    syncSingleComponentInstance(document, instance, component);
   }
   return instances.length;
+}
+
+function syncSingleComponentInstance(document, instance, component = document.components?.find(item => item.id === instance?.componentId)) {
+  const master = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+  if (!component || !master || !instance?.isInstance) return false;
+  const slotContents = collectNestedInstanceSlotContents(document, instance);
+  syncInstanceNode(instance, master, component.id, instance.componentOverrides || {}, true, slotContents);
+  if (instance.componentNameIsInherited !== false) instance.name = `${component.name} instance`;
+  applyComponentPropertyValues(document, instance);
+  return true;
 }
 
 export function syncAllComponentInstances(document) {
@@ -1870,13 +2214,15 @@ export function validateDocument(document) {
           || typeof property.id !== 'string' || !property.id || componentPropertyIds.has(property.id)
           || !nameKey || nameKey.length > 80 || propertyNames.has(nameKey)
           || !componentPropertyTypes.has(property.type)
-          || typeof property.targetSourceId !== 'string' || !target) throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
+          || typeof property.targetSourceId !== 'string' || !target
+          || (property.type === 'SLOT' && !isComponentSlotTarget(target, component))) throw new TypeError(`Invalid component property on ${component.name || component.id}.`);
         const targetKey = `${property.type}:${property.targetSourceId}`;
         if (propertyTargets.has(targetKey)) throw new TypeError(`Duplicate component property target on ${component.name || component.id}.`);
         propertyTargets.add(targetKey); propertyNames.add(nameKey); componentPropertyIds.add(property.id);
         if ((property.type === 'BOOLEAN' && typeof property.defaultValue !== 'boolean')
           || (property.type === 'TEXT' && (target.type !== 'text' || typeof property.defaultValue !== 'string' || property.defaultValue.length > 1_000_000))
-          || (property.type === 'INSTANCE_SWAP' && (!target.isInstance || !componentPropertyValueIsValid(document, component, property, property.defaultValue)))) throw new TypeError(`Invalid ${property.type} default on component property ${property.name}.`);
+          || (property.type === 'INSTANCE_SWAP' && (!target.isInstance || !componentPropertyValueIsValid(document, component, property, property.defaultValue)))
+          || (property.type === 'SLOT' && (!componentPropertyValueIsValid(document, component, property, property.defaultValue) || property.defaultValue.length !== 0))) throw new TypeError(`Invalid ${property.type} default on component property ${property.name}.`);
         if (property.preferredComponentIds != null) {
           if (property.type !== 'INSTANCE_SWAP' || !Array.isArray(property.preferredComponentIds)
             || new Set(property.preferredComponentIds).size !== property.preferredComponentIds.length
@@ -1892,7 +2238,9 @@ export function validateDocument(document) {
         const properties = new Map((component?.componentProperties || []).map(property => [property.id, property]));
         if (Object.entries(node.componentPropertyValues).some(([propertyId, value]) => {
           const property = properties.get(propertyId);
-          return !property || !componentPropertyValueIsValid(document, component, property, value);
+          return !property || (property.type === 'SLOT'
+            ? !componentSlotValueIsValidForInstance(document, node, component, property, value)
+            : !componentPropertyValueIsValid(document, component, property, value));
         })) throw new TypeError(`Invalid component property value on layer ${node.name || node.id}.`);
       }
     });

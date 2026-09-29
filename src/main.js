@@ -1,9 +1,9 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createComponentProperty, createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
-  setComponentPropertyValue, updateNode, walkNodes
+  resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
 import { createImageFill } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
@@ -12,6 +12,7 @@ import { History } from './history.js';
 import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText } from './text-layout.js';
 import { LocalImageEngine } from './image-engine.js';
+import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
 import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listSavedDocuments, loadDocumentById, loadImageAsset, loadLatestDocument, renameStoredDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
@@ -46,6 +47,7 @@ const state = {
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
+  componentSlotDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
   presenting: null
@@ -60,6 +62,7 @@ let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const previewTimers = new Map();
+let nextImageRenderVersion = 0;
 let presentRenderer = null;
 let presentRenderState = null;
 let textMeasureContext = null;
@@ -129,6 +132,7 @@ function queueSave() {
   if (!state.ready) return;
   state.saveRevision += 1;
   if (syncAllComponentInstances(state.document)) {
+    reconcileImagePreviewRuntime();
     renderLayers();
     renderer?.invalidate();
   }
@@ -517,6 +521,11 @@ function componentInstancePropertyControls(component, instance) {
     const label = `<span>${escapeHtml(property.name)}</span>`;
     if (property.type === 'BOOLEAN') return `<label class="component-property-value">${label}<input type="checkbox" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}"${current ? ' checked' : ''} aria-label="${escapeHtml(property.name)}"/></label>`;
     if (property.type === 'TEXT') return `<label class="component-property-value">${label}<input type="text" maxlength="1000000" data-component-property-value="${escapeHtml(property.id)}" data-instance-id="${escapeHtml(instance.id)}" value="${escapeHtml(current)}" aria-label="${escapeHtml(property.name)}"/></label>`;
+    if (property.type === 'SLOT') {
+      const count = Array.isArray(current) ? current.length : 0;
+      const hasOverride = Object.hasOwn(instance.componentPropertyValues || {}, property.id);
+      return `<div class="component-slot-value"><div class="component-slot-copy"><strong>${escapeHtml(property.name)}</strong><small>${hasOverride ? `${count} custom layer${count === 1 ? '' : 's'}` : 'Using default content'}</small></div><button class="secondary-button" type="button" data-action="choose-component-slot-content" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}">${hasOverride ? 'Replace…' : 'Choose content…'}</button>${hasOverride ? `<button class="tiny-icon-button component-slot-reset" type="button" data-action="reset-component-slot" data-instance-id="${escapeHtml(instance.id)}" data-property-id="${escapeHtml(property.id)}" aria-label="Reset ${escapeHtml(property.name)} to component default" title="Reset to component default">↺</button>` : ''}</div>`;
+    }
     const validCandidates = (state.document.components || []).filter(candidate => canSwapComponentTo(state.document, component.id, candidate.id));
     const preferredCandidates = property.preferredComponentIds?.length
       ? validCandidates.filter(candidate => property.preferredComponentIds.includes(candidate.id))
@@ -537,10 +546,11 @@ function componentPropertyDefinitions(component, root) {
   const supportedTypes = [['BOOLEAN', 'Visibility']];
   if (selectedTarget?.type === 'text') supportedTypes.push(['TEXT', 'Text']);
   if (selectedTarget?.isInstance) supportedTypes.push(['INSTANCE_SWAP', 'Instance swap']);
+  if (selectedTarget && selectedTarget.id !== component.rootNodeId && ['frame', 'group', 'section'].includes(selectedTarget.type)) supportedTypes.push(['SLOT', 'Content slot']);
   const selectedType = supportedTypes.some(([type]) => type === state.componentPropertyType) ? state.componentPropertyType : supportedTypes[0]?.[0] || 'BOOLEAN';
   const definitions = (component.componentProperties || []).map(property => {
     const target = targets.find(item => item.id === property.targetSourceId);
-    const summary = property.type === 'BOOLEAN' ? 'Visibility' : property.type === 'TEXT' ? 'Text' : 'Instance swap';
+    const summary = property.type === 'BOOLEAN' ? 'Visibility' : property.type === 'TEXT' ? 'Text' : property.type === 'SLOT' ? 'Flexible slot' : 'Instance swap';
     return `<div class="component-property-definition"><strong>${escapeHtml(property.name)}</strong><small>${summary}${target ? ` · ${escapeHtml(target.name)}` : ''}</small></div>`;
   }).join('');
   const targetOptions = targets.map(target => `<option value="${escapeHtml(target.id)}"${target.id === selectedTarget?.id ? ' selected' : ''}>${escapeHtml(target.name)}</option>`).join('');
@@ -548,7 +558,7 @@ function componentPropertyDefinitions(component, root) {
   const editor = targets.length && (component.componentProperties || []).length < 100
     ? `<div class="component-property-editor"><input class="text-field" id="component-property-name" maxlength="80" value="" placeholder="Property name" aria-label="New component property name"/><select class="select-field" id="component-property-target" aria-label="Component property target">${targetOptions}</select><select class="select-field" id="component-property-type" aria-label="Component property type">${typeOptions}</select><button class="add-fill" data-action="create-component-property" data-component-id="${escapeHtml(component.id)}" data-target-id="${escapeHtml(selectedTarget.id)}" data-property-type="${selectedType}">＋ Add property</button></div>`
     : '';
-  return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${(component.componentProperties || []).length}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, or a nested instance as a reusable control.</div>'}${component.componentProperties?.length >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}</div>`;
+  return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${(component.componentProperties || []).length}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, a nested instance, or a content slot as a reusable control.</div>'}${component.componentProperties?.length >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}</div>`;
 }
 function componentSection(node) {
   const linkedInstance = componentInstanceRoot(node.id);
@@ -1479,10 +1489,10 @@ function onCanvasPointerMove(event) {
       const center = axis === 'horizontal' ? item.x + item.width / 2 : item.y + item.height / 2;
       return localMain < center;
     });
-    const currentIndex = parent.children.findIndex(item => item.id === interaction.node.id);
-    const [moving] = parent.children.splice(currentIndex, 1);
-    const insertionIndex = targetIndex < 0 ? parent.children.length : Math.min(parent.children.length, targetIndex > currentIndex ? targetIndex - 1 : targetIndex);
-    parent.children.splice(insertionIndex, 0, moving);
+    const remaining = parent.children.filter(item => item.id !== interaction.node.id);
+    const target = targetIndex < 0 ? null : siblings[targetIndex];
+    const insertionIndex = target ? remaining.indexOf(target) : remaining.length;
+    reorderNode(state.document, interaction.node.id, insertionIndex);
     applyAutoLayout(parent);
     renderer.invalidate(); return;
   }
@@ -2346,7 +2356,12 @@ function schedulePreview(node, immediate = false) {
   const adjustments = node.imageFill?.adjustments || node.adjustments;
   const transforms = node.imageFill?.transforms || node.transforms;
   const run = () => renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
-  const timer = setTimeout(run, immediate ? 0 : 110);
+  let timer;
+  timer = setTimeout(() => {
+    if (previewTimers.get(node.id) !== timer) return;
+    previewTimers.delete(node.id);
+    run();
+  }, immediate ? 0 : 110);
   previewTimers.set(node.id, timer);
   if (state.selectedIds.includes(node.id)) {
     for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
@@ -2356,11 +2371,12 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {})
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
-  const version = (state.renderVersion.get(nodeId) || 0) + 1;
+  const version = ++nextImageRenderVersion;
   state.renderVersion.set(nodeId, version);
   state.imageStatus.set(nodeId, 'Processing locally…');
   try {
     const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms);
+    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) return false;
     const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
     if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
     state.previews.get(nodeId)?.close?.();
@@ -2374,9 +2390,22 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {})
     if (state.selectedIds.includes(nodeId)) for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); }
     return true;
   } catch (error) {
-    if (generation !== state.documentGeneration) return false;
+    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) return false;
     throw error;
   }
+}
+
+function reconcileImagePreviewRuntime() {
+  return pruneImagePreviewRuntime({
+    liveNodeIds: collectLiveImagePreviewNodeIds(state.document),
+    timers: previewTimers,
+    previews: state.previews,
+    previewUrls: state.previewUrls,
+    previewAssetIds: state.previewAssetIds,
+    previewVersions: state.previewVersions,
+    imageStatus: state.imageStatus,
+    renderVersion: state.renderVersion,
+  });
 }
 
 function setZoomButtonHandlers() {
@@ -2459,13 +2488,15 @@ function renderBulkBar() {
   const bar = $('#bulk-bar'); const bulk = state.bulk;
   bar.hidden = !bulk;
   if (!bulk) return;
+  const engineMetrics = imageEngine.metrics();
   const total = bulk.targets.length;
   $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
-  $('#bulk-subtitle').textContent = bulk.cancelled ? `${bulk.completed} completed · ${bulk.targets.length - bulk.completed} left untouched` : bulk.done ? `${bulk.completed} updated${bulk.failed ? ` · ${bulk.failed} failed` : ''} in place` : bulk.paused ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} finishing before pause` : `Editing original layers · ${bulk.inflight} active`;
+  $('#bulk-subtitle').textContent = bulk.cancelled ? `${bulk.completed} completed · ${bulk.targets.length - bulk.completed} left untouched` : bulk.done ? `${bulk.completed} updated${bulk.failed ? ` · ${bulk.failed} failed` : ''} in place` : bulk.paused ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} queued or finishing before pause` : `Editing original layers · ${bulk.inflight} queued or processing`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
   $('#bulk-speed').value = bulk.concurrency;
-  $('#bulk-speed-value').textContent = `${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}`;
+  $('#bulk-speed-value').textContent = `${bulk.concurrency} max worker${bulk.concurrency === 1 ? '' : 's'} · ${engineMetrics.active} active`;
+  $('#bulk-speed-value').title = `Estimated WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
@@ -3004,6 +3035,7 @@ function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
   checkpoint('Delete layers');
   for (const id of ids) removeNode(state.document, id);
+  reconcileImagePreviewRuntime();
   state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function copySelected() {
@@ -3030,6 +3062,7 @@ function cutSelected() {
     validateDocument(nextDocument);
     checkpoint('Cut layers');
     state.document = nextDocument;
+    reconcileImagePreviewRuntime();
     state.clipboard = clipboard;
     state.selectedIds = []; state.selectedVectorPoint = null;
     renderUI(); queueSave();
@@ -3130,6 +3163,96 @@ function addComponentProperty(componentId, targetNodeId, type) {
     showToast(error.message || 'Could not add this component property.');
   }
 }
+function componentSlotCandidateEntries(instanceId, pageId = state.document.activePageId) {
+  const page = state.document.pages?.find(item => item.id === pageId);
+  const instanceEntry = findNode(state.document, instanceId, pageId);
+  if (!page || !instanceEntry) return [];
+  const excludedIds = new Set([instanceId, ...instanceEntry.parents.map(parent => parent.id)]);
+  const containingMainComponent = new Set();
+  walkNodes(page.children || [], ({ node, parents }) => {
+    if (!node.isComponent) return;
+    containingMainComponent.add(node.id);
+    for (const parent of parents) containingMainComponent.add(parent.id);
+  });
+  const rows = [];
+  walkNodes(page.children || [], entry => {
+    const { node, parents } = entry;
+    if (excludedIds.has(node.id) || containingMainComponent.has(node.id) || parents.some(parent => parent.id === instanceId)) return;
+    rows.push(entry);
+  });
+  return rows;
+}
+function renderComponentSlotCandidateList() {
+  const dialogState = state.componentSlotDialog;
+  if (!dialogState) return;
+  const list = $('#component-slot-candidates');
+  const query = dialogState.query.trim().toLocaleLowerCase();
+  const matches = dialogState.entries.filter(({ node, parents }) => {
+    const label = `${node.name || ''} ${node.type} ${parents.map(parent => parent.name || '').join(' ')}`.toLocaleLowerCase();
+    return !query || label.includes(query);
+  });
+  const visible = matches.slice(0, 250);
+  $('#component-slot-count').textContent = matches.length > visible.length
+    ? `${matches.length.toLocaleString()} matches · showing the first ${visible.length}. Search to narrow the list.`
+    : `${matches.length.toLocaleString()} layer${matches.length === 1 ? '' : 's'} available`;
+  if (!visible.length) {
+    list.innerHTML = '<div class="slot-picker-empty">No matching layers on this page.</div>';
+    return;
+  }
+  list.innerHTML = visible.map(({ node, parents }) => {
+    const checked = dialogState.selectedIds.has(node.id);
+    const trail = [...parents.map(parent => parent.name), node.name].filter(Boolean).join(' / ');
+    return `<label class="slot-picker-row" title="${escapeHtml(trail)}"><input type="checkbox" data-slot-candidate="${escapeHtml(node.id)}"${checked ? ' checked' : ''}/><span class="slot-picker-name">${escapeHtml(node.name || node.type)}</span><small>${escapeHtml(node.type)}</small></label>`;
+  }).join('');
+}
+function openComponentSlotDialog(instanceId, propertyId) {
+  const instance = findNode(state.document, instanceId)?.node;
+  const component = instance?.isInstance && state.document.components?.find(item => item.id === instance.componentId);
+  const property = component?.componentProperties?.find(item => item.id === propertyId && item.type === 'SLOT');
+  if (!instance || !property) { showToast('This component slot is no longer available.'); return; }
+  const entry = findNode(state.document, instanceId);
+  const excludedIds = new Set([instanceId, ...(entry?.parents || []).map(parent => parent.id)]);
+  const selectedIds = new Set(state.selectedIds.filter(id => {
+    const selected = findNode(state.document, id);
+    return selected && !excludedIds.has(id) && !selected.parents.some(parent => parent.id === instanceId);
+  }));
+  state.componentSlotDialog = {
+    instanceId, propertyId, pageId: state.document.activePageId,
+    selectedIds, query: '', entries: componentSlotCandidateEntries(instanceId)
+  };
+  $('#component-slot-dialog-title').textContent = `Choose ${property.name} content`;
+  $('#component-slot-search').value = '';
+  renderComponentSlotCandidateList();
+  $('#component-slot-dialog').showModal();
+  $('#component-slot-search').focus();
+}
+function applyComponentSlotDialog(dialogState = state.componentSlotDialog) {
+  if (!dialogState) return;
+  const selectedSet = dialogState.selectedIds;
+  const selectedEntries = dialogState.entries.filter(entry => selectedSet.has(entry.node.id));
+  const selectedRootEntries = selectedEntries.filter(entry => !entry.parents.some(parent => selectedSet.has(parent.id)));
+  const nodes = selectedRootEntries.map(entry => entry.node);
+  try {
+    checkpoint('Set component slot content');
+    const installed = setComponentSlotContent(state.document, dialogState.instanceId, dialogState.propertyId, nodes, dialogState.pageId);
+    if (installed === false) throw new Error('This component slot is no longer available.');
+    setSelection(installed.map(node => node.id));
+    queueSave(); renderUI();
+    showToast(nodes.length ? `Added ${nodes.length} layer${nodes.length === 1 ? '' : 's'} to the component slot.` : 'Component slot content cleared.');
+  } catch (error) {
+    showToast(error.message || 'Could not update this component slot.');
+    renderInspector();
+  }
+}
+function resetComponentSlot(instanceId, propertyId) {
+  try {
+    checkpoint('Reset component slot');
+    if (!resetComponentSlotContent(state.document, instanceId, propertyId)) throw new Error('This component slot is no longer available.');
+    setSelection([instanceId]);
+    queueSave(); renderUI(); renderer.invalidate();
+    showToast('Component slot restored to its default content.');
+  } catch (error) { showToast(error.message || 'Could not reset this component slot.'); }
+}
 function changeMainVariantProperty(componentId, propertyName, value) {
   try {
     checkpoint(`Rename ${propertyName} variant`);
@@ -3221,6 +3344,7 @@ function undo() {
   const next = history.undo(previousDocument);
   if (!next) return;
   state.document = next;
+  reconcileImagePreviewRuntime();
   refreshHistoryImagePreviews(previousDocument);
   state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
   state.selectedVectorPoint = null; renderUI(); queueSave();
@@ -3230,6 +3354,7 @@ function redo() {
   const next = history.redo(previousDocument);
   if (!next) return;
   state.document = next;
+  reconcileImagePreviewRuntime();
   refreshHistoryImagePreviews(previousDocument);
   state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
   state.selectedVectorPoint = null; renderUI(); queueSave();
@@ -3958,6 +4083,8 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'create-component') makeComponent(node?.id);
   else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-property') addComponentProperty(details.componentId, details.targetId, details.propertyType);
+  else if (action === 'choose-component-slot-content') openComponentSlotDialog(details.instanceId, details.propertyId);
+  else if (action === 'reset-component-slot') resetComponentSlot(details.instanceId, details.propertyId);
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
   else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
   else if (action === 'prototype-start') {
@@ -4041,7 +4168,10 @@ function applyInspectorAction(action, details = {}) {
 
 function updateImageEngineState(metrics) {
   const output = $('#bulk-speed-value');
-  if (output && state.bulk) output.textContent = `${state.bulk.concurrency} worker${state.bulk.concurrency === 1 ? '' : 's'}`;
+  if (output && state.bulk) {
+    output.textContent = `${state.bulk.concurrency} max worker${state.bulk.concurrency === 1 ? '' : 's'} · ${metrics.active} active`;
+    output.title = `Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+  }
 }
 
 function toggleMobilePanel(panel) {
@@ -4356,6 +4486,25 @@ function initEvents() {
     queueSave(); renderInspector(); showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
   });
   $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
+  $('#component-slot-search').addEventListener('input', event => {
+    if (!state.componentSlotDialog) return;
+    state.componentSlotDialog.query = event.currentTarget.value;
+    renderComponentSlotCandidateList();
+  });
+  $('#component-slot-candidates').addEventListener('change', event => {
+    const checkbox = event.target.closest('[data-slot-candidate]');
+    if (!checkbox || !state.componentSlotDialog) return;
+    if (checkbox.checked) state.componentSlotDialog.selectedIds.add(checkbox.dataset.slotCandidate);
+    else state.componentSlotDialog.selectedIds.delete(checkbox.dataset.slotCandidate);
+  });
+  $('#component-slot-form').addEventListener('submit', event => {
+    if (!['apply', 'cancel'].includes(event.submitter?.value)) event.preventDefault();
+  });
+  $('#component-slot-dialog').addEventListener('close', () => {
+    const dialogState = state.componentSlotDialog;
+    state.componentSlotDialog = null;
+    if ($('#component-slot-dialog').returnValue === 'apply') applyComponentSlotDialog(dialogState);
+  });
   $('#variable-dialog').addEventListener('close', commitVariableNameDialog);
   $('#variable-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#variable-dialog').returnValue = 'save'; });
   $('#bulk-speed').max = String(CPU_LIMIT);

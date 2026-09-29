@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, detachComponentInstance,
-  canSwapComponentTo, createComponentProperty, findNode, removeNode, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant,
-  syncComponentInstances, validateDocument
+  addNode, canCreateMaskGroup, canGroupLayers, canUngroupLayers, combineBoolean, createComponent, createComponentInstance, createComponentSet, createDocument, createMaskGroup, createNode, detachComponentInstance,
+  canSwapComponentTo, createComponentProperty, duplicateNode, findNode, moveNode, removeNode, reorderNode, releaseMaskGroup, separateBoolean, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant, ungroupLayers, groupLayers, updateNode,
+  resetComponentSlotContent, setComponentSlotContent, syncComponentInstances, validateDocument
 } from '../src/model.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
@@ -372,4 +372,290 @@ test('component-property validation rejects duplicate IDs, unsupported targets, 
 
   instance.componentPropertyValues = { [property.id]: false };
   assert.throws(() => validateDocument(document), /Invalid component property value/);
+});
+
+test('slot content is real cloned layer content that survives master sync, reload, detach, and reset', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Card' });
+  const slot = createNode('section', { name: 'Content', x: 12, y: 20, width: 180, height: 90 });
+  const inherited = createNode('text', { name: 'Default content', text: 'Master copy' });
+  addNode(document, main);
+  addNode(document, slot, { parentId: main.id });
+  addNode(document, inherited, { parentId: slot.id });
+  const component = createComponent(document, main.id, 'Card');
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  assert.deepEqual(property.defaultValue, []);
+  const instance = createComponentInstance(document, component.id);
+  const replacement = createNode('group', { name: 'Supplied artwork', x: 3, y: 4, width: 80, height: 50 });
+  const replacementChild = createNode('rectangle', { name: 'Badge', fill: '#12abef', x: 2, y: 3 });
+  replacement.children.push(replacementChild);
+  const [installed] = setComponentSlotContent(document, instance.id, property.id, [replacement]);
+  assert.notEqual(installed.id, replacement.id, 'slot content gets new IDs instead of stealing IDs from its source');
+  assert.notEqual(installed.children[0].id, replacementChild.id);
+  assert.equal(installed.children[0].fill, '#12abef');
+  const instanceSlot = findNode(document, instance.id).node.children.find(node => node.componentSourceId === slot.id);
+  assert.deepEqual(instanceSlot.children.map(node => node.id), [installed.id]);
+  assert.deepEqual(instance.componentPropertyValues[property.id], [installed.id]);
+  assert.equal(validateDocument(document), true);
+  assert.throws(() => setComponentPropertyValue(document, instance.id, property.id, ['not-a-layer-tree']), /setComponentSlotContent/);
+  assert.equal(setComponentSlotContent(document, instance.id, 'missing-property', []), false);
+  const duplicateTree = createNode('group');
+  duplicateTree.children.push(createNode('rectangle', { id: duplicateTree.id }));
+  assert.throws(() => setComponentSlotContent(document, instance.id, property.id, [duplicateTree]), /unique IDs/);
+  const forbiddenMain = createNode('frame', { name: 'Unlinked main' });
+  addNode(document, forbiddenMain);
+  createComponent(document, forbiddenMain.id, 'Unlinked main');
+  assert.throws(() => setComponentSlotContent(document, instance.id, property.id, [forbiddenMain]), /main component/);
+
+  slot.width = 240;
+  inherited.text = 'Master changed';
+  assert.equal(syncComponentInstances(document, component.id), 1);
+  const synced = findNode(document, instance.id).node;
+  const syncedSlot = synced.children.find(node => node.componentSourceId === slot.id);
+  assert.equal(syncedSlot.width, 240);
+  assert.equal(syncedSlot.children[0].id, installed.id);
+  assert.equal(syncedSlot.children[0].children[0].fill, '#12abef');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  assert.equal(detachComponentInstance(document, instance.id), true);
+  assert.equal(synced.children.find(node => node.name === 'Content').children[0].id, installed.id);
+  assert.equal(synced.isInstance, undefined);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const second = createComponentInstance(document, component.id);
+  const [secondSlot] = findNode(document, second.id).node.children.filter(node => node.componentSourceId === slot.id);
+  assert.equal(secondSlot.children[0].text, 'Master changed');
+  const custom = createNode('text', { text: 'Replace again' });
+  setComponentSlotContent(document, second.id, property.id, [custom]);
+  setComponentSlotContent(document, second.id, property.id, []);
+  const emptySlotInstance = findNode(document, second.id).node;
+  assert.deepEqual(emptySlotInstance.componentPropertyValues[property.id], []);
+  assert.deepEqual(emptySlotInstance.children.find(node => node.componentSourceId === slot.id).children, []);
+  assert.equal(syncComponentInstances(document, component.id), 1);
+  assert.deepEqual(findNode(document, second.id).node.children.find(node => node.componentSourceId === slot.id).children, []);
+  assert.equal(resetComponentSlotContent(document, second.id, property.id), true);
+  const resetSlot = findNode(document, second.id).node.children.find(node => node.componentSourceId === slot.id);
+  assert.equal(resetSlot.children[0].text, 'Master changed');
+  assert.equal(Object.hasOwn(findNode(document, second.id).node.componentPropertyValues || {}, property.id), false);
+  assert.equal(validateDocument(document), true);
+});
+
+test('slot values remain isolated per instance and follow direct child order', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Card' });
+  const slot = createNode('group', { name: 'Content' });
+  const inherited = createNode('text', { text: 'Master' });
+  addNode(document, main); addNode(document, slot, { parentId: main.id });
+  addNode(document, inherited, { parentId: slot.id });
+  const component = createComponent(document, main.id, 'Card');
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const first = createComponentInstance(document, component.id);
+  const second = createComponentInstance(document, component.id);
+  setComponentSlotContent(document, first.id, property.id, [createNode('text', { text: 'First' }), createNode('text', { text: 'First extra' })]);
+  setComponentSlotContent(document, second.id, property.id, [createNode('text', { text: 'Second' })]);
+
+  inherited.text = 'Master updated';
+  assert.equal(syncComponentInstances(document, component.id), 2);
+  const firstSlot = findNode(document, first.id).node.children.find(node => node.componentSourceId === slot.id);
+  const secondSlot = findNode(document, second.id).node.children.find(node => node.componentSourceId === slot.id);
+  assert.deepEqual(firstSlot.children.map(node => node.text), ['First', 'First extra']);
+  assert.deepEqual(secondSlot.children.map(node => node.text), ['Second']);
+  assert.deepEqual(first.componentPropertyValues[property.id], firstSlot.children.map(node => node.id));
+  assert.deepEqual(second.componentPropertyValues[property.id], secondSlot.children.map(node => node.id));
+  assert.equal(validateDocument(document), true);
+});
+
+test('layer mutations keep explicit slot child IDs aligned through add, remove, duplicate, move, reorder, and group', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Card' });
+  const slot = createNode('frame', { name: 'Content' });
+  addNode(document, main); addNode(document, slot, { parentId: main.id });
+  const component = createComponent(document, main.id, 'Card');
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const instance = createComponentInstance(document, component.id);
+  const target = instance.children.find(node => node.componentSourceId === slot.id);
+  const first = createNode('rectangle', { name: 'First' });
+  const second = createNode('ellipse', { name: 'Second' });
+  const third = createNode('text', { name: 'Third', text: 'Third' });
+  setComponentSlotContent(document, instance.id, property.id, [first, second]);
+  const [firstId, secondId] = target.children.map(node => node.id);
+  updateNode(document, target.id, { children: [...target.children, createNode('rectangle', { name: 'Patch-added' })] });
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  addNode(document, third, { parentId: target.id });
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.equal(reorderNode(document, secondId, 0), true);
+  assert.deepEqual(instance.componentPropertyValues[property.id], [secondId, firstId, ...target.children.slice(2).map(node => node.id)]);
+
+  const duplicate = duplicateNode(document, firstId);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.equal(removeNode(document, firstId)?.id, firstId);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  const movedId = target.children.at(-1).id;
+  assert.equal(moveNode(document, movedId, { parentId: null }), true);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.equal(moveNode(document, movedId, { parentId: target.id, index: 1 }), true);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+
+  const groupInputs = target.children.slice(0, 2).map(node => node.id);
+  assert.equal(canGroupLayers(document, groupInputs), true);
+  const group = groupLayers(document, groupInputs);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.equal(target.children[0].id, group.id);
+  assert.equal(canUngroupLayers(document, group.id), true);
+  ungroupLayers(document, group.id);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.notEqual(duplicate.id, firstId);
+  assert.equal(validateDocument(document), true);
+});
+
+test('default slot content allows child-order overrides and blocks structural mutations', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Card' });
+  const slot = createNode('frame', { name: 'Content' });
+  const inherited = createNode('text', { name: 'Inherited', text: 'Keep me' });
+  const inheritedSecond = createNode('rectangle', { name: 'Inherited second' });
+  addNode(document, main); addNode(document, slot, { parentId: main.id });
+  addNode(document, inherited, { parentId: slot.id }); addNode(document, inheritedSecond, { parentId: slot.id });
+  const component = createComponent(document, main.id, 'Card');
+  createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const instance = createComponentInstance(document, component.id);
+  const target = instance.children.find(node => node.componentSourceId === slot.id);
+  const inheritedInstanceChild = target.children[0];
+  const inheritedInstanceSecond = target.children[1];
+
+  assert.throws(() => addNode(document, createNode('rectangle'), { parentId: target.id }), /Set a slot override before editing it/);
+  assert.throws(() => removeNode(document, inheritedInstanceChild.id), /Set a slot override before editing it/);
+  assert.throws(() => duplicateNode(document, inheritedInstanceChild.id), /Set a slot override before editing it/);
+  assert.throws(() => moveNode(document, inheritedInstanceChild.id, { parentId: null }), /Set a slot override before editing it/);
+  assert.throws(() => updateNode(document, target.id, { children: [] }), /Set a slot override before editing it/);
+  assert.equal(reorderNode(document, inheritedInstanceSecond.id, 0), true);
+  assert.deepEqual(target.children.map(node => node.componentSourceId), [inheritedInstanceSecond.componentSourceId, inheritedInstanceChild.componentSourceId]);
+  instance.componentOverrides ||= {};
+  instance.componentOverrides[slot.id] = { __childOrder: target.children.map(node => node.componentSourceId) };
+  assert.equal(syncComponentInstances(document, component.id), 1);
+  assert.deepEqual(target.children.map(node => node.componentSourceId), [inheritedInstanceSecond.componentSourceId, inheritedInstanceChild.componentSourceId]);
+  assert.equal(target.children.length, 2);
+  assert.equal(target.children[1].text, 'Keep me');
+  assert.equal(validateDocument(document), true);
+});
+
+test('Boolean and mask grouping mutations keep overridden slot roots synchronized', () => {
+  const document = createDocument();
+  const main = createNode('frame'); const slot = createNode('frame');
+  addNode(document, main); addNode(document, slot, { parentId: main.id });
+  const component = createComponent(document, main.id);
+  const property = createComponentProperty(document, component.id, { name: 'Artwork', type: 'SLOT', targetNodeId: slot.id });
+  const instance = createComponentInstance(document, component.id);
+  const target = instance.children.find(node => node.componentSourceId === slot.id);
+
+  setComponentSlotContent(document, instance.id, property.id, [createNode('rectangle'), createNode('ellipse')]);
+  const booleanIds = target.children.map(node => node.id);
+  const booleanGroup = combineBoolean(document, booleanIds, 'union');
+  assert.deepEqual(instance.componentPropertyValues[property.id], [booleanGroup.id]);
+  assert.equal(validateDocument(document), true);
+  separateBoolean(document, booleanGroup.id);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+
+  const text = createNode('text', { text: 'Masked' });
+  const mask = createNode('rectangle');
+  setComponentSlotContent(document, instance.id, property.id, [text, mask]);
+  const [textId, maskId] = target.children.map(node => node.id);
+  assert.equal(canCreateMaskGroup(document, [textId, maskId]), true);
+  const maskGroup = createMaskGroup(document, [textId, maskId]);
+  assert.deepEqual(instance.componentPropertyValues[property.id], [maskGroup.id]);
+  releaseMaskGroup(document, maskGroup.id);
+  assert.deepEqual(instance.componentPropertyValues[property.id], target.children.map(node => node.id));
+  assert.equal(validateDocument(document), true);
+});
+
+test('named slot content migrates between variants with different slot source IDs', () => {
+  const document = createDocument();
+  const compact = createNode('frame', { name: 'Compact card', width: 180, height: 100 });
+  const compactSlot = createNode('group', { name: 'Compact content' });
+  const wide = createNode('frame', { name: 'Wide card', width: 320, height: 140 });
+  const wideSlot = createNode('frame', { name: 'Wide content' });
+  addNode(document, compact); addNode(document, compactSlot, { parentId: compact.id });
+  addNode(document, wide); addNode(document, wideSlot, { parentId: wide.id });
+  const compactComponent = createComponent(document, compact.id, 'Card / Size=Compact');
+  const wideComponent = createComponent(document, wide.id, 'Card / Size=Wide');
+  const compactProperty = createComponentProperty(document, compactComponent.id, { name: 'Content', type: 'SLOT', targetNodeId: compactSlot.id });
+  const wideProperty = createComponentProperty(document, wideComponent.id, { name: 'Content', type: 'SLOT', targetNodeId: wideSlot.id });
+  createComponentSet(document, [compactComponent.id, wideComponent.id], 'Card');
+  const instance = createComponentInstance(document, compactComponent.id);
+  const artwork = createNode('rectangle', { name: 'Photo placeholder', fill: '#aabbcc', width: 64, height: 48 });
+  const [installed] = setComponentSlotContent(document, instance.id, compactProperty.id, [artwork]);
+
+  assert.equal(switchComponentInstanceVariant(document, instance.id, wideComponent.id), true);
+  assert.equal(instance.componentId, wideComponent.id);
+  assert.deepEqual(instance.componentPropertyValues[wideProperty.id], [installed.id]);
+  assert.equal(Object.hasOwn(instance.componentPropertyValues, compactProperty.id), false);
+  const targetSlot = instance.children.find(node => node.componentSourceId === wideSlot.id);
+  assert.equal(targetSlot.children[0].id, installed.id);
+  assert.equal(targetSlot.children[0].fill, '#aabbcc');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  assert.equal(switchComponentInstanceVariant(document, instance.id, compactComponent.id), true);
+  assert.equal(instance.children.find(node => node.componentSourceId === compactSlot.id).children[0].id, installed.id);
+  assert.equal(validateDocument(document), true);
+});
+
+test('slot validation rejects invalid targets, malformed content, and property-value mismatches', () => {
+  const document = createDocument();
+  const main = createNode('frame'); const slot = createNode('frame'); const label = createNode('text', { text: 'Label' });
+  addNode(document, main); addNode(document, slot, { parentId: main.id }); addNode(document, label, { parentId: main.id });
+  const component = createComponent(document, main.id);
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  assert.throws(() => createComponentProperty(document, component.id, { name: 'Root slot', type: 'SLOT', targetNodeId: main.id }), /nested frame, group, or section/);
+  const instance = createComponentInstance(document, component.id);
+  const supplied = createNode('section');
+  supplied.children.push(createNode('rectangle'));
+  const secondSupplied = createNode('text', { text: 'Also custom' });
+  const [installed, secondInstalled] = setComponentSlotContent(document, instance.id, property.id, [supplied, secondSupplied]);
+  assert.equal(validateDocument(document), true);
+
+  const missingId = parseDocument(serializeDocument(document));
+  const missingInstance = findNode(missingId, instance.id).node;
+  missingInstance.componentPropertyValues[property.id] = ['not-a-child'];
+  assert.throws(() => validateDocument(missingId), /Invalid component property value/);
+
+  const duplicateValues = parseDocument(serializeDocument(document));
+  const duplicateInstance = findNode(duplicateValues, instance.id).node;
+  duplicateInstance.componentPropertyValues[property.id] = [installed.id, installed.id];
+  assert.throws(() => validateDocument(duplicateValues), /Invalid component property value/);
+
+  const wrongOrder = parseDocument(serializeDocument(document));
+  const reorderedInstance = findNode(wrongOrder, instance.id).node;
+  reorderedInstance.componentPropertyValues[property.id] = [secondInstalled.id, installed.id];
+  assert.throws(() => validateDocument(wrongOrder), /Invalid component property value/);
+
+  const badTarget = parseDocument(serializeDocument(document));
+  badTarget.components[0].componentProperties[0].targetSourceId = label.id;
+  assert.throws(() => validateDocument(badTarget), /Invalid component property/);
+
+  const rootTarget = parseDocument(serializeDocument(document));
+  rootTarget.components[0].componentProperties[0].targetSourceId = main.id;
+  assert.throws(() => validateDocument(rootTarget), /Invalid component property/);
+
+  const badDefault = parseDocument(serializeDocument(document));
+  badDefault.components[0].componentProperties[0].defaultValue = ['content-is-not-a-default'];
+  assert.throws(() => validateDocument(badDefault), /Invalid SLOT default/);
+});
+
+test('variant switching preserves populated slots only when a same-named target slot exists', () => {
+  const document = createDocument();
+  const first = createNode('frame', { name: 'First / Size=One' }); const firstSlot = createNode('frame', { name: 'Content' });
+  const second = createNode('frame', { name: 'Second / Size=Two' }); const secondSlot = createNode('frame', { name: 'Other content' });
+  addNode(document, first); addNode(document, firstSlot, { parentId: first.id });
+  addNode(document, second); addNode(document, secondSlot, { parentId: second.id });
+  const firstComponent = createComponent(document, first.id);
+  const secondComponent = createComponent(document, second.id);
+  const firstProperty = createComponentProperty(document, firstComponent.id, { name: 'Content', type: 'SLOT', targetNodeId: firstSlot.id });
+  createComponentProperty(document, secondComponent.id, { name: 'Other content', type: 'SLOT', targetNodeId: secondSlot.id });
+  createComponentSet(document, [firstComponent.id, secondComponent.id], 'Card');
+  const instance = createComponentInstance(document, firstComponent.id);
+  setComponentSlotContent(document, instance.id, firstProperty.id, [createNode('rectangle')]);
+  const before = serializeDocument(document);
+  assert.throws(() => switchComponentInstanceVariant(document, instance.id, secondComponent.id), /no matching target slot/);
+  assert.equal(serializeDocument(document), before, 'a rejected variant switch must not discard custom slot content');
+  assert.equal(validateDocument(document), true);
 });

@@ -101,6 +101,28 @@ try {
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'new local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');
 
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  tap(app, app.querySelector('[data-sidebar-tab="assets"]'));
+  tap(app, app.querySelector('#add-variable-collection'));
+  app.querySelector('#variable-name').value = 'Phone colors';
+  tap(app, app.querySelector('#variable-save'));
+  await waitFor(() => app.querySelector('.variable-collection-card'), 'phone variable collection');
+  const collectionId = app.querySelector('[data-action="add-variable"]').dataset.collectionId;
+  tap(app, app.querySelector(`[data-action="add-variable"][data-collection-id="${collectionId}"]`));
+  app.querySelector('#variable-name').value = 'Accent';
+  tap(app, app.querySelector('#variable-save'));
+  await waitFor(() => app.querySelector('.variable-value'), 'phone variable value editor');
+  for (const [selector, label] of [
+    ['.variable-mode-add', 'Variable mode button'],
+    ['.variable-apply', 'Variable apply button'],
+    ['.variable-alias', 'Variable alias selector'],
+    ['.variable-value', 'Variable value editor'],
+    ['.variable-remove', 'Variable delete button'],
+  ]) assertTouchTarget(app, app.querySelector(selector), label, 40);
+  tap(app, app.querySelector('[data-sidebar-tab="layers"]'));
+  tap(app, app.querySelector('#sidebar-toggle'));
+
   const source = fixtureBmp();
   const importToasts = [];
   try {
