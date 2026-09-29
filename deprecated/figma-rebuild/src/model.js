@@ -13,7 +13,9 @@ export function createDocument() {
     name: 'Untitled',
     activePageId: pageId,
     pages: [{ id: pageId, name: 'Page 1', children: [] }],
+    components: [],
     recipes: [],
+    colorStyles: [],
     prototypeStartPoint: null,
     settings: { unit: 'px', grid: 8, snap: true }
   };
@@ -100,6 +102,12 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   if (!entry) return null;
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);
+  const removedComponents = [];
+  walkNodes([removed], ({ node }) => { if (node.isComponent && node.componentId) removedComponents.push(node.componentId); });
+  for (const componentId of removedComponents) {
+    document.components = (document.components || []).filter(component => component.id !== componentId);
+    detachComponentInstances(document, componentId);
+  }
   return removed;
 }
 
@@ -163,6 +171,126 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   return true;
 }
 
+export function getNodeColor(document, node, kind = node?.type === 'text' ? 'text' : 'fill') {
+  if (!node) return '#000000';
+  const styleId = kind === 'text' ? node.textStyleId : node.fillStyleId;
+  const style = (document.colorStyles || []).find(item => item.id === styleId && item.kind === kind);
+  if (style) return style.value;
+  return kind === 'text' ? (node.color || '#1e1e1e') : (node.fill || '#ffffff');
+}
+
+export function createColorStyle(document, nodeId, name, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!node) throw new Error('Select a layer before creating a color style.');
+  const kind = node.type === 'text' ? 'text' : 'fill';
+  const value = getNodeColor(document, node, kind);
+  if (!/^#[0-9a-f]{6}$/i.test(value)) throw new TypeError('Color styles require a solid six-digit color.');
+  const style = { id: createId('style'), name: String(name).trim() || `${node.name} color`, kind, value };
+  document.colorStyles ||= [];
+  document.colorStyles.push(style);
+  if (kind === 'text') node.textStyleId = style.id;
+  else node.fillStyleId = style.id;
+  return style;
+}
+
+export function applyColorStyle(document, nodeId, styleId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.colorStyles?.find(item => item.id === styleId);
+  if (!node || !style) return false;
+  if (style.kind === 'text' && node.type === 'text') node.textStyleId = style.id;
+  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type)) node.fillStyleId = style.id;
+  else return false;
+  return true;
+}
+
+export function createComponent(document, nodeId, name = null, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry) throw new Error('Select a layer to create a component.');
+  if (entry.node.isInstance) throw new Error('Detach an instance before creating a new component.');
+  if (entry.node.isComponent) return (document.components || []).find(component => component.id === entry.node.componentId) || null;
+  const component = { id: createId('component'), name: String(name || entry.node.name).trim() || entry.node.name, pageId, rootNodeId: entry.node.id };
+  entry.node.isComponent = true;
+  entry.node.componentId = component.id;
+  document.components ||= [];
+  document.components.push(component);
+  return component;
+}
+
+export function createComponentInstance(document, componentId) {
+  const component = document.components?.find(item => item.id === componentId);
+  const master = component && findNodeAcrossPages(document, component.rootNodeId);
+  if (!component || !master || !master.node.isComponent) throw new Error('The main component no longer exists.');
+  const instance = duplicateNode(document, master.node.id, master.page.id);
+  if (!instance) throw new Error('Could not create a component instance.');
+  const resetNested = node => {
+    if (node !== instance && node.isComponent) { node.isComponent = false; node.isInstance = true; }
+    for (const child of node.children || []) resetNested(child);
+  };
+  resetNested(instance);
+  instance.isComponent = false;
+  instance.isInstance = true;
+  instance.componentId = componentId;
+  instance.name = `${component.name} instance`;
+  return instance;
+}
+
+export function detachComponentInstances(document, componentId) {
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; }
+  });
+}
+
+export function detachComponentInstance(document, nodeId, pageId = document.activePageId) {
+  const instance = findNode(document, nodeId, pageId)?.node;
+  if (!instance?.isInstance) return false;
+  const componentId = instance.componentId;
+  delete instance.isInstance; delete instance.componentId;
+  for (const child of instance.children || []) walkNodes([child], ({ node }) => {
+    if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; }
+  });
+  return true;
+}
+
+function syncInstanceNode(instance, master, componentId, isRoot = false) {
+  const stableId = instance?.id || createId(master.type);
+  const rootX = instance?.x ?? master.x;
+  const rootY = instance?.y ?? master.y;
+  const oldChildren = instance?.children || [];
+  const copy = clone(master);
+  const children = (master.children || []).map((child, index) => syncInstanceNode(oldChildren[index], child, componentId));
+  Object.assign(instance || {}, copy, { id: stableId, children, x: isRoot ? rootX : copy.x, y: isRoot ? rootY : copy.y });
+  if (isRoot) {
+    instance.componentId = componentId;
+    instance.isInstance = true;
+    delete instance.isComponent;
+  } else if (instance !== null && copy.isComponent) {
+    instance.isComponent = false;
+    instance.isInstance = true;
+  }
+  return instance || { ...copy, id: stableId, children };
+}
+
+export function syncComponentInstances(document, componentId) {
+  const component = document.components?.find(item => item.id === componentId);
+  const master = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
+  if (!component || !master) return 0;
+  const instances = [];
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    if (node.isInstance && node.componentId === componentId) instances.push(node);
+  });
+  for (const instance of instances) {
+    syncInstanceNode(instance, master, componentId, true);
+    instance.name = `${component.name} instance`;
+  }
+  return instances.length;
+}
+
+export function syncAllComponentInstances(document) {
+  let updated = 0;
+  for (const component of document.components || []) updated += syncComponentInstances(document, component.id);
+  return updated;
+}
+
 export function cloneDocument(document) { return clone(document); }
 
 export function validateDocument(document) {
@@ -183,7 +311,32 @@ export function validateDocument(document) {
     });
   }
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
+  if (document.components != null) {
+    if (!Array.isArray(document.components)) throw new TypeError('Components must be a list.');
+    const componentIds = new Set();
+    for (const component of document.components) {
+      const root = findNodeAcrossPages(document, component.rootNodeId);
+      if (!component.id || componentIds.has(component.id) || !root?.node.isComponent || root.node.componentId !== component.id) throw new TypeError('Invalid or duplicate component.');
+      componentIds.add(component.id);
+    }
+    for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+      if (node.isComponent && !componentIds.has(node.componentId)) throw new TypeError(`Missing component definition on layer ${node.name || node.id}.`);
+      if (node.isInstance && !componentIds.has(node.componentId)) throw new TypeError(`Missing component source on layer ${node.name || node.id}.`);
+    });
+  }
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
+  if (document.colorStyles != null) {
+    if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');
+    const styleIds = new Set();
+    for (const style of document.colorStyles) {
+      if (!style.id || styleIds.has(style.id) || !['fill', 'text'].includes(style.kind) || !/^#[0-9a-f]{6}$/i.test(style.value || '')) throw new TypeError('Invalid or duplicate color style.');
+      styleIds.add(style.id);
+    }
+    for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+      if (node.fillStyleId && !styleIds.has(node.fillStyleId)) throw new TypeError(`Missing fill style on layer ${node.name || node.id}.`);
+      if (node.textStyleId && !styleIds.has(node.textStyleId)) throw new TypeError(`Missing text style on layer ${node.name || node.id}.`);
+    });
+  }
   return true;
 }
 

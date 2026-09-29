@@ -57,6 +57,7 @@ function readStore(storeName) {
     };
   });
 }
+function flattenNodes(nodes, result = []) { for (const node of nodes || []) { result.push(node); flattenNodes(node.children, result); } return result; }
 function buildPackage(documentData, assets) {
   const manifest = new TextEncoder().encode(JSON.stringify({ schema: documentData.schema, document: documentData, assets: assets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })) }));
   const headerLength = new Uint8Array(4); new DataView(headerLength.buffer).setUint32(0, manifest.byteLength, true);
@@ -160,7 +161,26 @@ try {
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', targetX, targetY, 83);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', targetX, targetY, 83);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes(destinationFrame.name), 'frame interaction connection');
-  dispatchClick(app.querySelector('[data-action="present"]'));
+
+  app.defaultView.prompt = () => 'Smoke white';
+  dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
+  dispatchClick(app.querySelector('[data-action="create-color-style"]'));
+  await waitFor(() => app.querySelector('#color-styles-list [data-color-style-id]'), 'shared color style creation');
+  const colorStyleId = app.querySelector('#color-styles-list [data-color-style-id]').dataset.colorStyleId;
+  const destinationRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
+  assert(destinationRow, 'the destination frame was not available for shared styling');
+  dispatchContextMenu(destinationRow);
+  const applyColorStyle = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.trim() === 'Smoke white');
+  assert(applyColorStyle, 'the layer context menu did not expose shared color styles');
+  dispatchClick(applyColorStyle);
+  await new Promise(resolve => setTimeout(resolve, 350));
+  const styledRecords = await readStore('documents'); styledRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const styledDocument = styledRecords[0]?.document;
+  const styledNodes = flattenNodes(styledDocument?.pages.flatMap(page => page.children));
+  assert(styledDocument?.colorStyles.some(style => style.id === colorStyleId), 'the shared color style did not persist');
+  assert(styledNodes.find(node => node.id === destinationFrame.id)?.fillStyleId === colorStyleId, 'the shared color style was not applied to the destination frame');
+
+  dispatchClick(app.querySelector('#present-button'));
   await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'local prototype presentation');
   const presentCanvas = app.querySelector('#present-canvas');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 84);
@@ -169,7 +189,7 @@ try {
   assert(app.querySelector('#present-back').disabled, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, presentNavigation: true, presentBack: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, startPoint: true, sharedColorStyles: true, presentNavigation: true, presentBack: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

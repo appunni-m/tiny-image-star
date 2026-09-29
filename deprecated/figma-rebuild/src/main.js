@@ -1,6 +1,6 @@
 import {
-  addNode, applyImageRecipe, cloneDocument, createDocument, createId, createImageRecipe, createNode,
-  duplicateNode, findNode, findNodeAcrossPages, getActivePage, parseDocument, removeNode, serializeDocument,
+  addNode, applyColorStyle, applyImageRecipe, cloneDocument, createColorStyle, createDocument, createId, createImageRecipe, createNode,
+  duplicateNode, findNode, findNodeAcrossPages, getActivePage, getNodeColor, parseDocument, removeNode, serializeDocument,
   updateNode, walkNodes
 } from './model.js';
 import { History } from './history.js';
@@ -158,10 +158,10 @@ function transformSection(node) {
   return section('Position', body);
 }
 function appearanceSection(node) {
-  const fill = colorField('Fill', 'fill', node.fill || '#ffffff', Math.round((node.fillOpacity ?? 1) * 100));
+  const fill = colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100));
   const stroke = node.stroke ? colorField('Stroke', 'stroke', node.stroke, 100) : '';
   const radius = ['rectangle', 'frame', 'section'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', node.radius || 0)}</div>` : '';
-  const body = `${fill}${stroke}<button class="add-fill" data-action="add-stroke">＋ Add stroke</button>${radius}`;
+  const body = `${fill}${stroke}<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button></div>${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -184,7 +184,7 @@ function constraintsSection(node) {
   return section('Constraints', `<div class="property-grid"><span class="field-caption">Horizontal</span>${select('horizontal', constraints.horizontal, horizontalConstraints)}<span class="field-caption">Vertical</span>${select('vertical', constraints.vertical, verticalConstraints)}</div><div class="image-properties-note">Pins and scales this layer when its parent frame changes size.</div>`);
 }
 function textSection(node) {
-  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', node.color || '#1e1e1e', 100)}</div><button class="add-fill" data-action="edit-text">Edit text content</button>`;
+  const body = `<div class="property-grid"><select class="prop-input select-field" data-prop="fontFamily" aria-label="Font family" style="grid-column:span 2"><option value="Inter, Arial, sans-serif">Inter</option><option value="Arial, sans-serif">Arial</option><option value="Georgia, serif">Georgia</option><option value="monospace">Mono</option></select>${numberField('Size', 'fontSize', node.fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight"><option value="400">Regular</option><option value="500">Medium</option><option value="600">Semi bold</option><option value="700">Bold</option></select>${numberField('Line', 'lineHeight', node.lineHeight, .05)}${numberField('↔', 'letterSpacing', node.letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></div><div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}</div><button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button>`;
   return section('Typography', body);
 }
 function prototypeInspector() {
@@ -248,6 +248,17 @@ function renderInspector() {
 
 function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
+  const styles = $('#color-styles-list'); styles.replaceChildren();
+  const colorStyles = state.document.colorStyles || [];
+  if (!colorStyles.length) {
+    const empty = document.createElement('div'); empty.className = 'color-styles-empty'; empty.textContent = 'Create styles from a layer’s Fill or Text color.'; styles.append(empty);
+  }
+  for (const style of colorStyles) {
+    const card = document.createElement('button'); card.className = 'color-style-card'; card.dataset.colorStyleId = style.id; card.title = `${style.name} · ${style.value}`;
+    const swatch = document.createElement('span'); swatch.className = 'color-style-swatch'; swatch.style.background = style.value;
+    const name = document.createElement('span'); name.className = 'color-style-name'; name.textContent = style.name;
+    card.append(swatch, name); styles.append(card);
+  }
   for (const node of imageNodes()) {
     const asset = state.assets.get(node.assetId);
     const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
@@ -590,6 +601,13 @@ function updateInspectorInput(event) {
     const oldWidth = node.width; const oldHeight = node.height;
     if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
     else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
+    else if (prop === 'fill' && node.fillStyleId) {
+      const style = state.document.colorStyles?.find(item => item.id === node.fillStyleId);
+      if (style) style.value = value; else node.fill = value;
+    } else if (prop === 'color' && node.textStyleId) {
+      const style = state.document.colorStyles?.find(item => item.id === node.textStyleId);
+      if (style) style.value = value; else node.color = value;
+    }
     else if (layoutSetting) {
       node.autoLayout = createAutoLayout(node.autoLayout || {});
       node.autoLayout[key] = value;
@@ -610,7 +628,7 @@ function updateInspectorInput(event) {
 function finishInspectorInput() {
   if (!state.controlEdit) return;
   clearTimeout(state.statusTimer);
-  state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); queueSave(); }, 160);
+  state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
 }
 function schedulePreview(node, immediate = false) {
   const previous = previewTimers.get(node.id);
@@ -773,6 +791,16 @@ function saveRecipeFor(nodeId) {
   $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
 }
 
+function applyStyleToSelection(styleId) {
+  const style = state.document.colorStyles?.find(item => item.id === styleId);
+  if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
+  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text' : !['text', 'image', 'line', 'path'].includes(node.type));
+  if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
+  checkpoint(`Apply ${style.name}`);
+  for (const node of compatible) applyColorStyle(state.document, node.id, style.id);
+  renderUI(); queueSave();
+}
+
 function showMenu(items, x, y) {
   const menu = $('#context-menu'); menu.replaceChildren(); menu.hidden = false;
   for (const item of items) {
@@ -811,6 +839,8 @@ function openNodeMenu(nodeId, x, y) {
     if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
     else items.push({ label: 'Save a recipe from an edited image first', className: 'recipe-option is-empty', disabled: true });
   }
+  const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text' ? selectedNodes().some(item => item.type === 'text') : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type)));
+  if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
   showMenu(items, x, y);
 }
 
@@ -880,7 +910,7 @@ function renderPresentationFrame(interaction = null) {
   if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); $('#present-dialog').close(); return; }
   const displayFrame = structuredClone(target.node);
   displayFrame.x = 0; displayFrame.y = 0;
-  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: [displayFrame] }] };
+  presentRenderState.document = { activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: [displayFrame] }], colorStyles: state.document.colorStyles || [] };
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
   const rect = $('#present-canvas').getBoundingClientRect();
@@ -1006,6 +1036,18 @@ function applyInspectorAction(action, details = {}) {
     removePrototypeInteraction(state.document, node.id, interactionId);
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
+  else if (action === 'create-color-style') {
+    if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }
+    const current = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
+    if (!/^#[0-9a-f]{6}$/i.test(current)) { showToast('Choose a solid color before creating a style.'); return; }
+    const name = prompt('Color style name', `${node.name} color`);
+    if (name == null) return;
+    try {
+      checkpoint('Create color style');
+      const style = createColorStyle(state.document, node.id, name);
+      renderUI(); queueSave(); showToast(`Color style “${style.name}” created.`);
+    } catch (error) { showToast(error.message); }
+  }
   else if (action === 'edit-text' && node?.type === 'text') editTextNode(node.id);
   else if (action === 'reset-image' && node?.type === 'image') {
     checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.fit = 'cover';
@@ -1108,6 +1150,7 @@ function initEvents() {
   $('#layer-options').addEventListener('click', event => showMenu([{ label: 'Show all layers', action: () => { checkpoint('Show all layers'); walkNodes(activePage().children, ({ node }) => { node.visible = true; }); renderUI(); queueSave(); } }, { label: 'Unlock all layers', action: () => { checkpoint('Unlock all layers'); walkNodes(activePage().children, ({ node }) => { node.locked = false; }); renderUI(); queueSave(); } }, { label: 'Select all layers', shortcut: '⌘A', action: () => setSelection(pageLayerRows().map(entry => entry.node.id)) }], event.clientX, event.clientY));
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
   $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
+  $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50));

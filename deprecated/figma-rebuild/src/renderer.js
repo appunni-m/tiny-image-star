@@ -1,3 +1,5 @@
+import { getNodeColor } from './model.js';
+
 const BLUE = '#0d99ff';
 
 function rgba(hex, alpha = 1) {
@@ -119,6 +121,7 @@ export class SceneRenderer {
 
   drawNode(ctx, node, parentX, parentY, assets, draft = false) {
     if (!node.visible) return;
+    const document = this.getState().document;
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
@@ -172,7 +175,7 @@ export class SceneRenderer {
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, node.radius); ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'text') {
-      ctx.fillStyle = rgba(node.color || '#1e1e1e', node.fillOpacity ?? 1);
+      ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
       ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${node.fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
       ctx.textAlign = node.align || 'left'; ctx.textBaseline = 'top';
       const lines = wrapText(ctx, node.text, Math.max(1, width));
@@ -181,7 +184,8 @@ export class SceneRenderer {
       lines.forEach((line, index) => ctx.fillText(line, x + offsetX, y + index * lineHeight, width));
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else {
-      if (node.fill && node.fill !== 'transparent' && node.type !== 'line' && node.type !== 'path') { ctx.fillStyle = rgba(node.fill, node.fillOpacity ?? 1); ctx.fill(); }
+      const fill = getNodeColor(document, node, 'fill');
+      if (fill && fill !== 'transparent' && node.type !== 'line' && node.type !== 'path') { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
       if (node.stroke && node.strokeWidth) { ctx.strokeStyle = node.stroke; ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     }
 

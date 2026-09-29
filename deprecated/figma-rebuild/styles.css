@@ -75,6 +75,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .sidebar-footer .tiny-icon-button { margin-left: auto; }
 .device-icon { color: #16a16a; font-size: 11px; }
 .assets-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 5px; overflow: auto; }
+.color-styles-list { max-height: 38%; flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 4px 5px 10px; overflow: auto; }
+.components-list { max-height: 25%; flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 4px 5px 9px; overflow: auto; }
+.component-card { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 5px 7px; border: 1px solid #ededed; border-radius: 6px; text-align: left; }
+.component-card:hover { border-color: #cfcfcf; background: #fafafa; }
+.component-card-icon { width: 21px; height: 21px; flex: 0 0 21px; display: grid; place-items: center; border-radius: 5px; background: #f1ecff; color: #7253c4; font-size: 13px; }
+.component-card-name { overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.components-empty { grid-column: 1 / -1; padding: 4px 2px 8px; color: #999; font-size: 9px; }
+.color-style-card { min-width: 0; height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 1px solid #ededed; border-radius: 5px; text-align: left; }
+.color-style-card:hover { border-color: #cfcfcf; background: #fafafa; }
+.color-style-swatch { width: 16px; height: 16px; flex: 0 0 16px; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; }
+.color-style-name { overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.color-styles-empty { grid-column: 1 / -1; padding: 4px 2px 8px; color: #999; font-size: 9px; }
+.local-assets-heading { margin-top: 2px; border-top: 1px solid var(--border); }
 .asset-card { width: 90px; display: flex; flex-direction: column; gap: 5px; cursor: pointer; }
 .asset-thumb { width: 90px; height: 72px; display: grid; place-items: center; overflow: hidden; border: 1px solid #e8e8e8; border-radius: 5px; background: #f5f5f5; }
 .asset-thumb img { width: 100%; height: 100%; object-fit: contain; }
