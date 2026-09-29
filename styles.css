@@ -120,6 +120,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .color-style-swatch { width: 16px; height: 16px; flex: 0 0 16px; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; }
 .color-style-name { overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .color-styles-empty { grid-column: 1 / -1; padding: 4px 2px 8px; color: #999; font-size: 9px; }
+.text-styles-list { max-height: 30%; min-height: 0; flex: 0 1 auto; display: grid; align-content: start; gap: 5px; padding: 4px 5px 8px; overflow: auto; }
+.typography-styles-hint, .typography-styles-empty { color: #888; font-size: 9px; line-height: 1.4; padding: 2px 1px 4px; }
+.typography-style-row { min-width: 0; display: flex; align-items: center; gap: 5px; padding: 3px; border: 1px solid #ededed; border-radius: 6px; background: #fff; }
+.typography-style-apply { min-width: 0; min-height: 38px; flex: 1; display: flex; align-items: center; gap: 8px; padding: 3px 5px; border-radius: 4px; text-align: left; }
+.typography-style-apply:hover { background: #f7f6fb; }
+.typography-style-mark { width: 31px; height: 31px; flex: 0 0 31px; display: grid; place-items: center; overflow: hidden; border: 1px solid #eeeaf3; border-radius: 5px; background: #faf8fd; color: #5f477f; line-height: 1; }
+.typography-style-copy { min-width: 0; display: grid; gap: 3px; }
+.typography-style-name, .typography-style-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.typography-style-name { color: #4a4650; font-size: 10px; }
+.typography-style-copy small { color: #89858d; font-size: 8px; }
+.typography-style-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.typography-style-actions button { min-width: 28px; min-height: 30px; padding: 0 5px; border-radius: 4px; color: #777; font-size: 9px; }
+.typography-style-actions button:hover { background: #f2f0f5; color: #443b50; }
 .local-assets-heading { margin-top: 2px; border-top: 1px solid var(--border); }
 .asset-card { width: 90px; display: flex; flex-direction: column; gap: 5px; cursor: pointer; }
 .asset-thumb { width: 90px; height: 72px; display: grid; place-items: center; overflow: hidden; border: 1px solid #e8e8e8; border-radius: 5px; background: #f5f5f5; }
@@ -486,6 +499,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .fill-type-row { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .fill-type-row .select-field { height: 38px; font-size: 12px; }
   .typography-font-family, [data-prop="fontWeight"], [data-prop="fontStyle"] { min-height: 40px; font-size: 12px; }
+  .typography-style-row { gap: 5px; padding: 4px; }
+  .typography-style-apply { min-height: 44px; }
+  .typography-style-actions button { min-width: 40px; min-height: 40px; font-size: 11px; }
   .blend-mode-select { min-height: 40px; font-size: 12px; }
   .image-fill-source { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .image-fill-source .select-field { height: 38px; font-size: 12px; }

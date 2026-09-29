@@ -541,10 +541,18 @@ try {
   const nestedThemeFrame = createNode('frame', { name: 'Nested theme', x: 20, y: 20, width: 250, height: 160 });
   const variableSurface = createNode('rectangle', { name: 'Variable surface', x: 12, y: 12, width: 150, height: 80, fillVariableId: surfaceVariable.id });
   const variableHeading = createNode('text', { name: 'Variable heading', x: 12, y: 108, width: 180, height: 32, text: 'Local variables', textVariableId: surfaceVariable.id });
+  const typographyFrame = createNode('frame', { name: 'Typography styles', x: 340, y: 20, width: 220, height: 240 });
+  const typographySource = createNode('text', { name: 'Typography source', x: 12, y: 145, width: 180, height: 32, text: 'Source style' });
+  const typographyTarget = createNode('text', { name: 'Typography target', x: 12, y: 180, width: 180, height: 32, text: 'First target' });
+  const typographyUpdatedTarget = createNode('text', { name: 'Typography updated target', x: 12, y: 215, width: 180, height: 32, text: 'Updated target' });
   addNode(variablesDocument, themeFrame);
+  addNode(variablesDocument, typographyFrame);
   addNode(variablesDocument, nestedThemeFrame, { parentId: themeFrame.id });
   addNode(variablesDocument, variableSurface, { parentId: nestedThemeFrame.id });
   addNode(variablesDocument, variableHeading, { parentId: nestedThemeFrame.id });
+  addNode(variablesDocument, typographySource, { parentId: typographyFrame.id });
+  addNode(variablesDocument, typographyTarget, { parentId: typographyFrame.id });
+  addNode(variablesDocument, typographyUpdatedTarget, { parentId: typographyFrame.id });
   const variablesInput = app.querySelector('#open-file-input'); const variablesTransfer = new DataTransfer();
   variablesTransfer.items.add(new File([buildPackage(variablesDocument, [])], 'variables-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(variablesInput, 'files', { configurable: true, value: variablesTransfer.files });
@@ -702,6 +710,108 @@ try {
   variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
   savedVariableHeading = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
   assert(savedVariableHeading.fontFamily === 'Georgia, serif' && savedVariableHeading.fontWeight === 800 && savedVariableHeading.fontStyle === 'italic', 'custom family, heavy weight, or italic style did not persist');
+
+  const selectTypographyLayer = (id) => {
+    dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
+    const row = app.querySelector(`[data-layer-id="${id}"]`);
+    assert(row, `typography fixture layer ${id} was missing from the layer list`);
+    dispatchClick(row);
+  };
+  const setTypographyProperty = (property, value) => {
+    const control = app.querySelector(`[data-prop="${property}"]`);
+    assert(control, `text Inspector did not expose ${property} for reusable text styles`);
+    control.value = String(value);
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    control.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const savedDocument = async () => {
+    const records = await readStore('documents'); records.sort((a, b) => b.savedAt - a.savedAt);
+    return records[0]?.document;
+  };
+  selectTypographyLayer(typographySource.id);
+  setTypographyProperty('fontFamily', 'Georgia, serif');
+  setTypographyProperty('fontSize', 31);
+  setTypographyProperty('fontWeight', 700);
+  setTypographyProperty('fontStyle', 'italic');
+  setTypographyProperty('color', '#e14a6d');
+  await waitForSaveCycle(app, 'typography source style');
+  const originalPrompt = app.defaultView.prompt;
+  app.defaultView.prompt = () => 'Smoke reusable typography';
+  dispatchClick(app.querySelector('[data-action="create-typography-style"]'));
+  app.defaultView.prompt = originalPrompt;
+  await waitForSaveCycle(app, 'reusable typography style save');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  await waitFor(() => app.querySelector('#text-styles-list [data-typography-style-id]'), 'saved typography style card');
+  let typographyRecord = await savedDocument();
+  let savedTypographyStyle = typographyRecord.typographyStyles?.find(style => style.name === 'Smoke reusable typography');
+  assert(savedTypographyStyle, 'the reusable typography style was not persisted');
+  const typographyStyleId = savedTypographyStyle.id;
+  const typographyStyleCard = () => app.querySelector(`#text-styles-list [data-typography-style-id="${typographyStyleId}"]`);
+  selectTypographyLayer(typographyTarget.id);
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  await waitFor(() => typographyStyleCard(), 'typography style card before apply');
+  dispatchClick(typographyStyleCard());
+  await waitForSaveCycle(app, 'typography style apply to first target');
+  typographyRecord = await savedDocument();
+  let savedTypographyTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyTarget.id);
+  assert(savedTypographyTarget.fontFamily === 'Georgia, serif' && savedTypographyTarget.fontSize === 31 && savedTypographyTarget.fontWeight === 700 && savedTypographyTarget.fontStyle === 'italic' && savedTypographyTarget.color === '#e14a6d',
+    'the saved typography style did not apply to another text layer');
+  assert(savedTypographyTarget.text === 'First target' && savedTypographyTarget.x === typographyTarget.x && savedTypographyTarget.y === typographyTarget.y,
+    'applying a typography style changed the target text or placement');
+
+  selectTypographyLayer(typographySource.id);
+  setTypographyProperty('fontFamily', 'Arial, sans-serif');
+  setTypographyProperty('fontSize', 36);
+  setTypographyProperty('fontWeight', 600);
+  setTypographyProperty('fontStyle', 'normal');
+  setTypographyProperty('color', '#3264c8');
+  await waitForSaveCycle(app, 'updated typography source');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  const styleCardBeforeUpdate = typographyStyleCard();
+  assert(styleCardBeforeUpdate, 'the typography style card disappeared before update');
+  const updateTypographyStyle = styleCardBeforeUpdate.closest('.typography-style-row')?.querySelector(`[data-text-style-action="update"][data-text-style-id="${typographyStyleId}"]`);
+  assert(updateTypographyStyle, 'the typography style card did not expose its update action');
+  dispatchClick(updateTypographyStyle);
+  await waitForSaveCycle(app, 'typography style update');
+  typographyRecord = await savedDocument();
+  savedTypographyStyle = typographyRecord.typographyStyles?.find(style => style.id === typographyStyleId);
+  assert(savedTypographyStyle?.fontFamily === 'Arial, sans-serif' && savedTypographyStyle.fontSize === 36 && savedTypographyStyle.fontWeight === 600 && savedTypographyStyle.fontStyle === 'normal' && savedTypographyStyle.color === '#3264c8',
+    'updating the typography style did not capture the selected text properties');
+
+  selectTypographyLayer(typographyUpdatedTarget.id);
+  const updatedTargetRow = app.querySelector(`[data-layer-id="${typographyUpdatedTarget.id}"]`);
+  dispatchContextMenu(updatedTargetRow);
+  const updatedStyleMenuItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.trim() === 'Smoke reusable typography');
+  assert(updatedStyleMenuItem, 'the selected text context menu did not offer saved typography styles');
+  dispatchClick(updatedStyleMenuItem);
+  await waitForSaveCycle(app, 'updated typography style apply to third target');
+  typographyRecord = await savedDocument();
+  const savedTypographyUpdatedTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyUpdatedTarget.id);
+  assert(savedTypographyUpdatedTarget.fontFamily === 'Arial, sans-serif' && savedTypographyUpdatedTarget.fontSize === 36 && savedTypographyUpdatedTarget.fontWeight === 600 && savedTypographyUpdatedTarget.fontStyle === 'normal' && savedTypographyUpdatedTarget.color === '#3264c8',
+    'the updated typography style did not apply to the third text layer');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  await waitFor(() => typographyStyleCard(), 'updated typography style card before phone layout check');
+  const desktopFrameSizeForTypography = { width: frame.style.width, height: frame.style.height };
+  frame.style.width = '390px'; frame.style.height = '844px';
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(() => app.defaultView.requestAnimationFrame(resolve)));
+  const mobileTypographyApply = typographyStyleCard();
+  const mobileTypographyRow = mobileTypographyApply?.closest('.typography-style-row');
+  const mobileTypographyUpdate = mobileTypographyRow?.querySelector(`[data-text-style-action="update"][data-text-style-id="${typographyStyleId}"]`);
+  assert(mobileTypographyApply?.getBoundingClientRect().height >= 44 && mobileTypographyUpdate?.getBoundingClientRect().height >= 40,
+    'text style apply and update actions do not meet mobile touch target sizing');
+  assert(mobileTypographyRow.getBoundingClientRect().right <= app.querySelector('#left-panel').getBoundingClientRect().right,
+    'the text style card overflows the mobile Assets panel');
+  frame.style.width = desktopFrameSizeForTypography.width; frame.style.height = desktopFrameSizeForTypography.height;
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
+  const deleteTypographyStyle = typographyStyleCard()?.closest('.typography-style-row')?.querySelector(`[data-text-style-action="delete"][data-text-style-id="${typographyStyleId}"]`);
+  assert(deleteTypographyStyle, 'the typography style card did not expose its delete action');
+  dispatchClick(deleteTypographyStyle);
+  await waitForSaveCycle(app, 'typography style deletion save');
+  await waitFor(() => !typographyStyleCard(), 'typography style deletion from Assets');
+  typographyRecord = await savedDocument();
+  assert(!typographyRecord.typographyStyles?.some(style => style.id === typographyStyleId), 'deleting the typography style did not remove it from the local document');
+
+  selectTypographyLayer(variableHeading.id);
   const textBinding = app.querySelector('[data-variable-property-binding="text"]');
   textBinding.value = actionText.id; textBinding.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'text variable binding autosave');

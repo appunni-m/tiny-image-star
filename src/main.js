@@ -1,7 +1,7 @@
 import {
-  addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
+  addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
 } from './model.js';
@@ -420,7 +420,7 @@ function textSection(node) {
     .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
     .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text style' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   return section('Typography', body);
 }
 function frameVariableModesSection(frame) {
@@ -752,6 +752,26 @@ function renderAssetsTab() {
     const swatch = document.createElement('span'); swatch.className = 'color-style-swatch'; swatch.style.background = style.value;
     const name = document.createElement('span'); name.className = 'color-style-name'; name.textContent = style.name;
     card.append(swatch, name); styles.append(card);
+  }
+  const textStyles = $('#text-styles-list'); textStyles.replaceChildren();
+  const typographyStyles = state.document.typographyStyles || [];
+  if (!typographyStyles.length) {
+    const empty = document.createElement('div'); empty.className = 'typography-styles-empty'; empty.textContent = 'Save typography from a text layer to reuse it here.'; textStyles.append(empty);
+  } else {
+    const hint = document.createElement('div'); hint.className = 'typography-styles-hint'; hint.textContent = 'Applying copies settings into selected text. Updates affect future applications.'; textStyles.append(hint);
+  }
+  for (const style of typographyStyles) {
+    const row = document.createElement('div'); row.className = 'typography-style-row';
+    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'typography-style-apply'; apply.dataset.typographyStyleId = style.id; apply.title = `Apply ${style.name} to selected text`;
+    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color;
+    const copy = document.createElement('span'); copy.className = 'typography-style-copy';
+    const name = document.createElement('span'); name.className = 'typography-style-name'; name.textContent = style.name;
+    const detail = document.createElement('small'); detail.textContent = `${style.fontFamily} · ${style.fontSize}px · ${style.fontWeight}`;
+    copy.append(name, detail); apply.append(mark, copy);
+    const actions = document.createElement('div'); actions.className = 'typography-style-actions';
+    const update = document.createElement('button'); update.type = 'button'; update.dataset.textStyleAction = 'update'; update.dataset.textStyleId = style.id; update.textContent = 'Update'; update.title = `Update ${style.name} from selected text`;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.dataset.textStyleAction = 'delete'; remove.dataset.textStyleId = style.id; remove.textContent = '×'; remove.title = `Delete ${style.name}`; remove.setAttribute('aria-label', `Delete ${style.name}`);
+    actions.append(update, remove); row.append(apply, actions); textStyles.append(row);
   }
   for (const node of imageNodes()) {
     const asset = state.assets.get(node.assetId);
@@ -1784,6 +1804,18 @@ function saveRecipeFor(nodeId) {
   $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
 }
 
+function saveTypographyStyleFor(nodeId) {
+  const node = findNode(state.document, nodeId)?.node;
+  if (node?.type !== 'text') { showToast('Select a text layer to save its typography.'); return; }
+  const name = prompt('Text style name', `${node.name} text`);
+  if (name == null) return;
+  try {
+    checkpoint('Create text style');
+    const style = createTypographyStyle(state.document, node.id, name);
+    renderUI(); queueSave(); showToast(`Text style “${style.name}” saved.`);
+  } catch (error) { showToast(error.message); }
+}
+
 function applyStyleToSelection(styleId) {
   const style = state.document.colorStyles?.find(item => item.id === styleId);
   if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
@@ -1797,6 +1829,45 @@ function applyStyleToSelection(styleId) {
     if (instanceRoot) recordComponentOverride(instanceRoot, node, style.kind === 'text' ? 'textStyleId' : 'fillStyleId');
   }
   renderUI(); queueSave();
+}
+
+function applyTypographyStyleToSelection(styleId) {
+  const style = state.document.typographyStyles?.find(item => item.id === styleId);
+  const compatible = selectedNodes().filter(node => node.type === 'text');
+  if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
+  checkpoint(`Apply ${style.name}`);
+  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'color', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const layoutParents = new Set();
+  for (const node of compatible) {
+    applyTypographyStyle(state.document, node.id, style.id);
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) for (const property of overriddenProperties) recordComponentOverride(instanceRoot, node, property);
+    if (resizeTextNode(node)) {
+      const parent = findNode(state.document, node.id)?.parent;
+      if (parent?.autoLayout) layoutParents.add(parent);
+    }
+  }
+  for (const parent of layoutParents) applyAutoLayout(parent);
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(`Applied “${style.name}” to ${compatible.length} text layer${compatible.length === 1 ? '' : 's'}.`);
+}
+
+function updateTypographyStyleFromSelection(styleId) {
+  const style = state.document.typographyStyles?.find(item => item.id === styleId);
+  const nodes = selectedNodes().filter(node => node.type === 'text');
+  if (!style) { showToast('This text style no longer exists.'); return; }
+  if (nodes.length !== 1) { showToast('Select one text layer to update a style.'); return; }
+  checkpoint(`Update ${style.name}`);
+  if (!updateTypographyStyle(state.document, style.id, nodes[0].id)) { showToast('Could not update this text style.'); return; }
+  renderUI(); queueSave(); showToast(`Updated “${style.name}” for future applications.`);
+}
+
+function removeTypographyStyleFromAssets(styleId) {
+  const style = state.document.typographyStyles?.find(item => item.id === styleId);
+  if (!style) return;
+  checkpoint(`Delete ${style.name}`);
+  deleteTypographyStyle(state.document, style.id);
+  renderUI(); queueSave(); showToast(`Deleted “${style.name}”.`);
 }
 
 function applyColorVariableToSelection(variableId, requestedKind = null) {
@@ -2003,6 +2074,9 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   if (node?.type === 'image') {
     items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
   }
+  if (node?.type === 'text') {
+    items.splice(0, 0, { label: 'Save text style…', action: () => saveTypographyStyleFor(nodeId) }, { separator: true });
+  }
   if (images.length) {
     items.push({ separator: true }, { label: `Apply recipe to ${images.length} image${images.length === 1 ? '' : 's'}`, labelOnly: true });
     if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
@@ -2012,6 +2086,9 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
     ? selectedNodes().some(item => item.type === 'text')
     : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type) && (item.type !== 'network' || (item.faces || []).length > 0)));
   if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
+  const textTargets = selectedNodes().filter(item => item.type === 'text');
+  const typographyStyles = state.document.typographyStyles || [];
+  if (textTargets.length && typographyStyles.length) items.push({ separator: true }, { label: 'Apply text style', labelOnly: true }, ...typographyStyles.map(style => ({ label: style.name, action: () => applyTypographyStyleToSelection(style.id) })));
   showMenu(items, x, y);
 }
 
@@ -2756,6 +2833,9 @@ function applyInspectorAction(action, details = {}) {
       renderUI(); queueSave(); showToast(`Color style “${style.name}” created.`);
     } catch (error) { showToast(error.message); }
   }
+  else if (action === 'create-typography-style') {
+    saveTypographyStyleFor(node?.id);
+  }
   else if (action === 'edit-text' && node?.type === 'text') editTextNode(node.id);
   else if (action === 'reset-image' && node?.type === 'image') {
     checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.fit = 'cover';
@@ -2987,6 +3067,16 @@ function initEvents() {
     const card = event.target.closest('[data-component-id]'); if (card) createInstanceAt(card.dataset.componentId);
   });
   $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
+  $('#text-styles-list').addEventListener('click', event => {
+    const action = event.target.closest('[data-text-style-action]');
+    if (action) {
+      if (action.dataset.textStyleAction === 'update') updateTypographyStyleFromSelection(action.dataset.textStyleId);
+      else if (action.dataset.textStyleAction === 'delete') removeTypographyStyleFromAssets(action.dataset.textStyleId);
+      return;
+    }
+    const style = event.target.closest('[data-typography-style-id]');
+    if (style) applyTypographyStyleToSelection(style.dataset.typographyStyleId);
+  });
   $('#file-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 72, event.clientY || 45));
   $('#main-menu-button').addEventListener('click', event => openFileMenu(event.clientX || 18, event.clientY || 45));
   $('#canvas-menu').addEventListener('click', event => openFileMenu(event.clientX || innerWidth - 36, event.clientY || 50));

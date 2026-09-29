@@ -63,6 +63,7 @@ export function createDocument() {
     componentSets: [],
     recipes: [],
     colorStyles: [],
+    typographyStyles: [],
     variableCollections: [],
     variables: [],
     comments: [],
@@ -972,6 +973,59 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'color'];
+
+function typographyStyleValues(document, node) {
+  return {
+    fontFamily: getNodePropertyValue(document, node, 'fontFamily') || 'Arial, sans-serif',
+    fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+    fontWeight: Number(getNodePropertyValue(document, node, 'fontWeight')) || 400,
+    fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
+    lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+    letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+    align: node.align || 'left',
+    color: getNodeColor(document, node, 'text')
+  };
+}
+
+export function createTypographyStyle(document, nodeId, name, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!node || node.type !== 'text') throw new Error('Select a text layer before saving a text style.');
+  document.typographyStyles ||= [];
+  if (document.typographyStyles.length >= 1000) throw new Error('A design can contain up to 1,000 text styles.');
+  const styleName = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || `${node.name} text`;
+  const style = { id: createId('typography'), name: styleName.slice(0, 120), ...typographyStyleValues(document, node) };
+  document.typographyStyles.push(style);
+  return style;
+}
+
+export function applyTypographyStyle(document, nodeId, styleId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.typographyStyles?.find(item => item.id === styleId);
+  if (!node || node.type !== 'text' || !style) return false;
+  for (const property of typographyStyleProperties) node[property] = style[property];
+  node.textVariableId = null;
+  node.textStyleId = null;
+  node.variableBindings ||= {};
+  for (const property of ['fontSize', 'lineHeight', 'letterSpacing']) delete node.variableBindings[property];
+  return true;
+}
+
+export function updateTypographyStyle(document, styleId, nodeId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.typographyStyles?.find(item => item.id === styleId);
+  if (!node || node.type !== 'text' || !style) return false;
+  Object.assign(style, typographyStyleValues(document, node));
+  return true;
+}
+
+export function deleteTypographyStyle(document, styleId) {
+  const index = (document.typographyStyles || []).findIndex(style => style.id === styleId);
+  if (index < 0) return false;
+  document.typographyStyles.splice(index, 1);
+  return true;
+}
+
 export function createComponent(document, nodeId, name = null, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) throw new Error('Select a layer to create a component.');
@@ -1571,6 +1625,23 @@ export function validateDocument(document) {
       if (node.fillStyleId && !styleIds.has(node.fillStyleId)) throw new TypeError(`Missing fill style on layer ${node.name || node.id}.`);
       if (node.textStyleId && !styleIds.has(node.textStyleId)) throw new TypeError(`Missing text style on layer ${node.name || node.id}.`);
     });
+  }
+  if (document.typographyStyles != null) {
+    if (!Array.isArray(document.typographyStyles) || document.typographyStyles.length > 1000) throw new TypeError('Text styles must be a list of up to 1,000 presets.');
+    const styleIds = new Set();
+    for (const style of document.typographyStyles) {
+      if (!style || typeof style.id !== 'string' || !style.id || styleIds.has(style.id)
+        || typeof style.name !== 'string' || !style.name.trim() || style.name.length > 120 || /[\x00-\x1f\x7f]/.test(style.name)
+        || typeof style.fontFamily !== 'string' || !style.fontFamily.trim() || style.fontFamily.length > 160 || /[\x00-\x1f]/.test(style.fontFamily)
+        || !Number.isFinite(style.fontSize) || style.fontSize <= 0
+        || !isValidFontWeight(style.fontWeight)
+        || !['normal', 'italic'].includes(style.fontStyle)
+        || !Number.isFinite(style.lineHeight) || style.lineHeight <= 0
+        || !Number.isFinite(style.letterSpacing)
+        || !['left', 'center', 'right'].includes(style.align)
+        || !/^#[0-9a-f]{6}$/i.test(style.color || '')) throw new TypeError('Invalid or duplicate text style.');
+      styleIds.add(style.id);
+    }
   }
   return true;
 }
