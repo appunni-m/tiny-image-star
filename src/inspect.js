@@ -1,4 +1,4 @@
-import { getNodeColor, getNodePropertyValue } from './model.js';
+import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { buildLayerEffectFilter } from './layer-effects.js';
 import { gradientFillToCSS } from './fills.js';
 
@@ -30,6 +30,17 @@ function cssIdentifier(value) {
   return token || 'layer';
 }
 
+function cssClass(node) {
+  const identity = String(node.id || '').slice(-6).replace(/[^a-z0-9_-]/gi, '').toLowerCase();
+  return `${cssIdentifier(node.name)}${identity ? `-${identity}` : ''}`;
+}
+
+function escapeMarkup(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[character]);
+}
+
 function cssColor(color, alpha = 1) {
   const match = /^#([0-9a-f]{6})$/i.exec(String(color || ''));
   if (!match) return color === 'transparent' ? 'transparent' : null;
@@ -39,10 +50,15 @@ function cssColor(color, alpha = 1) {
   return opacity >= 1 ? `#${match[1].toLowerCase()}` : `rgba(${channels.join(', ')}, ${number(opacity)})`;
 }
 
-function absolutePosition(entry) {
-  let x = Number(entry.node.x) || 0;
-  let y = Number(entry.node.y) || 0;
-  for (const parent of entry.parents || []) { x += Number(parent.x) || 0; y += Number(parent.y) || 0; }
+function absolutePosition(document, entry) {
+  const own = getNodeGeometry(document, entry.node);
+  let x = Number(own.x) || 0;
+  let y = Number(own.y) || 0;
+  for (const parent of entry.parents || []) {
+    const geometry = getNodeGeometry(document, parent);
+    x += Number(geometry.x) || 0;
+    y += Number(geometry.y) || 0;
+  }
   return { x, y };
 }
 
@@ -74,18 +90,18 @@ function autoLayoutDeclarations(layout) {
 
 function cssForEntry(document, entry) {
   const node = entry.node;
-  const position = absolutePosition(entry);
+  const geometry = getNodeGeometry(document, node);
+  const position = absolutePosition(document, entry);
   const parentLayout = entry.parents?.at(-1)?.autoLayout || null;
-  const identity = String(node.id || '').slice(-6).replace(/[^a-z0-9_-]/gi, '').toLowerCase();
-  const selector = `.${cssIdentifier(node.name)}${identity ? `-${identity}` : ''}`;
+  const selector = `.${cssClass(node)}`;
   const declarations = [
     ...(parentLayout ? ['/* Placement is controlled by the parent auto layout. */', 'position: relative;'] : [
       'position: absolute;',
       `left: ${number(position.x)}px;`,
       `top: ${number(position.y)}px;`
     ]),
-    `width: ${number(node.width)}px;`,
-    `height: ${number(node.height)}px;`,
+    `width: ${number(geometry.width)}px;`,
+    `height: ${number(geometry.height)}px;`,
     'box-sizing: border-box;',
     `opacity: ${number(getNodePropertyValue(document, node, 'opacity') ?? 1)};`
   ];
@@ -101,7 +117,7 @@ function cssForEntry(document, entry) {
     else declarations.push('flex: 0 0 auto;');
     if (node.layoutSizingCross === 'fill') declarations.push('align-self: stretch;');
   }
-  const rotation = Number(node.rotation) || 0;
+  const rotation = Number(geometry.rotation) || 0;
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
   const effectFilter = buildLayerEffectFilter(node.effects);
   if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
@@ -147,15 +163,42 @@ function cssForEntry(document, entry) {
   }
 
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');
-  if (node.visible === false) declarations.push('display: none;');
+  if (getNodePropertyValue(document, node, 'visible') === false) declarations.push('display: none;');
   declarations.push(...autoLayoutDeclarations(node.autoLayout));
   if (node.type === 'path' || node.type === 'network' || node.type === 'boolean' || node.mask) declarations.push('/* Vector, Boolean, and mask geometry is retained in layer JSON. */');
   return `${selector} {\n${declarations.map(declaration => `  ${declaration}`).join('\n')}\n}`;
 }
 
+function markupForNode(document, node) {
+  const className = cssClass(node);
+  const type = escapeMarkup(node.type || 'layer');
+  if (node.type === 'text') {
+    const value = getNodePropertyValue(document, node, 'text') ?? '';
+    return `<span class="${className}" data-layer-type="text">${escapeMarkup(value)}</span>`;
+  }
+  if (node.type === 'image') {
+    const label = escapeMarkup(node.fileName || node.name || 'Local image');
+    return `<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Set the source to the local image asset in your app. --></div>`;
+  }
+  const children = (node.children || []).map(child => markupForNode(document, child)).join('\n');
+  const content = children ? `\n${children}\n` : '';
+  return `<div class="${className}" data-layer-type="${type}">${content}</div>`;
+}
+
+function treeEntries(root) {
+  const entries = [];
+  const visit = (node, parents) => {
+    entries.push({ node, parents });
+    for (const child of node.children || []) visit(child, [...parents, node]);
+  };
+  visit(root.node, root.parents || []);
+  return entries;
+}
+
 function summaryForEntry(document, entry) {
   const node = entry.node;
-  const position = absolutePosition(entry);
+  const geometry = getNodeGeometry(document, node);
+  const position = absolutePosition(document, entry);
   const fill = getNodeColor(document, node, node.type === 'text' ? 'text' : 'fill');
   const summary = {
     id: node.id,
@@ -163,8 +206,8 @@ function summaryForEntry(document, entry) {
     type: node.type,
     parent: entry.parents?.at(-1)?.name || 'Page',
     position,
-    size: { width: node.width, height: node.height },
-    rotation: Number(node.rotation) || 0,
+    size: { width: geometry.width, height: geometry.height },
+    rotation: Number(geometry.rotation) || 0,
     opacity: getNodePropertyValue(document, node, 'opacity') ?? 1
   };
   if (fill) summary.color = fill;
@@ -196,9 +239,13 @@ function summaryForEntry(document, entry) {
 
 export function buildInspectOutput(document, entries) {
   const selected = Array.isArray(entries) ? entries.filter(entry => entry?.node) : [];
+  const selectedIds = new Set(selected.map(entry => entry.node.id));
+  const roots = selected.filter(entry => !(entry.parents || []).some(parent => selectedIds.has(parent.id)));
+  const includedEntries = roots.flatMap(treeEntries);
   return {
     layers: selected.map(entry => summaryForEntry(document, entry)),
-    css: selected.map(entry => cssForEntry(document, entry)).join('\n\n'),
+    css: includedEntries.map(entry => cssForEntry(document, entry)).join('\n\n'),
+    html: roots.map(entry => markupForNode(document, entry.node)).join('\n'),
     json: JSON.stringify(selected.length === 1 ? selected[0].node : selected.map(entry => entry.node), null, 2)
   };
 }

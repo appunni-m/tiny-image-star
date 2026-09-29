@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, ungroupLayers,
   updateNode, walkNodes
 } from './model.js';
@@ -19,6 +19,7 @@ import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
+import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import {
   appendVectorNetworkPath, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
@@ -34,8 +35,8 @@ const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
   assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
-  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
-  bulk: null, textNodeId: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
+  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
+  bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
@@ -61,6 +62,7 @@ let textMeasureContext = null;
 function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
+function resolvedGeometry(node) { return getNodeGeometry(state.document, node); }
 function componentInstanceRoot(nodeId) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
@@ -95,6 +97,14 @@ function rootSelectedIds() {
   const selected = new Set(state.selectedIds);
   return selectedEntries().filter(entry => !entry.parents.some(parent => selected.has(parent.id))).map(entry => entry.node.id);
 }
+function orderedRootSelectedEntries() {
+  const selected = new Set(rootSelectedIds());
+  const order = new Map();
+  let nextOrder = 0;
+  walkNodes(activePage()?.children || [], ({ node }) => order.set(node.id, nextOrder++));
+  return selectedEntries().filter(entry => selected.has(entry.node.id)).sort((left, right) => (order.get(left.node.id) ?? 0) - (order.get(right.node.id) ?? 0));
+}
+function hasClipboardLayers() { return Boolean(state.clipboard?.schema && state.clipboard.items?.length); }
 function setSaveState(kind, text) {
   const element = $('#save-state');
   element.classList.toggle('is-saving', kind === 'saving');
@@ -168,6 +178,12 @@ function renderPageList() {
 
 function renderLayers() {
   const list = $('#layers-list'); list.replaceChildren();
+  const selectMode = $('#layer-select-mode');
+  selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select';
+  selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting images' : 'Select images for recipes');
+  selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
+  selectMode.classList.toggle('is-active', state.layerSelectionMode);
+  list.setAttribute('aria-multiselectable', 'true');
   const page = activePage();
   latestPageLayerIds = [];
   const search = state.layerSearch.trim().toLowerCase();
@@ -178,7 +194,7 @@ function renderLayers() {
       latestPageLayerIds.push(node.id);
       const row = document.createElement('div');
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${getNodePropertyValue(state.document, node, 'visible') ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
-      row.setAttribute('role', 'treeitem'); row.dataset.layerId = node.id; row.tabIndex = 0;
+      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id))); row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = 0;
       row.style.paddingLeft = `${7 + depth * 13}px`;
       const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length ? '⌄' : '';
@@ -230,7 +246,7 @@ function variableBindingControl(node, kind) {
   return `<label class="variable-binding-row"><span>Variable</span><select class="select-field" data-variable-binding="${kind}" aria-label="${kind} color variable"><option value="">No variable</option>${options}</select></label>`;
 }
 function variablePropertyBindingControl(node, property, label) {
-  const type = { visible: 'boolean', opacity: 'number', radius: 'number', text: 'string', fontSize: 'number', lineHeight: 'number', letterSpacing: 'number' }[property];
+  const type = { x: 'number', y: 'number', width: 'number', height: 'number', rotation: 'number', visible: 'boolean', opacity: 'number', radius: 'number', text: 'string', fontSize: 'number', lineHeight: 'number', letterSpacing: 'number' }[property];
   const selected = node.variableBindings?.[property] || '';
   const matchingVariables = (state.document.variables || []).filter(variable => variable.type === type);
   if (!matchingVariables.length && !selected) return '';
@@ -266,8 +282,9 @@ function imageFillControls(node) {
   return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
 }
 function transformSection(node) {
+  const geometry = resolvedGeometry(node);
   const opacity = getNodePropertyValue(state.document, node, 'opacity');
-  const body = `<div class="property-grid">${numberField('X', 'x', node.x)}${numberField('Y', 'y', node.y)}${numberField('W', 'width', node.width)}${numberField('H', 'height', node.height)}${numberField('↻', 'rotation', node.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
+  const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width)}${numberField('H', 'height', geometry.height)}${numberField('↻', 'rotation', geometry.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
   return section('Position', body);
 }
 function blendingSection(node) {
@@ -300,6 +317,26 @@ function imageAdjustmentsSection(node) {
   const body = `${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
+function imageRecipeOptions(selectedId = '') {
+  const recipes = state.document.recipes || [];
+  return recipes.length
+    ? recipes.map(recipe => `<option value="${escapeHtml(recipe.id)}"${recipe.id === selectedId ? ' selected' : ''}>${escapeHtml(recipe.name)}</option>`).join('')
+    : '<option value="">No saved recipes yet</option>';
+}
+function singleImageRecipesSection(node) {
+  const recipes = state.document.recipes || [];
+  const apply = recipes.length
+    ? `<label class="field-label" for="selection-image-recipe">Apply a saved recipe</label><select class="select-field recipe-picker" id="selection-image-recipe" aria-label="Choose image recipe">${imageRecipeOptions()}</select><button class="add-fill" type="button" data-action="apply-image-recipe" data-node-id="${escapeHtml(node.id)}">Apply to this image</button>`
+    : '<div class="image-properties-note">Save a look from an edited image to reuse it here or across a batch.</div>';
+  return section('Image recipes', `<button class="add-fill recipe-save-button" type="button" data-action="save-image-recipe" data-node-id="${escapeHtml(node.id)}">＋ Save current look as recipe</button>${apply}`);
+}
+function selectionImageRecipesSection(imageCount) {
+  const recipes = state.document.recipes || [];
+  const picker = recipes.length
+    ? `<label class="field-label" for="selection-image-recipe">Recipe</label><select class="select-field recipe-picker" id="selection-image-recipe" aria-label="Choose image recipe">${imageRecipeOptions()}</select><button class="primary-button recipe-apply-button" type="button" data-action="apply-selection-image-recipe">Apply to ${imageCount} image${imageCount === 1 ? '' : 's'}</button>`
+    : '<div class="image-properties-note">Save a look from one image first, then apply it to selected images here.</div>';
+  return section('Image recipes', `<div class="image-properties-note">${imageCount} image${imageCount === 1 ? '' : 's'} selected. Recipe changes are applied to these image layers in place.</div>${picker}`);
+}
 function effectNumberField(label, effect, field, step = 1, min = 0, max = 100) {
   return `<div class="property-field"><label>${label}</label><input data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" type="number" step="${step}" min="${min}" max="${max}" value="${Number(effect[field])}" aria-label="${label}" /></div>`;
 }
@@ -330,7 +367,7 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG keeps vector shapes and text editable. Raster images, gradients, masks, effects, and Boolean layers are not supported yet.</div>';
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG keeps vector shapes and text editable, including linear and radial fills, shadows, blur, and blend modes. Raster images, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${svgExport}`);
 }
 function autoLayoutSection(node) {
@@ -458,8 +495,9 @@ function inspectPanel() {
     return `<article class="inspect-layer-card"><header><strong>${escapeHtml(layer.name)}</strong><span>${escapeHtml(layer.type)} · ${escapeHtml(layer.parent)}</span></header><dl>${properties.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${label === 'Color' ? value : escapeHtml(value)}</dd></div>`).join('')}</dl>${layer.text ? `<div class="inspect-text-value"><span>Text content</span><p>${escapeHtml(layer.text)}</p></div>` : ''}</article>`;
   }).join('');
   const css = output.css || '/* Select a layer to generate CSS. */';
+  const html = output.html || '<!-- Select a layer to generate an HTML structure. -->';
   const json = output.json || '[]';
-  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
+  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
 }
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
@@ -619,7 +657,7 @@ function renderInspector() {
     const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
     const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
     const layoutNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Right-click to apply a saved image recipe.` : 'Use the Layers panel to change their order.'}</span></div>${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${layoutNote}</div>`)}${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Use Image recipes below to apply a look without a keyboard or context menu.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${layoutNote}</div>`)}${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
     return;
   }
   const node = entries[0].node;
@@ -633,7 +671,7 @@ function renderInspector() {
     body += section('Mask', `<div class="image-properties-note">${escapeHtml(maskSource?.name || 'Vector shape')} masks the editable layers inside this group.</div><button class="add-fill" data-action="release-mask">Release mask</button>`);
   }
   if (node.type === 'text') body += textSection(node);
-  if (node.type === 'image') body += imageAdjustmentsSection(node);
+  if (node.type === 'image') body += imageAdjustmentsSection(node) + singleImageRecipesSection(node);
   if (node.type === 'path') {
     const pointCount = node.points?.length || 0;
     const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
@@ -805,8 +843,9 @@ function deepestContainerAt(point) {
   let result = null;
   const visit = (nodes, parentX = 0, parentY = 0) => {
     for (const node of nodes) {
-      const x = parentX + node.x; const y = parentY + node.y;
-      if (['frame', 'group'].includes(node.type) && point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height) result = { node, x, y };
+      const geometry = resolvedGeometry(node);
+      const x = parentX + geometry.x; const y = parentY + geometry.y;
+      if (['frame', 'group'].includes(node.type) && point.x >= x && point.y >= y && point.x <= x + geometry.width && point.y <= y + geometry.height) result = { node, x, y };
       visit(node.children || [], x, y);
     }
   };
@@ -823,11 +862,12 @@ function localizeToParent(node, worldX, worldY, parent) {
 function networkAnchorAt(world, node, pointerType = 'mouse') {
   if (!node || node.type !== 'network' || node.locked) return null;
   const origin = absolutePosition(node.id);
-  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+  const geometry = resolvedGeometry(node);
+  const center = { x: origin.x + geometry.width / 2, y: origin.y + geometry.height / 2 };
   let best = null;
   for (const vertex of node.vertices || []) {
     const localPoint = vectorNetworkVertexPoint(node, vertex.id, origin);
-    const screenPoint = rotatePoint(localPoint, center, node.rotation);
+    const screenPoint = rotatePoint(localPoint, center, geometry.rotation);
     const distance = checkPointDistance(world, screenPoint);
     const tolerance = (pointerType === 'touch' ? 22 : 12) / Math.max(.08, state.zoom);
     if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, localPoint, distance };
@@ -846,7 +886,8 @@ function startPenPath(world, pointerType = 'mouse') {
     const first = draft.anchors[0];
     if (existing && draft.anchors.length >= 2) {
       const existingOrigin = absolutePosition(target.id);
-      const firstWorld = rotatePoint(first, { x: existingOrigin.x + target.width / 2, y: existingOrigin.y + target.height / 2 }, target.rotation);
+      const targetGeometry = resolvedGeometry(target);
+      const firstWorld = rotatePoint(first, { x: existingOrigin.x + targetGeometry.width / 2, y: existingOrigin.y + targetGeometry.height / 2 }, targetGeometry.rotation);
       const closesAtFirst = (first.vertexId && first.vertexId === existing.vertexId)
         || (!first.vertexId && checkPointDistance(world, firstWorld) <= closeTolerance);
       if (closesAtFirst) {
@@ -860,7 +901,8 @@ function startPenPath(world, pointerType = 'mouse') {
       return;
     }
     const targetOrigin = target ? absolutePosition(target.id) : null;
-    const firstWorld = target ? rotatePoint(first, { x: targetOrigin.x + target.width / 2, y: targetOrigin.y + target.height / 2 }, target.rotation) : first;
+    const targetGeometry = target ? resolvedGeometry(target) : null;
+    const firstWorld = target ? rotatePoint(first, { x: targetOrigin.x + targetGeometry.width / 2, y: targetOrigin.y + targetGeometry.height / 2 }, targetGeometry.rotation) : first;
     if (draft.anchors.length >= 3 && checkPointDistance(world, firstWorld) <= closeTolerance) {
       finishPenPath(true);
       return;
@@ -930,7 +972,8 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
   const node = nodes.length === 1 && ['path', 'network'].includes(nodes[0].type) && !nodes[0].locked ? nodes[0] : null;
   if (!node || state.tool !== 'select') return null;
   const origin = absolutePosition(node.id);
-  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
+  const geometry = resolvedGeometry(node);
+  const center = { x: origin.x + geometry.width / 2, y: origin.y + geometry.height / 2 };
   const tolerance = (pointerType === 'touch' ? 22 : 9) / Math.max(.08, state.zoom);
   let best = null;
   if (node.type === 'network') {
@@ -939,13 +982,13 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
       if (!points) continue;
       for (const [part, handle, anchor] of [['control1', points[1], points[0]], ['control2', points[2], points[3]]]) {
         if (!edge[part]) continue;
-        const point = rotatePoint(handle, center, node.rotation);
+        const point = rotatePoint(handle, center, geometry.rotation);
         const distance = checkPointDistance(world, point);
         if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, edgeId: edge.id, part, distance };
       }
     }
     for (const vertex of node.vertices || []) {
-      const point = rotatePoint(vectorNetworkVertexPoint(node, vertex.id, origin), center, node.rotation);
+      const point = rotatePoint(vectorNetworkVertexPoint(node, vertex.id, origin), center, geometry.rotation);
       const distance = checkPointDistance(world, point);
       if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, vertexId: vertex.id, part: 'anchor', distance };
     }
@@ -957,7 +1000,7 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
         const handle = node.points[index][part];
         if (!handle || (Number(handle.x) === 0 && Number(handle.y) === 0)) continue;
       }
-      const point = rotatePoint(vectorNodePoint(node, index, part, origin), center, node.rotation);
+      const point = rotatePoint(vectorNodePoint(node, index, part, origin), center, geometry.rotation);
       const distance = checkPointDistance(world, point);
       if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, index, part, distance };
     }
@@ -1031,8 +1074,9 @@ function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
 }
 
 function unrotateForPath(world, node, origin) {
-  const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
-  return rotatePoint(world, center, -(node.rotation || 0));
+  const geometry = resolvedGeometry(node);
+  const center = { x: origin.x + geometry.width / 2, y: origin.y + geometry.height / 2 };
+  return rotatePoint(world, center, -geometry.rotation);
 }
 
 function checkPointDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -1048,12 +1092,13 @@ function resizeHandleAt(event) {
   if (nodes.length !== 1 || nodes[0].locked) return null;
   const entry = findNode(state.document, nodes[0].id);
   if (!entry) return null;
-  let x = nodes[0].x; let y = nodes[0].y;
-  for (const parent of entry.parents) { x += parent.x; y += parent.y; }
+  const nodeGeometry = resolvedGeometry(nodes[0]);
+  let x = nodeGeometry.x; let y = nodeGeometry.y;
+  for (const parent of entry.parents) { const geometry = resolvedGeometry(parent); x += geometry.x; y += geometry.y; }
   const node = nodes[0];
   const handles = {
-    nw: [x, y], n: [x + node.width / 2, y], ne: [x + node.width, y], e: [x + node.width, y + node.height / 2],
-    se: [x + node.width, y + node.height], s: [x + node.width / 2, y + node.height], sw: [x, y + node.height], w: [x, y + node.height / 2]
+    nw: [x, y], n: [x + nodeGeometry.width / 2, y], ne: [x + nodeGeometry.width, y], e: [x + nodeGeometry.width, y + nodeGeometry.height / 2],
+    se: [x + nodeGeometry.width, y + nodeGeometry.height], s: [x + nodeGeometry.width / 2, y + nodeGeometry.height], sw: [x, y + nodeGeometry.height], w: [x, y + nodeGeometry.height / 2]
   };
   const point = screenToWorld(event, canvas, state);
   const tolerance = 8 / state.zoom;
@@ -1070,7 +1115,7 @@ function selectedNodeDragStart(node, world, shiftKey) {
   }
   const nodes = selectedNodes();
   checkpoint('Move layers');
-  const originals = new Map(nodes.map(item => [item.id, { x: item.x, y: item.y }]));
+  const originals = new Map(nodes.map(item => { const geometry = resolvedGeometry(item); return [item.id, { x: geometry.x, y: geometry.y }]; }));
   state.interaction = { kind: 'move', start: world, originals, shiftKey };
 }
 
@@ -1092,7 +1137,7 @@ function onCanvasPointerDown(event) {
   if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
   if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
   if (state.prototypeSourceId) {
-    const target = findFrameAtPoint(activePage(), world);
+    const target = findFrameAtPoint(activePage(), world, state.document);
     if (!target) { showToast('Choose a frame as the interaction destination.'); return; }
     if (target.id === state.prototypeSourceId) { showToast('Choose a different destination frame.'); return; }
     try {
@@ -1133,7 +1178,8 @@ function onCanvasPointerDown(event) {
     const handle = resizeHandleAt(event);
     if (handle) {
       checkpoint('Resize layer');
-      state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, start: world, x: handle.node.x, y: handle.node.y, width: handle.node.width, height: handle.node.height, aspect: handle.node.height ? handle.node.width / handle.node.height : 1 };
+      const geometry = resolvedGeometry(handle.node);
+      state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, start: world, ...geometry, aspect: geometry.height ? geometry.width / geometry.height : 1 };
       if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
       event.preventDefault(); return;
     }
@@ -1216,7 +1262,12 @@ function onCanvasPointerMove(event) {
   if (interaction.kind === 'move') {
     let dx = world.x - interaction.start.x; let dy = world.y - interaction.start.y;
     if (state.document.settings.snap && !event.altKey) { const grid = state.document.settings.grid || 8; dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
-    for (const [id, original] of interaction.originals) updateNode(state.document, id, { x: original.x + dx, y: original.y + dy });
+    for (const [id, original] of interaction.originals) {
+      const node = findNode(state.document, id)?.node;
+      if (!node) continue;
+      setNodePropertyValue(node, 'x', original.x + dx);
+      setNodePropertyValue(node, 'y', original.y + dy);
+    }
     $('#position-status').textContent = `${Math.round(dx)}, ${Math.round(dy)} moved`;
     renderer.invalidate(); return;
   }
@@ -1250,9 +1301,10 @@ function onCanvasPointerMove(event) {
       if (interaction.handle.includes('w')) x = interaction.x + interaction.width - width;
       if (interaction.handle.includes('n')) y = interaction.y + interaction.height - height;
     }
-    Object.assign(interaction.node, { x, y, width, height });
+    for (const [property, value] of Object.entries({ x, y, width, height })) setNodePropertyValue(interaction.node, property, value);
+    const geometry = resolvedGeometry(interaction.node);
     if (interaction.node.type === 'frame' && interaction.node.autoLayout) applyAutoLayout(interaction.node);
-    else if (interaction.node.type === 'frame') applyFrameConstraints(interaction.node, interaction.width, interaction.height, width, height, interaction.childGeometry);
+    else if (interaction.node.type === 'frame') applyFrameConstraints(interaction.node, interaction.width, interaction.height, geometry.width, geometry.height, interaction.childGeometry);
     const parent = findNode(state.document, interaction.node.id)?.parent;
     if (parent?.autoLayout) applyAutoLayout(parent);
     renderer.invalidate(); return;
@@ -1303,7 +1355,11 @@ function onCanvasPointerUp(event) {
           instanceRoot.componentOverrides[node.componentSourceId] ||= {};
           instanceRoot.componentOverrides[node.componentSourceId].__childOrder = node.children.map(child => child.componentSourceId);
         }
-      } else recordNodeComponentOverrides(node, interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : ['x', 'y']);
+      } else {
+        const properties = interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : ['x', 'y'];
+        if (properties.some(property => node.variableBindings?.[property])) recordNodeComponentOverrides(node, ['variableBindings']);
+        recordNodeComponentOverrides(node, properties.filter(property => !node.variableBindings?.[property]));
+      }
     }
     if (interaction.kind === 'resize' && interaction.node?.type === 'frame') {
       const instanceRoot = componentInstanceRoot(interaction.node.id);
@@ -1314,8 +1370,10 @@ function onCanvasPointerUp(event) {
   if (interaction.kind === 'marquee') {
     const rect = { x: Math.min(state.marquee.x1, state.marquee.x2), y: Math.min(state.marquee.y1, state.marquee.y2), width: Math.abs(state.marquee.x2 - state.marquee.x1), height: Math.abs(state.marquee.y2 - state.marquee.y1) };
     const hits = pageLayerRows().filter(({ node, parents }) => {
-      let x = node.x; let y = node.y; for (const parent of parents) { x += parent.x; y += parent.y; }
-      return x <= rect.x + rect.width && x + node.width >= rect.x && y <= rect.y + rect.height && y + node.height >= rect.y;
+      const geometry = resolvedGeometry(node);
+      let x = geometry.x; let y = geometry.y;
+      for (const parent of parents) { const parentGeometry = resolvedGeometry(parent); x += parentGeometry.x; y += parentGeometry.y; }
+      return x <= rect.x + rect.width && x + geometry.width >= rect.x && y <= rect.y + rect.height && y + geometry.height >= rect.y;
     }).map(entry => entry.node.id);
     setSelection(interaction.additive ? [...state.selectedIds, ...hits] : hits);
     state.marquee = null; state.interaction = null; renderer.invalidate(); return;
@@ -1342,15 +1400,18 @@ function resizeTextNode(node) {
   if (node?.type !== 'text') return false;
   textMeasureContext ||= document.createElement('canvas').getContext('2d');
   if (!textMeasureContext) return false;
-  const before = { width: node.width, height: node.height };
-  const size = calculateTextBox(textMeasureContext, node, {
+  const before = resolvedGeometry(node);
+  const layoutNode = { ...node, ...before };
+  const size = calculateTextBox(textMeasureContext, layoutNode, {
     fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight'),
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
     text: getNodePropertyValue(state.document, node, 'text')
   });
-  node.width = size.width; node.height = size.height;
-  return before.width !== size.width || before.height !== size.height;
+  if (!node.variableBindings?.width) node.width = size.width;
+  if (!node.variableBindings?.height) node.height = size.height;
+  const after = resolvedGeometry(node);
+  return before.width !== after.width || before.height !== after.height;
 }
 
 function resizeTextLayers(roots, variableId = null) {
@@ -1358,12 +1419,304 @@ function resizeTextLayers(roots, variableId = null) {
   walkNodes(roots, ({ node, parent }) => {
     if (node.type !== 'text') return;
     const bindings = node.variableBindings || {};
-    const sizeProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing'];
+    const sizeProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing', 'width', 'height'];
     if (variableId && !sizeProperties.some(property => bindings[property] === variableId)) return;
     if (!variableId && !sizeProperties.some(property => bindings[property])) return;
     if (resizeTextNode(node) && parent?.autoLayout) layoutParents.add(parent);
   });
   for (const parent of layoutParents) applyAutoLayout(parent);
+}
+
+const textRunStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
+const textBlockTags = new Set(['DIV', 'P', 'LI', 'BLOCKQUOTE']);
+function textRunDataAttribute(property) { return `data-run-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`; }
+function normalizeTextRunStyle(source = {}) {
+  const style = {};
+  for (const property of textRunStyleKeys) {
+    let value = source[property];
+    if (value == null) continue;
+    if (property === 'fontFamily') {
+      value = String(value).trim();
+      if (!value || value.length > 160 || /[\x00-\x1f]/.test(value)) continue;
+    } else if (property === 'fontWeight') {
+      value = Number(value);
+      if (!Number.isInteger(value) || value < 1 || value > 1000) continue;
+    } else if (['fontSize', 'lineHeight'].includes(property)) {
+      value = Number(value);
+      if (!Number.isFinite(value) || value <= 0 || value > (property === 'lineHeight' ? 100 : 100_000)) continue;
+    } else if (property === 'letterSpacing') {
+      value = Number(value);
+      if (!Number.isFinite(value) || Math.abs(value) > 10_000) continue;
+    } else if (property === 'fontStyle') {
+      value = String(value);
+      if (!['normal', 'italic'].includes(value)) continue;
+    } else if (property === 'textDecoration') {
+      value = String(value);
+      if (!['none', 'underline', 'line-through'].includes(value)) continue;
+    } else if (property === 'color') {
+      value = String(value);
+      if (!/^#[0-9a-f]{6}$/i.test(value)) continue;
+      value = value.toLowerCase();
+    }
+    style[property] = value;
+  }
+  return style;
+}
+function appendTextRun(runs, text, style) {
+  if (!text) return;
+  const normalized = normalizeTextRunStyle(style);
+  const previous = runs.at(-1);
+  const keys = textRunStyleKeys.filter(property => normalized[property] != null);
+  if (previous && keys.every(property => previous[property] === normalized[property])
+    && Object.keys(previous).every(property => property === 'text' || normalized[property] != null && previous[property] === normalized[property])) previous.text += text;
+  else runs.push({ text, ...normalized });
+}
+function normalizeTextRuns(runs) {
+  const normalized = [];
+  for (const run of runs || []) appendTextRun(normalized, String(run.text || '').replace(/\r\n?/g, '\n'), run);
+  return normalized;
+}
+function parseTextRunColor(value) {
+  const text = String(value || '').trim();
+  if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+  const match = text.match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*[\d.]+)?\s*\)$/i);
+  if (!match) return null;
+  const parts = match.slice(1, 4).map(Number);
+  if (parts.some(part => part < 0 || part > 255)) return null;
+  return `#${parts.map(part => part.toString(16).padStart(2, '0')).join('')}`;
+}
+function textRunStyleForElement(element, inherited) {
+  const style = { ...inherited };
+  const tag = element.tagName;
+  if (tag === 'B' || tag === 'STRONG') style.fontWeight = 700;
+  if (tag === 'I' || tag === 'EM') style.fontStyle = 'italic';
+  for (const property of textRunStyleKeys) {
+    const encoded = element.getAttribute(textRunDataAttribute(property));
+    let value = encoded != null ? encoded : element.style?.[property];
+    if (property === 'fontWeight' && value) value = value === 'bold' ? 700 : value === 'normal' ? 400 : Number(value);
+    if (property === 'fontStyle' && value) value = value === 'italic' ? 'italic' : 'normal';
+    if (property === 'fontSize' || property === 'lineHeight' || property === 'letterSpacing') {
+      if (value != null && value !== '') value = Number.parseFloat(value);
+    }
+    if (property === 'color' && value) value = parseTextRunColor(value);
+    if (property === 'textDecoration' && value) {
+      const decoration = String(value).split(/\s+/).find(item => ['underline', 'line-through', 'none'].includes(item));
+      value = decoration || null;
+    }
+    if (value != null && value !== '') {
+      const normalized = normalizeTextRunStyle({ [property]: value });
+      if (normalized[property] != null) style[property] = normalized[property];
+    }
+  }
+  return style;
+}
+function readTextEditorContent(root) {
+  const runs = [];
+  let text = '';
+  const append = (value, style) => {
+    const next = String(value).replace(/\r\n?/g, '\n');
+    if (!next) return;
+    appendTextRun(runs, next, style);
+    text += next;
+  };
+  const visit = (node, inherited = {}, rootNode = false) => {
+    if (node.nodeType === Node.TEXT_NODE) { append(node.nodeValue || '', inherited); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
+    if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR') { append('\n', inherited); return; }
+    if (node.nodeType === Node.ELEMENT_NODE && !rootNode && textBlockTags.has(node.tagName) && text && !text.endsWith('\n')) append('\n', inherited);
+    const style = node.nodeType === Node.ELEMENT_NODE ? textRunStyleForElement(node, inherited) : inherited;
+    for (const child of node.childNodes) visit(child, style, false);
+  };
+  for (const child of root.childNodes) visit(child, {}, false);
+  return { text, runs: normalizeTextRuns(runs) };
+}
+function renderTextEditorRuns(editor, runs) {
+  editor.replaceChildren();
+  const text = runs.map(run => run.text).join('');
+  if (!runs.some(run => textRunStyleKeys.some(property => run[property] != null))) {
+    editor.textContent = text;
+    return;
+  }
+  for (const run of runs) {
+    if (!run.text) continue;
+    const span = document.createElement('span');
+    span.dataset.textRun = 'true';
+    for (const property of textRunStyleKeys) {
+      const value = run[property];
+      if (value == null) continue;
+      span.setAttribute(textRunDataAttribute(property), String(value));
+      span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+    }
+    span.textContent = run.text;
+    editor.append(span);
+  }
+}
+function trimTextRuns(runs, length) {
+  let remaining = length;
+  const result = [];
+  for (const run of runs) {
+    if (remaining <= 0) break;
+    const text = run.text.slice(0, remaining);
+    if (text) result.push({ ...run, text });
+    remaining -= text.length;
+  }
+  return normalizeTextRuns(result);
+}
+function editorPointOffset(editor, node, offset) {
+  if (node !== editor && !editor.contains(node)) return null;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.setEnd(node, offset);
+    return readTextEditorContent(range.cloneContents()).text.length;
+  } catch { return null; }
+}
+function currentTextSelection() {
+  const editor = $('#text-editor-overlay');
+  const selection = document.getSelection();
+  if (!selection?.rangeCount || !state.textNodeId) return null;
+  const range = selection.getRangeAt(0);
+  const start = editorPointOffset(editor, range.startContainer, range.startOffset);
+  const end = editorPointOffset(editor, range.endContainer, range.endOffset);
+  return start == null || end == null ? null : { start: Math.min(start, end), end: Math.max(start, end) };
+}
+function rememberTextSelection() {
+  const range = currentTextSelection();
+  if (range) state.textSelection = range;
+  return range || state.textSelection;
+}
+function setTextEditorSelection(editor, start, end = start) {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  if (!textNodes.length) { const empty = document.createTextNode(''); editor.append(empty); textNodes.push(empty); }
+  const pointAt = position => {
+    let remaining = Math.max(0, position);
+    for (const node of textNodes) {
+      if (remaining <= node.length) return { node, offset: remaining };
+      remaining -= node.length;
+    }
+    const last = textNodes.at(-1);
+    return { node: last, offset: last.length };
+  };
+  const from = pointAt(start); const to = pointAt(end);
+  const range = document.createRange();
+  range.setStart(from.node, from.offset); range.setEnd(to.node, to.offset);
+  const selection = document.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+function textBaseStyle(node) {
+  return {
+    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontSize: getNodePropertyValue(state.document, node, 'fontSize') || 24,
+    fontWeight: Number(node.fontWeight || 400),
+    fontStyle: node.fontStyle || 'normal',
+    lineHeight: getNodePropertyValue(state.document, node, 'lineHeight') || 1.25,
+    letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing') || 0,
+    color: getNodeColor(state.document, node, 'text') || '#1e1e1e'
+  };
+}
+function effectiveTextRunValue(run, property, node) {
+  return run[property] ?? textBaseStyle(node)[property];
+}
+function selectedTextRunValues(runs, start, end, property, node) {
+  const values = [];
+  let cursor = 0;
+  for (const run of runs) {
+    const next = cursor + run.text.length;
+    if (next > start && cursor < end) values.push(effectiveTextRunValue(run, property, node));
+    cursor = next;
+  }
+  return values;
+}
+function rangeUsesTextStyle(runs, start, end, property, node, predicate) {
+  const values = selectedTextRunValues(runs, start, end, property, node);
+  return values.length > 0 && values.every(predicate);
+}
+function positionTextFormatToolbar() {
+  const editor = $('#text-editor-overlay'); const toolbar = $('#text-format-toolbar'); const canvasScroll = $('#canvas-scroll');
+  if (!state.textNodeId || editor.hidden || toolbar.hidden) return;
+  const editorLeft = Number.parseFloat(editor.style.left) || 8;
+  const editorTop = Number.parseFloat(editor.style.top) || 8;
+  const toolbarWidth = toolbar.offsetWidth; const toolbarHeight = toolbar.offsetHeight;
+  const left = Math.max(8, Math.min(editorLeft, canvasScroll.clientWidth - toolbarWidth - 8));
+  const above = editorTop - toolbarHeight - 8;
+  const below = editorTop + (Number.parseFloat(editor.style.minHeight) || 32) + 8;
+  const top = above >= 8 ? above : Math.min(below, canvasScroll.clientHeight - toolbarHeight - 8);
+  toolbar.style.left = `${left}px`; toolbar.style.top = `${Math.max(8, top)}px`;
+}
+function updateTextFormatToolbar() {
+  const toolbar = $('#text-format-toolbar'); const editor = $('#text-editor-overlay');
+  if (!state.textNodeId || editor.hidden) { toolbar.hidden = true; return; }
+  toolbar.hidden = false;
+  const node = findNode(state.document, state.textNodeId)?.node;
+  const current = readTextEditorContent(editor);
+  const range = rememberTextSelection();
+  const selected = Boolean(range && range.end > range.start && range.end <= current.text.length);
+  const bold = toolbar.querySelector('[data-text-format="bold"]'); const italic = toolbar.querySelector('[data-text-format="italic"]');
+  bold.disabled = !selected; italic.disabled = !selected;
+  bold.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontWeight', node, value => Number(value) >= 600)));
+  italic.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontStyle', node, value => value === 'italic')));
+  const size = $('#text-format-size'); const color = $('#text-format-color');
+  size.disabled = !selected; color.disabled = !selected;
+  let firstRun = {};
+  if (selected) {
+    let cursor = 0;
+    firstRun = current.runs.find(run => {
+      const inRange = cursor + run.text.length > range.start && cursor < range.end;
+      cursor += run.text.length;
+      return inRange;
+    }) || {};
+  }
+  const base = textBaseStyle(node);
+  size.value = String(Math.max(1, Math.min(512, Math.round(effectiveTextRunValue(firstRun, 'fontSize', node) || base.fontSize))));
+  color.value = parseTextRunColor(effectiveTextRunValue(firstRun, 'color', node)) || '#1e1e1e';
+  positionTextFormatToolbar();
+}
+function transformTextRunsInRange(runs, start, end, property, value) {
+  const result = [];
+  let cursor = 0;
+  for (const run of runs) {
+    const runStart = cursor; const runEnd = cursor + run.text.length;
+    if (runStart < start) {
+      const before = run.text.slice(0, Math.max(0, start - runStart));
+      if (before) result.push({ ...run, text: before });
+    }
+    const overlapStart = Math.max(runStart, start); const overlapEnd = Math.min(runEnd, end);
+    if (overlapEnd > overlapStart) {
+      const middle = run.text.slice(overlapStart - runStart, overlapEnd - runStart);
+      result.push({ ...run, text: middle, [property]: value });
+    }
+    if (runEnd > end) {
+      const after = run.text.slice(Math.max(0, end - runStart));
+      if (after) result.push({ ...run, text: after });
+    }
+    cursor = runEnd;
+  }
+  return normalizeTextRuns(result);
+}
+function applyTextFormat(property, value) {
+  const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
+  const current = readTextEditorContent(editor); const range = rememberTextSelection();
+  if (!node || !range || range.end <= range.start || range.end > current.text.length) return;
+  const nextRuns = transformTextRunsInRange(current.runs, range.start, range.end, property, value);
+  if (nextRuns.length > 10_000) { showToast('This text has reached the 10,000 style-run limit.'); return; }
+  renderTextEditorRuns(editor, nextRuns);
+  state.textSelection = range;
+  setTextEditorSelection(editor, range.start, range.end);
+  editor.focus({ preventScroll: true });
+  updateTextFormatToolbar();
+}
+function toggleTextFormat(property) {
+  const editor = $('#text-editor-overlay'); const node = findNode(state.document, state.textNodeId)?.node;
+  const current = readTextEditorContent(editor); const range = rememberTextSelection();
+  if (!node || !range || range.end <= range.start) return;
+  if (property === 'fontWeight') {
+    const bold = rangeUsesTextStyle(current.runs, range.start, range.end, property, node, value => Number(value) >= 600);
+    applyTextFormat(property, bold ? 400 : 700);
+  } else {
+    const italic = rangeUsesTextStyle(current.runs, range.start, range.end, property, node, value => value === 'italic');
+    applyTextFormat(property, italic ? 'normal' : 'italic');
+  }
 }
 
 function createTextAt(world) {
@@ -1380,14 +1733,16 @@ function editTextNode(nodeId) {
   const entry = findNode(state.document, nodeId);
   if (!entry || entry.node.type !== 'text') return;
   state.textNodeId = nodeId;
+  state.textSelection = null;
   const editor = $('#text-editor-overlay');
   const absolute = absolutePosition(nodeId);
   const screen = worldToScreen(absolute, canvas, state);
   const canvasRect = canvasScroll.getBoundingClientRect();
   editor.style.left = `${screen.x - canvasRect.left}px`;
   editor.style.top = `${screen.y - canvasRect.top}px`;
-  editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, entry.node.width * state.zoom)}px`;
-  editor.style.minHeight = `${Math.max(28, entry.node.height * state.zoom)}px`;
+  const textGeometry = resolvedGeometry(entry.node);
+  editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, textGeometry.width * state.zoom)}px`;
+  editor.style.minHeight = `${Math.max(28, textGeometry.height * state.zoom)}px`;
   editor.style.whiteSpace = entry.node.textFit === 'auto-width' ? 'pre' : 'pre-wrap';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
   editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
@@ -1398,16 +1753,22 @@ function editTextNode(nodeId) {
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
   editor.style.color = getNodeColor(state.document, entry.node, 'text');
   const text = getNodePropertyValue(state.document, entry.node, 'text');
-  editor.textContent = text;
+  const existingRuns = Array.isArray(entry.node.textRuns) && entry.node.textRuns.map(run => run.text).join('') === text
+    ? entry.node.textRuns : [{ text }];
+  renderTextEditorRuns(editor, existingRuns);
+  $('#text-format-toolbar').hidden = false;
+  $('#canvas-scroll').classList.add('is-text-editing');
   editor.hidden = false; editor.focus();
   if (!text) document.execCommand?.('selectAll', false, null);
+  updateTextFormatToolbar();
 }
 
 function absolutePosition(nodeId) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return { x: 0, y: 0 };
-  let x = entry.node.x; let y = entry.node.y;
-  for (const parent of entry.parents) { x += parent.x; y += parent.y; }
+  const own = resolvedGeometry(entry.node);
+  let x = own.x; let y = own.y;
+  for (const parent of entry.parents) { const geometry = resolvedGeometry(parent); x += geometry.x; y += geometry.y; }
   return { x, y };
 }
 
@@ -1417,18 +1778,73 @@ function commitTextEdit() {
   const node = findNode(state.document, state.textNodeId)?.node;
   if (node) {
     const oldWidth = node.width; const oldHeight = node.height;
-    setNodePropertyValue(node, 'text', editor.innerText.replace(/\n$/, ''));
+    const oldText = node.text;
+    const oldRuns = node.textRuns ? JSON.stringify(node.textRuns) : null;
+    const content = readTextEditorContent(editor);
+    let text = content.text;
+    if (text.endsWith('\n')) text = text.slice(0, -1);
+    const normalizedRuns = trimTextRuns(content.runs, text.length);
+    const richRuns = normalizedRuns.some(run => textRunStyleKeys.some(property => run[property] != null)) ? normalizedRuns : null;
+    const nextTextFit = node.textFit || 'auto-height';
+    const nextRuns = richRuns ? JSON.stringify(richRuns) : null;
+    const textChanged = oldText !== text || (node.variableBindings?.text && getNodePropertyValue(state.document, node, 'text') !== text);
+    const runsChanged = oldRuns !== nextRuns;
+    const changed = textChanged || runsChanged || node.textFit !== nextTextFit;
+    if (changed) checkpoint('Edit text');
+    setNodePropertyValue(node, 'text', text);
+    node.text = text;
+    if (richRuns) node.textRuns = normalizedRuns;
+    else delete node.textRuns;
     node.textFit ||= 'auto-height';
     resizeTextNode(node);
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, node.variableBindings?.text ? 'variableBindings' : 'text');
+    if (instanceRoot && textChanged) recordComponentOverride(instanceRoot, node, node.variableBindings?.text ? 'variableBindings' : 'text');
+    if (instanceRoot && runsChanged) recordComponentOverride(instanceRoot, node, 'textRuns');
     if (instanceRoot && node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
     if (instanceRoot && node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
     const parent = findNode(state.document, node.id)?.parent;
     if (parent?.autoLayout) applyAutoLayout(parent);
   }
-  editor.hidden = true; state.textNodeId = null;
+  editor.hidden = true; $('#text-format-toolbar').hidden = true; $('#canvas-scroll').classList.remove('is-text-editing'); state.textNodeId = null; state.textSelection = null;
   renderInspector(); renderLayers(); queueSave(); renderer.invalidate();
+}
+
+function initRichTextEditorEvents() {
+  const editor = $('#text-editor-overlay'); const toolbar = $('#text-format-toolbar');
+  const refresh = () => { rememberTextSelection(); updateTextFormatToolbar(); };
+  editor.addEventListener('input', refresh);
+  editor.addEventListener('keyup', refresh);
+  editor.addEventListener('mouseup', refresh);
+  editor.addEventListener('pointerup', refresh);
+  editor.addEventListener('blur', event => {
+    if (event.relatedTarget?.closest?.('#text-format-toolbar')) return;
+    commitTextEdit();
+  });
+  editor.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); commitTextEdit(); }
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); commitTextEdit(); }
+  });
+  toolbar.addEventListener('pointerdown', event => {
+    rememberTextSelection();
+    if (event.target.closest('button')) event.preventDefault();
+  });
+  toolbar.addEventListener('click', event => {
+    const button = event.target.closest('[data-text-format]');
+    if (button?.dataset.textFormat === 'bold') toggleTextFormat('fontWeight');
+    else if (button?.dataset.textFormat === 'italic') toggleTextFormat('fontStyle');
+    else if (event.target.closest('[data-text-format-done]')) commitTextEdit();
+  });
+  toolbar.addEventListener('change', event => {
+    if (event.target.id === 'text-format-size') {
+      const value = Number(event.target.value);
+      if (Number.isFinite(value) && value > 0 && value <= 512) applyTextFormat('fontSize', value);
+      else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-color') {
+      const value = parseTextRunColor(event.target.value);
+      if (value) applyTextFormat('color', value);
+    }
+  });
+  document.addEventListener('selectionchange', () => { if (state.textNodeId) refresh(); });
 }
 
 function updateZoomUI() {
@@ -1532,7 +1948,8 @@ function updateInspectorInput(event) {
   const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
-    const oldWidth = node.width; const oldHeight = node.height;
+    const oldRawWidth = node.width; const oldRawHeight = node.height;
+    const oldWidth = resolvedGeometry(node).width; const oldHeight = resolvedGeometry(node).height;
     let adjustedSizeLimit = null;
     const variableProperty = prop === 'fill' ? 'fillVariableId' : prop === 'color' ? 'textVariableId' : prop === 'stroke' ? 'strokeVariableId' : null;
     const boundVariableId = node.variableBindings?.[prop];
@@ -1604,7 +2021,8 @@ function updateInspectorInput(event) {
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
       else if (resized && parent?.autoLayout) applyAutoLayout(parent);
     }
-    if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, node.width, node.height);
+    const geometry = resolvedGeometry(node);
+    if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, geometry.width, geometry.height);
     if (node.type === 'image' && adjustments) schedulePreview(node);
     if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
@@ -1618,8 +2036,8 @@ function updateInspectorInput(event) {
         recordComponentOverride(instanceRoot, node, 'fillStyleId');
       }
       if (prop === 'fillType') recordComponentOverride(instanceRoot, node, 'imageFill');
-      if (node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
-      if (node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
+      if (node.width !== oldRawWidth) recordComponentOverride(instanceRoot, node, 'width');
+      if (node.height !== oldRawHeight) recordComponentOverride(instanceRoot, node, 'height');
       if (adjustedSizeLimit) recordComponentOverride(instanceRoot, node, adjustedSizeLimit);
     }
   }
@@ -1757,6 +2175,48 @@ function renderBulkBar() {
   $('#bulk-done').hidden = !(bulk.done || bulk.cancelled);
 }
 
+function snapshotRecipeField(object, key) {
+  return { present: Object.hasOwn(object, key), value: object[key] };
+}
+
+function snapshotRecipeState(node) {
+  return {
+    adjustments: { ...(node.adjustments || {}) },
+    fit: snapshotRecipeField(node, 'fit'),
+    opacity: snapshotRecipeField(node, 'opacity')
+  };
+}
+
+function rollbackRecipeStateIfUnchanged(node, before, applied) {
+  let changed = false;
+  const currentAdjustments = { ...(node.adjustments || {}) };
+  const adjustmentKeys = new Set([
+    ...Object.keys(before.adjustments),
+    ...Object.keys(applied.adjustments),
+    ...Object.keys(currentAdjustments)
+  ]);
+  for (const key of adjustmentKeys) {
+    const stillApplied = Object.hasOwn(currentAdjustments, key) === Object.hasOwn(applied.adjustments, key)
+      && (!Object.hasOwn(applied.adjustments, key) || Object.is(currentAdjustments[key], applied.adjustments[key]));
+    if (!stillApplied) continue;
+    if (Object.hasOwn(before.adjustments, key)) currentAdjustments[key] = before.adjustments[key];
+    else delete currentAdjustments[key];
+    changed = true;
+  }
+  if (changed) node.adjustments = currentAdjustments;
+
+  for (const key of ['fit', 'opacity']) {
+    const current = snapshotRecipeField(node, key);
+    const recipeValue = applied[key];
+    if (current.present !== recipeValue.present || (current.present && !Object.is(current.value, recipeValue.value))) continue;
+    const previous = before[key];
+    if (previous.present) node[key] = previous.value;
+    else delete node[key];
+    changed = true;
+  }
+  return changed;
+}
+
 function scheduleBulk() {
   const bulk = state.bulk;
   if (!bulk || bulk.paused || bulk.cancelled || bulk.done) return;
@@ -1764,15 +2224,16 @@ function scheduleBulk() {
     const id = bulk.targets[bulk.next++];
     const entry = findNode(state.document, id);
     if (!entry || entry.node.type !== 'image') { bulk.failed += 1; bulk.completed += 1; continue; }
-    const node = entry.node; const oldAdjustments = { ...node.adjustments }; const oldFit = node.fit; const oldOpacity = node.opacity;
+    const node = entry.node; const before = snapshotRecipeState(node);
     applyImageRecipe(state.document, id, bulk.recipe);
+    const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     renderImagePreview(id, node.assetId, node.adjustments).then(() => {
       if (state.bulk !== bulk) return;
       bulk.completed += 1;
     }).catch(error => {
       if (state.bulk !== bulk) return;
-      node.adjustments = oldAdjustments; node.fit = oldFit; node.opacity = oldOpacity;
+      rollbackRecipeStateIfUnchanged(node, before, applied);
       state.imageStatus.set(id, 'Recipe failed'); bulk.failed += 1; bulk.completed += 1;
       showToast(`${node.name}: ${error.message}`);
     }).finally(() => {
@@ -1791,6 +2252,11 @@ function scheduleBulk() {
 }
 
 function startRecipe(recipe, targets) {
+  if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) {
+    showToast('A recipe batch is active. Finish or stop it before starting another.');
+    renderBulkBar();
+    return false;
+  }
   const unique = [...new Set(targets)].filter(id => findNode(state.document, id)?.node.type === 'image');
   if (!unique.length) { showToast('Select one or more image layers first.'); return; }
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
@@ -1798,6 +2264,7 @@ function startRecipe(recipe, targets) {
   state.bulk = { recipe, targets: unique, next: 0, completed: 0, failed: 0, inflight: 0, concurrency, paused: false, cancelled: false, done: false };
   imageEngine.setConcurrency(concurrency);
   renderBulkBar(); scheduleBulk();
+  return true;
 }
 
 function saveRecipeFor(nodeId) {
@@ -2037,6 +2504,10 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   const items = [
     { label: 'Add comment here', action: () => beginCommentAt(commentPoint) },
     { separator: true },
+    { label: 'Copy layers', shortcut: '⌘C', action: copySelected },
+    { label: 'Cut layers', shortcut: '⌘X', action: cutSelected },
+    { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
+    { separator: true },
     { label: 'Duplicate', shortcut: '⌘D', action: duplicateSelected },
     { label: 'Rename', shortcut: '↵', action: () => renameSelected() },
     { label: 'Bring to front', action: () => reorderSelected('front') },
@@ -2190,6 +2661,10 @@ function openFileMenu(x, y, commentAnchor = null) {
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { separator: true },
     { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
+    { label: 'Copy selected layers', shortcut: '⌘C', action: copySelected, disabled: !rootSelectedIds().length },
+    { label: 'Cut selected layers', shortcut: '⌘X', action: cutSelected, disabled: !rootSelectedIds().length },
+    { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
+    { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
     { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
     { label: 'Export selected layer as SVG', action: () => { try { exportSelectedNodeSvg(rootSelectedIds()[0]); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); } }, disabled: rootSelectedIds().length !== 1 },
     { label: 'Export current page as SVG', action: () => { try { exportActivePageSvg(); } catch (error) { showToast(error.message || 'Could not export this page as SVG.'); } } },
@@ -2216,11 +2691,57 @@ function deleteSelected() {
   for (const id of ids) removeNode(state.document, id);
   state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
 }
+function copySelected() {
+  const entries = orderedRootSelectedEntries();
+  if (!entries.length) { showToast('Select one or more layers to copy.'); return; }
+  try {
+    state.clipboard = createLayerClipboard(state.document, entries, { mode: 'copy', pageId: activePage().id });
+    showToast(`Copied ${entries.length} layer${entries.length === 1 ? '' : 's'}.`);
+  } catch (error) { showToast(error.message || 'Could not copy these layers.'); }
+}
+function cutSelected() {
+  const entries = orderedRootSelectedEntries();
+  if (!entries.length) { showToast('Select one or more layers to cut.'); return; }
+  let containsMainComponent = false;
+  for (const entry of entries) walkNodes([entry.node], ({ node }) => { if (node.isComponent) containsMainComponent = true; });
+  if (containsMainComponent || entries.some(entry => entry.parents.some(parent => parent.isInstance))) {
+    showToast('Cut the whole component instance, or duplicate a main component before moving it.');
+    return;
+  }
+  try {
+    const clipboard = createLayerClipboard(state.document, entries, { mode: 'cut', pageId: activePage().id });
+    const nextDocument = cloneDocument(state.document);
+    for (const entry of entries) if (!removeNode(nextDocument, entry.node.id, activePage().id)) throw new Error('One of the selected layers no longer exists.');
+    validateDocument(nextDocument);
+    checkpoint('Cut layers');
+    state.document = nextDocument;
+    state.clipboard = clipboard;
+    state.selectedIds = []; state.selectedVectorPoint = null;
+    renderUI(); queueSave();
+    showToast(`Cut ${entries.length} layer${entries.length === 1 ? '' : 's'}. Paste to move them back into this design.`);
+  } catch (error) { showToast(error.message || 'Could not cut these layers.'); }
+}
+function pasteSelectedLayers({ duplicate = false } = {}) {
+  try {
+    const clipboard = duplicate
+      ? (() => { const entries = orderedRootSelectedEntries(); return entries.length ? createLayerClipboard(state.document, entries, { mode: 'copy', pageId: activePage().id }) : null; })()
+      : state.clipboard;
+    if (!clipboard) { showToast(duplicate ? 'Select one or more layers to duplicate.' : 'Copy or cut layers before pasting.'); return; }
+    const result = pasteLayerClipboard(state.document, clipboard, { pageId: activePage().id });
+    if (!result.nodes.length) return;
+    checkpoint(duplicate ? 'Duplicate layers' : clipboard.mode === 'cut' ? 'Move cut layers' : 'Paste layers');
+    state.document = result.document;
+    if (!duplicate && state.clipboard === clipboard) {
+      if (clipboard.mode === 'cut') state.clipboard = [];
+      else clipboard.pasteCount = result.pasteCount;
+    }
+    setSelection(result.nodes.map(node => node.id));
+    renderUI(); queueSave();
+    showToast(duplicate ? `Duplicated ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.` : `Pasted ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.`);
+  } catch (error) { showToast(error.message || 'Could not paste these layers.'); }
+}
 function duplicateSelected() {
-  const ids = rootSelectedIds(); if (!ids.length) return;
-  checkpoint('Duplicate layers');
-  const duplicates = ids.map(id => duplicateNode(state.document, id)).filter(Boolean);
-  setSelection(duplicates.map(node => node.id)); renderUI(); queueSave();
+  pasteSelectedLayers({ duplicate: true });
 }
 function renameSelected() {
   const node = selectedNodes()[0]; if (!node) return;
@@ -2736,7 +3257,7 @@ async function copyInspectText(kind) {
   if (!text) { showToast('Select a layer before copying handoff data.'); return; }
   try {
     await navigator.clipboard.writeText(text);
-    showToast(`${kind === 'css' ? 'CSS' : 'Layer JSON'} copied.`);
+    showToast(`${kind === 'css' ? 'CSS' : kind === 'html' ? 'HTML' : 'Layer JSON'} copied.`);
     return;
   } catch { /* Use the selection-based fallback when clipboard access is unavailable. */ }
   const field = document.createElement('textarea');
@@ -2751,6 +3272,20 @@ async function copyInspectText(kind) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'apply-image-recipe' || action === 'apply-selection-image-recipe') {
+    const recipeId = $('#selection-image-recipe')?.value;
+    const recipe = state.document.recipes.find(item => item.id === recipeId);
+    if (!recipe) { showToast('Choose a saved image recipe first.'); return; }
+    const targets = action === 'apply-image-recipe'
+      ? [details.nodeId || node?.id].filter(Boolean)
+      : selectedNodes().filter(item => item.type === 'image').map(item => item.id);
+    if (!targets.length) { showToast('Select one or more image layers first.'); return; }
+    if (action === 'apply-selection-image-recipe') { state.layerSelectionMode = false; renderLayers(); }
+    closeMobilePanels();
+    startRecipe(recipe, targets);
+    return;
+  }
   if (action === 'align-selection') alignSelectedLayers(details.alignMode);
   else if (action === 'add-gradient-stop' && node?.fillGradient && !node.locked) {
     const stops = [...node.fillGradient.stops].sort((a, b) => a.position - b.position);
@@ -2884,7 +3419,7 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'create-typography-style') {
     saveTypographyStyleFor(node?.id);
   }
-  else if (action === 'edit-text' && node?.type === 'text') editTextNode(node.id);
+  else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
     checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.fit = 'cover';
     schedulePreview(node, true); renderInspector(); queueSave();
@@ -2910,6 +3445,12 @@ function toggleMobilePanel(panel) {
   if (panel === 'left') { right.classList.remove('is-open'); left.classList.toggle('is-open'); }
   else { left.classList.remove('is-open'); right.classList.toggle('is-open'); }
   scrim.classList.toggle('is-visible', left.classList.contains('is-open') || right.classList.contains('is-open'));
+}
+function closeMobilePanels() {
+  if (innerWidth > 820) return;
+  $('#left-panel').classList.remove('is-open');
+  $('#right-panel').classList.remove('is-open');
+  $('#mobile-scrim').classList.remove('is-visible');
 }
 
 function initEvents() {
@@ -2957,10 +3498,22 @@ function initEvents() {
   $('#add-page').addEventListener('click', addPage);
   $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
+  $('#layer-select-mode').addEventListener('click', () => {
+    state.layerSelectionMode = !state.layerSelectionMode;
+    if (state.layerSelectionMode) setSelection(selectedNodes().filter(node => node.type === 'image').map(node => node.id));
+    else renderLayers();
+  });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
     const node = findNode(state.document, row.dataset.layerId)?.node; if (!node) return;
     if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); setNodePropertyValue(node, 'visible', !getNodePropertyValue(state.document, node, 'visible')); renderUI(); queueSave(); return; }
+    if (state.layerSelectionMode) {
+      if (node.type !== 'image') { showToast('Image selection mode only selects image layers.'); return; }
+      const selectedImages = selectedNodes().filter(item => item.type === 'image').map(item => item.id);
+      setSelection(selectedImages.includes(node.id) ? selectedImages.filter(id => id !== node.id) : [...selectedImages, node.id]);
+      state.lastLayerSelection = node.id;
+      return;
+    }
     if (event.shiftKey) {
       const rows = latestPageLayerIds; const a = rows.indexOf(state.lastLayerSelection || row.dataset.layerId); const b = rows.indexOf(row.dataset.layerId); const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
       setSelection([...new Set([...state.selectedIds, ...range])]);
@@ -3149,7 +3702,7 @@ function initEvents() {
     const node = findNode(state.document, pendingRecipeNodeId)?.node; if (!node) return;
     checkpoint('Save image recipe');
     const recipe = createImageRecipe(node, $('#recipe-name').value); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
-    queueSave(); showToast(`Recipe “${recipe.name}” saved. Right-click selected images to apply it.`);
+    queueSave(); renderInspector(); showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
   });
   $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
   $('#variable-dialog').addEventListener('close', commitVariableNameDialog);
@@ -3167,8 +3720,7 @@ function initEvents() {
   $('#mobile-scrim').addEventListener('click', () => { $('#left-panel').classList.remove('is-open'); $('#right-panel').classList.remove('is-open'); $('#mobile-scrim').classList.remove('is-visible'); });
   document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu') && !event.target.closest('#file-menu-button') && !event.target.closest('#main-menu-button')) closeMenu(); });
   document.addEventListener('keydown', onKeyDown);
-  $('#text-editor-overlay').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); commitTextEdit(); } if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); commitTextEdit(); } });
-  $('#text-editor-overlay').addEventListener('blur', commitTextEdit);
+  initRichTextEditorEvents();
 }
 
 function onKeyDown(event) {
@@ -3183,6 +3735,9 @@ function onKeyDown(event) {
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
   if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }
+  if (mod && key === 'c') { event.preventDefault(); copySelected(); return; }
+  if (mod && key === 'x') { event.preventDefault(); cutSelected(); return; }
+  if (mod && key === 'v') { event.preventDefault(); pasteSelectedLayers(); return; }
   if (mod && key === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
   if (mod && key === 'y') { event.preventDefault(); redo(); return; }
   if (mod && key === 'd') { event.preventDefault(); duplicateSelected(); return; }
@@ -3202,7 +3757,11 @@ function onKeyDown(event) {
     checkpoint('Nudge layers');
     const dx = key === 'arrowleft' ? -delta : key === 'arrowright' ? delta : 0;
     const dy = key === 'arrowup' ? -delta : key === 'arrowdown' ? delta : 0;
-    for (const node of selectedNodes()) { node.x += dx; node.y += dy; }
+    for (const node of selectedNodes()) {
+      const geometry = resolvedGeometry(node);
+      setNodePropertyValue(node, 'x', geometry.x + dx);
+      setNodePropertyValue(node, 'y', geometry.y + dy);
+    }
     renderer.invalidate(); renderLayers(); renderInspector(); queueSave(); event.preventDefault();
   }
 }

@@ -1,4 +1,4 @@
-import { findNode, getNodeColor, getNodePropertyValue } from './model.js';
+import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
 import { measureTrackedText, textGraphemes, transformTextCase, wrapText } from './text-layout.js';
@@ -8,6 +8,7 @@ import { canvasBlendOperation } from './layer-blend.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
+const richWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
 
 function rgba(hex, alpha = 1) {
   if (!hex || hex === 'transparent') return `rgba(0,0,0,0)`;
@@ -178,6 +179,157 @@ export function drawTextDecoration(ctx, x, y, width, fontSize, decoration) {
   return true;
 }
 
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
+
+function richStyle(baseStyle, run) {
+  const style = {};
+  for (const key of richTextStyleKeys) style[key] = run[key] ?? baseStyle[key];
+  style.fontFamily ||= 'Arial, sans-serif';
+  style.fontSize = Math.max(1, Number(style.fontSize) || 24);
+  style.fontWeight = Number(style.fontWeight) || 400;
+  style.fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal';
+  style.lineHeight = Math.max(.1, Number(style.lineHeight) || 1.25);
+  style.letterSpacing = Number(style.letterSpacing) || 0;
+  style.color ||= '#1e1e1e';
+  style.textDecoration ||= 'none';
+  return style;
+}
+
+function richFont(style) {
+  return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+}
+
+function sameRichStyle(a, b) {
+  return richTextStyleKeys.every(key => a[key] === b[key]);
+}
+
+function appendRichPart(parts, text, style) {
+  if (!text) return;
+  const previous = parts.at(-1);
+  if (previous && sameRichStyle(previous.style, style)) previous.text += text;
+  else parts.push({ text, style });
+}
+
+function transformRichCharacters(runs, baseStyle) {
+  const characters = [];
+  let offset = 0;
+  for (const run of runs) {
+    const style = richStyle(baseStyle, run);
+    for (const text of textGraphemes(run.text)) {
+      characters.push({ text, style, start: offset, end: offset + text.length });
+      offset += text.length;
+    }
+  }
+  const mode = baseStyle.textCase || 'none';
+  if (mode === 'uppercase') for (const item of characters) item.text = item.text.toUpperCase();
+  else if (mode === 'lowercase') for (const item of characters) item.text = item.text.toLowerCase();
+  else if (mode === 'capitalize') {
+    const source = characters.map(item => item.text).join('');
+    if (richWordSegmenter) {
+      let characterIndex = 0;
+      for (const segment of richWordSegmenter.segment(source)) {
+        if (!segment.isWordLike) continue;
+        while (characterIndex < characters.length && characters[characterIndex].start < segment.index) characterIndex += 1;
+        if (characters[characterIndex]?.start === segment.index) characters[characterIndex].text = characters[characterIndex].text.toUpperCase();
+      }
+    } else {
+      let inWord = false;
+      for (const item of characters) {
+        if (/^[\p{L}\p{N}]/u.test(item.text)) {
+          if (!inWord) item.text = item.text.toUpperCase();
+          inWord = true;
+        } else if (!/^['’]$/u.test(item.text)) inWord = false;
+      }
+    }
+  }
+  return characters;
+}
+
+function measureRichParts(ctx, parts) {
+  const previousFont = ctx.font;
+  let width = 0;
+  for (const part of parts) {
+    ctx.font = richFont(part.style);
+    width += measureTrackedText(ctx, part.text, part.style.letterSpacing);
+  }
+  ctx.font = previousFont;
+  return width;
+}
+
+function richParagraphs(ctx, runs, width, baseStyle) {
+  const paragraphs = [{ words: [], current: [], pendingSpaceStyle: null }];
+  const finishWord = paragraph => {
+    if (!paragraph.current.length) return;
+    paragraph.words.push({ parts: paragraph.current, spaceStyle: paragraph.words.length ? paragraph.pendingSpaceStyle : null });
+    paragraph.current = [];
+    paragraph.pendingSpaceStyle = null;
+  };
+  for (const character of transformRichCharacters(runs, baseStyle)) {
+    const paragraph = paragraphs.at(-1);
+    if (character.text === '\n' || character.text === '\r\n') {
+      finishWord(paragraph);
+      paragraphs.push({ words: [], current: [], pendingSpaceStyle: null });
+    } else if (/^\s+$/u.test(character.text)) {
+      finishWord(paragraph);
+      if (paragraph.words.length && !paragraph.pendingSpaceStyle) paragraph.pendingSpaceStyle = character.style;
+    } else appendRichPart(paragraph.current, character.text, character.style);
+  }
+  for (const paragraph of paragraphs) finishWord(paragraph);
+
+  const lines = [];
+  for (const paragraph of paragraphs) {
+    let line = [];
+    for (const word of paragraph.words) {
+      const candidate = line.length
+        ? [...line, { text: ' ', style: word.spaceStyle || line.at(-1).style }, ...word.parts]
+        : word.parts;
+      const mergedCandidate = [];
+      for (const part of candidate) appendRichPart(mergedCandidate, part.text, part.style);
+      if (line.length && measureRichParts(ctx, mergedCandidate) > width) {
+        lines.push(line);
+        line = word.parts;
+      } else line = mergedCandidate;
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+
+/** Draws styled text runs using node-wide values as fallbacks for each run. */
+export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
+  const lines = richParagraphs(ctx, runs, Math.max(1, width), baseStyle);
+  const fallbackStyle = richStyle(baseStyle, {});
+  let top = y;
+  for (const line of lines) {
+    const naturalWidth = measureRichParts(ctx, line);
+    const visibleWidth = Math.min(Math.max(1, width), naturalWidth);
+    const offsetX = baseStyle.align === 'center' ? (width - visibleWidth) / 2 : baseStyle.align === 'right' ? width - visibleWidth : 0;
+    const scaleX = naturalWidth > width && naturalWidth > 0 ? width / naturalWidth : 1;
+    let lineHeight = line.length
+      ? Math.max(...line.map(part => part.style.fontSize * part.style.lineHeight))
+      : fallbackStyle.fontSize * fallbackStyle.lineHeight;
+    if (!Number.isFinite(lineHeight) || lineHeight <= 0) lineHeight = fallbackStyle.fontSize * fallbackStyle.lineHeight;
+
+    ctx.save();
+    ctx.translate(x + offsetX, top);
+    ctx.scale(scaleX, 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    let cursor = 0;
+    for (const part of line) {
+      const partWidth = measureRichParts(ctx, [part]);
+      ctx.font = richFont(part.style);
+      ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
+      drawTrackedText(ctx, part.text, cursor, 0, part.style.letterSpacing);
+      drawTextDecoration(ctx, cursor, 0, partWidth, part.style.fontSize, part.style.textDecoration);
+      cursor += partWidth;
+    }
+    ctx.restore();
+    top += lineHeight;
+  }
+  return { lines, height: top - y };
+}
+
 export class SceneRenderer {
   constructor(canvas, getState) {
     this.canvas = canvas;
@@ -254,6 +406,7 @@ export class SceneRenderer {
     const state = this.getState();
     const document = state.document;
     if (!getNodePropertyValue(document, node, 'visible')) return;
+    node = { ...node, ...getNodeGeometry(document, node) };
     const effects = (node.effects || []).filter(effect => effect.visible);
     const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
     const blendMode = node.blendMode || 'normal';
@@ -353,21 +506,38 @@ export class SceneRenderer {
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'text') {
-      ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
-      const text = transformTextCase(getNodePropertyValue(document, node, 'text'), node.textCase || 'none');
-      const fontSize = getNodePropertyValue(document, node, 'fontSize');
-      const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
-      const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
-      ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      const lines = wrapText(ctx, text, Math.max(1, width), letterSpacing);
-      const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
-      lines.forEach((line, index) => {
-        const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
-        const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
-        drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
-        drawTextDecoration(ctx, x + offsetX, y + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
-      });
+      const sourceText = getNodePropertyValue(document, node, 'text');
+      if (Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === sourceText) {
+        drawTextRuns(ctx, node.textRuns, x, y, width, {
+          fontFamily: node.fontFamily || 'Arial, sans-serif',
+          fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+          fontWeight: node.fontWeight || 400,
+          fontStyle: node.fontStyle || 'normal',
+          lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+          letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
+          color: getNodeColor(document, node, 'text'),
+          textCase: node.textCase || 'none',
+          textDecoration: node.textDecoration || 'none',
+          align: node.align || 'left',
+          fillOpacity: node.fillOpacity ?? 1
+        });
+      } else {
+        ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
+        const text = transformTextCase(sourceText, node.textCase || 'none');
+        const fontSize = getNodePropertyValue(document, node, 'fontSize');
+        const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
+        const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
+        ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        const lines = wrapText(ctx, text, Math.max(1, width), letterSpacing);
+        const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
+        lines.forEach((line, index) => {
+          const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
+          const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
+          drawTrackedText(ctx, line, x + offsetX, y + index * lineHeight, letterSpacing, width);
+          drawTextDecoration(ctx, x + offsetX, y + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
+        });
+      }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; ctx.stroke(); }
     } else if (node.type === 'network') {
       const fill = getNodeColor(document, node, 'fill');
@@ -441,7 +611,9 @@ export class SceneRenderer {
       return;
     }
     effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
-    const copy = { ...node, x: 0, y: 0 };
+    const copy = { ...node, x: 0, y: 0, variableBindings: { ...(node.variableBindings || {}) } };
+    delete copy.variableBindings.x;
+    delete copy.variableBindings.y;
     this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
@@ -677,8 +849,9 @@ export class SceneRenderer {
     const selected = [];
     const collect = (list, offsetX, offsetY) => {
       for (const node of list) {
-        if (selectedIds.includes(node.id)) selected.push({ node, x: offsetX + node.x, y: offsetY + node.y });
-        collect(node.children || [], offsetX + node.x, offsetY + node.y);
+        const geometry = getNodeGeometry(this.getState().document, node);
+        if (selectedIds.includes(node.id)) selected.push({ node: { ...node, ...geometry }, x: offsetX + geometry.x, y: offsetY + geometry.y });
+        collect(node.children || [], offsetX + geometry.x, offsetY + geometry.y);
       }
     };
     collect(nodes, parentX, parentY);
@@ -855,9 +1028,18 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
   const visit = (nodes, parentX = 0, parentY = 0) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
-      const x = parentX + node.x; const y = parentY + node.y;
-      const inBounds = point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height;
-      if (inBounds && (node.type !== 'boolean' || !containsBoolean || containsBoolean(node, point, x, y))) hits.push(node);
+      const geometry = document ? getNodeGeometry(document, node) : node;
+      const resolvedNode = document ? { ...node, ...geometry } : node;
+      const x = parentX + geometry.x; const y = parentY + geometry.y;
+      const center = { x: x + geometry.width / 2, y: y + geometry.height / 2 };
+      const angle = -(Number(geometry.rotation) || 0) * Math.PI / 180;
+      const dx = point.x - center.x; const dy = point.y - center.y;
+      const localPoint = angle ? {
+        x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle),
+        y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle)
+      } : point;
+      const inBounds = localPoint.x >= x && localPoint.y >= y && localPoint.x <= x + geometry.width && localPoint.y <= y + geometry.height;
+      if (inBounds && (node.type !== 'boolean' || !containsBoolean || containsBoolean(resolvedNode, point, x, y))) hits.push(resolvedNode);
       if (node.type !== 'boolean') visit(node.children || [], x, y);
     }
   };

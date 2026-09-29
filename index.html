@@ -41,7 +41,7 @@
             <div id="pages-list" class="pages-list" role="listbox" aria-label="Pages"></div>
           </section>
           <section class="layers-section" id="layers-section">
-            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
+            <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select images for recipes" aria-pressed="false">Select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
             <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Draw on the canvas or place an image</span></div>
@@ -70,6 +70,13 @@
           <div class="canvas-scroll" id="canvas-scroll">
             <canvas id="scene-canvas" aria-label="Design canvas"></canvas>
             <div class="text-editor-overlay" id="text-editor-overlay" contenteditable="true" spellcheck="false" hidden aria-label="Edit text layer"></div>
+            <div class="text-format-toolbar" id="text-format-toolbar" role="toolbar" aria-label="Format selected text" hidden>
+              <button class="text-format-button" type="button" data-text-format="bold" aria-label="Bold" aria-pressed="false" title="Bold"><strong>B</strong></button>
+              <button class="text-format-button" type="button" data-text-format="italic" aria-label="Italic" aria-pressed="false" title="Italic"><em>I</em></button>
+              <label class="text-format-size-label" for="text-format-size">Size<input id="text-format-size" type="number" min="1" max="512" step="1" value="24" aria-label="Selected text font size"></label>
+              <label class="text-format-color-label" for="text-format-color">Color<input id="text-format-color" type="color" value="#1e1e1e" aria-label="Selected text color"></label>
+              <button class="text-format-done" type="button" data-text-format-done>Done</button>
+            </div>
             <div class="canvas-drop-overlay" id="canvas-drop-overlay">Drop images to place them on the canvas</div>
             <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" hidden></div>
             <div class="canvas-ruler ruler-vertical" id="ruler-vertical" hidden></div>

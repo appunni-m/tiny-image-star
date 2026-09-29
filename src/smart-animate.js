@@ -1,5 +1,6 @@
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
+const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 
 function interpolateColor(from, to, progress) {
   const fromMatch = /^#([0-9a-f]{6})$/i.exec(String(from || ''));
@@ -66,8 +67,41 @@ function interpolateLayer(from, to, progress) {
     copy.visible = true;
     copy.opacity = layerOpacity(from) * (1 - progress);
   } else if (from.visible === false && to.visible === false) copy.visible = false;
+  if (from.type === 'text' && to.type === 'text') {
+    const textRuns = interpolateTextRuns(from.textRuns, to.textRuns, progress);
+    if (textRuns) copy.textRuns = textRuns;
+  }
   copy.children = blendChildren(from.children || [], to.children || [], progress);
   return copy;
+}
+
+function finiteStyleNumber(value) {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function interpolateTextRuns(fromRuns, toRuns, progress) {
+  if (!Array.isArray(fromRuns) || !Array.isArray(toRuns) || fromRuns.length !== toRuns.length) return null;
+  if (fromRuns.some((run, index) => run.text !== toRuns[index].text)) return null;
+
+  return toRuns.map((toRun, index) => {
+    const fromRun = fromRuns[index];
+    const run = structuredClone(toRun);
+    for (const property of textRunNumericProperties) {
+      const start = finiteStyleNumber(fromRun[property]);
+      const end = finiteStyleNumber(toRun[property]);
+      if (start === null || end === null) continue;
+      run[property] = progress === 0 ? fromRun[property]
+        : progress === 1 ? toRun[property]
+          : start + (end - start) * progress;
+    }
+    if (fromRun.color != null && toRun.color != null) {
+      const color = interpolateColor(fromRun.color, toRun.color, progress);
+      if (color) run.color = progress === 0 ? fromRun.color : progress === 1 ? toRun.color : color;
+    }
+    return run;
+  });
 }
 
 function blendChildren(fromChildren, toChildren, progress) {

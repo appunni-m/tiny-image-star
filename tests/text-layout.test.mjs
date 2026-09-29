@@ -12,6 +12,16 @@ function context() {
   };
 }
 
+function fontAwareContext() {
+  return {
+    font: '',
+    measureText(text) {
+      const size = Number(/([\d.]+)px/.exec(this.font)?.[1] || 10);
+      return { width: [...String(text)].length * size / 2 };
+    }
+  };
+}
+
 test('auto-width fits the widest explicit line and keeps newline height', () => {
   const node = createNode('text', { text: 'one\ntwo words', fontSize: 20, lineHeight: 1.25, letterSpacing: 2, textFit: 'auto-width' });
   assert.deepEqual(calculateTextBox(context(), node), { width: 103, height: 54 });
@@ -23,6 +33,29 @@ test('auto-height wraps to the fixed width while fixed text keeps its explicit b
   assert.deepEqual(calculateTextBox(ctx, node), { width: 50, height: 40 });
   node.textFit = 'fixed';
   assert.deepEqual(calculateTextBox(ctx, node), { width: 50, height: 22 });
+});
+
+test('rich text auto-sizing uses each run font, wrapping, and maximum line metrics', () => {
+  const node = createNode('text', {
+    text: 'one two', width: 70, height: 20, fontSize: 10, lineHeight: 1,
+    textFit: 'auto-height',
+    textRuns: [
+      { text: 'one ', fontSize: 20 },
+      { text: 'two', fontSize: 30, lineHeight: 1.5, fontWeight: 700 }
+    ]
+  });
+  const ctx = fontAwareContext();
+  assert.deepEqual(calculateTextBox(ctx, node), { width: 70, height: 69 });
+  assert.equal(ctx.font, '400 10px Inter, Arial, sans-serif', 'rich measurement restores the node-wide font after measuring overrides');
+
+  node.textFit = 'auto-width';
+  assert.deepEqual(calculateTextBox(fontAwareContext(), node), { width: 87, height: 49 });
+});
+
+test('rich text sizing falls back to the legacy uniform path when runs do not match text', () => {
+  const plain = createNode('text', { text: 'one two', width: 30, fontSize: 10, textFit: 'auto-height' });
+  const mismatched = createNode('text', { ...plain, textRuns: [{ text: 'other text' }] });
+  assert.deepEqual(calculateTextBox(context(), mismatched), calculateTextBox(context(), plain));
 });
 
 test('text case transformation is Unicode aware and feeds auto sizing', () => {

@@ -1,4 +1,4 @@
-import { findNode, findNodeAcrossPages, getActivePage, walkNodes } from './model.js';
+import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, walkNodes } from './model.js';
 
 const triggers = new Set(['on-click', 'while-hovering']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
@@ -184,20 +184,21 @@ export function removePrototypeInteraction(document, sourceId, interactionId, pa
   return true;
 }
 
-export function findFrameAtPoint(page, point) {
+export function findFrameAtPoint(page, point, document = null) {
   const matches = [];
   const visit = (nodes, parentX = 0, parentY = 0, depth = 0) => {
     for (const node of nodes) {
-      if (!node.visible) continue;
-      const x = parentX + node.x;
-      const y = parentY + node.y;
-      const inside = point.x >= x && point.y >= y && point.x <= x + node.width && point.y <= y + node.height;
-      if (inside && node.type === 'frame') matches.push({ node, depth });
+      if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
+      const geometry = document ? getNodeGeometry(document, node) : node;
+      const x = parentX + geometry.x;
+      const y = parentY + geometry.y;
+      const inside = point.x >= x && point.y >= y && point.x <= x + geometry.width && point.y <= y + geometry.height;
+      if (inside && node.type === 'frame') matches.push({ node, depth, area: geometry.width * geometry.height });
       if (inside || !node.clip) visit(node.children || [], x, y, depth + 1);
     }
   };
   visit(page?.children || []);
-  return matches.sort((a, b) => b.depth - a.depth || (a.node.width * a.node.height) - (b.node.width * b.node.height))[0]?.node ?? null;
+  return matches.sort((a, b) => b.depth - a.depth || a.area - b.area)[0]?.node ?? null;
 }
 
 export function findClickableInteraction(document, pageId, hitId, trigger = 'on-click') {

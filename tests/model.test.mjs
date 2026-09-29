@@ -108,6 +108,45 @@ test('text typography supports system font names, the full weight range, and ita
   assert.equal(validateDocument(legacy), true, 'previous saves stored select values as numeric strings');
 });
 
+test('rich text runs are optional, validated, and preserved in local design serialization', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    text: 'Hello bold world',
+    textRuns: [
+      { text: 'Hello ' },
+      { text: 'bold', fontWeight: 700, color: '#ff2200', textDecoration: 'underline' },
+      { text: ' world', fontStyle: 'italic', fontSize: 18 }
+    ]
+  });
+  addNode(document, text);
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[0].textRuns, text.textRuns);
+  assert.equal(reopened.pages[0].children[0].text, 'Hello bold world');
+
+  const legacy = createDocument();
+  addNode(legacy, createNode('text', { text: 'Uniform text' }));
+  assert.equal(validateDocument(legacy), true, 'legacy uniform text remains valid without a textRuns property');
+  assert.equal(Object.hasOwn(legacy.pages[0].children[0], 'textRuns'), false);
+
+  const invalidCases = [
+    ['text mismatch', runs => { runs.pages[0].children[0].text = 'Different'; }],
+    ['unsupported style', runs => { runs.pages[0].children[0].textRuns[1].fontStyle = 'oblique'; }],
+    ['invalid color', runs => { runs.pages[0].children[0].textRuns[1].color = 'red'; }],
+    ['unknown field', runs => { runs.pages[0].children[0].textRuns[1].opacity = .5; }],
+    ['empty run', runs => { runs.pages[0].children[0].textRuns[1].text = ''; }]
+  ];
+  for (const [label, mutate] of invalidCases) {
+    const invalid = structuredClone(document);
+    mutate(invalid);
+    assert.throws(() => validateDocument(invalid), /Invalid rich text runs/, label);
+  }
+
+  const nonText = createDocument();
+  addNode(nonText, createNode('rectangle', { textRuns: [{ text: 'Text' }] }));
+  assert.throws(() => validateDocument(nonText), /Invalid rich text runs/);
+});
+
 test('history restores both document direction and redo state', () => {
   const document = createDocument();
   const history = new History();

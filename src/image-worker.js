@@ -1,13 +1,22 @@
 import { decodeOriginal, renderImage } from './image-processing.js';
+import { DecodedSourceCache } from './decoded-source-cache.js';
 
 let pillow;
-const sources = new Map();
+const sources = new DecodedSourceCache();
 const ready = import('../wasm/pillow_rs_js.js').then(async module => { await module.default(); pillow = module; });
 
 self.onmessage = async event => {
   const message = event.data;
+  if (message.type === 'configure-cache') {
+    try {
+      const { pixelBudget, evictedAssetIds } = sources.setBudget(message.pixelBudget);
+      self.postMessage({ type: 'cache-configured', generation: message.generation, pixelBudget, evictedAssetIds });
+    } catch (error) {
+      self.postMessage({ type: 'cache-config-error', generation: message.generation, message: error?.message || 'The decoded image cache could not be configured.' });
+    }
+    return;
+  }
   if (message.type === 'dispose') {
-    sources.get(message.assetId)?.free();
     sources.delete(message.assetId);
     self.postMessage({ type: 'disposed', assetId: message.assetId });
     return;
@@ -15,19 +24,18 @@ self.onmessage = async event => {
   if (message.type !== 'render') return;
   try {
     await ready;
-    let source = sources.get(message.assetId);
-    if (!source) {
+    const cachedRender = sources.withSource(message.assetId, () => {
       if (!message.sourceBytes) throw new Error('The original image is no longer available in memory.');
-      source = decodeOriginal(pillow, new Uint8Array(message.sourceBytes));
-      sources.set(message.assetId, source);
-    }
-    const result = renderImage(source, message.adjustments);
-    self.postMessage({ type: 'rendered', requestId: message.requestId, assetId: message.assetId, ...result }, [result.bytes.buffer]);
+      return decodeOriginal(pillow, new Uint8Array(message.sourceBytes));
+    }, source => renderImage(source, message.adjustments));
+    const { result, retained, evictedAssetIds } = cachedRender;
+    self.postMessage({ type: 'rendered', requestId: message.requestId, assetId: message.assetId, sourceRetained: retained, evictedAssetIds, ...result }, [result.bytes.buffer]);
   } catch (error) {
-    self.postMessage({ type: 'error', requestId: message.requestId, assetId: message.assetId, message: error?.message || 'Pillow-RS could not render this image.' });
+    const cacheState = error?.decodedSourceCache;
+    self.postMessage({ type: 'error', requestId: message.requestId, assetId: message.assetId, sourceRetained: cacheState?.retained, evictedAssetIds: cacheState?.evictedAssetIds || [], message: error?.message || 'Pillow-RS could not render this image.' });
   }
 };
 
 ready.then(() => self.postMessage({ type: 'ready' }), error => self.postMessage({ type: 'init-error', message: error?.message || 'Pillow-RS WebAssembly failed to load.' }));
 
-self.addEventListener('close', () => { for (const source of sources.values()) source.free(); sources.clear(); });
+self.addEventListener('close', () => sources.clear());

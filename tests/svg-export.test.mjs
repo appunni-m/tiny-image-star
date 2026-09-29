@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, bindVariable, createDocument, createNode, createVariable, createVariableCollection } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setVariableValue } from '../src/model.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
 
 test('exports editable nested geometry, text styling, rotation, opacity, and clipping deterministically', () => {
@@ -30,6 +30,38 @@ test('exports editable nested geometry, text styling, rotation, opacity, and cli
   assert.match(first, /opacity="0.8"/);
 });
 
+test('SVG export uses the selected variable mode for bound position, size, and rotation', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Responsive geometry');
+  const compact = collection.defaultModeId;
+  const wide = addVariableMode(document, collection.id, 'Wide');
+  const values = {
+    x: [12, 48], y: [16, 32], width: [120, 240], height: [60, 120], rotation: [0, 90]
+  };
+  const variables = Object.fromEntries(Object.entries(values).map(([property, [initial]]) => [
+    property, createVariable(document, collection.id, property, 'number', initial)
+  ]));
+  for (const [property, [, wideValue]] of Object.entries(values)) {
+    assert.equal(setVariableValue(document, variables[property].id, wideValue, wide.id), true);
+  }
+  const rectangle = createNode('rectangle', { fill: '#123456' });
+  addNode(document, rectangle);
+  for (const [property, variable] of Object.entries(variables)) assert.equal(bindVariable(document, rectangle.id, variable.id, property), true);
+  const page = { id: 'page', children: [rectangle] };
+
+  const compactSvg = exportPageToSvg(page, { document });
+  assert.match(compactSvg, /viewBox="12 16 120 60"/);
+  assert.match(compactSvg, /<rect x="0" y="0" width="120" height="60"/);
+  assert.match(compactSvg, /matrix\(1 0 0 1 12 16\)/);
+
+  collection.defaultModeId = wide.id;
+  const wideSvg = exportPageToSvg(page, { document });
+  assert.match(wideSvg, /viewBox="108 -28 120 240"/);
+  assert.match(wideSvg, /<rect x="0" y="0" width="240" height="120"/);
+  assert.match(wideSvg, /matrix\(0 1 -1 0 228 -28\)/);
+  assert.equal(compact, collection.modes[0].id);
+});
+
 test('exports a selected node in its own rotated local bounds and supports vector basics', () => {
   const ellipse = createNode('ellipse', { name: 'Dot', x: 900, y: -500, width: 40, height: 20, rotation: 90, fill: '#ff0088' });
   const svg = exportNodeToSvg(ellipse);
@@ -46,13 +78,50 @@ test('exports a selected node in its own rotated local bounds and supports vecto
   assert.match(exportNodeToSvg(vector), /<path d="M 0 0 C 25 0 75 80 100 80 L 0 0 Z" fill="#ccddaa"/);
 });
 
+test('exports user-space gradient fills, layer effects, and CSS blend modes as editable SVG', () => {
+  const gradient = createNode('rectangle', {
+    id: 'gradient-layer', name: 'Gradient card', x: 8, y: 12, width: 100, height: 50,
+    rotation: 90, opacity: 0.6, fillOpacity: 0.4, fill: '#ffffff',
+    fillGradient: { type: 'linear', angle: 0, stops: [
+      { id: 'stop-a', color: '#123456', position: 0 },
+      { id: 'stop-b', color: '#abcdef', position: 1 }
+    ] }
+  });
+  const first = exportNodeToSvg(gradient);
+  assert.equal(first, exportNodeToSvg(gradient));
+  assert.match(first, /<linearGradient id="tis-gradient-0" gradientUnits="userSpaceOnUse" x1="0" y1="25" x2="100" y2="25"><stop offset="0" stop-color="#123456"\/><stop offset="1" stop-color="#abcdef"\/><\/linearGradient>/);
+  assert.match(first, /<g transform="matrix\(0 1 -1 0 75 -25\)" opacity="0\.6" data-tiny-image-star-type="rectangle" data-tiny-image-star-node-id="gradient-layer">/);
+  assert.match(first, /fill="url\(#tis-gradient-0\)" fill-opacity="0\.4"/);
+
+  const radial = createNode('ellipse', {
+    width: 40, height: 20, fill: '#ffffff', fillOpacity: 0.7,
+    fillGradient: { type: 'radial', angle: 0, stops: [
+      { id: 'radial-a', color: '#000000', position: 0 },
+      { id: 'radial-b', color: '#ffffff', position: 1 }
+    ] }
+  });
+  assert.match(exportNodeToSvg(radial), /<radialGradient id="tis-gradient-0" gradientUnits="userSpaceOnUse" cx="20" cy="10" r="22\.360679775"><stop offset="0" stop-color="#000000"\/><stop offset="1" stop-color="#ffffff"\/><\/radialGradient>/);
+
+  const effected = createNode('rectangle', {
+    id: 'shadow-layer', width: 100, height: 50, fill: '#ffffff',
+    blendMode: 'multiply',
+    effects: [
+      { id: 'blur-1', type: 'layer-blur', visible: false, radius: 4 },
+      { id: 'shadow-1', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 }
+    ]
+  });
+  const effectSvg = exportNodeToSvg(effected);
+  assert.match(effectSvg, /<filter id="tis-effect-0" filterUnits="userSpaceOnUse" x="-14" y="-11" width="128" height="72"><feDropShadow in="SourceGraphic" dx="5" dy="-2" stdDeviation="3" flood-color="#112233" flood-opacity="0\.25" result="tis-effect-0-result-0"\/><\/filter>/);
+  assert.match(effectSvg, /<g opacity="1" filter="url\(#tis-effect-0\)" style="mix-blend-mode:multiply" data-tiny-image-star-type="rectangle" data-tiny-image-star-node-id="shadow-layer">/);
+  assert.equal(effectSvg, exportNodeToSvg(effected), 'generated paint and effect IDs remain stable across exports');
+});
+
 test('rejects unsupported content explicitly instead of dropping design features', () => {
   const unsupported = [
     [createNode('image'), 'image layers'],
     [createNode('group', { mask: true, maskSourceId: 'mask' }), 'mask groups'],
-    [createNode('rectangle', { effects: [{ id: 'effect-1', type: 'layer-blur', visible: true, radius: 4 }] }), 'visible layer effects'],
-    [createNode('rectangle', { fillGradient: { type: 'linear', angle: 0, stops: [] } }), 'gradient fills'],
-    [createNode('rectangle', { blendMode: 'multiply' }), 'blend mode "multiply"'],
+    [createNode('rectangle', { imageFill: {} }), 'image fills'],
+    [createNode('text', { fillGradient: { type: 'linear', angle: 0, stops: [] } }), 'gradient fills'],
     [createNode('boolean'), 'boolean layers']
   ];
   for (const [node, feature] of unsupported) {
@@ -134,6 +203,24 @@ test('text wraps into positioned tspans like the canvas editor and requires reli
   assert.throws(() => exportNodeToSvg(createNode('text', {
     width: 0, height: 0, fontSize: 24, text: 'WIDE', textFit: 'fixed'
   }), { measureText: value => value.length * 16 }), /zero-width box/);
+});
+
+test('exports mixed text runs with matching font metrics, wrapping, colors, and per-run decoration', () => {
+  const text = createNode('text', {
+    width: 35, height: 45, fontSize: 10, lineHeight: 1.25, align: 'center',
+    color: '#123456', text: 'ab cd', textFit: 'fixed',
+    textRuns: [
+      { text: 'ab ' },
+      { text: 'cd', fontSize: 20, fontWeight: 700, lineHeight: 1.5, color: '#ff2200', textDecoration: 'underline' }
+    ]
+  });
+  const measureText = (value, node) => [...value].length * Number(node.fontSize) * .6;
+  const svg = exportNodeToSvg(text, { measureText });
+
+  assert.match(svg, /<tspan x="17\.5" y="0" textLength="12" lengthAdjust="spacingAndGlyphs"><tspan font-family="Inter, Arial, sans-serif" font-size="10" font-weight="400" font-style="normal" letter-spacing="0" fill="#123456">ab<\/tspan><\/tspan>/);
+  assert.match(svg, /<tspan x="17\.5" y="12\.5" textLength="24" lengthAdjust="spacingAndGlyphs"><tspan font-family="Inter, Arial, sans-serif" font-size="20" font-weight="700" font-style="normal" letter-spacing="0" fill="#ff2200">cd<\/tspan><\/tspan>/);
+  assert.match(svg, /<path d="M 5\.5 33\.1 L 29\.5 33\.1" fill="none" stroke="#ff2200" stroke-opacity="1" stroke-width="1\.25"\/>/);
+  assert.match(svg, /viewBox="0 -1\.5 35 46\.5"/);
 });
 
 test('polygon and star point generation matches the editor for fractional counts', () => {

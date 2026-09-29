@@ -1,5 +1,8 @@
-import { getNodeColor, getNodePropertyValue } from './model.js';
-import { transformTextCase, wrapTextWithMeasure } from './text-layout.js';
+import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
+import { layoutTextRuns, transformTextCase, wrapTextWithMeasure } from './text-layout.js';
+import { isValidGradientFill } from './fills.js';
+import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -83,12 +86,29 @@ function color(document, node, kind) {
   return value;
 }
 
-function fillAttributes(document, node, { text = false } = {}) {
+function gradientDefinition(node, index) {
+  const gradient = node.fillGradient;
+  if (!gradient) return null;
+  if (!isValidGradientFill(gradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
+  const id = `tis-gradient-${index}`;
+  const { width, height } = dimensions(node);
+  const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"/>`).join('');
+  if (gradient.type === 'linear') {
+    const angle = gradient.angle * Math.PI / 180;
+    const halfLength = Math.abs(Math.cos(angle)) * width / 2 + Math.abs(Math.sin(angle)) * height / 2;
+    const centerX = width / 2; const centerY = height / 2;
+    const dx = Math.cos(angle) * halfLength; const dy = Math.sin(angle) * halfLength;
+    return { id, markup: `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${number(centerX - dx)}" y1="${number(centerY - dy)}" x2="${number(centerX + dx)}" y2="${number(centerY + dy)}">${stops}</linearGradient>` };
+  }
+  const radialRadius = Math.max(1, Math.hypot(width, height) / 2);
+  return { id, markup: `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${number(width / 2)}" cy="${number(height / 2)}" r="${number(radialRadius)}">${stops}</radialGradient>` };
+}
+
+function fillAttributes(document, node, { text = false, gradientId = null } = {}) {
   const value = text ? color(document, node, 'text') : color(document, node, 'fill');
-  const fill = value === 'transparent' ? 'none' : value;
-  const opacity = getNodePropertyValue(document, node, 'opacity') ?? 1;
+  const fill = gradientId ? `url(#${gradientId})` : value === 'transparent' ? 'none' : value;
   const fillOpacity = node.fillOpacity ?? 1;
-  if (![Number(opacity), Number(fillOpacity)].every(Number.isFinite) || opacity < 0 || opacity > 1 || fillOpacity < 0 || fillOpacity > 1) {
+  if (!Number.isFinite(Number(fillOpacity)) || fillOpacity < 0 || fillOpacity > 1) {
     throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
   }
   return ` fill="${escapeXml(fill)}" fill-opacity="${number(fillOpacity)}"`;
@@ -112,10 +132,12 @@ function radius(document, node) {
 function unsupportedFeature(node) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
   if (node.mask) return 'mask groups';
-  if ((node.effects || []).some(effect => effect.visible !== false)) return 'visible layer effects';
-  if (node.blendMode && node.blendMode !== 'normal') return `blend mode "${node.blendMode}"`;
-  if (node.fillGradient) return 'gradient fills';
   if (node.imageFill) return 'image fills';
+  if (node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
+    && !(node.type === 'path' && node.closed)) return 'gradient fills';
+  if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`SVG export requires a supported blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (node.fillGradient && !isValidGradientFill(node.fillGradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.type === 'group' && node.maskSourceId) return 'mask groups';
   return null;
 }
@@ -130,14 +152,14 @@ function validateTree(nodes, document) {
     if (!isNodeVisible(document, node)) continue;
     const unsupported = unsupportedFeature(node);
     if (unsupported) throw new SvgExportError(unsupported, node);
-    dimensions(node);
+    dimensions({ ...node, ...getNodeGeometry(document, node) });
     if (!Array.isArray(node.children || [])) throw new TypeError(`SVG export requires a child layer list on ${node.name || node.id || '(unnamed)'}.`);
     validateTree(node.children || [], document);
   }
 }
 
-function shapeMarkup(node, document, measureText) {
-  const fill = fillAttributes(document, node, { text: node.type === 'text' });
+function shapeMarkup(node, document, measureText, gradientId = null) {
+  const fill = fillAttributes(document, node, { text: node.type === 'text', gradientId });
   const stroke = strokeAttributes(document, node);
   switch (node.type) {
     case 'frame':
@@ -201,10 +223,39 @@ function shapeMarkup(node, document, measureText) {
 }
 
 function textLines(node, document, measureText) {
-  const text = transformTextCase(String(getNodePropertyValue(document, node, 'text') ?? ''), node.textCase || 'none');
+  const sourceText = String(getNodePropertyValue(document, node, 'text') ?? '');
+  const text = transformTextCase(sourceText, node.textCase || 'none');
   if (!text) return [{ displayText: '', index: 0, naturalWidth: 0, width: 0 }];
   if (Number(node.width) <= 0) throw new TypeError(`SVG export cannot faithfully render text in a zero-width box on layer ${node.name || node.id || '(unnamed)'}.`);
   if (typeof measureText !== 'function') throw new TypeError(`SVG export requires canvas text measurement to match editor wrapping on layer ${node.name || node.id || '(unnamed)'}.`);
+
+  const runs = node.textRuns;
+  if (Array.isArray(runs) && runs.every(run => run && typeof run.text === 'string') && runs.map(run => run.text).join('') === sourceText) {
+    const baseStyle = {
+      fontFamily: node.fontFamily || 'Arial, sans-serif',
+      fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+      fontWeight: node.fontWeight || 400,
+      fontStyle: node.fontStyle || 'normal',
+      lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+      letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+      color: color(document, node, 'text'),
+      textDecoration: node.textDecoration || 'none',
+      textCase: node.textCase || 'none'
+    };
+    const layout = layoutTextRuns(runs, Math.max(1, Number(node.width)), baseStyle, (value, style) => {
+      const measureNode = { ...node, ...style, variableBindings: {} };
+      return Number(measureText(value, measureNode));
+    });
+    for (const line of layout.lines) {
+      if (![line.naturalWidth, line.width, line.y, line.lineHeight].every(Number.isFinite)
+        || line.naturalWidth < 0 || line.width < 0 || line.y < 0 || line.lineHeight <= 0
+        || line.parts.some(part => !Number.isFinite(part.offsetX) || !Number.isFinite(part.width) || part.width < 0)) {
+        throw new TypeError(`SVG export requires finite text measurements on layer ${node.name || node.id || '(unnamed)'}.`);
+      }
+    }
+    return layout.lines;
+  }
+
   const measure = line => Number(measureText(line, node));
   const displayLines = wrapTextWithMeasure(text, Math.max(1, Number(node.width)), measure);
   return displayLines.map((displayText, index) => {
@@ -227,6 +278,37 @@ function textMarkup(node, document, measureText) {
   const fontFamily = node.fontFamily || 'Arial, sans-serif';
   const textCase = ['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? ` text-transform="${node.textCase}"` : '';
   const lines = textLines(node, document, measureText);
+  const richLines = lines.some(line => Array.isArray(line.parts));
+  if (richLines) {
+    const textOpacity = node.fillOpacity ?? 1;
+    const decorations = [];
+    const richTspans = lines.map(line => {
+      const textLength = line.width > 0 ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
+      const parts = line.parts.map(part => {
+        const style = part.style;
+        const partColor = style.color === 'transparent' ? 'none' : style.color;
+        if (partColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(partColor)) {
+          throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
+        }
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}" fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
+        if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
+        const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
+        const lineStartX = node.align === 'center' ? (Number(node.width) - line.width) / 2 : node.align === 'right' ? Number(node.width) - line.width : 0;
+        const x = lineStartX + part.offsetX * scaleX;
+        const decorationWidth = Math.max(1, style.fontSize / 16);
+        const y = line.y + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
+        const stroke = partColor === 'none' ? 'none' : partColor;
+        decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + part.width * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
+        return partMarkup;
+      }).join('');
+      return `<tspan x="${number(anchorX)}" y="${number(line.y)}"${textLength}>${parts}</tspan>`;
+    }).join('');
+    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
+    const border = node.stroke && Number(node.strokeWidth) > 0
+      ? `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node)}/>`
+      : '';
+    return element + border + decorations.join('');
+  }
   const tspans = lines.map(({ displayText, index, width, naturalWidth }) => {
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
@@ -253,24 +335,49 @@ function clipDefinition(document, id, node) {
   return `<clipPath id="${id}" clipPathUnits="userSpaceOnUse"><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" rx="${number(r)}" ry="${number(r)}"/></clipPath>`;
 }
 
+function effectDefinition(node, index, document, measureText) {
+  const effects = (node.effects || []).filter(effect => effect.visible !== false);
+  if (!effects.length) return null;
+  const id = `tis-effect-${index}`;
+  const bounds = getBounds([node], { document, includePosition: false, measureText });
+  let input = 'SourceGraphic';
+  const primitives = effects.map((effect, effectIndex) => {
+    const result = `${id}-result-${effectIndex}`;
+    if (effect.type === 'layer-blur') {
+      return `<feGaussianBlur in="${input}" stdDeviation="${number(effect.radius)}" result="${result}"/>`;
+    }
+    return `<feDropShadow in="${input}" dx="${number(effect.offsetX)}" dy="${number(effect.offsetY)}" stdDeviation="${number(effect.blur)}" flood-color="${escapeXml(effect.color)}" flood-opacity="${number(effect.opacity)}" result="${result}"/>`;
+  }).map((primitive, indexInList) => {
+    input = `${id}-result-${indexInList}`;
+    return primitive;
+  }).join('');
+  return { id, markup: `<filter id="${id}" filterUnits="userSpaceOnUse" x="${number(bounds.x)}" y="${number(bounds.y)}" width="${number(bounds.width)}" height="${number(bounds.height)}">${primitives}</filter>` };
+}
+
 function renderTree(nodes, document, context, includePosition = true, measureText) {
   let markup = '';
-  for (const node of nodes || []) {
-    if (!isNodeVisible(document, node)) continue;
+  for (const sourceNode of nodes || []) {
+    if (!isNodeVisible(document, sourceNode)) continue;
+    const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
     const index = context.nextIndex++;
     const transform = nodeMatrix(node, { includePosition });
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
     const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}`;
-    let ownShape = shapeMarkup(node, document, measureText);
+    const gradient = gradientDefinition(node, index);
+    if (gradient) context.defs.push(gradient.markup);
+    let ownShape = shapeMarkup(node, document, measureText, gradient?.id || null);
     if (node.type === 'line' && !node.stroke) ownShape = ownShape.replace(/ stroke="none" stroke-width="[^"]*"\/>$/, ' stroke="none"/>');
     const childClipId = node.clip ? `tis-clip-${index}` : null;
     if (childClipId) context.defs.push(clipDefinition(document, childClipId, node));
+    const filter = effectDefinition(node, index, document, measureText);
+    if (filter) context.defs.push(filter.markup);
     const childNodes = node.children?.length
       ? `<g${childClipId ? ` clip-path="url(#${childClipId})"` : ''}>${renderTree(node.children, document, context, true, measureText)}</g>`
       : '';
-    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${metadata}>${title}${ownShape}${childNodes}</g>`;
+    const blendMode = node.blendMode && node.blendMode !== 'normal' ? ` style="mix-blend-mode:${escapeXml(node.blendMode)}"` : '';
+    markup += `<g${matrixAttribute(transform)} opacity="${number(opacity)}"${filter ? ` filter="url(#${filter.id})"` : ''}${blendMode}${metadata}>${title}${ownShape}${childNodes}</g>`;
   }
   return markup;
 }
@@ -296,8 +403,9 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
     bounds.maxX = Math.max(bounds.maxX, point.x); bounds.maxY = Math.max(bounds.maxY, point.y);
   };
   const visit = (list, parentMatrix, isRoot, clipBounds = null) => {
-    for (const node of list || []) {
-      if (!isNodeVisible(document, node)) continue;
+    for (const sourceNode of list || []) {
+      if (!isNodeVisible(document, sourceNode)) continue;
+      const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
       const matrix = multiply(parentMatrix, nodeMatrix(node, { includePosition: !isRoot || includePosition }));
       const { width, height } = dimensions(node);
       const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
@@ -318,15 +426,37 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
       if (node.type === 'text') {
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
-        for (const { index, width: lineWidth } of textLines(node, document, measureText)) {
+        for (const line of textLines(node, document, measureText)) {
+          const lineWidth = line.width;
           const startX = node.align === 'center' ? (width - lineWidth) / 2 : node.align === 'right' ? width - lineWidth : 0;
-          const top = index * lineHeight - fontSize * .15;
-          const bottom = Math.max(index * lineHeight + fontSize * 1.25, index * lineHeight + fontSize * (node.textDecoration === 'underline' ? 1.03 : .55));
-          for (const [x, y] of [[startX, top], [startX + lineWidth, top], [startX, bottom], [startX + lineWidth, bottom]]) include(transformPoint(matrix, x, y), bounds);
+          if (Array.isArray(line.parts)) {
+            const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
+            const parts = line.parts.length ? line.parts : [{ offsetX: 0, width: line.width, style: { fontSize, textDecoration: node.textDecoration } }];
+            for (const part of parts) {
+              const size = part.style.fontSize;
+              const x1 = startX + part.offsetX * scaleX;
+              const x2 = x1 + part.width * scaleX;
+              const top = line.y - size * .15;
+              const decorationBottom = line.y + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
+              const bottom = Math.max(line.y + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);
+              for (const [x, y] of [[x1, top], [x2, top], [x1, bottom], [x2, bottom]]) include(transformPoint(matrix, x, y), bounds);
+            }
+          } else {
+            const top = line.index * lineHeight - fontSize * .15;
+            const bottom = Math.max(line.index * lineHeight + fontSize * 1.25, line.index * lineHeight + fontSize * (node.textDecoration === 'underline' ? 1.03 : .55));
+            for (const [x, y] of [[startX, top], [startX + lineWidth, top], [startX, bottom], [startX + lineWidth, bottom]]) include(transformPoint(matrix, x, y), bounds);
+          }
         }
       }
       const strokeWidth = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
       if (strokeWidth) { bounds.minX -= strokeWidth; bounds.minY -= strokeWidth; bounds.maxX += strokeWidth; bounds.maxY += strokeWidth; }
+      const effectPadding = layerEffectPadding(node.effects);
+      if (effectPadding.x || effectPadding.y) {
+        for (const [x, y] of [
+          [-effectPadding.x, -effectPadding.y], [width + effectPadding.x, -effectPadding.y],
+          [width + effectPadding.x, height + effectPadding.y], [-effectPadding.x, height + effectPadding.y]
+        ]) include(transformPoint(matrix, x, y), bounds);
+      }
       const visibleBounds = intersectBounds(bounds, clipBounds);
       if (visibleBounds) {
         minX = Math.min(minX, visibleBounds.minX); minY = Math.min(minY, visibleBounds.minY);

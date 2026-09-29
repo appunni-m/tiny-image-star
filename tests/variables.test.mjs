@@ -4,7 +4,7 @@ import {
   addNode, addVariableMode, bindColorVariable, bindVariable, canBindVariable, createColorStyle, createColorVariable,
   createComponent, createComponentInstance, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, deleteVariableCollection,
   getNodeColor, getNodePropertyValue, parseDocument, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue,
-  setFrameVariableMode, syncComponentInstances, validateDocument, variableModeForNode
+  getNodeGeometry, setFrameVariableMode, syncComponentInstances, validateDocument, variableModeForNode
 } from '../src/model.js';
 
 test('color variables resolve through nested frame modes and survive a local round trip', () => {
@@ -254,4 +254,51 @@ test('typed variable property overrides survive component synchronization and de
   assert.equal(instance.children[0].variableBindings, undefined);
   assert.equal(instance.componentOverrides[instanceText.componentSourceId], undefined);
   assert.equal(validateDocument(document), true);
+});
+
+test('geometry variables resolve per inherited mode, validate every value, and materialize on unlink', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Geometry');
+  const compact = collection.defaultModeId;
+  const expanded = addVariableMode(document, collection.id, 'Expanded');
+  const tokens = Object.fromEntries(['x', 'y', 'width', 'height', 'rotation'].map(property => [
+    property, createVariable(document, collection.id, property, 'number', property === 'width' ? 80 : property === 'height' ? 40 : 0)
+  ]));
+  const expandedValues = { x: 36, y: -12, width: 240, height: 96, rotation: 15 };
+  for (const [property, value] of Object.entries(expandedValues)) assert.equal(setVariableValue(document, tokens[property].id, value, expanded.id), true);
+
+  const frame = createNode('frame', { x: 10, y: 20, variableModes: { [collection.id]: compact } });
+  const card = createNode('rectangle', { x: 3, y: 4, width: 12, height: 12 });
+  addNode(document, frame); addNode(document, card, { parentId: frame.id });
+  for (const property of Object.keys(tokens)) assert.equal(bindVariable(document, card.id, tokens[property].id, property), true, `${property} binding`);
+
+  assert.deepEqual(getNodeGeometry(document, card), { x: 0, y: 0, width: 80, height: 40, rotation: 0 });
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, expanded.id), true);
+  assert.deepEqual(getNodeGeometry(document, card), expandedValues);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  assert.equal(setVariableValue(document, tokens.width.id, -1, compact), false, 'negative mode values are rejected when bound as width');
+  assert.equal(setVariableValue(document, tokens.height.id, -1, expanded.id), false, 'negative mode values are rejected in non-default modes');
+  assert.equal(tokens.width.valuesByMode[compact], 80);
+  assert.equal(tokens.height.valuesByMode[expanded.id], 96);
+
+  assert.equal(bindVariable(document, card.id, null, 'width'), true);
+  assert.equal(card.width, 240, 'unlinking materializes the currently resolved width instead of exposing stale raw width');
+  assert.equal(getNodePropertyValue(document, card, 'width'), 240);
+  assert.equal(validateDocument(document), true);
+  assert.ok(collection.modes.some(mode => mode.id === compact) && collection.modes.some(mode => mode.id === expanded.id));
+});
+
+test('geometry bindings reject incompatible values and unknown properties during document validation', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Geometry');
+  const width = createVariable(document, collection.id, 'Width', 'number', 120);
+  const text = createVariable(document, collection.id, 'Text', 'string', 'bad');
+  const rectangle = createNode('rectangle');
+  addNode(document, rectangle);
+  assert.equal(bindVariable(document, rectangle.id, text.id, 'width'), false);
+  assert.equal(bindVariable(document, rectangle.id, width.id, 'width'), true);
+  const unknown = structuredClone(document);
+  unknown.pages[0].children[0].variableBindings.depth = width.id;
+  assert.throws(() => validateDocument(unknown), /Invalid depth variable binding/);
 });

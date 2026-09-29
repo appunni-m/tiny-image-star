@@ -78,6 +78,47 @@ test('smart animation crossfades incompatible content instead of morphing it', (
   assert.deepEqual(networks.map(node => node.opacity), [0.5, 0.5]);
 });
 
+test('smart animation interpolates compatible rich-text run metrics and solid colors', () => {
+  const fromRuns = [
+    { text: 'Hello ', fontSize: 12, fontWeight: '400', lineHeight: 1, letterSpacing: -2, color: '#000000' },
+    { text: 'world', fontSize: 20, fontWeight: 500, lineHeight: 1.2, letterSpacing: 0, color: '#204060' }
+  ];
+  const toRuns = [
+    { text: 'Hello ', fontSize: 32, fontWeight: 700, lineHeight: 2, letterSpacing: 4, color: '#ffffff' },
+    { text: 'world', fontSize: 40, fontWeight: 800, lineHeight: 1.8, letterSpacing: 6, color: '#e0a080' }
+  ];
+  const from = createNode('frame', { children: [createNode('text', { name: 'Headline', text: 'Hello world', textRuns: fromRuns })] });
+  const to = createNode('frame', { children: [createNode('text', { name: 'Headline', text: 'Hello world', textRuns: toRuns })] });
+
+  const middleRuns = interpolateSmartFrame(from, to, 0.5).children[0].textRuns;
+  assert.deepEqual(middleRuns, [
+    { text: 'Hello ', fontSize: 22, fontWeight: 550, lineHeight: 1.5, letterSpacing: 1, color: '#808080' },
+    { text: 'world', fontSize: 30, fontWeight: 650, lineHeight: 1.5, letterSpacing: 3, color: '#807070' }
+  ]);
+
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].textRuns, fromRuns, 'the starting endpoint keeps its original run values');
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].textRuns, toRuns, 'the destination endpoint keeps its original run values');
+  assert.deepEqual(interpolateSmartFrame(from, to, -1).children[0].textRuns, fromRuns, 'progress below zero clamps to the starting endpoint');
+  assert.deepEqual(interpolateSmartFrame(from, to, 2).children[0].textRuns, toRuns, 'progress above one clamps to the destination endpoint');
+  assert.deepEqual(from.children[0].textRuns, fromRuns, 'interpolation leaves source runs unchanged');
+  assert.deepEqual(to.children[0].textRuns, toRuns, 'interpolation leaves destination runs unchanged');
+});
+
+test('smart animation snaps rich-text styles when unchanged text has incompatible run segmentation', () => {
+  const from = createNode('frame', { children: [createNode('text', {
+    name: 'Headline', text: 'Hello world',
+    textRuns: [{ text: 'Hello ', fontSize: 12, color: '#000000' }, { text: 'world', fontSize: 20, color: '#204060' }]
+  })] });
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'Headline', text: 'Hello world',
+    textRuns: [{ text: 'Hello world', fontSize: 32, color: '#ffffff' }]
+  })] });
+
+  const middle = interpolateSmartFrame(from, to, 0.5).children;
+  assert.equal(middle.length, 1, 'unchanged text remains a matched layer');
+  assert.deepEqual(middle[0].textRuns, to.children[0].textRuns, 'unaligned run boundaries keep the existing destination-style snap');
+});
+
 test('smart animation rejects non-frame endpoints and clamps its progress', () => {
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Shape', x: 0 })] });
   const to = createNode('frame', { children: [createNode('rectangle', { name: 'Shape', x: 100 })] });

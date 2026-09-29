@@ -152,6 +152,8 @@ try {
   assert(css.includes('background: radial-gradient(circle,') && css.includes('filter: drop-shadow(') && css.includes(' blur(3px);') && css.includes('border-radius: 10px;') && css.includes('rotate(3deg)'), 'Inspect CSS omitted resolved gradient or layer effects.');
   assert(css.includes('min-width: 150px;') && css.includes('max-width: 200px;') && css.includes('min-height: 44px;') && css.includes('max-height: 72px;'), 'Inspect CSS omitted the selected layer size limits.');
   assert(panel.textContent.includes('Primary button') && panel.textContent.includes('Mobile screen'), 'The selected layer or its owner is missing from the handoff summary.');
+  const html = [...panel.querySelectorAll('.inspect-code-card')].find(card => card.querySelector('strong')?.textContent === 'HTML structure')?.querySelector('code')?.textContent || '';
+  assert(html.includes('data-layer-type="rectangle"'), 'HTML handoff should include the selected layer.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(panel.querySelector('.inspect-copy')).minHeight) >= 40, 'Copy control should remain finger-sized on a phone viewport.');
 
   const copied = [];
@@ -159,14 +161,22 @@ try {
   click(panel.querySelector('[data-inspect-copy="css"]'));
   await waitFor(() => copied.length === 1, 'copy CSS');
   assert(copied[0] === css, 'Copy CSS did not copy the visible generated CSS.');
+  click(panel.querySelector('[data-inspect-copy="html"]'));
+  await waitFor(() => copied.length === 2, 'copy HTML');
+  assert(copied[1] === html, 'Copy HTML did not copy the visible generated markup.');
   click(panel.querySelector('[data-inspect-copy="json"]'));
-  await waitFor(() => copied.length === 2, 'copy layer JSON');
-  assert(JSON.parse(copied[1]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
+  await waitFor(() => copied.length === 3, 'copy layer JSON');
+  assert(JSON.parse(copied[2]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
+
+  click(app.querySelector(`[data-layer-id="${screen.id}"]`));
+  await waitFor(() => app.querySelector('.inspect-panel .inspect-code-card:nth-of-type(2) code')?.textContent.includes('data-layer-type="text"'), 'nested frame HTML handoff');
+  const frameHtml = app.querySelector('.inspect-panel .inspect-code-card:nth-of-type(2) code')?.textContent || '';
+  assert(frameHtml.includes('data-layer-type="frame"') && frameHtml.includes('data-layer-type="text"') && frameHtml.includes('Continue'), 'HTML handoff should preserve nested frame and text structure.');
 
   click(app.querySelector(`[data-layer-id="${label.id}"]`));
   await waitFor(() => app.querySelector('.inspect-panel')?.textContent.includes('16 px · Arial, sans-serif'), 'text metrics');
   assert(app.querySelector('.inspect-panel').textContent.includes('Continue'), 'Inspect panel did not show resolved text content.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, typography: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, typography: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

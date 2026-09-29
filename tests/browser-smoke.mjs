@@ -1,4 +1,4 @@
-import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue, setVariableValue } from '../src/model.js';
 import { SceneRenderer } from '../src/renderer.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 import { createImageFill } from '../src/image-fills.js';
@@ -50,6 +50,9 @@ function dispatchClick(element, options = {}) {
 }
 function dispatchContextMenu(element) {
   element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160 }));
+}
+function dispatchShortcut(doc, key, { shift = false } = {}) {
+  doc.body.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, ctrlKey: true, shiftKey: shift }));
 }
 function dispatchCanvasPointer(app, canvas, type, clientX, clientY, pointerId = 71) {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
@@ -142,6 +145,106 @@ try {
   assert(app.querySelector('#bulk-title').textContent === 'Recipe applied', 'bulk recipe did not finish successfully');
   assert(app.querySelectorAll('.layer-row').length === 3, 'bulk processing replaced the selected image layers');
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'last batch autosave');
+
+  const clipboardRecords = await readStore('documents'); clipboardRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const clipboardDocument = clipboardRecords[0]?.document;
+  const clipboardImages = flattenNodes(clipboardDocument?.pages?.find(page => page.id === clipboardDocument.activePageId)?.children)
+    .filter(node => node.type === 'image');
+  assert(clipboardImages.length === 3, 'clipboard browser coverage did not start with the three imported images');
+  const originalClipboardIds = clipboardImages.map(node => node.id);
+  const originalAssetIds = new Set(clipboardImages.map(node => node.assetId));
+  const assetIdsBeforeClipboard = new Set((await readStore('assets')).map(asset => asset.id));
+  const rowForLayer = id => app.querySelector(`.layer-row[data-layer-id="${id}"]`);
+  const selectClipboardLayer = id => {
+    const row = rowForLayer(id); assert(row, `layer ${id} disappeared during clipboard coverage`); dispatchClick(row); return row;
+  };
+  const openClipboardMenu = id => { const row = rowForLayer(id); assert(row, `layer ${id} disappeared before its context menu opened`); dispatchContextMenu(row); };
+  const clickClipboardMenuAction = (label, { startsWith = false } = {}) => {
+    const button = [...app.querySelectorAll('#context-menu button')].find(item => startsWith
+      ? item.textContent.trim().startsWith(label)
+      : item.textContent.trim() === label);
+    assert(button, `layer context menu did not expose ${label}`); dispatchClick(button);
+  };
+  const assertClipboardCount = count => assert(app.querySelectorAll('.layer-row[data-layer-id]').length === count,
+    `layer clipboard action expected ${count} layers, got ${app.querySelectorAll('.layer-row[data-layer-id]').length}`);
+
+  selectClipboardLayer(originalClipboardIds[0]);
+  dispatchClick(app.querySelector('#file-menu-button'));
+  for (const label of ['Copy selected layers', 'Cut selected layers', 'Paste layers', 'Duplicate selected layers']) {
+    assert([...app.querySelectorAll('#context-menu button')].some(button => button.textContent.trim().startsWith(label)), `the visible editor menu omitted ${label}`);
+  }
+  openClipboardMenu(originalClipboardIds[0]);
+  for (const label of ['Copy layers', 'Cut layers', 'Paste layers', 'Duplicate']) {
+    assert([...app.querySelectorAll('#context-menu button')].some(button => button.textContent.trim().startsWith(label)), `layer context menu omitted ${label}`);
+  }
+  clickClipboardMenuAction('Copy layers', { startsWith: true });
+  openClipboardMenu(originalClipboardIds[0]);
+  clickClipboardMenuAction('Paste layers', { startsWith: true });
+  assertClipboardCount(4);
+  let pastedClipboardRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  const contextPastedId = pastedClipboardRow?.dataset.layerId;
+  assert(contextPastedId && !originalClipboardIds.includes(contextPastedId), 'context-menu paste did not create a fresh layer ID');
+  await waitForSaveCycle(app, 'context-menu clipboard paste');
+  let pastedRecords = await readStore('documents'); pastedRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let pastedImages = flattenNodes(pastedRecords[0]?.document?.pages?.find(page => page.id === pastedRecords[0]?.document?.activePageId)?.children).filter(node => node.type === 'image');
+  assert(pastedImages.find(node => node.id === contextPastedId)?.assetId === clipboardImages[0].assetId,
+    'copying an image duplicated its asset bytes or broke the original local asset reference');
+  const assetsAfterCopy = new Set((await readStore('assets')).map(asset => asset.id));
+  assert(assetsAfterCopy.size === assetIdsBeforeClipboard.size && [...assetIdsBeforeClipboard].every(id => assetsAfterCopy.has(id)),
+    'copying an image wrote a duplicate local asset record');
+
+  openClipboardMenu(contextPastedId);
+  clickClipboardMenuAction('Duplicate', { startsWith: true });
+  assertClipboardCount(5);
+  dispatchShortcut(app, 'z'); assertClipboardCount(4);
+  dispatchShortcut(app, 'z', { shift: true }); assertClipboardCount(5);
+  dispatchShortcut(app, 'z'); assertClipboardCount(4);
+
+  openClipboardMenu(originalClipboardIds[0]);
+  clickClipboardMenuAction('Cut layers', { startsWith: true });
+  assertClipboardCount(3);
+  assert(!rowForLayer(originalClipboardIds[0]), 'context-menu cut left the source layer in the design');
+  openClipboardMenu(contextPastedId);
+  clickClipboardMenuAction('Paste layers', { startsWith: true });
+  assertClipboardCount(4);
+  pastedClipboardRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  const contextCutPastedId = pastedClipboardRow?.dataset.layerId;
+  assert(contextCutPastedId && !originalClipboardIds.includes(contextCutPastedId), 'context-menu paste did not restore the cut layer as a fresh layer');
+  dispatchShortcut(app, 'z'); assertClipboardCount(3);
+  dispatchShortcut(app, 'z', { shift: true }); assertClipboardCount(4);
+
+  selectClipboardLayer(contextCutPastedId);
+  dispatchShortcut(app, 'c');
+  dispatchShortcut(app, 'v');
+  assertClipboardCount(5);
+  const keyboardPastedId = app.querySelector('.layer-row.is-selected[data-layer-id]')?.dataset.layerId;
+  assert(keyboardPastedId && keyboardPastedId !== contextCutPastedId, 'Ctrl+C/Ctrl+V did not paste a distinct layer');
+  dispatchShortcut(app, 'd');
+  assertClipboardCount(6);
+  dispatchShortcut(app, 'z'); assertClipboardCount(5);
+  dispatchShortcut(app, 'z', { shift: true }); assertClipboardCount(6);
+  dispatchShortcut(app, 'z'); assertClipboardCount(5);
+
+  selectClipboardLayer(contextCutPastedId);
+  dispatchShortcut(app, 'x');
+  assertClipboardCount(4);
+  assert(!rowForLayer(contextCutPastedId), 'Ctrl+X did not remove the selected layer');
+  dispatchShortcut(app, 'v');
+  assertClipboardCount(5);
+  const keyboardCutPastedId = app.querySelector('.layer-row.is-selected[data-layer-id]')?.dataset.layerId;
+  assert(keyboardCutPastedId && keyboardCutPastedId !== contextCutPastedId, 'Ctrl+X/Ctrl+V did not move the cut layer through a fresh ID');
+  dispatchShortcut(app, 'z'); assertClipboardCount(4);
+  dispatchShortcut(app, 'z', { shift: true }); assertClipboardCount(5);
+
+  // Return the fixture to its original three image layers before later editor assertions.
+  for (let index = 0; index < 6; index += 1) dispatchShortcut(app, 'z');
+  assertClipboardCount(3);
+  await waitForSaveCycle(app, 'clipboard history restoration');
+  const assetsAfterClipboard = new Set((await readStore('assets')).map(asset => asset.id));
+  assert(assetsAfterClipboard.size === assetIdsBeforeClipboard.size && [...originalAssetIds].every(id => assetsAfterClipboard.has(id)),
+    'clipboard edits changed the document asset catalog');
+  const clipboardContract = { visibleCopyPaste: true, visibleCutPaste: true, visibleDuplicate: true, keyboardCopyCutPasteDuplicate: true,
+    undoRedo: true, freshIds: true, sharedImageAssets: true, fixtureRestored: true };
 
   const fillCanvas = app.querySelector('#scene-canvas');
   const fillCanvasRect = fillCanvas.getBoundingClientRect();
@@ -537,6 +640,8 @@ try {
   const darkMode = addVariableMode(variablesDocument, brandColors.id, 'Dark');
   const surfaceVariable = createColorVariable(variablesDocument, brandColors.id, 'Surface', '#f7f7f7');
   setColorVariableValue(variablesDocument, surfaceVariable.id, '#202124', darkMode.id);
+  const cardWidthVariable = createVariable(variablesDocument, brandColors.id, 'Card width', 'number', 90);
+  setVariableValue(variablesDocument, cardWidthVariable.id, 210, darkMode.id);
   const themeFrame = createNode('frame', { name: 'Theme frame', width: 300, height: 210 });
   const nestedThemeFrame = createNode('frame', { name: 'Nested theme', x: 20, y: 20, width: 250, height: 160 });
   const variableSurface = createNode('rectangle', { name: 'Variable surface', x: 12, y: 12, width: 150, height: 80, fillVariableId: surfaceVariable.id });
@@ -588,6 +693,26 @@ try {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'inherited frame mode autosave');
 
   dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  const widthBinding = app.querySelector('[data-variable-property-binding="width"]');
+  assert(widthBinding && [...widthBinding.options].some(option => option.value === cardWidthVariable.id), 'geometry variable was missing from the width binding control');
+  widthBinding.value = cardWidthVariable.id; widthBinding.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'geometry variable binding autosave');
+  variableRecords = await readStore('documents'); variableRecords.sort((a, b) => b.savedAt - a.savedAt); savedVariables = variableRecords[0]?.document;
+  savedVariableSurface = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableSurface.id);
+  assert(getNodePropertyValue(savedVariables, savedVariableSurface, 'width') === 210, 'geometry binding did not resolve the inherited dark mode value');
+  dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
+  frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  frameModeControl.value = lightMode.id; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'geometry variable mode change autosave');
+  dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  assert(app.querySelector('[data-prop="width"]')?.value === '90', 'geometry variable did not update the visible inspector value after a frame mode change');
+  dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
+  frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
+  frameModeControl.value = ''; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'geometry variable mode inheritance restore');
+  dispatchClick(app.querySelector(`[data-layer-id="${variableSurface.id}"]`));
+  assert(app.querySelector('[data-prop="width"]')?.value === '210', 'geometry inspector kept a stale raw width after restoring the inherited mode');
+
   dispatchClick(app.querySelector('[data-action="create-color-variable"][data-kind="fill"]'));
   assert(app.querySelector('#variable-dialog').open, 'creating a variable from a layer did not open the native dialog');
   app.querySelector('#variable-name').value = 'Card accent';
@@ -1094,7 +1219,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

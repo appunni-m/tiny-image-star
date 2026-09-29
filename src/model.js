@@ -6,6 +6,11 @@ import { isValidLayerBlendMode } from './layer-blend.js';
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
 const variableBindingSpecs = {
+  x: { type: 'number' },
+  y: { type: 'number' },
+  width: { type: 'number' },
+  height: { type: 'number' },
+  rotation: { type: 'number' },
   visible: { type: 'boolean' },
   opacity: { type: 'number' },
   radius: { type: 'number', nodeTypes: ['rectangle', 'frame', 'section', 'image'] },
@@ -37,6 +42,7 @@ function isVariableBindingValue(property, value) {
   if (!spec || !isVariableValue(spec.type, value)) return false;
   if (property === 'opacity') return value >= 0 && value <= 1;
   if (property === 'radius') return value >= 0;
+  if (property === 'width' || property === 'height') return value >= 0;
   if (property === 'fontSize' || property === 'lineHeight') return value > 0;
   return true;
 }
@@ -44,6 +50,30 @@ function isVariableBindingValue(property, value) {
 function isValidFontWeight(value) {
   const weight = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
   return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
+}
+
+const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration']);
+
+function isValidTextRun(run) {
+  if (!run || typeof run !== 'object' || Array.isArray(run)
+    || typeof run.text !== 'string' || !run.text.length
+    || Object.keys(run).some(key => key !== 'text' && !textRunStyleProperties.has(key))) return false;
+  if (run.fontFamily != null && (typeof run.fontFamily !== 'string' || !run.fontFamily.trim() || run.fontFamily.length > 160 || /[\x00-\x1f]/.test(run.fontFamily))) return false;
+  if (run.fontSize != null && (typeof run.fontSize !== 'number' || !Number.isFinite(run.fontSize) || run.fontSize <= 0 || run.fontSize > 100_000)) return false;
+  if (run.fontWeight != null && !isValidFontWeight(run.fontWeight)) return false;
+  if (run.fontStyle != null && !['normal', 'italic'].includes(run.fontStyle)) return false;
+  if (run.lineHeight != null && (typeof run.lineHeight !== 'number' || !Number.isFinite(run.lineHeight) || run.lineHeight <= 0 || run.lineHeight > 100)) return false;
+  if (run.letterSpacing != null && (typeof run.letterSpacing !== 'number' || !Number.isFinite(run.letterSpacing) || Math.abs(run.letterSpacing) > 10_000)) return false;
+  if (run.color != null && (typeof run.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(run.color))) return false;
+  if (run.textDecoration != null && !textDecorations.has(run.textDecoration)) return false;
+  return true;
+}
+
+function isValidTextRuns(runs, text = undefined) {
+  if (!Array.isArray(runs) || runs.length > 10_000 || runs.some(run => !isValidTextRun(run))) return false;
+  const runText = runs.map(run => run.text).join('');
+  if (runText.length > 1_000_000) return false;
+  return text === undefined || (typeof text === 'string' && runText === text);
 }
 
 export function createId(prefix = 'id') {
@@ -101,7 +131,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'fontStyle', 'color', 'textStyleId', 'align', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'constraints', 'autoLayout',
+  'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -280,10 +310,15 @@ export function flattenPage(page) {
 export function absoluteBounds(document, nodeId, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return null;
-  let x = entry.node.x;
-  let y = entry.node.y;
-  for (const parent of entry.parents) { x += parent.x; y += parent.y; }
-  return { x, y, width: entry.node.width, height: entry.node.height };
+  const geometry = getNodeGeometry(document, entry.node);
+  let x = geometry.x;
+  let y = geometry.y;
+  for (const parent of entry.parents) {
+    const parentGeometry = getNodeGeometry(document, parent);
+    x += parentGeometry.x;
+    y += parentGeometry.y;
+  }
+  return { x, y, width: geometry.width, height: geometry.height };
 }
 
 export function duplicateNode(document, nodeId, pageId = document.activePageId) {
@@ -786,6 +821,14 @@ export function getNodePropertyValue(document, node, property) {
   if (!variable || variable.type !== variableBindingSpecs[property].type) return node[property];
   const value = resolveVariableValue(document, variableId, node);
   return isVariableBindingValue(property, value) ? value : node[property];
+}
+
+/** Return the current mode-resolved transform fields for a layer. */
+export function getNodeGeometry(document, node) {
+  if (!node) return undefined;
+  return Object.fromEntries(['x', 'y', 'width', 'height', 'rotation'].map(property => [
+    property, getNodePropertyValue(document, node, property)
+  ]));
 }
 
 export function canBindVariable(document, nodeId, variableId, property, pageId = document.activePageId) {
@@ -1386,6 +1429,7 @@ export function validateDocument(document) {
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
+      if (node.textRuns != null && (node.type !== 'text' || !isValidTextRuns(node.textRuns, node.text))) throw new TypeError(`Invalid rich text runs on layer ${node.name || node.id}.`);
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
       if (node.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(node.fontWeight))) throw new TypeError(`Invalid font weight on layer ${node.name || node.id}.`);
       if (node.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(node.fontStyle))) throw new TypeError(`Invalid font style on layer ${node.name || node.id}.`);
@@ -1475,6 +1519,11 @@ export function validateDocument(document) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          if (overrides.textRuns != null) {
+            const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+            const sourceText = overrides.text ?? sourceNode?.text;
+            if ((sourceNode && sourceNode.type !== 'text') || !isValidTextRuns(overrides.textRuns, sourceText)) throw new TypeError(`Invalid component text runs override on ${node.name || node.id}.`);
+          }
           if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
           if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
