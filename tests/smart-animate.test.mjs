@@ -284,6 +284,156 @@ test('smart animation morphs compatible vector anchors and Bézier handles with 
   assert.deepEqual(to, originalTo, 'interpolation does not mutate the target path');
 });
 
+test('smart animation morphs a compatible vector network without crossfading its graph', () => {
+  const fromNetwork = {
+    vertices: [
+      { id: 'v1', x: 0, y: 0, label: 'start' },
+      { id: 'v2', x: 1, y: 0 },
+      { id: 'v3', x: .5, y: 1 }
+    ],
+    edges: [
+      { id: 'e1', from: 'v1', to: 'v2', control1: { x: .2, y: -.2 }, control2: { x: .8, y: -.2 } },
+      { id: 'e2', from: 'v2', to: 'v3' },
+      { id: 'e3', from: 'v3', to: 'v1', control1: { x: .4, y: .8 } }
+    ],
+    faces: [{ id: 'f1', vertexIds: ['v1', 'v2', 'v3'], fill: '#000000', fillOpacity: .5, fillStyleId: 'style-before' }]
+  };
+  const toNetwork = {
+    vertices: [
+      { id: 'v1', x: .2, y: .4, label: 'end' },
+      { id: 'v2', x: .8, y: .2 },
+      { id: 'v3', x: .4, y: .8 }
+    ],
+    edges: [
+      { id: 'e1', from: 'v1', to: 'v2', control1: { x: .3, y: -.4 }, control2: { x: .7, y: -.1 } },
+      { id: 'e2', from: 'v2', to: 'v3', control1: { x: .75, y: .25 }, control2: null },
+      { id: 'e3', from: 'v3', to: 'v1', control2: { x: .3, y: .6 } }
+    ],
+    faces: [{ id: 'f1', vertexIds: ['v1', 'v2', 'v3'], fill: '#ffffff', fillOpacity: 1, fillStyleId: 'style-after' }]
+  };
+  const from = createNode('frame', { children: [createNode('network', { name: 'Triangle', x: 10, width: 100, ...fromNetwork })] });
+  const to = createNode('frame', { children: [createNode('network', { name: 'Triangle', x: 30, width: 200, ...toNetwork })] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const start = interpolateSmartFrame(from, to, 0).children;
+  const middle = interpolateSmartFrame(from, to, .5).children;
+  const beforeMidpoint = interpolateSmartFrame(from, to, .499).children[0];
+  const atMidpoint = interpolateSmartFrame(from, to, .5).children[0];
+  const end = interpolateSmartFrame(from, to, 1).children;
+  assert.equal(middle.length, 1, 'same graph topology is one continuously morphing layer');
+  assert.equal(middle[0].type, 'network');
+  assert.deepEqual([middle[0].x, middle[0].width], [20, 150], 'layer geometry continues interpolating with the network graph');
+  assert.deepEqual(start[0].vertices, fromNetwork.vertices, 'the source endpoint is exact');
+  assert.deepEqual(start[0].edges, fromNetwork.edges, 'the source controls are exact');
+  assert.deepEqual(start[0].faces, fromNetwork.faces, 'the source face style is exact');
+  assert.deepEqual(end[0].vertices, toNetwork.vertices, 'the destination endpoint is exact');
+  assert.deepEqual(end[0].edges, toNetwork.edges, 'the destination controls are exact');
+  assert.deepEqual(end[0].faces, toNetwork.faces, 'the destination face style is exact');
+
+  assert.deepEqual(middle[0].vertices.map(({ x, y }) => [x, y]), [[.1, .2], [.9, .1], [.45, .9]]);
+  const closePoint = (actual, expected) => {
+    assert.ok(Math.abs(actual.x - expected.x) < 1e-12);
+    assert.ok(Math.abs(actual.y - expected.y) < 1e-12);
+  };
+  closePoint(middle[0].edges[0].control1, { x: .25, y: -.3 });
+  closePoint(middle[0].edges[0].control2, { x: .75, y: -.15 });
+  closePoint(middle[0].edges[1].control1, { x: .875, y: .125 });
+  assert.equal(middle[0].edges[1].control2, null, 'ordinary line semantics remain absent');
+  closePoint(middle[0].edges[2].control1, { x: .4, y: .8 });
+  closePoint(middle[0].edges[2].control2, { x: .15, y: .3 });
+  assert.deepEqual(beforeMidpoint.faces[0], {
+    id: 'f1', vertexIds: ['v1', 'v2', 'v3'], fill: '#7f7f7f', fillOpacity: .7495, fillStyleId: 'style-before'
+  });
+  assert.deepEqual(atMidpoint.faces[0], {
+    id: 'f1', vertexIds: ['v1', 'v2', 'v3'], fill: '#808080', fillOpacity: .75, fillStyleId: 'style-after'
+  }, 'face paint references switch categorically while direct paint values interpolate');
+  assert.deepEqual(from, originalFrom, 'network interpolation leaves source frame untouched');
+  assert.deepEqual(to, originalTo, 'network interpolation leaves destination frame untouched');
+});
+
+test('smart animation crossfades vector networks with changed identity, incidence, or face traversal order', () => {
+  const base = {
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 0, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'face', vertexIds: ['a', 'b', 'c'] }]
+  };
+  const incompatible = [
+    { ...base, edges: [{ ...base.edges[0], from: 'b', to: 'a' }, ...base.edges.slice(1)] },
+    { ...base, edges: [base.edges[1], base.edges[0], base.edges[2]] },
+    { ...base, faces: [{ id: 'face', vertexIds: ['a', 'c', 'b'] }] },
+    { ...base, vertices: [{ ...base.vertices[0], id: 'renamed' }, ...base.vertices.slice(1)] }
+  ];
+
+  for (const [index, targetNetwork] of incompatible.entries()) {
+    const from = createNode('frame', { children: [createNode('network', { name: `Topology ${index}`, ...base })] });
+    const to = createNode('frame', { children: [createNode('network', { name: `Topology ${index}`, ...targetNetwork })] });
+    const copies = interpolateSmartFrame(from, to, .5).children;
+    assert.equal(copies.length, 2, `network topology variant ${index} crossfades`);
+    assert.deepEqual(copies.map(node => node.opacity), [.5, .5]);
+  }
+});
+
+test('smart animation crossfades malformed vector networks instead of propagating invalid geometry', () => {
+  const valid = {
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 0, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'face', vertexIds: ['a', 'b', 'c'] }]
+  };
+  const invalidNetworks = [
+    { ...valid, vertices: [{ ...valid.vertices[0] }, { ...valid.vertices[1], id: 'a' }, valid.vertices[2]] },
+    { ...valid, vertices: [{ ...valid.vertices[0], x: Number.NaN }, ...valid.vertices.slice(1)] },
+    { ...valid, edges: [{ ...valid.edges[0], control1: { x: Infinity, y: 0 } }, ...valid.edges.slice(1)] },
+    { ...valid, edges: [{ ...valid.edges[0], to: 'missing' }, ...valid.edges.slice(1)] },
+    { ...valid, faces: [{ ...valid.faces[0], vertexIds: ['a', 'missing', 'c'] }] }
+  ];
+
+  for (const [index, targetNetwork] of invalidNetworks.entries()) {
+    const from = createNode('frame', { children: [createNode('network', { name: `Malformed ${index}`, ...valid })] });
+    const to = createNode('frame', { children: [createNode('network', { name: `Malformed ${index}`, ...targetNetwork })] });
+    const copies = interpolateSmartFrame(from, to, .5).children;
+    assert.equal(copies.length, 2, `malformed network variant ${index} crossfades`);
+    assert.deepEqual(copies.map(node => node.opacity), [.5, .5]);
+  }
+});
+
+test('smart animation crossfades networks whose face rings lack a boundary edge', () => {
+  const makeNetwork = (offset) => createNode('network', {
+    name: 'Open triangle face',
+    vertices: [
+      { id: 'a', x: offset, y: 0 },
+      { id: 'b', x: 1 + offset, y: 0 },
+      { id: 'c', x: offset, y: 1 }
+    ],
+    // The face ring says a-b-c-a, but the graph has no c-a edge.
+    edges: [
+      { id: 'ab', from: 'a', to: 'b' },
+      { id: 'bc', from: 'b', to: 'c' }
+    ],
+    faces: [{ id: 'face', vertexIds: ['a', 'b', 'c'] }]
+  });
+  const from = createNode('frame', { children: [makeNetwork(0)] });
+  const to = createNode('frame', { children: [makeNetwork(.25)] });
+
+  const copies = interpolateSmartFrame(from, to, .5).children;
+  assert.equal(copies.length, 2, 'an invalid face boundary is incompatible even when both graphs otherwise match');
+  assert.deepEqual(copies.map(node => node.opacity), [.5, .5]);
+});
+
+test('smart animation keeps extreme but finite vector coordinates finite while morphing', () => {
+  const from = createNode('frame', { children: [createNode('network', {
+    name: 'Extreme', vertices: [{ id: 'v1', x: 1e308, y: -1e308 }], edges: [], faces: []
+  })] });
+  const to = createNode('frame', { children: [createNode('network', {
+    name: 'Extreme', vertices: [{ id: 'v1', x: -1e308, y: 1e308 }], edges: [], faces: []
+  })] });
+
+  const middle = interpolateSmartFrame(from, to, .5).children[0];
+  assert.deepEqual([middle.vertices[0].x, middle.vertices[0].y], [0, 0]);
+  assert.ok(Number.isFinite(middle.vertices[0].x));
+  assert.ok(Number.isFinite(middle.vertices[0].y));
+});
+
 test('smart animation crossfades paths with different closure or invalid coordinates', () => {
   const from = createNode('frame', { children: [
     createNode('path', { name: 'Closure', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }),

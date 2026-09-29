@@ -166,6 +166,12 @@ try {
   prototypeTransition.value = 'smart-animate'; prototypeTransition.dispatchEvent(new Event('change', { bubbles: true }));
   const prototypeEasing = app.querySelector('#prototype-easing');
   assert(prototypeEasing && prototypeEasing.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the easing control should fit inside the phone prototype inspector');
+  const prototypeTrigger = app.querySelector('#prototype-trigger');
+  prototypeTrigger.value = 'after-delay'; prototypeTrigger.dispatchEvent(new Event('change', { bubbles: true }));
+  const prototypeDelay = app.querySelector('#prototype-delay');
+  const prototypeDelayLabel = prototypeDelay?.closest('label');
+  assert(prototypeDelay && prototypeDelayLabel && prototypeDelay.getBoundingClientRect().width >= prototypeDelayLabel.getBoundingClientRect().width - 2 && prototypeDelay.getBoundingClientRect().height >= 44, 'the after-delay slider should span the phone inspector and provide a 44px touch target');
+  prototypeTrigger.value = 'on-click'; prototypeTrigger.dispatchEvent(new Event('change', { bubbles: true }));
   const prototypeAction = app.querySelector('#prototype-action');
   prototypeAction.value = 'open-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   assert(![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should keep overlay transitions separate');
@@ -217,7 +223,7 @@ try {
   const handoffLayer = JSON.parse(handoffJson)[0];
   const verticalCss = app.querySelector('.inspect-panel .inspect-code-card code')?.textContent || '';
   assert(verticalCss.includes('justify-content: flex-end;'), `Inspect CSS should hand off bottom-aligned text; control=${selectedVerticalAlign}, layer=${handoffLayer?.verticalAlign}, typography=${handoffLayer?.typography?.verticalAlign}; found: ${verticalCss}`);
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true, afterDelayPhoneControl: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

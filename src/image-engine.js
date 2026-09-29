@@ -140,6 +140,32 @@ function rasterDimensions(view) {
   return pngDimensions(view) || jpegDimensions(view) || gifDimensions(view) || bmpDimensions(view) || webpDimensions(view) || pnmDimensions(view);
 }
 
+/** The source-pixel ceiling enforced by the local Pillow-RS decoder. */
+export const MAX_IMAGE_SOURCE_PIXELS = MAX_RENDER_SOURCE_PIXELS;
+
+/** Maximum prefix needed by the supported image-header scanners. */
+export const IMAGE_HEADER_SCAN_BYTES = MAX_HEADER_SCAN_BYTES;
+
+/** Read dimensions without asking the browser to decode or allocate image pixels. */
+export function inspectRasterDimensions(sourceBytes) {
+  return rasterDimensions(bytesView(sourceBytes));
+}
+
+/**
+ * Verify an image's dimensions before browser decoding. Unknown headers fail closed
+ * because compressed size is not a safe estimate of the decoded pixel allocation.
+ */
+export function assertSafeRasterDimensions(sourceBytes) {
+  const dimensions = inspectRasterDimensions(sourceBytes);
+  if (!dimensions) {
+    throw new Error('Tiny Image Star could not verify this image size before decoding. Use a PNG, JPEG, GIF, BMP, WebP, or PNM image.');
+  }
+  if (dimensions.pixels > MAX_IMAGE_SOURCE_PIXELS) {
+    throw new RangeError(`This image is ${dimensions.width.toLocaleString()} × ${dimensions.height.toLocaleString()} (${dimensions.pixels.toLocaleString()} pixels). The local editor supports images up to ${MAX_IMAGE_SOURCE_PIXELS.toLocaleString()} pixels; resize it before importing.`);
+  }
+  return dimensions;
+}
+
 /**
  * Estimate transient Pillow-RS memory from the source header. Unknown formats
  * receive the decoder's full pixel ceiling and therefore run alone; the

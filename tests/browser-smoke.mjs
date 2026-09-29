@@ -1,5 +1,6 @@
 import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue, setVariableValue } from '../src/model.js';
-import { SceneRenderer, worldToScreen } from '../src/renderer.js';
+import { SceneRenderer, screenToWorld, worldToScreen } from '../src/renderer.js';
+import { findFrameAtPoint } from '../src/prototype.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
 import { createImageFill } from '../src/image-fills.js';
 import { createAutoLayout } from '../src/layout-engine.js';
@@ -34,6 +35,12 @@ function fixtureBmp() {
   }
   return bytes;
 }
+function oversizedBmpHeader(width, height) {
+  const bytes = new Uint8Array(54); const view = new DataView(bytes.buffer);
+  bytes[0] = 66; bytes[1] = 77; view.setUint32(2, 54 + width * height * 3, true); view.setUint32(10, 54, true); view.setUint32(14, 40, true);
+  view.setInt32(18, width, true); view.setInt32(22, height, true); view.setUint16(26, 1, true); view.setUint16(28, 24, true); view.setUint32(34, width * height * 3, true);
+  return bytes;
+}
 function imageInput(doc, files) {
   const input = doc.querySelector('#image-input'); const transfer = new DataTransfer();
   for (const file of files) transfer.items.add(file);
@@ -48,6 +55,13 @@ function pixelInLeftHalf(doc) {
 }
 function dispatchClick(element, options = {}) {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...options }));
+}
+async function clickDialogCloseAndWait(dialog, closeButton, label) {
+  let closeEventReceived = false;
+  dialog.addEventListener('close', () => { closeEventReceived = true; }, { once: true });
+  dispatchClick(closeButton);
+  await waitFor(() => closeEventReceived, label);
+  assert(!dialog.open, `${label} fired while the native dialog was still open`);
 }
 function dispatchContextMenu(element) {
   element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160 }));
@@ -79,6 +93,27 @@ function readStore(storeName) {
     };
   });
 }
+async function waitForStoredInteraction(nodeId, predicate, label, expectedDestinationId = null, timeout = 8000) {
+  const started = performance.now();
+  let diagnostics = [];
+  while (performance.now() - started < timeout) {
+    const records = await readStore('documents');
+    const nodes = records.flatMap(record => record.document?.pages?.flatMap(page => flattenNodes(page.children)) || []);
+    const source = nodes.find(node => node.id === nodeId);
+    if (source?.interactions?.some(predicate)) return source;
+    diagnostics = records.map(record => {
+      const sourceNode = (record.document?.pages || []).flatMap(page => flattenNodes(page.children)).find(node => node.id === nodeId);
+      return {
+        documentId: record.id || record.document?.id || null,
+        savedAt: record.savedAt ?? null,
+        sourceFound: Boolean(sourceNode),
+        interactions: sourceNode?.interactions?.map(item => ({ trigger: item.trigger, action: item.action, delay: item.delay, destinationId: item.destinationId })) || []
+      };
+    });
+    await new Promise(resolve => setTimeout(resolve, 80));
+  }
+  throw new Error(`Timed out waiting for ${label} in IndexedDB: ${JSON.stringify({ nodeId, expectedDestinationId, documents: diagnostics })}`);
+}
 function flattenNodes(nodes, result = []) { for (const node of nodes || []) { result.push(node); flattenNodes(node.children, result); } return result; }
 function findNodeOrigin(nodes, id, parentX = 0, parentY = 0) {
   for (const node of nodes || []) {
@@ -88,6 +123,41 @@ function findNodeOrigin(nodes, id, parentX = 0, parentY = 0) {
     if (nested) return nested;
   }
   return null;
+}
+function screenPointInsideExpectedFrame(canvas, page, documentData, expectedFrame, sourceFrame, transform) {
+  const frameGeometry = node => node ? ({
+    id: node.id, name: node.name, x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation || 0
+  }) : null;
+  const insetX = Math.min(16, expectedFrame.width / 4);
+  const insetY = Math.min(16, expectedFrame.height / 4);
+  const points = [
+    { x: expectedFrame.x + expectedFrame.width / 2, y: expectedFrame.y + expectedFrame.height / 2 },
+    { x: expectedFrame.x + insetX, y: expectedFrame.y + insetY },
+    { x: expectedFrame.x + expectedFrame.width - insetX, y: expectedFrame.y + insetY },
+    { x: expectedFrame.x + insetX, y: expectedFrame.y + expectedFrame.height - insetY },
+    { x: expectedFrame.x + expectedFrame.width - insetX, y: expectedFrame.y + expectedFrame.height - insetY },
+    { x: expectedFrame.x + expectedFrame.width / 2, y: expectedFrame.y + insetY },
+    { x: expectedFrame.x + expectedFrame.width / 2, y: expectedFrame.y + expectedFrame.height - insetY }
+  ];
+  const candidates = points.map(world => {
+    const screen = worldToScreen(world, canvas, transform);
+    const actualWorld = screenToWorld({ clientX: screen.x, clientY: screen.y }, canvas, transform);
+    return { screen, world: actualWorld, hit: findFrameAtPoint(page, actualWorld, documentData) };
+  });
+  const center = candidates[0];
+  const diagnostic = candidate => ({
+    expectedFrame: frameGeometry(expectedFrame),
+    predictedHit: frameGeometry(candidate?.hit),
+    sourceFrame: frameGeometry(sourceFrame),
+    transform,
+    screenPoint: candidate?.screen,
+    worldPoint: candidate?.world
+  });
+  const match = candidates.find(candidate => candidate.hit?.id === expectedFrame.id);
+  if (!match) throw new Error(`Prototype destination hit test missed the expected frame: ${JSON.stringify({ ...diagnostic(center), candidates: candidates.map(diagnostic) })}`);
+  if (center.hit?.id !== expectedFrame.id) console.warn(`Center point was occluded; selected a verified point in the intended prototype frame: ${JSON.stringify(diagnostic(center))}`);
+  assert(match.hit.id === expectedFrame.id, `Expected ${expectedFrame.id}, predicted ${match.hit?.id || 'no frame'}: ${JSON.stringify(diagnostic(match))}`);
+  return match.screen;
 }
 function buildPackage(documentData, assets) {
   const manifest = new TextEncoder().encode(JSON.stringify({ schema: documentData.schema, document: documentData, assets: assets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })) }));
@@ -108,6 +178,21 @@ try {
   dispatchClick(newDesign);
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('New local design created.')), 'fresh local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh local design');
+  const bitmapDescriptor = Object.getOwnPropertyDescriptor(app.defaultView, 'createImageBitmap');
+  let bitmapDecodeCalls = 0;
+  Object.defineProperty(app.defaultView, 'createImageBitmap', {
+    configurable: true,
+    value: (...args) => { bitmapDecodeCalls += 1; return bitmapDescriptor.value.apply(app.defaultView, args); }
+  });
+  try {
+    imageInput(app, [new File([oversizedBmpHeader(10_000, 10_000)], 'oversized-local-fixture.bmp', { type: 'image/bmp' })]);
+    await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('resize it before importing')), 'oversized image rejection');
+    assert(bitmapDecodeCalls === 0, 'an oversized image was handed to browser decoding before the local pixel limit rejected it');
+    assert(app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'an oversized image was added to the document');
+  } finally {
+    if (bitmapDescriptor) Object.defineProperty(app.defaultView, 'createImageBitmap', bitmapDescriptor);
+    else delete app.defaultView.createImageBitmap;
+  }
   const source = fixtureBmp();
   const files = Array.from({ length: 3 }, (_, index) => new File([source], `local-fixture-${index + 1}.bmp`, { type: 'image/bmp' }));
   imageInput(app, files);
@@ -355,7 +440,7 @@ try {
   const sourceFrame = frameNodes[0]; const destinationFrame = frameNodes[1];
   const sourceRow = app.querySelector(`[data-layer-id="${sourceFrame.id}"]`);
   assert(sourceRow, 'the source frame was not available in the Layers panel');
-  dispatchClick(sourceRow);
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="prototype"]'));
   const setStart = [...app.querySelectorAll('[data-action="prototype-start"]')].find(Boolean);
   assert(setStart, 'Prototype did not offer a frame starting point');
@@ -662,6 +747,77 @@ try {
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
 
+  const geometryRecords = await readStore('documents');
+  const geometryDocument = geometryRecords.map(record => record.document).find(candidate => {
+    const ids = new Set((candidate?.pages || []).flatMap(page => flattenNodes(page.children)).map(node => node.id));
+    return ids.has(sourceFrame.id) && ids.has(destinationFrame.id);
+  });
+  const persistedDestinationFrame = geometryDocument?.pages.flatMap(page => flattenNodes(page.children)).find(node => node.id === destinationFrame.id);
+  const geometrySourceFrame = geometryDocument?.pages.flatMap(page => flattenNodes(page.children)).find(node => node.id === sourceFrame.id);
+  const destinationPage = geometryDocument?.pages.find(page => flattenNodes(page.children).some(node => node.id === destinationFrame.id));
+  assert(persistedDestinationFrame, 'saved document geometry for the delayed destination was unavailable');
+  assert(geometrySourceFrame && destinationPage, 'saved source geometry or destination page was unavailable');
+  dispatchClick(app.querySelector(`[data-layer-id="${persistedDestinationFrame.id}"]`));
+  assert(app.querySelector('.layer-row.is-selected[data-layer-id]')?.dataset.layerId === persistedDestinationFrame.id,
+    `The delayed route safety check should use the intended destination selection (${persistedDestinationFrame.id})`);
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const prototypeTab = app.querySelector('.inspector-tab[data-inspector-tab="prototype"]');
+  if (!prototypeTab.classList.contains('is-active')) dispatchClick(prototypeTab);
+  const delayedAction = app.querySelector('#prototype-action');
+  delayedAction.value = 'navigate'; delayedAction.dispatchEvent(new Event('change', { bubbles: true }));
+  const delayedTrigger = app.querySelector('#prototype-trigger');
+  assert([...delayedTrigger.options].some(option => option.value === 'after-delay'), 'prototype inspector did not offer an after-delay trigger');
+  delayedTrigger.value = 'after-delay'; delayedTrigger.dispatchEvent(new Event('change', { bubbles: true }));
+  const delayControl = app.querySelector('#prototype-delay');
+  assert(delayControl && Number(delayControl.min) >= 100 && Number(delayControl.max) <= 10_000, 'after-delay wait control did not expose a bounded short delay');
+  delayControl.value = '900'; delayControl.dispatchEvent(new Event('input', { bubbles: true })); delayControl.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  const delayedTargetPoint = screenPointInsideExpectedFrame(
+    designCanvas, destinationPage, geometryDocument, persistedDestinationFrame, geometrySourceFrame, canvasPan
+  );
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', delayedTargetPoint.x, delayedTargetPoint.y, 101);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', delayedTargetPoint.x, delayedTargetPoint.y, 101);
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('After 0.9 s') && row.textContent.includes(destinationFrame.name)), 'after-delay prototype connection');
+  const delayedSource = await waitForStoredInteraction(sourceFrame.id,
+    item => item.trigger === 'after-delay' && item.delay === 900 && item.destinationId === destinationFrame.id,
+    'after-delay route', destinationFrame.id);
+  assert(delayedSource, 'after-delay trigger and wait were not serialized');
+
+  dispatchClick(app.querySelector('#present-button'));
+  await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'after-delay presentation start');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'after-delay prototype navigation', 3000);
+  assert(app.querySelector('#present-dialog').dataset.afterDelayPending !== 'true', 'completed after-delay navigation left a timer pending');
+  await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'native after-delay presentation close event');
+
+  dispatchClick(app.querySelector('#present-button'));
+  const secondDelayedPresentation = app.querySelector('#present-dialog');
+  await waitFor(() => secondDelayedPresentation?.open && secondDelayedPresentation.dataset.frameId === sourceFrame.id, 'second delayed presentation source frame');
+  try {
+    await waitFor(() => secondDelayedPresentation.dataset.afterDelayPending === 'true', 'second presentation after-delay timer', 2000);
+  } catch (error) {
+    let persistedSourceInteractions = [];
+    try {
+      const records = await readStore('documents');
+      persistedSourceInteractions = records.flatMap(record => record.document?.pages?.flatMap(page => flattenNodes(page.children)) || [])
+        .filter(node => node.id === sourceFrame.id)
+        .map(node => (node.interactions || []).map(item => ({ trigger: item.trigger, delay: item.delay, destinationId: item.destinationId })));
+    } catch (diagnosticError) {
+      persistedSourceInteractions = [{ diagnosticError: diagnosticError.message }];
+    }
+    throw new Error(`${error.message} Presentation diagnostics: ${JSON.stringify({
+      frameId: secondDelayedPresentation.dataset.frameId || null,
+      afterDelayPending: secondDelayedPresentation.dataset.afterDelayPending ?? null,
+      title: app.querySelector('#present-title')?.textContent || null,
+      persistedSourceInteractions
+    })}`);
+  }
+  await clickDialogCloseAndWait(secondDelayedPresentation, app.querySelector('#present-exit'), 'native cancelled presentation close event');
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert(!app.querySelector('#present-dialog').open && app.querySelector('#present-dialog').dataset.afterDelayPending !== 'true', 'closing presentation did not clear its after-delay timer');
+
+  const designInspectorTab = app.querySelector('.inspector-tab[data-inspector-tab="design"]');
+  if (!designInspectorTab.classList.contains('is-active')) dispatchClick(designInspectorTab);
+  await waitFor(() => designInspectorTab.classList.contains('is-active'), 'Design inspector before vector editing');
   const penButton = app.querySelector('.tool-button[data-tool="pen"]');
   const vectorIdsBeforePen = new Set([...app.querySelectorAll('.layer-row[data-layer-id]')]
     .filter(row => row.querySelector('.layer-name')?.textContent.trim() === 'Vector network').map(row => row.dataset.layerId));
@@ -1435,7 +1591,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

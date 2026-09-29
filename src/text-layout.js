@@ -229,3 +229,31 @@ export function calculateTextBox(ctx, node, { fontSize = node.fontSize, lineHeig
   const lines = wrapText(ctx, textValue, Math.max(1, width), spacing);
   return { width, height: Math.max(36, Math.ceil(lines.length * lineHeightPx + 4)) };
 }
+
+/** Keep an auto-width text layer's aligned top anchor fixed as its measured box changes. */
+export function preserveAutoWidthTextAnchor(node, before, after) {
+  if (node?.type !== 'text' || node.textFit !== 'auto-width'
+    || node.variableBindings?.x || node.variableBindings?.y
+    || !before || !after
+    || ![before.x, before.y, before.width, before.height, before.rotation,
+      after.x, after.y, after.width, after.height, after.rotation].every(Number.isFinite)
+    || before.width === after.width && before.height === after.height) return false;
+
+  const anchor = geometry => {
+    const width = geometry.width;
+    const height = geometry.height;
+    const localX = node.align === 'center' ? width / 2 : node.align === 'right' ? width : 0;
+    const radians = geometry.rotation * Math.PI / 180;
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    return {
+      x: geometry.x + width / 2 + cosine * (localX - width / 2) + sine * height / 2,
+      y: geometry.y + height / 2 + sine * (localX - width / 2) - cosine * height / 2
+    };
+  };
+  const previousAnchor = anchor(before);
+  const resizedAnchor = anchor(after);
+  node.x += previousAnchor.x - resizedAnchor.x;
+  node.y += previousAnchor.y - resizedAnchor.y;
+  return true;
+}

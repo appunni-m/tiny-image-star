@@ -158,7 +158,7 @@ const defaults = {
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
 const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
-const prototypeTriggers = new Set(['on-click', 'while-hovering']);
+const prototypeTriggers = new Set(['on-click', 'while-hovering', 'after-delay']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
@@ -2176,6 +2176,10 @@ export function validateDocument(document) {
         if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
         if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
         if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
+        if (item.trigger === 'after-delay'
+          ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
+            || !Number.isInteger(item.delay) || item.delay < 100 || item.delay > 10_000)
+          : Object.hasOwn(item, 'delay')) return true;
         if (item.action === 'open-overlay') {
           if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;
           if (item.overlayOutsideClick != null && typeof item.overlayOutsideClick !== 'boolean') return true;

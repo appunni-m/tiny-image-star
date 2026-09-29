@@ -1,8 +1,11 @@
 import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, walkNodes } from './model.js';
 
-const triggers = new Set(['on-click', 'while-hovering']);
+const triggers = new Set(['on-click', 'while-hovering', 'after-delay']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
+const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
+const minPrototypeDelay = 100;
+const maxPrototypeDelay = 10_000;
 const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
@@ -126,6 +129,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   overlayBackground = true,
   overlayBackgroundColor = '#000000',
   overlayBackgroundOpacity = 0.32,
+  delay = 1000,
   url,
   collectionId,
   modeId,
@@ -133,6 +137,10 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
+  if (trigger === 'after-delay' && (!delayedActions.has(action)
+    || !Number.isInteger(delay) || delay < minPrototypeDelay || delay > maxPrototypeDelay)) {
+    throw new TypeError('After-delay interactions need a destination action and a whole-number delay from 100 to 10,000 ms.');
+  }
   if (!transitions.has(transition)) throw new TypeError('Unsupported prototype transition.');
   if (!easings.has(easing)) throw new TypeError('Unsupported prototype easing.');
   if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
@@ -172,6 +180,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
     if (normalizedCondition) existing.condition = normalizedCondition;
     else delete existing.condition;
+    if (trigger === 'after-delay') existing.delay = delay;
+    else delete existing.delay;
     return existing;
   }
   const interaction = {
@@ -187,6 +197,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
   if (normalizedCondition) interaction.condition = normalizedCondition;
+  if (trigger === 'after-delay') interaction.delay = delay;
   if (action === 'open-overlay') Object.assign(interaction, {
     overlayPosition,
     overlayOutsideClick: Boolean(overlayOutsideClick),
@@ -201,6 +212,41 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
 export function createPrototypeSession(start) {
   if (!start?.page?.id || start.frame?.type !== 'frame') throw new TypeError('Choose a frame to start this prototype.');
   return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, lastHoverInteractionId: null };
+}
+
+export function findPrototypeDelayInteraction(document, pageId, frameId, session = null) {
+  const frame = findNode(document, frameId, pageId)?.node;
+  if (!frame || frame.type !== 'frame') return null;
+  let match = null;
+  walkNodes([frame], ({ node }) => {
+    if (match) return;
+    const interaction = node.interactions?.find(item => item.trigger === 'after-delay'
+      && delayedActions.has(item.action)
+      && Number.isInteger(item.delay) && item.delay >= minPrototypeDelay && item.delay <= maxPrototypeDelay
+      && prototypeConditionMatches(document, item.condition, session, node));
+    if (interaction) match = { source: node, interaction };
+  });
+  return match;
+}
+
+export function schedulePrototypeDelay(interaction, callback, timers = globalThis) {
+  if (interaction?.trigger !== 'after-delay' || !delayedActions.has(interaction.action)
+    || !Number.isInteger(interaction.delay) || interaction.delay < minPrototypeDelay || interaction.delay > maxPrototypeDelay
+    || typeof callback !== 'function' || typeof timers?.setTimeout !== 'function' || typeof timers?.clearTimeout !== 'function') {
+    return () => false;
+  }
+  let active = true;
+  const timeout = timers.setTimeout(() => {
+    if (!active) return;
+    active = false;
+    callback(interaction);
+  }, interaction.delay);
+  return () => {
+    if (!active) return false;
+    active = false;
+    timers.clearTimeout(timeout);
+    return true;
+  };
 }
 
 export function applyPrototypeInteraction(document, session, interaction) {

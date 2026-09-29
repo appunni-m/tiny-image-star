@@ -431,6 +431,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .prototype-controls { display: grid; gap: 10px; margin-top: 14px; }
 .prototype-controls label { display: grid; grid-template-columns: 1fr minmax(105px, 1.15fr); align-items: center; gap: 9px; color: #777; font-size: 10px; }
 .prototype-controls .select-field { width: 100%; min-height: 38px; }
+.prototype-controls label:has(#prototype-delay) { grid-template-columns: 1fr auto; }
+.prototype-controls #prototype-delay { grid-column: 1 / -1; width: 100%; margin: -4px 0 0; accent-color: #0d99ff; }
 .prototype-controls label:has(#prototype-duration) { grid-template-columns: 1fr auto; }
 .prototype-controls #prototype-duration { grid-column: 1 / -1; width: 100%; margin: -4px 0 0; accent-color: #0d99ff; }
 .prototype-controls label:has(input[type="checkbox"]) { grid-template-columns: 1fr auto; }
@@ -598,6 +600,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layer-effect-heading label, .effect-color-row label { font-size: 11px; }
   .effect-color-row input[type=color] { width: 36px; height: 34px; }
   .effect-opacity output { min-width: 36px; }
+  .prototype-controls #prototype-delay { min-height: 44px; margin-top: 0; }
   .fill-type-row { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .fill-type-row .select-field { height: 38px; font-size: 12px; }
   .typography-font-family, [data-prop="fontWeight"], [data-prop="fontStyle"] { min-height: 40px; font-size: 12px; }

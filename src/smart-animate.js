@@ -81,8 +81,133 @@ function canMatch(from, to) {
   if (from.type === 'image' && from.assetId !== to.assetId) return false;
   if (from.type === 'boolean' && from.operation !== to.operation) return false;
   if (from.type === 'path' && !canInterpolatePath(from, to)) return false;
-  if (from.type === 'network' && JSON.stringify([from.vertices || [], from.edges || [], from.faces || []]) !== JSON.stringify([to.vertices || [], to.edges || [], to.faces || []])) return false;
+  if (from.type === 'network' && !canInterpolateNetwork(from, to)) return false;
   return true;
+}
+
+function isFiniteNetworkPoint(point) {
+  return Boolean(point && typeof point === 'object' && !Array.isArray(point)
+    && finiteStyleNumber(point.x) !== null && finiteStyleNumber(point.y) !== null);
+}
+
+function hasUniqueIds(records) {
+  const ids = new Set();
+  for (const record of records) {
+    if (!record || typeof record !== 'object' || Array.isArray(record)
+        || typeof record.id !== 'string' || !record.id || ids.has(record.id)) return false;
+    ids.add(record.id);
+  }
+  return ids;
+}
+
+function isValidNetwork(node) {
+  if (!Array.isArray(node.vertices) || !Array.isArray(node.edges) || !Array.isArray(node.faces)) return false;
+  const vertexIds = hasUniqueIds(node.vertices);
+  const edgeIds = hasUniqueIds(node.edges);
+  const faceIds = hasUniqueIds(node.faces);
+  if (!vertexIds || !edgeIds || !faceIds) return false;
+  if (node.vertices.some(vertex => !isFiniteNetworkPoint(vertex))) return false;
+  if (node.edges.some(edge => typeof edge.from !== 'string' || typeof edge.to !== 'string'
+      || !vertexIds.has(edge.from) || !vertexIds.has(edge.to) || edge.from === edge.to
+      || ['control1', 'control2'].some(key => edge[key] != null && !isFiniteNetworkPoint(edge[key])))) return false;
+  const connections = new Map(node.vertices.map(vertex => [vertex.id, new Set()]));
+  for (const edge of node.edges) {
+    connections.get(edge.from).add(edge.to);
+    connections.get(edge.to).add(edge.from);
+  }
+  if (node.faces.some(face => !Array.isArray(face.vertexIds) || face.vertexIds.length < 3
+      || new Set(face.vertexIds).size !== face.vertexIds.length
+      || face.vertexIds.some((id, index) => typeof id !== 'string' || !vertexIds.has(id)
+        || !connections.get(id)?.has(face.vertexIds[(index + 1) % face.vertexIds.length])))) return false;
+  return true;
+}
+
+function canInterpolateNetwork(from, to) {
+  if (!isValidNetwork(from) || !isValidNetwork(to)
+      || from.vertices.length !== to.vertices.length
+      || from.edges.length !== to.edges.length
+      || from.faces.length !== to.faces.length) return false;
+
+  // Array order is part of the graph's authored traversal order. IDs keep each
+  // geometric record paired while incidence and ring order preserve topology.
+  if (from.vertices.some((vertex, index) => vertex.id !== to.vertices[index].id)) return false;
+  if (from.edges.some((edge, index) => {
+    const target = to.edges[index];
+    return edge.id !== target.id || edge.from !== target.from || edge.to !== target.to;
+  })) return false;
+  return from.faces.every((face, index) => {
+    const target = to.faces[index];
+    return face.id === target.id && face.vertexIds.length === target.vertexIds.length
+      && face.vertexIds.every((vertexId, vertexIndex) => vertexId === target.vertexIds[vertexIndex]);
+  });
+}
+
+function interpolateNetworkPoint(from, to, progress) {
+  return {
+    x: interpolateFiniteNumber(from.x, to.x, progress),
+    y: interpolateFiniteNumber(from.y, to.y, progress)
+  };
+}
+
+function interpolateFiniteNumber(from, to, progress) {
+  const start = Number(from);
+  const end = Number(to);
+  // The difference can overflow when finite endpoints have opposite signs.
+  // A weighted sum is safe in that case; same-sign deltas remain bounded.
+  return (start < 0) !== (end < 0)
+    ? start * (1 - progress) + end * progress
+    : start + (end - start) * progress;
+}
+
+function interpolateNetwork(from, to, progress) {
+  if (progress === 0) return structuredClone(from);
+  if (progress === 1) return structuredClone(to);
+
+  const copy = structuredClone(to);
+  copy.vertices = to.vertices.map((target, index) => {
+    const source = from.vertices[index];
+    const vertex = structuredClone(progress < 0.5 ? source : target);
+    Object.assign(vertex, interpolateNetworkPoint(source, target, progress));
+    return vertex;
+  });
+  const sourceVertices = new Map(from.vertices.map(vertex => [vertex.id, vertex]));
+  const targetVertices = new Map(to.vertices.map(vertex => [vertex.id, vertex]));
+  copy.edges = to.edges.map((target, index) => {
+    const source = from.edges[index];
+    const edge = structuredClone(progress < 0.5 ? source : target);
+    const sourceStart = sourceVertices.get(source.from);
+    const sourceEnd = sourceVertices.get(source.to);
+    const targetStart = targetVertices.get(target.from);
+    const targetEnd = targetVertices.get(target.to);
+    for (const [property, endpoint] of [['control1', 'from'], ['control2', 'to']]) {
+      const sourceControl = source[property] ?? (endpoint === 'from' ? sourceStart : sourceEnd);
+      const targetControl = target[property] ?? (endpoint === 'from' ? targetStart : targetEnd);
+      if (source[property] == null && target[property] == null) {
+        // Keep ordinary line edges ordinary; they follow their endpoints.
+        if (Object.prototype.hasOwnProperty.call(edge, property)) edge[property] = null;
+        continue;
+      }
+      edge[property] = interpolateNetworkPoint(sourceControl, targetControl, progress);
+    }
+    return edge;
+  });
+  copy.faces = to.faces.map((target, index) => {
+    const source = from.faces[index];
+    // Paint references and other categorical face settings switch together,
+    // while direct color and opacity edits remain continuous.
+    const face = structuredClone(progress < 0.5 ? source : target);
+    if (!source.fillVariableId && !target.fillVariableId) {
+      const fill = interpolateColor(source.fill, target.fill, progress);
+      if (fill) face.fill = fill;
+    }
+    const sourceOpacity = finiteStyleNumber(source.fillOpacity);
+    const targetOpacity = finiteStyleNumber(target.fillOpacity);
+    if (sourceOpacity !== null && targetOpacity !== null) {
+      face.fillOpacity = interpolateFiniteNumber(sourceOpacity, targetOpacity, progress);
+    }
+    return face;
+  });
+  return copy;
 }
 
 function isFinitePathCoordinate(value) {
@@ -202,6 +327,12 @@ function interpolateLayer(from, to, progress) {
   }
   if (from.type === 'path' && to.type === 'path') {
     copy.points = interpolatePathPoints(from.points, to.points, progress);
+  }
+  if (from.type === 'network' && to.type === 'network') {
+    const network = interpolateNetwork(from, to, progress);
+    copy.vertices = network.vertices;
+    copy.edges = network.edges;
+    copy.faces = network.faces;
   }
   copy.children = blendChildren(from.children || [], to.children || [], progress);
   return copy;

@@ -19,11 +19,14 @@ const MAX_VECTOR_POINTS = 20_000;
 const MAX_VECTOR_TOKENS = 100_000;
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
+const MAX_TEXT_LENGTH = 100_000;
 const initialStyle = {
   fill: '#000000', fillAlpha: 1, fillColorAlpha: 1, fillOpacityValue: 1,
   stroke: null, strokeAlpha: 1, strokeColorAlpha: 1, strokeOpacityValue: 1, strokeWidth: 1,
   strokeCap: 'butt', strokeJoin: 'miter', strokePattern: 'solid', strokeMiterLimit: 4, strokeDashArray: null, fillGradient: null,
   fillRule: 'nonzero', opacity: 1,
+  fontFamily: 'sans-serif', fontSize: 16, fontWeight: 400, fontStyle: 'normal', textAnchor: 'start',
+  dominantBaseline: 'alphabetic', letterSpacing: 0, textDecoration: 'none', textCase: 'none', xmlSpace: 'default',
   display: true, visibility: 'visible', visible: true
 };
 
@@ -32,7 +35,10 @@ function fail(code, message, element = null) {
 }
 
 function decodeXml(value, element) {
-  if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);)/i.test(value)) fail('invalid-xml', 'SVG contains an unescaped ampersand in an attribute.', element);
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/u.test(value)) {
+    fail('invalid-xml-character', 'SVG contains a character that XML does not permit.', element);
+  }
+  if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);)/i.test(value)) fail('invalid-xml', 'SVG contains an unescaped ampersand in text or an attribute.', element);
   return value.replace(/&([^;]+);/g, (_whole, entity) => {
     if (entity === 'amp') return '&';
     if (entity === 'lt') return '<';
@@ -92,10 +98,14 @@ function parseXml(source) {
       if (text.slice(cursor).trim()) fail('unsupported-text', 'Text outside SVG shape elements is not supported.');
       break;
     }
-    if (text.slice(cursor, open).trim()) {
-      const context = stack.at(-1)?.tag;
+    const textContent = text.slice(cursor, open);
+    if (textContent) {
+      const parent = stack.at(-1);
+      const context = parent?.tag;
       if (['script', 'foreignObject'].includes(context)) fail('active-content', `SVG element <${context}> contains active or embedded content.`, context);
-      fail('unsupported-text', 'SVG text content is unsupported; import outlined vector shapes instead.', context);
+      if (context === 'text') parent.textContent = (parent.textContent ?? '') + decodeXml(textContent, 'text');
+      else if (stack.some(entry => entry.tag === 'text')) { /* nested text markup is rejected with a precise feature error below */ }
+      else if (textContent.trim()) fail('unsupported-text', 'Text outside a supported <text> element is not accepted.', context);
     }
     if (text.startsWith('<!--', open)) {
       const end = text.indexOf('-->', open + 4);
@@ -109,7 +119,8 @@ function parseXml(source) {
       if (text.slice(open + 9, end).trim()) {
         const context = stack.at(-1)?.tag;
         if (['script', 'foreignObject'].includes(context)) fail('active-content', `SVG element <${context}> contains active or embedded content.`, context);
-        fail('unsupported-text', 'SVG text content is unsupported; import outlined vector shapes instead.', context);
+        if (context === 'text') fail('unsupported-text-feature', 'CDATA sections inside SVG text are not supported; use escaped character data.', 'text');
+        fail('unsupported-text', 'Text outside a supported <text> element is not accepted.', context);
       }
       cursor = end + 3;
       continue;
@@ -473,7 +484,11 @@ function collectGradients(root) {
   return gradients;
 }
 
-const inheritedProperties = new Set(['fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility']);
+const inheritedProperties = new Set([
+  'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+  'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility', 'font-family', 'font-size',
+  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'letter-spacing', 'text-decoration', 'text-transform'
+]);
 const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility']);
 
 function parseStyle(node, parentStyle, gradients = new Map()) {
@@ -519,6 +534,40 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       case 'stroke-opacity': values.strokeOpacityValue = parseAlpha(value, key, node.tag); break;
       case 'stroke-width': values.strokeWidth = length(value, key, node.tag); break;
       case 'opacity': values.opacity = parseAlpha(value, key, node.tag); break;
+      case 'font-family':
+        if (!value.trim() || value.length > 160 || /[\x00-\x1f]/.test(value) || /url\s*\(/i.test(value)) {
+          fail('invalid-text-font', 'SVG font-family must be a plain family name or family list no longer than 160 characters.', node.tag);
+        }
+        values.fontFamily = value; break;
+      case 'font-size': {
+        const size = length(value, key, node.tag);
+        if (size <= 0 || size > 100_000) fail('invalid-text-font', 'SVG font-size must be greater than zero and at most 100000 px.', node.tag);
+        values.fontSize = size; break;
+      }
+      case 'font-weight': {
+        const weight = value === 'normal' ? 400 : value === 'bold' ? 700 : /^\d{1,4}$/.test(value) ? Number(value) : NaN;
+        if (!Number.isInteger(weight) || weight < 1 || weight > 1000) fail('invalid-text-font', 'SVG font-weight must be normal, bold, or a number from 1 to 1000.', node.tag);
+        values.fontWeight = weight; break;
+      }
+      case 'font-style':
+        if (!['normal', 'italic', 'oblique'].includes(value)) fail('invalid-text-font', 'SVG font-style must be normal, italic, or oblique.', node.tag);
+        values.fontStyle = value; break;
+      case 'text-anchor':
+        if (!['start', 'middle', 'end'].includes(value)) fail('invalid-text-alignment', 'SVG text-anchor must be start, middle, or end.', node.tag);
+        values.textAnchor = value; break;
+      case 'dominant-baseline': {
+        const baselines = new Set(['auto', 'text-before-edge', 'text-after-edge', 'central', 'middle', 'alphabetic', 'ideographic', 'hanging', 'mathematical', 'before-edge', 'after-edge']);
+        if (!baselines.has(value)) fail('invalid-text-baseline', 'SVG dominant-baseline is not a recognized baseline value.', node.tag);
+        values.dominantBaseline = value; break;
+      }
+      case 'letter-spacing':
+        values.letterSpacing = value === 'normal' ? 0 : coordinateLength(value, key, node.tag); break;
+      case 'text-decoration':
+        if (!['none', 'underline', 'line-through', 'overline', 'blink'].includes(value)) fail('invalid-text-decoration', 'SVG text-decoration is not a recognized value.', node.tag);
+        values.textDecoration = value; break;
+      case 'text-transform':
+        if (!['none', 'uppercase', 'lowercase', 'capitalize', 'full-width', 'full-size-kana'].includes(value)) fail('invalid-text-transform', 'SVG text-transform is not a recognized value.', node.tag);
+        values.textCase = value; break;
       case 'stroke-linecap':
         if (!['butt', 'round', 'square'].includes(value)) fail('invalid-stroke', 'SVG stroke-linecap must be butt, round, or square.', node.tag);
         values.strokeCap = value; break;
@@ -570,6 +619,15 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     else if (normalized.length === 2 && close(normalized[0], 0) && close(normalized[1], unit * 2)) values.strokePattern = 'dotted';
     else fail('unsupported-stroke-style', 'SVG custom dash arrays cannot be represented; use solid, 4:2 dashed, or round 0:2 dotted strokes.', node.tag);
   }
+  for (const [property, styleKey] of [
+    ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'],
+    ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['letter-spacing', 'letterSpacing'],
+    ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
+  ]) if (!Object.hasOwn(declarations, property)) values[styleKey] = parentStyle[styleKey];
+  if (Object.hasOwn(node.attrs, 'xml:space')) {
+    if (!['default', 'preserve'].includes(node.attrs['xml:space'])) fail('invalid-xml-space', 'SVG xml:space must be default or preserve.', node.tag);
+    values.xmlSpace = node.attrs['xml:space'];
+  } else values.xmlSpace = parentStyle.xmlSpace;
   if (!Object.hasOwn(declarations, 'fill-rule')) values.fillRule = parentStyle.fillRule;
   values.fillAlpha = values.fillColorAlpha * values.fillOpacityValue;
   values.strokeAlpha = values.strokeColorAlpha * values.strokeOpacityValue;
@@ -584,6 +642,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
 const geomAttrs = {
   svg: new Set(['xmlns', 'version', 'width', 'height', 'viewBox', 'preserveAspectRatio']),
   g: new Set(), defs: new Set(['id']),
+  text: new Set(['x', 'y']),
   rect: new Set(['x', 'y', 'width', 'height', 'rx', 'ry']),
   circle: new Set(['cx', 'cy', 'r']),
   ellipse: new Set(['cx', 'cy', 'rx', 'ry']),
@@ -593,12 +652,19 @@ const geomAttrs = {
 const commonAttrs = new Set([
   'id', 'transform', 'style', 'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap',
   'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'opacity', 'display', 'visibility', 'color', 'class',
-  'href', 'xlink:href', 'xml:space', 'role', 'focusable'
+  'href', 'xlink:href', 'xml:space', 'role', 'focusable', 'font-family', 'font-size', 'font-weight', 'font-style',
+  'text-anchor', 'dominant-baseline', 'letter-spacing', 'text-decoration', 'text-transform'
 ]);
 
 function checkElementAttributes(node) {
   const allowed = geomAttrs[node.tag];
   for (const key of Object.keys(node.attrs)) {
+    if (node.tag === 'text' && ['dx', 'dy', 'rotate'].includes(key)) {
+      fail('unsupported-text-positioning', `SVG <text> ${key} positioning is unsupported; use one x and y coordinate for the entire text layer.`, 'text');
+    }
+    if (node.tag === 'text' && ['textLength', 'lengthAdjust', 'writing-mode', 'glyph-orientation-horizontal', 'glyph-orientation-vertical'].includes(key)) {
+      fail('unsupported-text-feature', `SVG <text> attribute “${key}” is not supported by editable text layers.`, 'text');
+    }
     if (key === 'xmlns' && node.tag === 'svg' || key === 'version' && node.tag === 'svg' || key.startsWith('aria-') || key.startsWith('data-')) continue;
     if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, node.tag);
     if (key === 'href' || key === 'xlink:href') fail('external-reference', 'SVG href references are not accepted; embed local vector geometry instead.', node.tag);
@@ -1152,7 +1218,12 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
 }
 
 function boundsOf(nodes) {
-  const visible = nodes.filter(node => node.width >= 0 && node.height >= 0);
+  const visible = nodes.filter(node => node.width >= 0 && node.height >= 0).map(node => {
+    const radians = (Number(node.rotation) || 0) * Math.PI / 180;
+    const width = Math.abs(node.width * Math.cos(radians)) + Math.abs(node.height * Math.sin(radians));
+    const height = Math.abs(node.height * Math.cos(radians)) + Math.abs(node.width * Math.sin(radians));
+    return { x: node.x + (node.width - width) / 2, y: node.y + (node.height - height) / 2, width, height };
+  });
   if (!visible.length) return { x: 0, y: 0, width: 0, height: 0 };
   const left = Math.min(...visible.map(node => node.x)); const top = Math.min(...visible.map(node => node.y));
   const right = Math.max(...visible.map(node => node.x + node.width)); const bottom = Math.max(...visible.map(node => node.y + node.height));
@@ -1185,9 +1256,121 @@ function localName(node) {
   return node.attrs.id ? cleanLayerName(node.attrs.id) : `${node.tag} ${node.serial}`;
 }
 
+function svgTextValue(node, style) {
+  let value = String(node.textContent ?? '').replace(/\r\n?/g, '\n');
+  if (style.xmlSpace === 'default') value = value.replace(/[\t\n\r ]+/g, ' ').trim();
+  else if (/[\t\n\r]/.test(value) || /^ | $| {2,}/.test(value)) {
+    fail('unsupported-text-whitespace', 'SVG xml:space="preserve" text with tabs, line breaks, or repeated spaces cannot be represented faithfully.', 'text');
+  }
+  if (value.length > MAX_TEXT_LENGTH) fail('resource-limit', `SVG text exceeds the ${MAX_TEXT_LENGTH}-character import limit.`, 'text');
+  return value;
+}
+
+function estimateTextBoxWidth(text, fontSize, letterSpacing, element) {
+  // A generous per-codepoint bound prevents the editor's fixed text box from wrapping a
+  // single SVG text run while keeping the source text anchored at x/middle/end.
+  const glyphCount = [...text].length;
+  const width = Math.max(fontSize, glyphCount * fontSize * 1.25 + Math.max(0, glyphCount - 1) * Math.max(0, letterSpacing) + 2);
+  if (!Number.isFinite(width) || width > 100_000) fail('resource-limit', 'SVG text would exceed the editor’s 100000 px text-layer width limit.', element);
+  return Math.ceil(width);
+}
+
+function validateNestedTextMarkup(node) {
+  const pending = [...node.children];
+  while (pending.length) {
+    const child = pending.pop();
+    if (['script', 'foreignObject'].includes(child.tag)) {
+      fail('active-content', `SVG element <${child.tag}> contains active or embedded content.`, child.tag);
+    }
+    if (['image', 'use'].includes(child.tag) || Object.hasOwn(child.attrs, 'href') || Object.hasOwn(child.attrs, 'xlink:href')) {
+      fail('external-reference', 'SVG text cannot contain linked or embedded elements.', child.tag);
+    }
+    for (const key of Object.keys(child.attrs)) {
+      if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, child.tag);
+    }
+    pending.push(...child.children);
+  }
+}
+
+function textLayer(node, style, matrix, prefix, serial) {
+  if (node.children.length) {
+    validateNestedTextMarkup(node);
+    if (node.children.some(child => child.tag === 'tspan')) {
+      fail('unsupported-text-tspan', 'SVG <tspan> runs are not supported; use one plain text run per <text> element.', 'tspan');
+    }
+    fail('unsupported-text-feature', 'Nested SVG elements inside <text> are not supported.', 'text');
+  }
+  const value = svgTextValue(node, style);
+  if (!value) return null;
+  if (style.dominantBaseline !== 'text-before-edge') {
+    fail('unsupported-text-baseline', 'Editable SVG text requires dominant-baseline="text-before-edge" so its top edge maps exactly to the text layer.', 'text');
+  }
+  if (style.fontStyle === 'oblique') fail('unsupported-text-font', 'Oblique SVG text is not supported; use normal or italic font-style.', 'text');
+  if (!['none', 'underline', 'line-through'].includes(style.textDecoration)) {
+    fail('unsupported-text-decoration', 'Only none, underline, and line-through SVG text decoration are supported.', 'text');
+  }
+  if (!['none', 'uppercase', 'lowercase', 'capitalize'].includes(style.textCase)) {
+    fail('unsupported-text-transform', 'Only none, uppercase, lowercase, and capitalize SVG text transforms are supported.', 'text');
+  }
+  if (style.fillGradient) fail('unsupported-text-paint', 'SVG gradient fills on text cannot be represented by a solid editable text color.', 'text');
+  if (style.stroke && style.strokeAlpha > 0 && style.strokeWidth > 0) {
+    fail('unsupported-text-paint', 'SVG stroke paint on text cannot be represented by the editable text layer.', 'text');
+  }
+  const scale = matrixScale(matrix);
+  const determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+  const tolerance = Math.max(1, scale || 0) * 1e-8;
+  if (!(scale > 0) || determinant <= tolerance * tolerance) {
+    fail('unsupported-text-transform', 'SVG text supports only positive uniform scale, translation, and rotation transforms.', 'text');
+  }
+  const angle = Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI;
+  const xText = node.attrs.x == null ? '0' : node.attrs.x.trim();
+  const yText = node.attrs.y == null ? '0' : node.attrs.y.trim();
+  if (/[\s,]/.test(xText) || /[\s,]/.test(yText)) {
+    fail('unsupported-text-positioning', 'SVG text x and y must each be a single coordinate; per-character positioning is unsupported.', 'text');
+  }
+  const x = coordinateLength(xText, 'text x', 'text');
+  const y = coordinateLength(yText, 'text y', 'text');
+  const width = estimateTextBoxWidth(value, style.fontSize, style.letterSpacing, 'text');
+  const outputFontSize = style.fontSize * scale;
+  const height = Math.max(36, Math.ceil(outputFontSize * 1.25 + 4));
+  const anchor = style.textAnchor === 'middle' ? 'center' : style.textAnchor === 'end' ? 'right' : 'left';
+  const localLeft = anchor === 'center' ? x - width / 2 : anchor === 'right' ? x - width : x;
+  const mappedTopLeft = mapPoint(matrix, { x: localLeft, y });
+  const outputWidth = width * scale;
+  const outputHeight = height * scale;
+  const outputLetterSpacing = style.letterSpacing * scale;
+  if (!Number.isFinite(outputFontSize) || outputFontSize <= 0 || outputFontSize > 100_000
+    || !Number.isFinite(outputLetterSpacing) || Math.abs(outputLetterSpacing) > 10_000
+    || !Number.isFinite(outputWidth) || outputWidth > 100_000
+    || !Number.isFinite(outputHeight) || outputHeight > MAX_COORDINATE) {
+    fail('resource-limit', 'Transformed SVG text exceeds the editor’s font, spacing, or text-layer size limits.', 'text');
+  }
+  const radians = angle * Math.PI / 180;
+  const cosine = Math.cos(radians); const sine = Math.sin(radians);
+  // Scene layers rotate around their center. Move the unrotated bounds so their
+  // post-rotation top-left remains at the point transformed by the source SVG.
+  const layerX = mappedTopLeft.x + cosine * outputWidth / 2 - sine * outputHeight / 2 - outputWidth / 2;
+  const layerY = mappedTopLeft.y + sine * outputWidth / 2 + cosine * outputHeight / 2 - outputHeight / 2;
+  if (![layerX, layerY, outputWidth, outputHeight].every(Number.isFinite)
+    || Math.abs(layerX) > MAX_COORDINATE || Math.abs(layerY) > MAX_COORDINATE) {
+    fail('coordinate-out-of-range', 'Transformed SVG text exceeds the supported coordinate range.', 'text');
+  }
+  return createNode('text', {
+    id: `${prefix}-${serial}`, name: cleanLayerName(localName(node)),
+    x: layerX, y: layerY, width: outputWidth, height: outputHeight, rotation: angle,
+    opacity: style.opacity, text: value, textFit: 'auto-width',
+    fontFamily: style.fontFamily, fontSize: outputFontSize, fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle, lineHeight: 1.25, letterSpacing: outputLetterSpacing,
+    color: style.fill || '#000000', fillOpacity: style.fill ? style.fillColorAlpha * style.fillOpacityValue : 0,
+    align: anchor, verticalAlign: 'top', textCase: style.textCase, textDecoration: style.textDecoration,
+    stroke: null, strokeWidth: 0, children: []
+  });
+}
+
 function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients) {
   if (node.tag === 'svg' && node !== counter.root) fail('unsupported-nested-svg', 'Nested <svg> viewports are not supported.', 'svg');
   if (node.tag === 'defs') return [];
+  if (node.tag === 'tspan') fail('unsupported-text-tspan', 'SVG <tspan> runs are not supported; use one plain text run per <text> element.', 'tspan');
   const unsafe = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
   if (unsafe.has(node.tag)) {
     const code = ['script', 'foreignObject'].includes(node.tag) ? 'active-content' : ['image', 'use'].includes(node.tag) ? 'external-reference' : 'unsupported-element';
@@ -1198,6 +1381,11 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
   const style = parseStyle(node, parentStyle, gradients);
   if (!style.display || (node.tag !== 'g' && node.tag !== 'svg' && !style.visible)) return [];
   const matrix = matrixMultiply(parentMatrix, parseTransform(node.attrs.transform, node.tag));
+  if (node.tag === 'text') {
+    const serial = counter.next++;
+    const layer = textLayer(node, style, matrix, prefix, serial);
+    return layer ? [layer] : [];
+  }
   if (node.tag !== 'g' && node.tag !== 'svg') {
     const paths = elementPaths(node, budget);
     const output = [];

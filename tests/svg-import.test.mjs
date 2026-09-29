@@ -150,10 +150,77 @@ test('rejects active content, external references, declarations, and unresolved 
 });
 
 test('reports model-incompatible geometry and paint explicitly', () => {
-  importFailure(`<svg><text x="0" y="0">hello</text></svg>`, 'unsupported-text');
+  importFailure(`<svg><text x="0" y="0">hello</text></svg>`, 'unsupported-text-baseline');
   importFailure(`<svg><path d="M0 0L10 0 M20 20L30 30" fill="#000"/></svg>`, 'unsupported-compound-path');
   importFailure(`<svg><path d="M0 0L10 0L10 10Z" fill="#000" fill-rule="evenodd"/></svg>`, 'unsupported-fill-rule');
   importFailure(`<svg><g><marker/></g></svg>`, 'unsupported-element');
+});
+
+test('imports a plain SVG text run as an editable native text layer with inherited supported styles', () => {
+  const result = importSvgToLayers(`<svg width="300" height="120">
+    <g transform="translate(10 20)" fill="#336699" fill-opacity=".5" font-family="Inter, Arial, sans-serif"
+       font-size="20" font-weight="700" font-style="italic" text-anchor="middle" dominant-baseline="text-before-edge">
+      <text id="headline" x="100" y="5" letter-spacing="1" text-decoration="underline">Hello &amp; world</text>
+    </g>
+  </svg>`);
+  const headline = allNodes(result.nodes).find(node => node.type === 'text');
+  assert.ok(headline, 'SVG text imports as a native text layer');
+  assert.equal(headline.name, 'headline');
+  assert.equal(headline.text, 'Hello & world');
+  assert.equal(headline.fontFamily, 'Inter, Arial, sans-serif');
+  assert.equal(headline.fontSize, 20);
+  assert.equal(headline.fontWeight, 700);
+  assert.equal(headline.fontStyle, 'italic');
+  assert.equal(headline.letterSpacing, 1);
+  assert.equal(headline.color, '#336699');
+  assert.equal(headline.fillOpacity, 0.5);
+  assert.equal(headline.align, 'center');
+  assert.equal(headline.textDecoration, 'underline');
+  assert.equal(headline.textFit, 'auto-width');
+  const group = allNodes(result.nodes).find(node => node.type === 'group');
+  assert.equal(headline.x + group.x + headline.width / 2, 110, 'text-anchor=middle keeps the transformed SVG anchor centered');
+  assert.equal(headline.y + group.y, 25, 'text-before-edge maps to the native text top edge');
+});
+
+test('imports positively scaled and rotated text without changing its anchor', () => {
+  const result = importSvgToLayers(`<svg width="100" height="100"><text id="rotated" x="10" y="20" transform="translate(5 6) rotate(90) scale(2)"
+      font-size="12" dominant-baseline="text-before-edge">Hi</text></svg>`);
+  const text = allNodes(result.nodes).find(node => node.type === 'text');
+  assert.equal(text.rotation, 90);
+  assert.equal(text.fontSize, 24);
+  assert.equal(text.width, Math.ceil((2 * 12 * 1.25 + 2) * 2));
+  const angle = text.rotation * Math.PI / 180;
+  const topLeftAfterRotation = {
+    x: text.x + text.width / 2 - Math.cos(angle) * text.width / 2 + Math.sin(angle) * text.height / 2,
+    y: text.y + text.height / 2 - Math.sin(angle) * text.width / 2 - Math.cos(angle) * text.height / 2
+  };
+  assert.ok(Math.abs(topLeftAfterRotation.x - (-35)) < 1e-8);
+  assert.ok(Math.abs(topLeftAfterRotation.y - 26) < 1e-8);
+});
+
+test('uses SVG default x/y coordinates and preserves valid non-BMP text characters', () => {
+  const text = allNodes(importSvgToLayers(`<svg><text dominant-baseline="text-before-edge">&#x1f680;</text></svg>`).nodes)
+    .find(node => node.type === 'text');
+  assert.equal(text.text, '🚀');
+  assert.equal(text.x, 0);
+  assert.equal(text.y, 0);
+});
+
+test('rejects SVG text features the native text model cannot represent', () => {
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge">A<tspan>B</tspan></text></svg>`, 'unsupported-text-tspan');
+  importFailure(`<svg><text x="0 10" y="0" dominant-baseline="text-before-edge">A</text></svg>`, 'unsupported-text-positioning');
+  importFailure(`<svg><text x="0" y="0" dx="2" dominant-baseline="text-before-edge">A</text></svg>`, 'unsupported-text-positioning');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="alphabetic">A</text></svg>`, 'unsupported-text-baseline');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge" stroke="#000">A</text></svg>`, 'unsupported-text-paint');
+  importFailure(`<svg><defs><linearGradient id="g"><stop/><stop offset="1"/></linearGradient></defs><text x="0" y="0" dominant-baseline="text-before-edge" fill="url(#g)">A</text></svg>`, 'unsupported-text-paint');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge" textLength="100">A</text></svg>`, 'unsupported-text-feature');
+  importFailure(`<svg><text x="0" y="0" transform="scale(2 1)" dominant-baseline="text-before-edge">A</text></svg>`, 'unsupported-text-transform');
+  importFailure(`<svg><text x="0" y="0" transform="scale(10000)" font-size="100" dominant-baseline="text-before-edge">A</text></svg>`, 'resource-limit');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge" xml:space="preserve">A  B</text></svg>`, 'unsupported-text-whitespace');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge"><script/></text></svg>`, 'active-content');
+  importFailure(`<svg><text x="0" y="0" dominant-baseline="text-before-edge">A\u0001B</text></svg>`, 'invalid-xml-character');
+  importFailure(`<svg>stray</svg>`, 'unsupported-text');
+  importFailure(`<svg><text><![CDATA[A&B]]></text></svg>`, 'unsupported-text-feature');
 });
 
 test('imports editable SVG stroke caps, joins, and standard dash patterns', () => {

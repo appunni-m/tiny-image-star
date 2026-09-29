@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
+import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
   return {
@@ -19,6 +20,23 @@ function fontAwareContext() {
       const size = Number(/([\d.]+)px/.exec(this.font)?.[1] || 10);
       return { width: [...String(text)].length * size / 2 };
     }
+  };
+}
+
+function textGeometry(node) {
+  return { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+}
+
+function alignedTopAnchor(node) {
+  const width = node.width;
+  const height = node.height;
+  const localX = node.align === 'center' ? width / 2 : node.align === 'right' ? width : 0;
+  const radians = node.rotation * Math.PI / 180;
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  return {
+    x: node.x + width / 2 + cosine * (localX - width / 2) + sine * height / 2,
+    y: node.y + height / 2 + sine * (localX - width / 2) - cosine * height / 2
   };
 }
 
@@ -66,6 +84,42 @@ test('text case transformation is Unicode aware and feeds auto sizing', () => {
 
   const node = createNode('text', { text: 'straße', textCase: 'uppercase', textFit: 'auto-width', fontSize: 10, lineHeight: 1 });
   assert.equal(calculateTextBox(context(), node).width, 72, 'expanded uppercase glyphs are included in the measured text width');
+});
+
+test('text edits and typography resizing preserve centered and right SVG text anchors', () => {
+  for (const [svgAnchor, align] of [['middle', 'center'], ['end', 'right']]) {
+    const imported = importSvgToLayers(`<svg width="300" height="160"><text x="160" y="60" text-anchor="${svgAnchor}"
+      dominant-baseline="text-before-edge" font-family="Arial" font-size="20" transform="rotate(25 20 30)">A deliberately long imported SVG heading</text></svg>`);
+    const node = imported.nodes[0].children.find(child => child.type === 'text');
+    assert.equal(node.align, align);
+    const angle = 25 * Math.PI / 180;
+    const expectedAnchor = {
+      x: 20 + Math.cos(angle) * 140 - Math.sin(angle) * 30,
+      y: 30 + Math.sin(angle) * 140 + Math.cos(angle) * 30
+    };
+    const importedAnchor = alignedTopAnchor(node);
+    assert.ok(Math.abs(importedAnchor.x - expectedAnchor.x) < 1e-8 && Math.abs(importedAnchor.y - expectedAnchor.y) < 1e-8,
+      `${align} SVG anchor should start at its transformed x/y coordinate`);
+
+    for (const edit of [
+      () => { node.text = 'Short'; },
+      () => { node.fontSize = 32; },
+      () => { node.letterSpacing = 5; }
+    ]) {
+      const before = textGeometry(node);
+      const anchorBefore = alignedTopAnchor(node);
+      edit();
+      const size = calculateTextBox(fontAwareContext(), node);
+      node.width = size.width;
+      node.height = size.height;
+      assert.equal(preserveAutoWidthTextAnchor(node, before, textGeometry(node)), true);
+      const anchorAfter = alignedTopAnchor(node);
+      assert.ok(Math.abs(anchorAfter.x - anchorBefore.x) < 1e-8 && Math.abs(anchorAfter.y - anchorBefore.y) < 1e-8,
+        `${align} SVG text anchor should survive text and typography edits`);
+      assert.ok(Math.abs(anchorAfter.x - expectedAnchor.x) < 1e-8 && Math.abs(anchorAfter.y - expectedAnchor.y) < 1e-8,
+        `${align} SVG text anchor should remain at its original transformed x/y coordinate`);
+    }
+  }
 });
 
 test('text resize modes are valid only on text layers and persist in design documents', () => {

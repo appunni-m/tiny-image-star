@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from '../src/prototype.js';
 
 test('prototype links persist as local navigation to a destination frame', () => {
   const document = createDocument();
@@ -45,6 +45,70 @@ test('smart animate is stored for frame navigation and rejected for overlays', (
   const invalidEasing = structuredClone(document);
   invalidEasing.pages[0].children[0].children[0].interactions[0].easing = 'bounce';
   assert.throws(() => validateDocument(invalidEasing), /Invalid prototype interactions/);
+});
+
+test('after-delay prototype routes validate, persist, schedule once, and cancel safely', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Timed home' });
+  const trigger = createNode('rectangle', { name: 'Timed route' });
+  const destination = createNode('frame', { name: 'Timed destination' });
+  home.children.push(trigger);
+  addNode(document, home); addNode(document, destination);
+
+  const interaction = addPrototypeInteraction(document, trigger.id, destination.id, { trigger: 'after-delay', delay: 1250 });
+  assert.equal(interaction.delay, 1250);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true, 'the wait and destination should round-trip through document storage');
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  const timed = findPrototypeDelayInteraction(document, document.activePageId, home.id, session);
+  assert.equal(timed.source.id, trigger.id);
+  assert.equal(timed.interaction.id, interaction.id);
+  assert.equal(applyPrototypeInteraction(document, session, timed.interaction), 'navigated');
+  assert.equal(session.frameId, destination.id);
+
+  const opener = createNode('rectangle', { name: 'Open timed overlay' });
+  const overlay = createNode('frame', { name: 'Timed overlay' });
+  const overlayTrigger = createNode('rectangle', { name: 'Continue after wait' });
+  home.children.push(opener);
+  overlay.children.push(overlayTrigger);
+  addNode(document, overlay);
+  const openOverlay = addPrototypeInteraction(document, opener.id, overlay.id, { action: 'open-overlay' });
+  const overlayRoute = addPrototypeInteraction(document, overlayTrigger.id, destination.id, { trigger: 'after-delay', delay: 300 });
+  const overlaySession = createPrototypeSession({ page: document.pages[0], frame: home });
+  assert.equal(applyPrototypeInteraction(document, overlaySession, openOverlay), 'overlay-opened');
+  const visibleOverlay = overlaySession.overlays.at(-1);
+  assert.equal(findPrototypeDelayInteraction(document, visibleOverlay.pageId, visibleOverlay.frameId, overlaySession).interaction.id, overlayRoute.id,
+    'the active overlay should scope delayed actions independently from its underlying frame');
+
+  for (const delay of [99, 10_001, 1250.5, NaN]) {
+    assert.throws(() => addPrototypeInteraction(document, trigger.id, destination.id, { trigger: 'after-delay', delay }), /whole-number delay/);
+  }
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, null, { action: 'back', trigger: 'after-delay' }), /destination action/);
+  const invalid = structuredClone(document);
+  findNode(invalid, trigger.id).node.interactions[0].delay = 10_001;
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  const missingDelay = structuredClone(document);
+  delete findNode(missingDelay, trigger.id).node.interactions[0].delay;
+  assert.throws(() => validateDocument(missingDelay), /Invalid prototype interactions/);
+
+  let scheduledCallback;
+  let scheduledDelay;
+  let clearedHandle = null;
+  const timers = {
+    setTimeout(callback, delay) { scheduledCallback = callback; scheduledDelay = delay; return 'timer-1'; },
+    clearTimeout(handle) { clearedHandle = handle; }
+  };
+  let fired = 0;
+  const cancel = schedulePrototypeDelay(interaction, () => { fired += 1; }, timers);
+  assert.equal(scheduledDelay, 1250);
+  assert.equal(cancel(), true);
+  assert.equal(clearedHandle, 'timer-1');
+  scheduledCallback();
+  assert.equal(fired, 0, 'a callback already queued at cancellation time must remain inert');
+
+  let completed = 0;
+  schedulePrototypeDelay(interaction, () => { completed += 1; }, timers);
+  scheduledCallback();
+  assert.equal(completed, 1, 'an active delay should invoke its route exactly once');
 });
 
 test('prototype easing curves clamp progress and preserve the legacy smooth default', () => {

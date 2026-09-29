@@ -10,8 +10,8 @@ import { createImageTransforms } from './image-transforms.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, worldToScreen } from './renderer.js';
-import { calculateTextBox, measureTrackedText } from './text-layout.js';
-import { LocalImageEngine } from './image-engine.js';
+import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
+import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
 import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
 import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listSavedDocuments, loadDocumentById, loadImageAsset, loadLatestDocument, renameStoredDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
@@ -20,7 +20,7 @@ import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { importSvgToLayers } from './svg-import.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
@@ -46,7 +46,7 @@ const state = {
   documentGeneration: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
-  prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
+  prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null,
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
@@ -63,6 +63,7 @@ let pendingRecipeNodeId = null;
 let latestPageLayerIds = [];
 let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
+let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const previewTimers = new Map();
 let nextImageRenderVersion = 0;
@@ -683,7 +684,7 @@ function prototypeInspector() {
     const variableCollection = state.document.variableCollections?.find(collection => collection.id === interaction.collectionId);
     const variableMode = variableCollection?.modes.find(mode => mode.id === interaction.modeId);
     const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : 'Navigate to';
-    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap';
+    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : 'On click / tap';
     const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
     const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
     const conditionLabel = conditionVariable ? ` · If ${conditionVariable.name} ${interaction.condition.operator === 'equals' ? 'is' : 'is not'} ${String(interaction.condition.value)}` : '';
@@ -698,6 +699,8 @@ function prototypeInspector() {
     .map(([value, label]) => `<option value="${value}"${state.prototypeEasing === value ? ' selected' : ''}>${label}</option>`).join('');
   const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
   const variableCollections = state.document.variableCollections || [];
+  const canUseDelayTrigger = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
+  const triggerOptions = `<option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option>${canUseDelayTrigger ? `<option value="after-delay"${state.prototypeTrigger === 'after-delay' ? ' selected' : ''}>After delay</option>` : ''}`;
   const conditionVariables = state.document.variables || [];
   const conditionVariable = conditionVariables.find(variable => variable.id === state.prototypeConditionVariableId) || null;
   const rawConditionValue = conditionVariable
@@ -721,7 +724,7 @@ function prototypeInspector() {
       ? `<label>Collection<select id="prototype-variable-collection" class="select-field">${variableCollections.map(collection => `<option value="${escapeHtml(collection.id)}"${collection.id === prototypeCollection.id ? ' selected' : ''}>${escapeHtml(collection.name)}</option>`).join('')}</select></label><label>Mode<select id="prototype-variable-mode" class="select-field">${prototypeModes.map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === selectedPrototypeMode?.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('')}</select></label>`
       : '<p class="prototype-hint">Create a variable collection and modes before adding this action.</p>'
     : '';
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${conditionControls}${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${conditionControls}${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow. Variable mode actions update the active flow without changing the saved frame settings.</span></section></div>`;
 }
@@ -1379,6 +1382,7 @@ function onCanvasPointerDown(event) {
       addPrototypeInteraction(state.document, state.prototypeSourceId, target.id, {
         action: state.prototypeAction,
         trigger: state.prototypeTrigger,
+        delay: state.prototypeDelay,
         transition: state.prototypeTransition,
         easing: state.prototypeEasing,
         duration: state.prototypeDuration,
@@ -1662,6 +1666,7 @@ function resizeTextNode(node) {
   if (!node.variableBindings?.width) node.width = size.width;
   if (!node.variableBindings?.height) node.height = size.height;
   const after = resolvedGeometry(node);
+  preserveAutoWidthTextAnchor(node, before, after);
   return before.width !== after.width || before.height !== after.height;
 }
 
@@ -2493,6 +2498,8 @@ async function importImageFiles(files, point = null) {
   for (const [index, file] of inputs.entries()) {
     try {
       const assetId = createId('asset');
+      const headerBytes = new Uint8Array(await file.slice(0, IMAGE_HEADER_SCAN_BYTES).arrayBuffer());
+      assertSafeRasterDimensions(headerBytes);
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
       const bitmap = await createImageBitmap(file);
       if (generation !== state.documentGeneration) { bitmap.close?.(); continue; }
@@ -2530,6 +2537,7 @@ async function restoreImageAssets(generation = state.documentGeneration) {
       if (generation !== state.documentGeneration) return;
       if (!saved) { state.imageStatus.set(node.id, 'Original image missing'); continue; }
       const sourceBytes = new Uint8Array(saved.bytes);
+      assertSafeRasterDimensions(sourceBytes);
       const bitmap = await createImageBitmap(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
       if (generation !== state.documentGeneration) { bitmap.close?.(); return; }
       state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
@@ -3526,10 +3534,36 @@ function cancelPresentationAnimation() {
   presentationAnimationFrame = 0;
 }
 
+function clearPresentationDelay() {
+  if (presentationDelayCancel) presentationDelayCancel();
+  presentationDelayCancel = null;
+  const dialog = $('#present-dialog');
+  if (dialog) delete dialog.dataset.afterDelayPending;
+}
+
+function schedulePresentationDelay() {
+  clearPresentationDelay();
+  if (!state.presenting || !$('#present-dialog').open) return;
+  const session = state.presenting;
+  const topOverlay = session.overlays.at(-1);
+  const pageId = topOverlay?.pageId || session.pageId;
+  const frameId = topOverlay?.frameId || session.frameId;
+  const found = findPrototypeDelayInteraction(state.document, pageId, frameId, session);
+  if (!found) return;
+  presentationDelayCancel = schedulePrototypeDelay(found.interaction, () => {
+    presentationDelayCancel = null;
+    delete $('#present-dialog').dataset.afterDelayPending;
+    if (state.presenting !== session || (session.overlays.at(-1)?.frameId || session.frameId) !== frameId
+      || (session.overlays.at(-1)?.pageId || session.pageId) !== pageId) return;
+    navigatePresentation(found.interaction);
+  });
+  $('#present-dialog').dataset.afterDelayPending = String(Boolean(presentationDelayCancel));
+}
+
 function animateSmartTransition(fromFrame, interaction) {
   cancelPresentationAnimation();
   const duration = Math.max(0, Number(interaction.duration) || 0);
-  if (!duration) { renderPresentationFrame(); return; }
+  if (!duration) { renderPresentationFrame(); schedulePresentationDelay(); return; }
   const startTime = performance.now();
   const tick = now => {
     if (!state.presenting) { presentationAnimationFrame = 0; return; }
@@ -3540,6 +3574,7 @@ function animateSmartTransition(fromFrame, interaction) {
     else {
       presentationAnimationFrame = 0;
       renderPresentationFrame();
+      schedulePresentationDelay();
     }
   };
   presentationAnimationFrame = requestAnimationFrame(tick);
@@ -3556,6 +3591,7 @@ function startPresentation(selectedId = null) {
   requestAnimationFrame(() => {
     if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentRenderState);
     renderPresentationFrame();
+    schedulePresentationDelay();
   });
 }
 
@@ -3566,15 +3602,17 @@ function navigatePresentation(interaction) {
     ? findNode(state.document, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
   const previousFrame = source ? structuredClone(source) : null;
+  clearPresentationDelay();
   cancelPresentationAnimation();
   const result = applyPrototypeInteraction(state.document, state.presenting, interaction);
   if (!result) { showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.'); return; }
   if (result === 'link-opened' && linkUrl) {
     window.open(linkUrl, '_blank', 'noopener,noreferrer');
+    schedulePresentationDelay();
     return;
   }
   if (result === 'navigated' && previousFrame) animateSmartTransition(previousFrame, interaction);
-  else renderPresentationFrame(interaction);
+  else { renderPresentationFrame(interaction); schedulePresentationDelay(); }
 }
 
 function handlePresentationPointer(event, trigger) {
@@ -3589,7 +3627,9 @@ function handlePresentationPointer(event, trigger) {
     if (!insideOverlay && topOverlayState.outsideClick) {
       state.presenting.overlays.pop();
       state.presenting.lastHoverInteractionId = null;
+      clearPresentationDelay();
       renderPresentationFrame();
+      schedulePresentationDelay();
       return;
     }
   }
@@ -3601,9 +3641,11 @@ function handlePresentationPointer(event, trigger) {
 }
 
 function backPresentation() {
+  clearPresentationDelay();
   cancelPresentationAnimation();
   if (!backPrototypeSession(state.presenting)) return;
   renderPresentationFrame();
+  schedulePresentationDelay();
 }
 
 async function exportDesign() {
@@ -4425,6 +4467,10 @@ function initEvents() {
       state.prototypeDuration = Number(event.target.value);
       $('#prototype-duration-value').textContent = `${(state.prototypeDuration / 1000).toFixed(1)} s`;
     }
+    if (event.target.id === 'prototype-delay') {
+      state.prototypeDelay = Number(event.target.value);
+      $('#prototype-delay-value').textContent = `${(state.prototypeDelay / 1000).toFixed(1)} s`;
+    }
     if (event.target.id === 'prototype-condition-value') state.prototypeConditionValue = event.target.value;
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
@@ -4488,6 +4534,7 @@ function initEvents() {
     if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
     if (event.target.id === 'prototype-action') {
       state.prototypeAction = event.target.value;
+      if (!['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTrigger === 'after-delay') state.prototypeTrigger = 'on-click';
       if (state.prototypeAction !== 'navigate' && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'set-variable-mode') {
         const collection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
@@ -4502,11 +4549,12 @@ function initEvents() {
       renderInspector();
     }
     if (event.target.id === 'prototype-variable-mode') state.prototypeVariableModeId = event.target.value;
-    if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
+    if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-easing') state.prototypeEasing = event.target.value;
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
+    if (event.target.id === 'prototype-delay') state.prototypeDelay = Number(event.target.value);
     if (event.target.id === 'prototype-overlay-position') state.prototypeOverlayPosition = event.target.value;
     if (event.target.id === 'prototype-overlay-outside') state.prototypeOverlayOutsideClick = event.target.checked;
     if (event.target.id === 'prototype-overlay-background') { state.prototypeOverlayBackground = event.target.checked; renderInspector(); }
@@ -4620,6 +4668,7 @@ function initEvents() {
   $('#present-back').addEventListener('click', backPresentation);
   $('#present-exit').addEventListener('click', () => $('#present-dialog').close());
   $('#present-dialog').addEventListener('close', () => {
+    clearPresentationDelay();
     cancelPresentationAnimation();
     presentRenderer?.destroy(); presentRenderer = null; presentRenderState = null; state.presenting = null;
     $('#present-canvas').style.opacity = '1'; $('#present-canvas').style.transform = 'translateX(0)';
