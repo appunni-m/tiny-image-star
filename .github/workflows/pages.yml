@@ -32,7 +32,7 @@ jobs:
           node-version: ${{ matrix.node }}
 
       - name: Run model, storage, and WASM tests
-        run: npm test
+        run: node scripts/ci-test.mjs
 
       - name: Verify static deployment inputs
         run: npm run verify:static

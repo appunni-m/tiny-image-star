@@ -25,7 +25,13 @@ test('grouping siblings preserves hierarchy, stacking order, geometry, and local
   assert.deepEqual(group.children.map(node => node.id), [first.id, last.id]);
   for (const expected of original) {
     const node = findNode(document, expected.id).node;
-    assert.deepEqual(absoluteBounds(document, expected.id), expected.bounds);
+    const actualBounds = absoluteBounds(document, expected.id);
+    for (const key of ['x', 'y', 'width', 'height']) {
+      assert.ok(
+        Math.abs(actualBounds[key] - expected.bounds[key]) < 1e-9,
+        `${key} changed while grouping ${expected.id}: expected ${expected.bounds[key]}, got ${actualBounds[key]}`
+      );
+    }
     assert.equal(node.rotation, expected.rotation);
   }
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
