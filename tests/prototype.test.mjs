@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, findNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
 
 test('prototype links persist as local navigation to a destination frame', () => {
   const document = createDocument();
@@ -32,14 +32,28 @@ test('smart animate is stored for frame navigation and rejected for overlays', (
   firstFrame.children.push(source);
   addNode(document, firstFrame); addNode(document, destination);
 
-  const interaction = addPrototypeInteraction(document, source.id, destination.id, { transition: 'smart-animate', duration: 500 });
+  const interaction = addPrototypeInteraction(document, source.id, destination.id, { transition: 'smart-animate', easing: 'ease-out', duration: 500 });
   assert.equal(interaction.transition, 'smart-animate');
-  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].transition, 'smart-animate');
+  assert.equal(interaction.easing, 'ease-out');
+  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].easing, 'ease-out');
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { easing: 'bounce' }), /Unsupported prototype easing/);
   assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { action: 'open-overlay', transition: 'smart-animate' }), /only be used for frame navigation/);
 
   const invalid = structuredClone(document);
   invalid.pages[0].children[0].children[0].interactions[0].action = 'open-overlay';
   assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  const invalidEasing = structuredClone(document);
+  invalidEasing.pages[0].children[0].children[0].interactions[0].easing = 'bounce';
+  assert.throws(() => validateDocument(invalidEasing), /Invalid prototype interactions/);
+});
+
+test('prototype easing curves clamp progress and preserve the legacy smooth default', () => {
+  assert.equal(easePrototypeProgress(-1, 'linear'), 0);
+  assert.equal(easePrototypeProgress(2, 'linear'), 1);
+  assert.equal(easePrototypeProgress(0.5, 'ease-in'), 0.25);
+  assert.equal(easePrototypeProgress(0.5, 'ease-out'), 0.75);
+  assert.equal(easePrototypeProgress(0.5, 'ease-in-out'), 0.5);
+  assert.equal(easePrototypeProgress(0.5), 0.5);
 });
 
 test('prototype start point and frame hit-testing prefer a nested frame', () => {

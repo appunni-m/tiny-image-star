@@ -69,6 +69,9 @@ try {
   click(app.querySelector('[data-inspector-tab="prototype"]'));
   let prototypeTransition = app.querySelector('#prototype-transition');
   assert([...prototypeTransition.options].some(option => option.value === 'smart-animate') && prototypeTransition.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'Smart animate should remain available inside the phone prototype inspector');
+  prototypeTransition.value = 'smart-animate'; prototypeTransition.dispatchEvent(new Event('change', { bubbles: true }));
+  const prototypeEasing = app.querySelector('#prototype-easing');
+  assert(prototypeEasing && prototypeEasing.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'the easing control should fit inside the phone prototype inspector');
   const prototypeAction = app.querySelector('#prototype-action');
   prototypeAction.value = 'open-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   assert(![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should keep overlay transitions separate');

@@ -3,6 +3,7 @@ import { findNode, findNodeAcrossPages, getActivePage, walkNodes } from './model
 const triggers = new Set(['on-click', 'while-hovering']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const actions = new Set(['navigate', 'open-overlay', 'close-overlay']);
+const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
   'bottom-left', 'bottom-center', 'bottom-right'
@@ -23,6 +24,18 @@ export function setPrototypeStartPoint(document, frameId, pageId = document.acti
   if (!entry || entry.node.type !== 'frame') throw new Error('Choose a frame to use as the prototype starting point.');
   document.prototypeStartPoint = { pageId, nodeId: frameId };
   return document.prototypeStartPoint;
+}
+
+export function easePrototypeProgress(progress, easing = 'ease-in-out') {
+  const value = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
+  if (easing === 'linear') return value;
+  if (easing === 'ease-in') return value * value;
+  if (easing === 'ease-out') return 1 - (1 - value) ** 2;
+  return value * value * (3 - 2 * value);
+}
+
+export function prototypeEasingTimingFunction(easing = 'ease-in-out') {
+  return easings.has(easing) ? easing : 'ease-in-out';
 }
 
 export function getPrototypeStartFrame(document, selectedId = null) {
@@ -48,6 +61,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   action = 'navigate',
   trigger = 'on-click',
   transition = 'instant',
+  easing = 'ease-in-out',
   duration = 300,
   overlayPosition = 'center',
   overlayOutsideClick = true,
@@ -58,6 +72,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
   if (!transitions.has(transition)) throw new TypeError('Unsupported prototype transition.');
+  if (!easings.has(easing)) throw new TypeError('Unsupported prototype easing.');
   if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
   const source = findNode(document, sourceId, sourcePageId);
   const needsDestination = action !== 'close-overlay';
@@ -71,6 +86,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null));
   if (existing) {
     existing.transition = transition;
+    existing.easing = easing;
     existing.duration = Math.max(0, Math.min(2000, Number(duration) || 0));
     if (action === 'open-overlay') {
       existing.overlayPosition = overlayPosition;
@@ -88,6 +104,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     destinationId: destination?.node?.id ?? null,
     destinationPageId: destination?.page?.id ?? null,
     transition,
+    easing,
     duration: Math.max(0, Math.min(2000, Number(duration) || 0))
   };
   if (action === 'open-overlay') Object.assign(interaction, {

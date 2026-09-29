@@ -13,7 +13,7 @@ import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, prototypeEasingTimingFunction, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import {
   appendVectorNetworkPath, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
@@ -35,7 +35,7 @@ const state = {
   statusTimer: null, saveTimer: null, lastLayerSelection: null,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
-  prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeDuration: 300,
+  prototypeSourceId: null, prototypeAction: 'navigate', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
   presenting: null
@@ -405,13 +405,16 @@ function prototypeInspector() {
     const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'close-overlay' ? 'Close overlay' : 'Navigate to';
     const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : 'On click / tap';
     const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : 'Missing frame';
-    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'open-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'open-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
   const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
   const overlayControls = state.prototypeAction === 'open-overlay' ? `<label>Position<select id="prototype-overlay-position" class="select-field">${[['center','Center'],['top-left','Top left'],['top-center','Top center'],['top-right','Top right'],['left-center','Left center'],['right-center','Right center'],['bottom-left','Bottom left'],['bottom-center','Bottom center'],['bottom-right','Bottom right']].map(([value, label]) => `<option value="${value}"${state.prototypeOverlayPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label><span>Dismiss on outside click</span><input id="prototype-overlay-outside" type="checkbox"${state.prototypeOverlayOutsideClick ? ' checked' : ''}/></label><label><span>Show background</span><input id="prototype-overlay-background" type="checkbox"${state.prototypeOverlayBackground ? ' checked' : ''}/></label>${state.prototypeOverlayBackground ? `<label>Background<input id="prototype-overlay-color" type="color" value="${state.prototypeOverlayBackgroundColor}"/><input id="prototype-overlay-opacity" type="range" min="0" max="100" value="${Math.round(state.prototypeOverlayBackgroundOpacity * 100)}" aria-label="Overlay background opacity"/></label>` : ''}` : '';
   const transitionOptions = [['instant', 'Instant'], ['dissolve', 'Dissolve'], ['move-left', 'Move in · left'], ['move-right', 'Move in · right'], ...(state.prototypeAction === 'navigate' ? [['smart-animate', 'Smart animate']] : [])]
     .map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option></select></label>${state.prototypeAction !== 'close-overlay' ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label><label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect">${state.prototypeAction === 'close-overlay' ? '＋ Add close overlay' : '＋ Add interaction'}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const easingOptions = [['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out']]
+    .map(([value, label]) => `<option value="${value}"${state.prototypeEasing === value ? ' selected' : ''}>${label}</option>`).join('');
+  const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field"><option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option></select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option></select></label>${state.prototypeAction !== 'close-overlay' ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect">${state.prototypeAction === 'close-overlay' ? '＋ Add close overlay' : '＋ Add interaction'}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow.</span></section></div>`;
 }
@@ -1007,6 +1010,7 @@ function onCanvasPointerDown(event) {
         action: state.prototypeAction,
         trigger: state.prototypeTrigger,
         transition: state.prototypeTransition,
+        easing: state.prototypeEasing,
         duration: state.prototypeDuration,
         overlayPosition: state.prototypeOverlayPosition,
         overlayOutsideClick: state.prototypeOverlayOutsideClick,
@@ -2109,6 +2113,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     delete $('#present-dialog').dataset.smartProgress;
   }
   $('#present-dialog').style.setProperty('--present-duration', `${Math.max(0, interaction?.duration ?? 240)}ms`);
+  $('#present-dialog').style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction?.easing || 'ease-in-out'));
   if (interaction?.transition === 'smart-animate') {
     $('#present-canvas').style.opacity = '1';
     $('#present-canvas').style.transform = 'translateX(0)';
@@ -2142,7 +2147,7 @@ function animateSmartTransition(fromFrame, interaction) {
   const tick = now => {
     if (!state.presenting) { presentationAnimationFrame = 0; return; }
     const linear = Math.min(1, (now - startTime) / duration);
-    const eased = linear * linear * (3 - 2 * linear);
+    const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out');
     renderPresentationFrame(interaction, fromFrame, eased);
     if (linear < 1) presentationAnimationFrame = requestAnimationFrame(tick);
     else {
@@ -2475,7 +2480,7 @@ function applyInspectorAction(action, details = {}) {
         checkpoint('Add close overlay interaction');
         addPrototypeInteraction(state.document, node.id, null, {
           action: 'close-overlay', trigger: state.prototypeTrigger,
-          transition: state.prototypeTransition, duration: state.prototypeDuration
+          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration
         });
         renderInspector(); queueSave(); renderer.invalidate(); showToast('Close overlay interaction added.');
       } catch (error) { showToast(error.message); }
@@ -2641,7 +2646,8 @@ function initEvents() {
       renderInspector();
     }
     if (event.target.id === 'prototype-trigger') state.prototypeTrigger = event.target.value;
-    if (event.target.id === 'prototype-transition') state.prototypeTransition = event.target.value;
+    if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
+    if (event.target.id === 'prototype-easing') state.prototypeEasing = event.target.value;
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
     if (event.target.id === 'prototype-overlay-position') state.prototypeOverlayPosition = event.target.value;
     if (event.target.id === 'prototype-overlay-outside') state.prototypeOverlayOutsideClick = event.target.checked;

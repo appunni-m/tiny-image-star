@@ -180,12 +180,20 @@ try {
   const transition = app.querySelector('#prototype-transition');
   assert([...transition.options].some(option => option.value === 'smart-animate'), 'frame navigation did not offer Smart animate');
   transition.value = 'smart-animate'; transition.dispatchEvent(new Event('change', { bubbles: true }));
+  const easing = app.querySelector('#prototype-easing');
+  assert(easing && [...easing.options].some(option => option.value === 'ease-out'), 'transition easing options were not available');
+  easing.value = 'ease-out'; easing.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
   const targetX = canvasRect.left + panCenter.x + 550;
   const targetY = canvasRect.top + panCenter.y;
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', targetX, targetY, 83);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', targetX, targetY, 83);
   await waitFor(() => app.querySelector('.prototype-interaction-row')?.textContent.includes(destinationFrame.name), 'frame interaction connection');
+  assert(app.querySelector('.prototype-interaction-row')?.textContent.includes('ease-out'), 'the saved interaction did not display its chosen easing');
+  await waitForSaveCycle(app, 'prototype easing');
+  const easingRecords = await readStore('documents'); easingRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const persistedSourceFrame = easingRecords[0]?.document?.pages[0]?.children.find(node => node.id === sourceFrame.id);
+  assert(persistedSourceFrame?.interactions?.[0]?.easing === 'ease-out', 'the transition easing was not persisted with the local design');
 
   dispatchClick(app.querySelector('.tool-button[data-tool="frame"]'));
   const overlayX = canvasRect.left + panCenter.x - 550;
