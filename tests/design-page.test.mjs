@@ -113,6 +113,10 @@ test("pen vector layers persist closed paths and Bezier handles as one undoable 
   const id = command.commands[0].id, node = history.document.nodes[id];
   assert.equal(node.kind, "shape"); assert.equal(node.style.shape, "path");
   assert.equal(node.style.path.closed, true); assert.deepEqual(node.style.path.points[1].handleOut, { x: 1.3, y: .3 });
+  for (const mode of ["corner", "smooth", "mirrored"]) {
+    const withMode = structuredClone(history.document); withMode.nodes[id].style.path.points[1].handleMode = mode;
+    assert.doesNotThrow(() => validateProject(withMode), `${mode} handle behavior persists in a design path`);
+  }
   const [planned] = planScene(history.document, "vector-page", "page").nodes;
   assert.equal(planned.id, id); assert.ok(planned.bounds.x < planned.viewport.x - 100, "raster bounds include Bézier handles extending outside the frame");
   assert.doesNotThrow(() => validateProject(history.document));
@@ -120,6 +124,10 @@ test("pen vector layers persist closed paths and Bezier handles as one undoable 
   history.redo(); assert.deepEqual(history.document.nodes[id].style.path, node.style.path);
   const invalid = structuredClone(history.document); invalid.nodes[id].style.path.points[0].x = 2;
   assert.throws(() => validateProject(invalid), /vector point position/);
+  const badHandleMode = structuredClone(history.document); badHandleMode.nodes[id].style.path.points[1].handleMode = "auto";
+  assert.throws(() => validateProject(badHandleMode), /Invalid vector handle mode/);
+  const badHandleModeWithoutHandles = structuredClone(history.document); badHandleModeWithoutHandles.nodes[id].style.path.points[0].handleMode = "smooth";
+  assert.throws(() => validateProject(badHandleModeWithoutHandles), /Invalid vector handle mode/);
 });
 
 test("line, arrow, polygon and star tools generate bounded editable vector paths", () => {

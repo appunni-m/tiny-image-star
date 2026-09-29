@@ -80,6 +80,7 @@ export function createDesignView() {
             <button id="design-edit-vector" class="button secondary" type="button" aria-pressed="false">Edit points</button>
             <button id="design-vector-add-point" class="button secondary" type="button" aria-pressed="false" hidden>Add point</button>
             <button id="design-vector-delete-point" class="button secondary" type="button" disabled hidden>Delete point</button>
+            <label id="design-vector-handle-mode-field" class="design-field design-vector-handle-mode-field" hidden><span>Handle behavior</span><select id="design-vector-handle-mode"><option value="corner">Corner</option><option value="smooth">Smooth</option><option value="mirrored">Mirrored</option></select></label>
             <span id="design-vector-point-status" class="design-vector-point-status" role="status" aria-live="polite"></span>
           </div>
           <fieldset id="design-vector-primitive" class="design-fieldset" hidden><legend>Shape geometry</legend>

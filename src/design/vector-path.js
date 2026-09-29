@@ -33,6 +33,7 @@ export function insertVectorPoint(path, startIndex, t) {
     end.handleIn = c;
     point.handleIn = d;
     point.handleOut = e;
+    point.handleMode = "smooth";
   }
   points.splice(startIndex + 1, 0, point);
   return { ...structuredClone(path), points };

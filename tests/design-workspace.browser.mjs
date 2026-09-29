@@ -426,6 +426,39 @@ export async function assertDesignWorkspace(browser, address) {
     await page.mouse.click(insertedAnchor.x, insertedAnchor.y);
     assert.equal(await page.locator("#design-vector-delete-point").isEnabled(), true,
       `selecting anchor ${insertedPointIndex} at ${JSON.stringify(insertedAnchor)} enables its deletion control (state: ${JSON.stringify(await page.evaluate(() => window.tinyImageStarDesign.getSnapshot().vectorEditing))}; status: ${await page.locator("#design-vector-point-status").textContent()})`);
+    assert.equal(await page.locator("#design-vector-handle-mode-field").isVisible(), true, "selected curved anchors expose tangent behavior");
+    await page.locator("#design-vector-handle-mode").selectOption("mirrored");
+    await page.waitForFunction(({ id, index }) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points[index].handleMode === "mirrored",
+      { id: vectorId, index: insertedPointIndex });
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    const handleStart = await page.evaluate((index) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), handle = state.vectorEditing.handles[index].handleOut;
+      const bounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: bounds.left + handle.x, y: bounds.top + handle.y };
+    }, insertedPointIndex);
+    const beforeHandleDrag = await page.evaluate(({ id, index }) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points[index],
+      { id: vectorId, index: insertedPointIndex });
+    await page.mouse.move(handleStart.x, handleStart.y); await page.mouse.down();
+    await page.mouse.move(handleStart.x + 24, handleStart.y + 16, { steps: 4 }); await page.mouse.up();
+    await page.waitForFunction(({ id, index }) => {
+      const point = window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points[index];
+      return Math.abs((point.handleIn.x + point.handleOut.x) / 2 - point.x) < 1e-8
+        && Math.abs((point.handleIn.y + point.handleOut.y) / 2 - point.y) < 1e-8;
+    }, { id: vectorId, index: insertedPointIndex });
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-undo").click();
+    assert.deepEqual(await page.evaluate(({ id, index }) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points[index],
+      { id: vectorId, index: insertedPointIndex }), beforeHandleDrag, "undo restores both handles together");
+    await page.locator("#design-redo").click();
+    await page.waitForFunction(({ id, index }) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.path.points[index].handleMode === "mirrored",
+      { id: vectorId, index: insertedPointIndex });
+    const selectedAnchor = await page.evaluate((index) => {
+      const state = window.tinyImageStarDesign.getSnapshot(), point = state.vectorEditing.points[index], bounds = document.querySelector("#design-canvas").getBoundingClientRect();
+      return { x: bounds.left + point.x, y: bounds.top + point.y };
+    }, insertedPointIndex);
+    await page.mouse.click(selectedAnchor.x, selectedAnchor.y);
+    await page.waitForFunction(({ id, index }) => window.tinyImageStarDesign.getSnapshot().vectorEditing.selectedPoint === index,
+      { id: vectorId, index: insertedPointIndex });
     const deletePointBox = await page.locator("#design-vector-delete-point").boundingBox();
     assert.ok(deletePointBox?.height >= 43 && deletePointBox.x >= 0 && deletePointBox.x + deletePointBox.width <= 390,
       `mobile anchor editing exposes a touch-sized Delete point action: ${JSON.stringify(deletePointBox)}`);

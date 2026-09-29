@@ -291,8 +291,10 @@ function validateNodeStyle(node) {
       }
       if (!path.closed) check(style.strokeColor != null && style.strokeWidth > 0, "An open vector path needs a visible stroke.");
       for (const point of path.points) {
-        check(object(point), "Invalid vector point."); keys(point, ["x", "y", "handleIn", "handleOut"]);
+        check(object(point), "Invalid vector point."); keys(point, ["x", "y", "handleIn", "handleOut", "handleMode"]);
         check(number(point.x, 0, 1) && number(point.y, 0, 1), "Invalid vector point position.");
+        if (point.handleMode != null) check(["corner", "smooth", "mirrored"].includes(point.handleMode)
+          && (point.handleIn != null || point.handleOut != null), "Invalid vector handle mode.");
         for (const key of ["handleIn", "handleOut"]) if (point[key] != null) {
           const handle = point[key]; check(object(handle), "Invalid vector handle."); keys(handle, ["x", "y"]);
           check(number(handle.x, -4, 5) && number(handle.y, -4, 5), "Invalid vector handle position.");

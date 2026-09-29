@@ -230,6 +230,7 @@ export function attachDesignWorkspace() {
     const path = node?.style?.path, editing = Boolean(path && vectorEditId === node.id);
     if (!editing || vectorPointSelection == null || vectorPointSelection >= (path?.points.length ?? 0)) vectorPointSelection = null;
     if (!editing) vectorInsertMode = false;
+    const selectedPoint = vectorPointSelection == null ? null : path?.points[vectorPointSelection];
     const locked = !node || Boolean(worldLayer(node.id)?.locked), minimum = path?.closed ? 3 : 2;
     const add = get("vector-add-point"), remove = get("vector-delete-point");
     add.hidden = !editing; remove.hidden = !editing;
@@ -237,6 +238,9 @@ export function attachDesignWorkspace() {
     add.setAttribute("aria-pressed", String(vectorInsertMode));
     add.textContent = vectorInsertMode ? "Tap a segment…" : "Add point";
     remove.disabled = locked || vectorPointSelection == null || (path?.points.length ?? 0) <= minimum;
+    const modeField = get("vector-handle-mode-field"), mode = get("vector-handle-mode");
+    modeField.hidden = !editing || !selectedPoint || !(selectedPoint.handleIn || selectedPoint.handleOut);
+    mode.disabled = locked; mode.value = selectedPoint?.handleMode ?? "corner";
     get("vector-point-status").textContent = !editing ? "" : vectorInsertMode ? "Tap close to a path segment to split it." : vectorPointSelection == null
       ? "Drag anchors or handles; select an anchor to remove it." : `Point ${vectorPointSelection + 1} selected.`;
   }
@@ -961,8 +965,25 @@ export function attachDesignWorkspace() {
     if (!node || !local || !drag?.path) return;
     if (Math.hypot(point.x - drag.startScreen.x, point.y - drag.startScreen.y) < 1) return;
     const path = clone(drag.path), target = path.points[drag.index];
-    if (drag.key === "anchor") { target.x = Math.max(0, Math.min(1, local.x)); target.y = Math.max(0, Math.min(1, local.y)); }
-    else target[drag.key] = { x: Math.max(-4, Math.min(5, local.x)), y: Math.max(-4, Math.min(5, local.y)) };
+    if (drag.key === "anchor") {
+      const x = Math.max(0, Math.min(1, local.x)), y = Math.max(0, Math.min(1, local.y)), dx = x - target.x, dy = y - target.y;
+      target.x = x; target.y = y;
+      for (const key of ["handleIn", "handleOut"]) if (target[key]) target[key] = {
+        x: Math.max(-4, Math.min(5, target[key].x + dx)), y: Math.max(-4, Math.min(5, target[key].y + dy)),
+      };
+    } else {
+      const next = { x: Math.max(-4, Math.min(5, local.x)), y: Math.max(-4, Math.min(5, local.y)) };
+      target[drag.key] = next;
+      if (target.handleMode === "smooth" || target.handleMode === "mirrored") {
+        const oppositeKey = drag.key === "handleIn" ? "handleOut" : "handleIn", opposite = target[oppositeKey];
+        const dx = next.x - target.x, dy = next.y - target.y, length = Math.hypot(dx, dy);
+        if (length > 1e-8) {
+          const oppositeLength = target.handleMode === "mirrored" || !opposite ? length : Math.hypot(opposite.x - target.x, opposite.y - target.y);
+          target[oppositeKey] = { x: Math.max(-4, Math.min(5, target.x - dx / length * oppositeLength)),
+            y: Math.max(-4, Math.min(5, target.y - dy / length * oppositeLength)) };
+        }
+      }
+    }
     drag.moved = true;
     try {
       const style = { ...clone(node.style), path }; delete style.primitive;
@@ -1258,7 +1279,7 @@ export function attachDesignWorkspace() {
     if (vectorEditId) {
       const target = vectorEditTarget(point), node = layer(vectorEditId);
       if (target && node && !worldLayer(node.id)?.locked) {
-        vectorPointSelection = target.key === "anchor" ? target.index : null;
+        vectorPointSelection = target.index;
         vectorInsertMode = false; syncVectorPointControls(node); drawCanvas();
         drag = { kind: "vector-point", pointerId: event.pointerId, id: node.id, index: target.index, key: target.key,
           path: clone(node.style.path), startScreen: point, moved: false };
@@ -1844,6 +1865,17 @@ export function attachDesignWorkspace() {
     else setStatus("Point insertion cancelled.");
   });
   get("vector-delete-point").addEventListener("click", removeSelectedVectorPoint);
+  get("vector-handle-mode").addEventListener("change", () => {
+    const node = vectorEditId && layer(vectorEditId), point = node?.style?.path?.points[vectorPointSelection];
+    const mode = get("vector-handle-mode").value;
+    if (!node || !point || !(point.handleIn || point.handleOut) || !["corner", "smooth", "mirrored"].includes(mode)
+      || worldLayer(node.id)?.locked || point.handleMode === mode) return;
+    try {
+      const value = clone(node), target = value.style.path.points[vectorPointSelection]; target.handleMode = mode;
+      history.apply({ type: "node", id: node.id, value }, "Change vector handle behavior");
+      edited(`${mode[0].toUpperCase()}${mode.slice(1)} handles selected.`);
+    } catch (error) { setStatus(error.message); }
+  });
   get("vector-count").addEventListener("input", () => {
     const sides = Number(get("vector-count").value);
     if (Number.isInteger(sides) && sides >= 3 && sides <= 24) previewVectorPrimitive({ sides });
@@ -2123,13 +2155,18 @@ export function attachDesignWorkspace() {
     getSnapshot: () => {
       const project = renderProject();
       if (!project) return null;
+      const vectorNode = vectorEditId ? layer(vectorEditId) : null;
       return { id: project.id, revision: project.revision, name: project.name, key: fileOwner?.key ?? null, savedRevision: fileOwner?.savedRevision ?? null, pageId: currentPage()?.id,
         variant: clone(project.variants[0]),
         pages: clone(project.slides), nodes: clone(project.nodes), assets: clone(project.assets), selection: currentSelection(), retainedSourceBytes: retainedSourceBytes(),
         resolvedFrames: Object.fromEntries([...resolvedLayerMap()].map(([id, frame]) => [id, clone(frame)])),
         canvas: { zoom, panX, panY, geometry: clone(geometry) }, cropModeId,
-        vectorEditing: vectorEditId ? { layerId: vectorEditId, selectedPoint: vectorPointSelection, insertMode: vectorInsertMode,
-          points: (layer(vectorEditId)?.style?.path?.points ?? []).map((point) => vectorPointOnCanvas(layer(vectorEditId), point)) } : null,
+        vectorEditing: vectorNode ? { layerId: vectorNode.id, selectedPoint: vectorPointSelection, insertMode: vectorInsertMode,
+          points: (vectorNode.style?.path?.points ?? []).map((point) => vectorPointOnCanvas(vectorNode, point)),
+          handles: (vectorNode.style?.path?.points ?? []).map((point) => ({
+            handleIn: point.handleIn ? vectorPointOnCanvas(vectorNode, point.handleIn) : null,
+            handleOut: point.handleOut ? vectorPointOnCanvas(vectorNode, point.handleOut) : null,
+          })) } : null,
         gridTracks: selectedGridFrameId() ? clone(gridGeometryFor()) : null,
         recipeJob: recipeJob ? { total: recipeJob.total, completed: recipeJob.completed, active: recipeJob.active, paused: recipeJob.paused } : null };
     },
