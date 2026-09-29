@@ -66,6 +66,13 @@ try {
   const savedRecords = await readDocuments(); savedRecords.sort((a, b) => b.savedAt - a.savedAt);
   const savedButton = savedRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
   assert(savedButton?.minWidth === 150 && savedButton.maxWidth === 200 && savedButton.minHeight === 44 && savedButton.maxHeight === 72, 'size limits should persist in the local document');
+  click(app.querySelector('[data-inspector-tab="prototype"]'));
+  let prototypeTransition = app.querySelector('#prototype-transition');
+  assert([...prototypeTransition.options].some(option => option.value === 'smart-animate') && prototypeTransition.getBoundingClientRect().right <= app.querySelector('#right-panel').getBoundingClientRect().right, 'Smart animate should remain available inside the phone prototype inspector');
+  const prototypeAction = app.querySelector('#prototype-action');
+  prototypeAction.value = 'open-overlay'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'the phone prototype inspector should keep overlay transitions separate');
+  prototypeAction.value = 'navigate'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
   click(app.querySelector('[data-inspector-tab="inspect"]'));
   await waitFor(() => app.querySelector('.inspect-panel'), 'Inspect panel');
   const panel = app.querySelector('.inspect-panel');

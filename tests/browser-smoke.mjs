@@ -177,7 +177,8 @@ try {
   dispatchClick(setStart);
   assert(app.querySelector('[data-action="prototype-start"]')?.textContent.includes('Starting point'), 'prototype start point was not stored');
   const transition = app.querySelector('#prototype-transition');
-  transition.value = 'dissolve'; transition.dispatchEvent(new Event('change', { bubbles: true }));
+  assert([...transition.options].some(option => option.value === 'smart-animate'), 'frame navigation did not offer Smart animate');
+  transition.value = 'smart-animate'; transition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
   const targetX = canvasRect.left + panCenter.x + 550;
   const targetY = canvasRect.top + panCenter.y;
@@ -200,6 +201,7 @@ try {
   dispatchClick(app.querySelector(`[data-layer-id="${destinationFrame.id}"]`));
   let actionSelect = app.querySelector('#prototype-action');
   actionSelect.value = 'open-overlay'; actionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  assert(app.querySelector('#prototype-transition').value === 'dissolve' && ![...app.querySelectorAll('#prototype-transition option')].some(option => option.value === 'smart-animate'), 'overlay interactions should use their own transition and exclude Smart animate');
   const overlayPosition = app.querySelector('#prototype-overlay-position');
   overlayPosition.value = 'center'; overlayPosition.dispatchEvent(new Event('change', { bubbles: true }));
   dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
@@ -321,6 +323,10 @@ try {
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 84);
   await waitFor(() => !app.querySelector('#present-back')?.disabled, 'prototype navigation and history');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'prototype destination frame');
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating === 'true', 'Smart animate interpolation start');
+  const smartProgress = Number(app.querySelector('#present-dialog').dataset.smartProgress);
+  assert(smartProgress > 0 && smartProgress < 1, `Smart animate should render an intermediate scene, received ${smartProgress}`);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating !== 'true', 'Smart animate completion');
   dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 86);
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.overlayDepth === '1', 'prototype overlay presentation');
   assert(app.querySelector('#present-dialog').dataset.frameId === destinationFrame.id, 'opening an overlay replaced the underlying frame');
@@ -700,7 +706,7 @@ try {
   const releasedMaskLayers = releaseMaskGroup(maskDocument, maskGroup.id);
   assert(releasedMaskLayers.map(node => node.id).join(',') === `${maskedContent.id},${maskShape.id}`, 'releasing the mask did not restore the original editable layers');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, smartAnimate: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode, findNode, parseDocument, serializeDocument } from '../src/model.js';
+import { addNode, createDocument, createNode, findNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, removePrototypeInteraction, setPrototypeStartPoint } from '../src/prototype.js';
 
 test('prototype links persist as local navigation to a destination frame', () => {
@@ -22,6 +22,24 @@ test('prototype links persist as local navigation to a destination frame', () =>
   assert.equal(findNode(reloaded, source.id).node.interactions[0].transition, 'dissolve');
   assert.equal(removePrototypeInteraction(reloaded, source.id, interaction.id), true);
   assert.equal(findNode(reloaded, source.id).node.interactions.length, 0);
+});
+
+test('smart animate is stored for frame navigation and rejected for overlays', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Open details' });
+  const firstFrame = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Details' });
+  firstFrame.children.push(source);
+  addNode(document, firstFrame); addNode(document, destination);
+
+  const interaction = addPrototypeInteraction(document, source.id, destination.id, { transition: 'smart-animate', duration: 500 });
+  assert.equal(interaction.transition, 'smart-animate');
+  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].transition, 'smart-animate');
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, { action: 'open-overlay', transition: 'smart-animate' }), /only be used for frame navigation/);
+
+  const invalid = structuredClone(document);
+  invalid.pages[0].children[0].children[0].interactions[0].action = 'open-overlay';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
 });
 
 test('prototype start point and frame hit-testing prefer a nested frame', () => {

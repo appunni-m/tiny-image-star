@@ -77,7 +77,7 @@ const defaults = {
 };
 const prototypeActions = new Set(['navigate', 'open-overlay', 'close-overlay']);
 const prototypeTriggers = new Set(['on-click', 'while-hovering']);
-const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
+const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
@@ -1164,6 +1164,7 @@ export function validateDocument(document) {
         if (item.action === 'close-overlay' ? item.destinationId != null : typeof item.destinationId !== 'string') return true;
         if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
         if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
+        if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
         if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
         if (item.action === 'open-overlay') {
           if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;

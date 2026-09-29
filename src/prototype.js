@@ -1,7 +1,7 @@
 import { findNode, findNodeAcrossPages, getActivePage, walkNodes } from './model.js';
 
 const triggers = new Set(['on-click', 'while-hovering']);
-const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right']);
+const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const actions = new Set(['navigate', 'open-overlay', 'close-overlay']);
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
@@ -58,6 +58,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
   if (!triggers.has(trigger)) throw new TypeError('Unsupported prototype trigger.');
   if (!transitions.has(transition)) throw new TypeError('Unsupported prototype transition.');
+  if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
   const source = findNode(document, sourceId, sourcePageId);
   const needsDestination = action !== 'close-overlay';
   const candidateDestination = needsDestination ? findNodeAcrossPages(document, destinationId) : null;
