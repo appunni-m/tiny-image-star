@@ -11,6 +11,7 @@ This is an active rebuild, not full Figma parity or production certification. Li
 ## Run locally
 
 ```sh
+cd deprecated/figma-rebuild
 npm run dev
 ```
 
@@ -19,6 +20,7 @@ Open `http://127.0.0.1:8000`. No image or design data is uploaded by the app. Th
 ## Verify
 
 ```sh
+cd deprecated/figma-rebuild
 npm test
 ```
 
