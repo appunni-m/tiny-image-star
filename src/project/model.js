@@ -262,7 +262,7 @@ function validateNodeStyle(node) {
         check(object(layout.padding), "Invalid frame layout padding."); keys(layout.padding, ["top", "right", "bottom", "left"]);
         for (const value of Object.values(layout.padding)) check(number(value, 0, 16384), "Invalid frame layout padding.");
       }
-      if (layout.direction !== "grid" && layout.justify != null) check(["start", "center", "end", "space-between"].includes(layout.justify), "Invalid frame layout alignment.");
+      if (layout.direction !== "grid" && layout.justify != null) check(["start", "center", "end", "space-between", "space-around", "space-evenly"].includes(layout.justify), "Invalid frame layout alignment.");
       if (layout.align != null) check(["start", "center", "end", "stretch"].includes(layout.align), "Invalid frame cross-axis alignment.");
     }
   } else if (node.kind === "shape") {
@@ -676,9 +676,15 @@ function layoutChildren(project, slide, parentId, parentFrame, variant, layout) 
     const distributedMain = fillCount ? Math.max(0, (mainAvailable - fixedMain - mainGap * Math.max(0, row.items.length - 1)) / fillCount) : 0;
     const mainSizes = row.items.map((item) => item.mainSizing === "fill" ? distributedMain : item.main);
     const occupiedMain = mainSizes.reduce((sum, value) => sum + value, 0) + mainGap * Math.max(0, row.items.length - 1);
-    const free = Math.max(0, mainAvailable - occupiedMain), offset = justify === "center" ? free / 2 : justify === "end" ? free : 0;
-    const effectiveGap = justify === "space-between" && row.items.length > 1 && !fillCount
-      ? mainGap + free / (row.items.length - 1) : mainGap;
+    const free = Math.max(0, mainAvailable - occupiedMain);
+    const distributable = !fillCount && row.items.length > 0;
+    const extraGap = distributable && justify === "space-between" && row.items.length > 1 ? free / (row.items.length - 1)
+      : distributable && justify === "space-around" ? free / row.items.length
+        : distributable && justify === "space-evenly" ? free / (row.items.length + 1) : 0;
+    const offset = justify === "center" ? free / 2 : justify === "end" ? free
+      : justify === "space-around" && row.items.length ? extraGap / 2
+        : justify === "space-evenly" && row.items.length ? extraGap : 0;
+    const effectiveGap = mainGap + extraGap;
     let mainCursor = mainStart + offset;
     row.items.forEach((item, index) => {
       const stretch = align === "stretch" || item.crossSizing === "fill";

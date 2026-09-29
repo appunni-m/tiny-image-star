@@ -451,6 +451,10 @@ export async function assertDesignWorkspace(browser, address) {
     assert.equal(autoLayout.nodes[frameId].style.layout.direction, "horizontal");
     assert.ok(autoLayout.resolvedFrames[shapeId].frame.x > childBeforeLayout.x,
       "Auto Layout computes child positions from layer order inside the frame");
+    await page.locator("#design-layout-justify").selectOption("space-evenly");
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    autoLayout = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
+    assert.equal(autoLayout.nodes[frameId].style.layout.justify, "space-evenly", "the inspector stores the selected free-space distribution mode");
     await page.locator("#design-layout-gap").fill("12");
     await page.locator("#design-layout-gap").press("Tab");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
@@ -475,10 +479,13 @@ export async function assertDesignWorkspace(browser, address) {
     await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     await page.locator("#design-frame-layout").selectOption("grid");
     await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator(`#design-layer-list [data-layer-id="${frameId}"] .design-layer-select`).click();
     let gridState = await page.evaluate(() => window.tinyImageStarDesign.getSnapshot());
     assert.equal(gridState.nodes[frameId].style.layout.direction, "grid");
     assert.equal(gridState.nodes[frameId].style.layout.columns, 2);
     assert.equal(gridState.nodes[frameId].style.layout.rows, 0, "grid starts with content-sized auto rows");
+    assert.equal(await page.locator('#design-layout-justify option[value="space-evenly"]').evaluate((option) => option.disabled), true,
+      "grid layouts disable flow-only spacing distribution modes");
     await page.locator("#design-layout-columns").fill("3");
     await page.locator("#design-layout-columns").press("Tab");
     await page.locator("#design-layout-justify").selectOption("stretch");

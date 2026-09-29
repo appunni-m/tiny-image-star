@@ -327,6 +327,8 @@ export function attachDesignWorkspace() {
       for (const edge of ["left", "right", "top", "bottom"]) get(`layout-padding-${edge}`).value = String(layout?.padding?.[edge] ?? 0);
       get("layout-justify").value = layout?.justify ?? "start"; get("layout-align").value = layout?.align ?? "center";
       get("layout-justify").querySelector('option[value="space-between"]').disabled = layout?.direction === "grid";
+      for (const value of ["space-around", "space-evenly"])
+        get("layout-justify").querySelector(`option[value="${value}"]`).disabled = layout?.direction === "grid";
       get("layout-justify").querySelector('option[value="stretch"]').disabled = layout?.direction !== "grid";
       if (layout?.direction === "grid") {
         const children = currentPage().nodeIds.filter((id) => project.nodes[id]?.parentId === node.id && project.nodes[id]?.visible !== false);

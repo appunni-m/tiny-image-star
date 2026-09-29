@@ -237,6 +237,38 @@ test("frame Auto Layout resolves horizontal and vertical flow with pixel spacing
   assert.throws(() => validateProject(invalid), /alignment/);
 });
 
+test("Auto Layout distributes children with space-between, space-around, and space-evenly", () => {
+  const ids = ["frame", "first", "second", "third"];
+  const project = createSceneProject({ id: "layout-distribution", variants: [{ id: "page", width: 1000, height: 500 }],
+    slides: [{ id: "page-one", nodeIds: ids, overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: .5, height: .2 },
+        style: { layout: { direction: "horizontal", justify: "space-between", align: "start" } } },
+      ...Object.fromEntries(ids.slice(1).map((id) => [id, { id, kind: "shape", space: "slide", parentId: "frame",
+        constraints: { horizontal: "left", vertical: "top" }, frame: { x: 0, y: 0, width: .1, height: .1 },
+        layoutSizing: { width: "fixed", height: "fixed" }, layoutSize: { width: 100, height: 20 }, style: { shape: "rectangle" } }]))
+    } });
+  const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} ≈ ${expected}`);
+  const positions = (justify) => {
+    project.nodes.frame.style.layout.justify = justify;
+    return ids.slice(1).map((id) => resolveLayerFrames(project, "page-one").get(id).frame.x * 1000);
+  };
+  for (const [justify, expected] of [["space-between", [0, 200, 400]], ["space-around", [100 / 3, 200, 1100 / 3]],
+    ["space-evenly", [50, 200, 350]]]) positions(justify).forEach((actual, index) => close(actual, expected[index]));
+  const singleChild = createSceneProject({ id: "layout-even-single", variants: [{ id: "page", width: 1000, height: 500 }],
+    slides: [{ id: "page-one", nodeIds: ["frame", "child"], overrides: {} }], nodes: {
+      frame: { id: "frame", kind: "frame", space: "slide", frame: { x: 0, y: 0, width: .5, height: .2 },
+        style: { layout: { direction: "horizontal", justify: "space-evenly", align: "start" } } },
+      child: { id: "child", kind: "shape", space: "slide", parentId: "frame", constraints: { horizontal: "left", vertical: "top" },
+        frame: { x: 0, y: 0, width: .1, height: .1 }, layoutSizing: { width: "fixed", height: "fixed" },
+        layoutSize: { width: 100, height: 20 }, style: { shape: "rectangle" } },
+    } });
+  close(resolveLayerFrames(singleChild, "page-one").get("child").frame.x, .2,
+    "space-evenly centers a single fixed-width child between equal edge gaps");
+  const invalid = structuredClone(project); invalid.nodes.frame.style.layout.justify = "space-evenly";
+  invalid.nodes.frame.style.layout.direction = "grid"; invalid.nodes.frame.style.layout.columns = 3; invalid.nodes.frame.style.layout.rows = 1;
+  assert.throws(() => validateProject(invalid), /alignment/);
+});
+
 test("Auto Layout wraps in flow order and distributes Fill sizing on both axes", () => {
   const project = createSceneProject({ id: "layout-wrap", variants: [{ id: "page", width: 400, height: 300 }],
     slides: [{ id: "page-one", nodeIds: ["frame", "first", "second", "third"], overrides: {} }], nodes: {
