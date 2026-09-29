@@ -383,6 +383,7 @@ export class SceneRenderer {
         ctx.beginPath(); ctx.rect(hx - size / 2, hy - size / 2, size, size); ctx.fill(); ctx.stroke();
       }
       if (node.type === 'path') {
+        const selectedPointIndex = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.index : -1;
         for (const [index, point] of (node.points || []).entries()) {
           const anchor = vectorNodePoint(node, index, 'anchor', { x, y });
           for (const part of ['in', 'out']) {
@@ -391,7 +392,9 @@ export class SceneRenderer {
             ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
             ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           }
+          ctx.fillStyle = selectedPointIndex === index ? BLUE : '#ffffff';
           ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = '#ffffff';
         }
       }
     }

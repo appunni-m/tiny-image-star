@@ -168,6 +168,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .fill-opacity { width: 40px; height: 27px; padding: 0 4px; border: 1px solid #e8e8e8; border-radius: 5px; text-align: right; font-size: 10px; }
 .add-fill { width: 100%; height: 25px; margin-top: 6px; border-radius: 5px; color: #888; text-align: left; font-size: 10px; }
 .add-fill:hover { background: #f5f5f5; }
+.vector-point-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.vector-point-actions .add-fill { margin: 0; }
+.vector-point-actions .add-fill:disabled { color: #bbb; cursor: default; }
 .slider-row { display: grid; grid-template-columns: 74px 1fr 33px; align-items: center; gap: 7px; margin: 8px 0; }
 .slider-row label { color: #666; font-size: 10px; }
 .slider-row input[type=range] { width: 100%; accent-color: #0d99ff; }

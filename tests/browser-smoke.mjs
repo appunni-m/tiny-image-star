@@ -1,4 +1,5 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
+import { vectorSegmentPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -384,6 +385,24 @@ try {
   const editedVector = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
   assert(editedVector.points[1].out.y !== editablePoint.out.y, 'canvas Bézier handle editing did not update the path');
 
+  const currentVector = findNodeOrigin(vectorDocument.pages.flatMap(page => page.children), vectorNode.id);
+  const insertionWorld = vectorSegmentPoint(currentVector.node, 0, .42, { x: currentVector.x, y: currentVector.y });
+  const insertionScreen = penScreenPoint(insertionWorld);
+  designCanvas.dispatchEvent(new app.defaultView.MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: insertionScreen.x, clientY: insertionScreen.y }));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('4 points'), 'double-click vector point insertion');
+  assert(app.querySelector('[data-action="delete-vector-point"]') && !app.querySelector('[data-action="delete-vector-point"]').disabled, 'inserted vector point was not selected for deletion');
+  dispatchClick(app.querySelector('[data-action="delete-vector-point"]'));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('3 points'), 'vector point inspector deletion');
+  dispatchClick(app.querySelector('[data-action="insert-vector-point"]'));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('4 points'), 'touch-friendly vector point insertion');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Backspace' }));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('3 points'), 'Backspace vector point deletion');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'vector point edits autosave');
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  const savedEditedPath = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(savedEditedPath?.points.length === 3 && savedEditedPath.closed, 'vector point edits did not preserve the closed path on disk');
+
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
   const booleanBase = createNode('rectangle', { name: 'Boolean base', x: 0, y: 0, width: 160, height: 90, fill: '#0055ff' });
@@ -445,7 +464,7 @@ try {
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

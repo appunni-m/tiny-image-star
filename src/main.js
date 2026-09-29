@@ -13,14 +13,14 @@ import { icon } from './icons.js';
 import { applyAutoLayout, createAutoLayout } from './layout-engine.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, findClickableInteraction, findFrameAtPoint, getPrototypeStartFrame, listPrototypeFrames, removePrototypeInteraction, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
-import { setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
+import { closestVectorSegment, insertVectorNodePoint, longestVectorSegment, removeVectorNodePoint, setVectorNodePoint, vectorGeometryFromAnchors, vectorNodePoint } from './vector-path.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
-  document: createDocument(), selectedIds: [], tool: 'select', zoom: 1, panX: 0, panY: 0,
+  document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
   assets: new Map(), previews: new Map(), previewUrls: new Map(), imageStatus: new Map(), renderVersion: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false,
@@ -100,6 +100,7 @@ function checkpoint(label) { history.checkpoint(state.document, label); }
 function setSelection(ids, { keepInspector = false } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
   state.selectedIds = [...new Set(valid)];
+  if (state.selectedVectorPoint && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.selectedVectorPoint.nodeId)) state.selectedVectorPoint = null;
   renderLayers();
   if (!keepInspector) renderInspector();
   updateSelectionStatus();
@@ -296,7 +297,8 @@ function renderInspector() {
   if (node.type === 'image') body += imageAdjustmentsSection(node);
   if (node.type === 'path') {
     const pointCount = node.points?.length || 0;
-    body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · drag anchors and Bézier handles on the canvas.</div>`);
+    const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
+    body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.closed) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', node.stroke || '#1e1e1e', 100) + `<div class="property-grid" style="margin-top:8px">${numberField('W', 'strokeWidth', node.strokeWidth || 1)}</div>`);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
@@ -460,6 +462,58 @@ function vectorPathControlAt(world) {
   return best;
 }
 
+function insertPathPoint(node, segmentIndex, t = .5, origin = absolutePosition(node.id)) {
+  if (!node || node.type !== 'path' || node.locked) return false;
+  const pointIndex = insertVectorNodePoint(node, segmentIndex, t, origin);
+  if (pointIndex < 0) return false;
+  state.selectedVectorPoint = { nodeId: node.id, index: pointIndex };
+  recordNodeComponentOverrides(node, ['points']);
+  renderInspector(); renderer.invalidate(); queueSave();
+  showToast('Vector point inserted. The Bézier curve keeps its original shape.');
+  return true;
+}
+
+function insertPathPointOnLongestSegment(nodeId = selectedNodes()[0]?.id) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : null;
+  if (!node || node.type !== 'path') return;
+  const origin = absolutePosition(node.id);
+  const segment = longestVectorSegment(node, origin);
+  if (!segment) { showToast('This vector path has no segment to split.'); return; }
+  checkpoint('Insert vector point');
+  insertPathPoint(node, segment.segmentIndex, segment.t, origin);
+}
+
+function insertPathPointAtWorld(world) {
+  let node = selectedNodes().length === 1 && selectedNodes()[0].type === 'path' ? selectedNodes()[0] : null;
+  if (!node) {
+    const hit = hitTestPage(activePage(), world);
+    if (hit?.type !== 'path') return false;
+    node = hit;
+    setSelection([node.id]);
+  }
+  if (node.locked || vectorPathControlAt(world)) return false;
+  const origin = absolutePosition(node.id);
+  const localWorld = unrotateForPath(world, node, origin);
+  const closest = closestVectorSegment(node, localWorld, origin);
+  if (!closest || closest.distance > 12 / Math.max(.08, state.zoom)) return false;
+  checkpoint('Insert vector point');
+  return insertPathPoint(node, closest.segmentIndex, closest.t, origin);
+}
+
+function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : null;
+  const index = state.selectedVectorPoint?.index;
+  if (!node || node.type !== 'path' || state.selectedVectorPoint?.nodeId !== node.id || !Number.isInteger(index)) return false;
+  if (node.points.length <= 2) { showToast('A vector path must keep at least two points.'); return false; }
+  checkpoint('Delete vector point');
+  removeVectorNodePoint(node, index);
+  state.selectedVectorPoint.index = Math.min(index, node.points.length - 1);
+  recordNodeComponentOverrides(node, ['points']);
+  renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
+  showToast('Vector point deleted.');
+  return true;
+}
+
 function unrotateForPath(world, node, origin) {
   const center = { x: origin.x + node.width / 2, y: origin.y + node.height / 2 };
   return rotatePoint(world, center, -(node.rotation || 0));
@@ -538,6 +592,7 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'select') {
     const vectorControl = vectorPathControlAt(world);
     if (vectorControl) {
+      state.selectedVectorPoint = { nodeId: vectorControl.node.id, index: vectorControl.index };
       checkpoint('Edit vector path');
       state.interaction = { kind: 'vector-control', ...vectorControl };
       event.preventDefault(); return;
@@ -1156,7 +1211,7 @@ function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
   checkpoint('Delete layers');
   for (const id of ids) removeNode(state.document, id);
-  state.selectedIds = []; renderUI(); queueSave();
+  state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function duplicateSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
@@ -1260,15 +1315,15 @@ function reorderSelected(direction) {
   reorder(page.children); renderUI(); queueSave();
 }
 
-function undo() { const next = history.undo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); renderUI(); queueSave(); }
-function redo() { const next = history.redo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); renderUI(); queueSave(); }
+function undo() { const next = history.undo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
+function redo() { const next = history.redo(state.document); if (!next) return; state.document = next; state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id)); state.selectedVectorPoint = null; renderUI(); queueSave(); }
 function newDesign() {
-  state.document = createDocument(); state.selectedIds = []; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+  state.document = createDocument(); state.selectedIds = []; state.selectedVectorPoint = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); showToast('New local design created.');
 }
 function addPage() {
   const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
-  checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; renderUI(); queueSave();
+  checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function renamePage(pageId) {
   const page = state.document.pages.find(item => item.id === pageId); if (!page) return;
@@ -1461,6 +1516,8 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
+  else if (action === 'insert-vector-point' && node?.type === 'path') insertPathPointOnLongestSegment(node.id);
+  else if (action === 'delete-vector-point' && node?.type === 'path') deleteSelectedVectorPoint(node.id);
   else if (action === 'create-color-style') {
     if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }
     const current = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
@@ -1510,6 +1567,11 @@ function initEvents() {
   canvas.addEventListener('pointermove', onCanvasPointerMove);
   canvas.addEventListener('pointerup', onCanvasPointerUp);
   canvas.addEventListener('pointercancel', onCanvasPointerUp);
+  canvas.addEventListener('dblclick', event => {
+    if (state.tool !== 'select') return;
+    const world = screenToWorld(event, canvas, state);
+    if (insertPathPointAtWorld(world)) event.preventDefault();
+  });
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
     const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true);
@@ -1531,7 +1593,7 @@ function initEvents() {
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
       const importedDocument = parseDocument(packageData.document);
       for (const asset of packageData.assets) await saveImageAssetBytes(asset.id, asset.name, asset.type, asset.bytes);
-      state.document = importedDocument; state.selectedIds = []; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
+      state.document = importedDocument; state.selectedIds = []; state.selectedVectorPoint = null; state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
       history.undoStack.length = 0; history.redoStack.length = 0; renderUI(); queueSave(); await restoreImageAssets(); showToast('Local design opened on this device.');
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
     input.value = '';
@@ -1539,7 +1601,7 @@ function initEvents() {
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
   $('#add-page').addEventListener('click', addPage);
-  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; renderUI(); });
+  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
@@ -1650,6 +1712,10 @@ function onKeyDown(event) {
   if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
   if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
   if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
+  if ((key === 'delete' || key === 'backspace') && state.selectedVectorPoint) {
+    if (deleteSelectedVectorPoint()) event.preventDefault();
+    return;
+  }
   if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
   if (key === 'escape') { closeMenu(); if (state.bulk && !state.bulk.done) { state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; renderBulkBar(); } setSelection([]); return; }
   const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text' };
