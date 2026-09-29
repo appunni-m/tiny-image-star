@@ -267,7 +267,7 @@ function validateNodeStyle(node) {
     }
   } else if (node.kind === "shape") {
     check(node.text == null, "Shapes cannot contain caption text.");
-    keys(style, ["shape", "radius", "strokeColor", "strokeWidth", "path"]);
+    keys(style, ["shape", "radius", "strokeColor", "strokeWidth", "path", "primitive"]);
     check(style.shape == null || ["rectangle", "rounded", "ellipse", "path"].includes(style.shape), "Unsupported shape.");
     if (style.radius != null) check(number(style.radius, 0, .5), "Invalid corner radius.");
     if (style.strokeColor != null) check(color(style.strokeColor), "Invalid stroke color.");
@@ -278,6 +278,17 @@ function validateNodeStyle(node) {
       check(object(path), "A vector layer needs path data."); keys(path, ["closed", "points"]);
       check(typeof path.closed === "boolean" && Array.isArray(path.points) && path.points.length >= (path.closed ? 3 : 2)
         && path.points.length <= 512, "Invalid vector path.");
+      if (style.primitive != null) {
+        const primitive = style.primitive;
+        check(object(primitive) && path.closed, "Parametric vector shapes need a closed path.");
+        keys(primitive, ["type", "sides", "innerRadius"]);
+        check(["polygon", "star"].includes(primitive.type) && Number.isInteger(primitive.sides)
+          && primitive.sides >= 3 && primitive.sides <= 24, "Invalid parametric vector shape.");
+        if (primitive.type === "star") check(number(primitive.innerRadius, .12, .85), "Invalid star inner radius.");
+        else check(primitive.innerRadius == null, "Polygons do not use an inner radius.");
+        check(path.points.length === primitive.sides * (primitive.type === "star" ? 2 : 1),
+          "Parametric vector point count does not match its saved geometry.");
+      }
       if (!path.closed) check(style.strokeColor != null && style.strokeWidth > 0, "An open vector path needs a visible stroke.");
       for (const point of path.points) {
         check(object(point), "Invalid vector point."); keys(point, ["x", "y", "handleIn", "handleOut"]);
@@ -288,7 +299,7 @@ function validateNodeStyle(node) {
         }
       }
       if (style.radius != null) check(false, "Vector paths do not use a corner radius.");
-    } else check(style.path == null, "Only vector paths can carry path data.");
+    } else check(style.path == null && style.primitive == null, "Only vector paths can carry path data or geometry.");
     check(node.fontId == null, "Shapes cannot reference a font.");
   } else if (node.kind === "text") {
     keys(style, ["builtinFont", "fontSize", "minFontSize", "fontBasis", "weight", "italic", "align", "verticalAlign", "lineHeight", "fit", "shadow"]);

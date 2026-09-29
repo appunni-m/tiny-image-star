@@ -77,6 +77,10 @@ export function createDesignView() {
           <label id="design-text-field" class="design-field" hidden><span>Text</span><textarea id="design-text" maxlength="5000" rows="3"></textarea></label>
           <label id="design-color-field" class="design-field" hidden><span>Fill</span><input id="design-color" type="color" value="#5149d5" /></label>
           <div id="design-vector-actions" class="design-layer-actions" hidden><button id="design-edit-vector" class="button secondary" type="button" aria-pressed="false">Edit path points</button></div>
+          <fieldset id="design-vector-primitive" class="design-fieldset" hidden><legend>Shape geometry</legend>
+            <label class="design-field"><span id="design-vector-count-label">Sides</span><input id="design-vector-count" type="number" min="3" max="24" step="1" inputmode="numeric" /></label>
+            <label id="design-vector-inner-radius-field" class="design-range-field"><span>Inner radius <output id="design-vector-inner-radius-value">46%</output></span><input id="design-vector-inner-radius" type="range" min="0.12" max="0.85" step="0.01" /></label>
+          </fieldset>
           <label id="design-opacity-field" class="design-range-field"><span>Opacity <output id="design-opacity-value">100%</output></span><input id="design-opacity" type="range" min="0" max="100" step="1" value="100" /></label>
           <label id="design-frame-clip-field" class="design-field design-checkbox-field" hidden><span>Clip content</span><input id="design-frame-clip" type="checkbox" checked /></label>
           <label id="design-frame-radius-field" class="design-range-field" hidden><span>Corner radius <output id="design-frame-radius-value">0%</output></span><input id="design-frame-radius" type="range" min="0" max="0.5" step="0.01" value="0" /></label>

@@ -8,7 +8,7 @@ import { ProjectHistory } from "../src/project/history.js";
 import { createSceneProject, ENGINE_IDENTITY, resolveGridTrackGeometry, resolveLayerFrames, resolveSlide, validateProject } from "../src/project/model.js";
 import { planScene } from "../src/compositor/scene-spec.js";
 import { designRecipePatch, designRecipeProblem } from "../src/design/recipes.js";
-import { createVectorShape } from "../src/design/vector-shapes.js";
+import { createVectorShape, updateVectorPrimitive } from "../src/design/vector-shapes.js";
 
 const images = (count = 3) => Array.from({ length: count }, (_, index) => ({ id: `asset-${index}`, kind: "image", name: `Photo ${index}.png`,
   type: "image/png", byteLength: 120, sha256: index.toString(16).padStart(64, "0"), width: index % 2 ? 400 : 600, height: index % 2 ? 600 : 400,
@@ -133,6 +133,7 @@ test("line, arrow, polygon and star tools generate bounded editable vector paths
     assert.equal(node.name, geometry.name);
     assert.equal(node.style.shape, "path");
     assert.equal(node.style.path.closed, kind !== "line");
+    assert.deepEqual(node.style.primitive, geometry.primitive);
     assert.ok(node.style.path.points.length >= (node.style.path.closed ? 3 : 2));
     assert.ok(node.style.path.points.every(({ x, y }) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
     if (kind === "line") assert.ok(node.style.strokeWidth > 0 && node.style.strokeColor);
@@ -140,6 +141,17 @@ test("line, arrow, polygon and star tools generate bounded editable vector paths
   }
   assert.equal(createVectorShape("polygon", { sides: 9 }).path.points.length, 9);
   assert.equal(createVectorShape("star", { sides: 7 }).path.points.length, 14);
+  const starId = history.document.slides[0].nodeIds.at(-1), originalStar = structuredClone(history.document.nodes[starId]);
+  const changedStar = updateVectorPrimitive(originalStar, { sides: 7, innerRadius: .3 });
+  history.apply({ type: "node", id: starId, value: changedStar }, "Change star geometry");
+  assert.equal(changedStar.style.path.points.length, 14);
+  assert.deepEqual(changedStar.style.primitive, { type: "star", sides: 7, innerRadius: .3 });
+  assert.deepEqual(changedStar.frame, originalStar.frame, "parametric edits keep the same layer and frame");
+  assert.doesNotThrow(() => validateProject(history.document));
+  history.undo(); assert.deepEqual(history.document.nodes[starId].style.primitive, originalStar.style.primitive);
+  history.redo(); assert.deepEqual(history.document.nodes[starId].style.primitive, changedStar.style.primitive);
+  const mismatched = structuredClone(history.document); mismatched.nodes[starId].style.path.points.pop();
+  assert.throws(() => validateProject(mismatched), /point count/);
   assert.throws(() => createVectorShape("polygon", { sides: 2 }), /3 and 24/);
   assert.throws(() => createVectorShape("star", { innerRadius: .05 }), /inner radius/);
   assert.throws(() => createVectorShape("heart"), /supported vector shape/);

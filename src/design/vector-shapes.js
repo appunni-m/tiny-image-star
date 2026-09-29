@@ -31,8 +31,19 @@ export function createVectorShape(shape, { sides, innerRadius = .46 } = {}) {
   if (!Number.isInteger(count) || count < 3 || count > 24) throw new Error("Choose between 3 and 24 sides.");
   if (shape === "star" && (!Number.isFinite(innerRadius) || innerRadius < .12 || innerRadius > .85))
     throw new Error("Choose a star inner radius between 0.12 and 0.85.");
+  const primitive = { type: shape, sides: count, ...(shape === "star" ? { innerRadius: rounded(innerRadius) } : {}) };
   return {
     name: shape === "star" ? "Star" : "Polygon", frame: { x: .35, y: .35, width: .3, height: .3 },
-    path: { closed: true, points: radialPoints(count, shape === "star" ? innerRadius : null) },
+    path: { closed: true, points: radialPoints(count, shape === "star" ? innerRadius : null) }, primitive,
   };
+}
+
+/** Regenerate an unedited polygon or star while preserving its layer identity and frame. */
+export function updateVectorPrimitive(node, patch = {}) {
+  const primitive = node?.style?.primitive;
+  if (node?.kind !== "shape" || node.style?.shape !== "path" || !primitive)
+    throw new Error("Select an untouched polygon or star to edit its geometry.");
+  const geometry = createVectorShape(primitive.type, { sides: patch.sides ?? primitive.sides,
+    innerRadius: patch.innerRadius ?? primitive.innerRadius });
+  return { ...node, style: { ...node.style, path: geometry.path, primitive: geometry.primitive } };
 }

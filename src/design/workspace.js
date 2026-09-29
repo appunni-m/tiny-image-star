@@ -12,7 +12,7 @@ import { importStoryPhotos } from "../story/assets.js";
 import { openContextMenu } from "../context-menu.js";
 import { designRecipePatch, designRecipeProblem } from "./recipes.js";
 import { resizeSelection, rotateSelection, selectionBounds, zoomAtPoint } from "./geometry.js";
-import { createVectorShape } from "./vector-shapes.js";
+import { createVectorShape, updateVectorPrimitive } from "./vector-shapes.js";
 
 const DESIGN_IMPORT_LIMIT = 128 * 1024 * 1024;
 
@@ -272,6 +272,17 @@ export function attachDesignWorkspace() {
     get("edit-vector").textContent = vectorEditId === node.id ? "Done editing path" : "Edit path points";
     get("edit-vector").setAttribute("aria-pressed", String(vectorEditId === node.id));
     get("edit-vector").disabled = Boolean(world.locked);
+    const primitive = node.kind === "shape" ? node.style?.primitive : null;
+    get("vector-primitive").hidden = !primitive;
+    if (primitive) {
+      get("vector-count-label").textContent = primitive.type === "star" ? "Points" : "Sides";
+      get("vector-count").value = String(primitive.sides);
+      get("vector-inner-radius-field").hidden = primitive.type !== "star";
+      if (primitive.type === "star") {
+        get("vector-inner-radius").value = String(primitive.innerRadius);
+        get("vector-inner-radius-value").value = `${Math.round(primitive.innerRadius * 100)}%`;
+      }
+    }
     fitField.hidden = node.kind !== "image"; adjustments.hidden = node.kind !== "image";
     get("frame-clip-field").hidden = node.kind !== "frame";
     get("frame-radius-field").hidden = node.kind !== "frame";
@@ -874,8 +885,20 @@ export function attachDesignWorkspace() {
     if (drag.key === "anchor") { target.x = Math.max(0, Math.min(1, local.x)); target.y = Math.max(0, Math.min(1, local.y)); }
     else target[drag.key] = { x: Math.max(-4, Math.min(5, local.x)), y: Math.max(-4, Math.min(5, local.y)) };
     drag.moved = true;
-    try { history.preview({ type: "node", id: node.id, value: { ...clone(node), style: { ...clone(node.style), path } } }); edited("Editing vector points…", { previewOnly: true }); }
+    try {
+      const style = { ...clone(node.style), path }; delete style.primitive;
+      history.preview({ type: "node", id: node.id, value: { ...clone(node), style } }); edited("Editing vector points…", { previewOnly: true });
+    }
     catch (error) { setStatus(error.message); }
+  }
+
+  function previewVectorPrimitive(patch) {
+    const id = currentSelection()[0], node = id && layer(id);
+    if (!node?.style?.primitive || worldLayer(id)?.locked) return;
+    try {
+      const value = updateVectorPrimitive(node, patch);
+      history.preview({ type: "node", id, value }); edited("Adjusting vector geometry…", { previewOnly: true });
+    } catch (error) { setStatus(error.message); }
   }
 
   function cropIsFull(crop) {
@@ -1719,6 +1742,19 @@ export function attachDesignWorkspace() {
     vectorEditId = vectorEditId === id ? null : id;
     renderWorkspace(); setStatus(vectorEditId ? "Edit path points · drag anchors or Bézier handles." : "Path point editing closed.");
   });
+  get("vector-count").addEventListener("input", () => {
+    const sides = Number(get("vector-count").value);
+    if (Number.isInteger(sides) && sides >= 3 && sides <= 24) previewVectorPrimitive({ sides });
+  });
+  get("vector-count").addEventListener("change", () => commitEdit("Change polygon sides or star points"));
+  get("vector-inner-radius").addEventListener("input", () => {
+    const innerRadius = Number(get("vector-inner-radius").value);
+    if (Number.isFinite(innerRadius)) {
+      get("vector-inner-radius-value").value = `${Math.round(innerRadius * 100)}%`;
+      previewVectorPrimitive({ innerRadius });
+    }
+  });
+  get("vector-inner-radius").addEventListener("change", () => commitEdit("Change star inner radius"));
   get("frame-selection").addEventListener("click", frameSelection);
   get("new-page").addEventListener("click", () => {
     try {

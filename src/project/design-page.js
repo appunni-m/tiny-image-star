@@ -114,13 +114,14 @@ export function addShapeLayerCommand(project, pageId, shape = "rectangle") {
 }
 
 /** Add a locally editable vector path to a design page. Points and handles are frame-relative. */
-export function addVectorLayerCommand(project, pageId, { frame, path, name = "Vector", strokeColor = "#5149d5", strokeWidth = .012 } = {}) {
+export function addVectorLayerCommand(project, pageId, { frame, path, primitive, name = "Vector", strokeColor = "#5149d5", strokeWidth = .012 } = {}) {
   const page = project.slides.find((entry) => entry.id === pageId);
   if (!page || page.nodeIds.length >= MAX_DESIGN_PAGE_LAYERS || !frame || !path
     || typeof name !== "string" || !name.trim() || name.length > 120) throw new Error("This page cannot add that vector.");
   const id = newId("layer"), node = { id, kind: "shape", name: name.trim(), visible: true, locked: false,
     space: "slide", frame: clone(frame), color: "#5149d5",
-    style: { shape: "path", path: clone(path), ...(!path.closed ? { strokeColor, strokeWidth } : {}) } };
+    style: { shape: "path", path: clone(path), ...(primitive ? { primitive: clone(primitive) } : {}),
+      ...(!path.closed ? { strokeColor, strokeWidth } : {}) } };
   return { type: "group", commands: [{ type: "node", id, value: node }, { type: "slides", value: project.slides.map((entry) =>
     entry.id === pageId ? { ...clone(entry), nodeIds: [...entry.nodeIds, id] } : clone(entry)) }] };
 }
@@ -260,7 +261,7 @@ export function setFrameLayoutCommand(project, pageId, frameId, direction) {
     parent.style.layout = { direction, gap: previous?.gap ?? 0, rowGap: previous?.rowGap, columnGap: previous?.columnGap,
       padding: previous?.padding ?? { top: 0, right: 0, bottom: 0, left: 0 },
       justify: direction === "grid" ? (["start", "center", "end", "stretch"].includes(previous?.justify) ? previous.justify : "start")
-        : (["start", "center", "end", "space-between"].includes(previous?.justify) ? previous.justify : "start"),
+        : (["start", "center", "end", "space-between", "space-around", "space-evenly"].includes(previous?.justify) ? previous.justify : "start"),
       align: direction === "grid" ? previous?.align ?? "start" : previous?.align ?? "center",
       ...(direction === "grid" ? { columns: previous?.columns ?? 2, rows: previous?.rows ?? 0, wrap: false,
         ...(previous?.columnTracks ? { columnTracks: clone(previous.columnTracks) } : {}),

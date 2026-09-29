@@ -677,6 +677,46 @@ export async function assertDesignWorkspace(browser, address) {
     assert.ok(shapePage[3].style.strokeWidth > 0);
     assert.ok(shapePage.slice(4).every((node) => node.style.shape === "path" && node.style.path.closed),
       "Arrow, polygon and star are normal editable closed vector paths");
+    assert.deepEqual(shapePage[5].style.primitive, { type: "polygon", sides: 6 }, "polygons retain editable side-count metadata");
+    assert.deepEqual(shapePage[6].style.primitive, { type: "star", sides: 5, innerRadius: .46 }, "stars retain their editable geometry parameters");
+    await page.locator(`#design-layer-list [data-layer-id="${shapePage[6].id}"] .design-layer-select`).click();
+    assert.equal(await page.locator("#design-vector-primitive").isVisible(), true, "parametric vector controls appear for an untouched star");
+    assert.equal(await page.locator("#design-vector-inner-radius-field").isVisible(), true);
+    await page.locator("#design-vector-count").fill("7");
+    await page.locator("#design-vector-count").press("Tab");
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive.sides === 7, shapePage[6].id);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    let tunedStar = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], shapePage[6].id);
+    assert.equal(tunedStar.style.path.points.length, 14, "increasing the point count regenerates the same star layer");
+    const innerRadiusBox = await page.locator("#design-vector-inner-radius").boundingBox();
+    await page.mouse.click(innerRadiusBox.x + innerRadiusBox.width * ((.3 - .12) / (.85 - .12)), innerRadiusBox.y + innerRadiusBox.height / 2);
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive.innerRadius < .4, shapePage[6].id);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    tunedStar = await page.evaluate((id) => window.tinyImageStarDesign.getSnapshot().nodes[id], shapePage[6].id);
+    assert.ok(tunedStar.style.primitive.innerRadius < .4 && tunedStar.style.path.points.length === 14,
+      "the star inner-radius control updates its live polygon points");
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive.innerRadius === .46, shapePage[6].id);
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive.innerRadius < .4, shapePage[6].id);
+    await page.locator("#design-edit-vector").click();
+    const starAnchor = await page.evaluate((id) => {
+      const canvas = document.querySelector("#design-canvas"), bounds = canvas.getBoundingClientRect(), state = window.tinyImageStarDesign.getSnapshot();
+      const frame = state.resolvedFrames[id].frame, point = state.nodes[id].style.path.points[0], view = state.canvas.geometry;
+      return { x: bounds.left + view.x + (frame.x + point.x * frame.width) * view.width * view.scale,
+        y: bounds.top + view.y + (frame.y + point.y * frame.height) * view.height * view.scale };
+    }, shapePage[6].id);
+    await page.mouse.move(starAnchor.x, starAnchor.y); await page.mouse.down();
+    await page.mouse.move(starAnchor.x + 12, starAnchor.y + 8, { steps: 3 }); await page.mouse.up();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive === undefined, shapePage[6].id);
+    await page.waitForFunction(() => document.querySelector("#design-canvas-status")?.textContent?.includes("Preview ready"));
+    await page.locator("#design-undo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive.innerRadius < .4, shapePage[6].id);
+    await page.locator("#design-redo").click();
+    await page.waitForFunction((id) => window.tinyImageStarDesign.getSnapshot().nodes[id].style.primitive === undefined, shapePage[6].id);
+    await page.locator(`#design-layer-list [data-layer-id="${shapePage[5].id}"] .design-layer-select`).click();
+    assert.equal(await page.locator("#design-vector-inner-radius-field").isVisible(), false,
+      "polygon controls do not show star-only settings");
     await page.locator(`#design-layer-list [data-layer-id="${shapePage[0].id}"] .design-layer-select`).click();
     await page.locator(`#design-layer-list [data-layer-id="${shapePage[1].id}"] .design-layer-select`).click({ modifiers: ["Shift"] });
     await page.locator("#design-frame-selection").click();
