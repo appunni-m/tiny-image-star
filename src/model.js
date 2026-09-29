@@ -86,7 +86,7 @@ const componentOverrideProperties = new Set([
   'letterSpacing', 'color', 'textStyleId', 'align', 'fit', 'adjustments', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
-  'layoutSizingMain', 'layoutSizingCross', 'points', 'closed', 'operation', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'gridCell', 'points', 'closed', 'operation', '__childOrder'
 ]);
 
 export function createNode(type, overrides = {}) {
@@ -971,7 +971,25 @@ export function validateDocument(document) {
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.children && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
-      if (node.autoLayout && (node.type !== 'frame' || !['horizontal', 'vertical'].includes(node.autoLayout.axis) || !Number.isFinite(Number(node.autoLayout.gap)))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);
+      if (node.autoLayout) {
+        const layout = node.autoLayout;
+        const validCount = value => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 64;
+        const validGap = value => Number.isFinite(Number(value)) && Number(value) >= 0;
+        const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
+        if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)
+          || (layout.gap != null && !validGap(layout.gap))
+          || (layout.rowGap != null && !validGap(layout.rowGap))
+          || (layout.columnGap != null && !validGap(layout.columnGap))
+          || (layout.columns != null && !validCount(layout.columns))
+          || (layout.rows != null && layout.rows !== 'auto' && !validCount(layout.rows))
+          || (layout.autoPositioning != null && typeof layout.autoPositioning !== 'boolean')
+          || ['top', 'right', 'bottom', 'left'].some(side => padding[side] != null && !validGap(padding[side]))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);
+      }
+      if (node.gridCell != null && (!node.gridCell || typeof node.gridCell !== 'object' || Array.isArray(node.gridCell)
+        || ['row', 'column', 'rowSpan', 'columnSpan'].some(key => node.gridCell[key] != null && (!Number.isInteger(Number(node.gridCell[key])) || Number(node.gridCell[key]) < 1 || Number(node.gridCell[key]) > 64))
+        || (node.gridCell.alignX != null && !['start', 'center', 'end'].includes(node.gridCell.alignX))
+        || (node.gridCell.alignY != null && !['start', 'center', 'end'].includes(node.gridCell.alignY)))) throw new TypeError(`Invalid grid cell on layer ${node.name || node.id}.`);
+      if ((node.layoutSizingX != null && !['fixed', 'fill'].includes(node.layoutSizingX)) || (node.layoutSizingY != null && !['fixed', 'fill'].includes(node.layoutSizingY))) throw new TypeError(`Invalid grid sizing on layer ${node.name || node.id}.`);
       if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => {
         if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
         if (item.action === 'close-overlay' ? item.destinationId != null : typeof item.destinationId !== 'string') return true;

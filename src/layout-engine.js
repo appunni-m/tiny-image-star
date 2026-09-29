@@ -1,17 +1,36 @@
-const clamp = (value, min = 0) => Math.max(min, Number.isFinite(Number(value)) ? Number(value) : 0);
+const clamp = (value, min = 0) => Math.max(min, Number.isFinite(Number(value)) ? Number(value) : min);
+const trackCount = (value, fallback) => {
+  const count = Math.floor(Number(value));
+  return Number.isFinite(count) && count >= 1 ? Math.min(64, count) : fallback;
+};
 
 export function createAutoLayout(overrides = {}) {
+  const gap = clamp(overrides.gap ?? 8);
+  const padding = typeof overrides.padding === 'object'
+    ? { top: 16, right: 16, bottom: 16, left: 16, ...overrides.padding }
+    : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 };
   return {
-    axis: 'vertical', gap: 8, padding: { top: 16, right: 16, bottom: 16, left: 16 },
+    axis: 'vertical', gap, padding: { top: 16, right: 16, bottom: 16, left: 16 },
+    rowGap: gap, columnGap: gap, columns: 2, rows: 'auto', autoPositioning: true,
     align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
     ...overrides,
-    padding: typeof overrides.padding === 'object'
-      ? { top: 16, right: 16, bottom: 16, left: 16, ...overrides.padding }
-      : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 }
+    gap,
+    rowGap: clamp(overrides.rowGap ?? gap),
+    columnGap: clamp(overrides.columnGap ?? gap),
+    columns: trackCount(overrides.columns, 2),
+    rows: overrides.rows === 'auto' || overrides.rows == null ? 'auto' : trackCount(overrides.rows, 'auto'),
+    autoPositioning: overrides.autoPositioning !== false,
+    padding: Object.fromEntries(Object.entries(padding).map(([side, value]) => [side, clamp(value)]))
   };
 }
 
-function groupedItems(frame, settings, flowItems) {
+function flowGaps(settings) {
+  return settings.axis === 'horizontal'
+    ? { main: settings.columnGap, cross: settings.rowGap }
+    : { main: settings.rowGap, cross: settings.columnGap };
+}
+
+function groupedItems(frame, settings, flowItems, mainGap) {
   const horizontal = settings.axis === 'horizontal';
   const padding = settings.padding;
   const availableMain = horizontal
@@ -21,21 +40,21 @@ function groupedItems(frame, settings, flowItems) {
   const groups = []; let group = []; let used = 0;
   for (const item of flowItems) {
     const size = horizontal ? item.width : item.height;
-    const extra = group.length ? settings.gap : 0;
+    const extra = group.length ? mainGap : 0;
     if (group.length && used + extra + size > availableMain) { groups.push(group); group = []; used = 0; }
-    if (group.length) used += settings.gap;
+    if (group.length) used += mainGap;
     group.push(item); used += size;
   }
   if (group.length) groups.push(group);
   return groups;
 }
 
-function distribute(items, mainAvailable, settings) {
+function distribute(items, mainAvailable, settings, mainGap) {
   const horizontal = settings.axis === 'horizontal';
   const sizes = items.map(item => horizontal ? item.width : item.height);
   const occupied = sizes.reduce((sum, value) => sum + value, 0);
   const spare = Math.max(0, mainAvailable - occupied);
-  let gap = settings.gap;
+  let gap = mainGap;
   let start = 0;
   if (settings.justify === 'center') start = spare / 2;
   else if (settings.justify === 'end') start = spare;
@@ -43,14 +62,139 @@ function distribute(items, mainAvailable, settings) {
   return { start, gap };
 }
 
+function normalizedCell(node) {
+  const cell = node.gridCell || {};
+  return {
+    row: trackCount(cell.row, null),
+    column: trackCount(cell.column, null),
+    rowSpan: trackCount(cell.rowSpan, 1),
+    columnSpan: trackCount(cell.columnSpan, 1),
+    alignX: ['start', 'center', 'end'].includes(cell.alignX) ? cell.alignX : 'start',
+    alignY: ['start', 'center', 'end'].includes(cell.alignY) ? cell.alignY : 'start'
+  };
+}
+
+function applyGridAutoLayout(frame, settings) {
+  const padding = settings.padding;
+  const columns = trackCount(settings.columns, 2);
+  const columnGap = clamp(settings.columnGap);
+  const rowGap = clamp(settings.rowGap);
+  const requestedRows = settings.rows === 'auto' ? null : trackCount(settings.rows, null);
+  const innerWidth = Math.max(0, frame.width - padding.left - padding.right);
+  const innerHeight = Math.max(0, frame.height - padding.top - padding.bottom);
+  const cellWidth = Math.max(0, (innerWidth - (columns - 1) * columnGap) / columns);
+  const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
+  if (!flowItems.length) return;
+
+  const occupied = new Set();
+  const placements = new Map();
+  const reserve = (row, column, rowSpan, columnSpan) => {
+    for (let y = row; y < row + rowSpan; y += 1) for (let x = column; x < column + columnSpan; x += 1) occupied.add(`${y}:${x}`);
+  };
+  const fits = (row, column, rowSpan, columnSpan) => {
+    if (column < 1 || column + columnSpan - 1 > columns) return false;
+    for (let y = row; y < row + rowSpan; y += 1) for (let x = column; x < column + columnSpan; x += 1) if (occupied.has(`${y}:${x}`)) return false;
+    return true;
+  };
+  const findOpenCell = (start, rowSpan, columnSpan) => {
+    for (let cursor = start; cursor < 1_000_000; cursor += 1) {
+      const row = Math.floor(cursor / columns) + 1;
+      const column = cursor % columns + 1;
+      if (column + columnSpan - 1 > columns) continue;
+      if (fits(row, column, rowSpan, columnSpan)) return { row, column, cursor: cursor + columnSpan };
+    }
+    throw new RangeError('The grid does not have an available cell for this layer.');
+  };
+
+  let cursor = 0;
+  if (settings.autoPositioning) {
+    for (const item of flowItems) {
+      const cell = normalizedCell(item);
+      const columnSpan = Math.min(columns, cell.columnSpan);
+      const placement = findOpenCell(cursor, cell.rowSpan, columnSpan);
+      const nextCell = { ...cell, ...placement, rowSpan: cell.rowSpan, columnSpan };
+      delete nextCell.cursor;
+      placements.set(item.id, nextCell);
+      reserve(nextCell.row, nextCell.column, nextCell.rowSpan, nextCell.columnSpan);
+      cursor = placement.cursor;
+    }
+  } else {
+    const unplaced = [];
+    for (const item of flowItems) {
+      const cell = normalizedCell(item);
+      const rowSpan = cell.rowSpan;
+      const columnSpan = Math.min(columns, cell.columnSpan);
+      if (cell.row && cell.column && cell.column + columnSpan - 1 <= columns) {
+        const placement = { ...cell, rowSpan, columnSpan };
+        placements.set(item.id, placement);
+        reserve(placement.row, placement.column, rowSpan, columnSpan);
+      } else unplaced.push({ item, cell, rowSpan, columnSpan });
+    }
+    for (const { item, cell, rowSpan, columnSpan } of unplaced) {
+      const placement = findOpenCell(cursor, rowSpan, columnSpan);
+      const nextCell = { ...cell, ...placement, rowSpan, columnSpan };
+      delete nextCell.cursor;
+      placements.set(item.id, nextCell);
+      reserve(nextCell.row, nextCell.column, nextCell.rowSpan, nextCell.columnSpan);
+      cursor = placement.cursor;
+    }
+  }
+
+  let rowCount = requestedRows || 1;
+  for (const cell of placements.values()) rowCount = Math.max(rowCount, cell.row + cell.rowSpan - 1);
+  const rowHeights = Array(rowCount).fill(requestedRows
+    ? Math.max(0, (innerHeight - rowGap * (rowCount - 1)) / rowCount)
+    : 0);
+  if (!requestedRows) {
+    for (const item of flowItems) {
+      const cell = placements.get(item.id);
+      if (cell.rowSpan === 1) rowHeights[cell.row - 1] = Math.max(rowHeights[cell.row - 1], item.height);
+    }
+    for (const item of flowItems) {
+      const cell = placements.get(item.id);
+      if (cell.rowSpan < 2) continue;
+      const current = rowHeights.slice(cell.row - 1, cell.row - 1 + cell.rowSpan).reduce((sum, height) => sum + height, 0) + rowGap * (cell.rowSpan - 1);
+      const extra = Math.max(0, item.height - current) / cell.rowSpan;
+      for (let row = cell.row - 1; row < cell.row - 1 + cell.rowSpan; row += 1) rowHeights[row] += extra;
+    }
+  }
+  const rowOffsets = Array(rowCount + 1).fill(0);
+  for (let row = 1; row <= rowCount; row += 1) rowOffsets[row] = rowOffsets[row - 1] + rowHeights[row - 1] + rowGap;
+  const rowTop = row => padding.top + rowOffsets[row - 1];
+  const rowSize = (row, span) => rowOffsets[row - 1 + span] - rowOffsets[row - 1] - rowGap;
+
+  for (const item of flowItems) {
+    const cell = placements.get(item.id);
+    const cellX = padding.left + (cell.column - 1) * (cellWidth + columnGap);
+    const cellY = rowTop(cell.row);
+    const spanWidth = cellWidth * cell.columnSpan + columnGap * (cell.columnSpan - 1);
+    const spanHeight = rowSize(cell.row, cell.rowSpan);
+    const width = item.layoutSizingX === 'fill' ? spanWidth : item.width;
+    const height = item.layoutSizingY === 'fill' ? spanHeight : item.height;
+    const alignOffset = (available, size, align) => align === 'center' ? (available - size) / 2 : align === 'end' ? available - size : 0;
+    item.x = cellX + alignOffset(spanWidth, width, cell.alignX);
+    item.y = cellY + alignOffset(spanHeight, height, cell.alignY);
+    if (item.layoutSizingX === 'fill') item.width = width;
+    if (item.layoutSizingY === 'fill') item.height = height;
+    item.gridCell = { ...cell };
+    delete item.gridCell.cursor;
+  }
+}
+
 export function applyAutoLayout(frame) {
   if (!frame || frame.type !== 'frame' || !frame.autoLayout) return frame;
   const settings = createAutoLayout(frame.autoLayout);
+  if (settings.axis === 'grid') {
+    applyGridAutoLayout(frame, settings);
+    frame.autoLayout = settings;
+    return frame;
+  }
   const horizontal = settings.axis === 'horizontal';
   const padding = settings.padding;
   const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
-  const groups = groupedItems(frame, settings, flowItems);
-  const gap = clamp(settings.gap);
+  const gaps = flowGaps(settings);
+  const groups = groupedItems(frame, settings, flowItems, gaps.main);
+  const crossGap = clamp(gaps.cross);
   const mainAvailable = horizontal
     ? Math.max(0, frame.width - padding.left - padding.right)
     : Math.max(0, frame.height - padding.top - padding.bottom);
@@ -65,11 +209,11 @@ export function applyAutoLayout(frame) {
     const fillItems = settings.mainSizing === 'fixed' ? group.filter(item => item.layoutSizingMain === 'fill') : [];
     if (fillItems.length) {
       const usedByFixedItems = group.filter(item => item.layoutSizingMain !== 'fill').reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0);
-      const remaining = Math.max(0, mainAvailable - usedByFixedItems - gap * Math.max(0, group.length - 1));
+      const remaining = Math.max(0, mainAvailable - usedByFixedItems - gaps.main * Math.max(0, group.length - 1));
       const fillSize = Math.max(1, remaining / fillItems.length);
       for (const item of fillItems) { if (horizontal) item.width = fillSize; else item.height = fillSize; }
     }
-    const content = distribute(group, mainAvailable, settings.mainSizing === 'hug' ? { ...settings, justify: 'start' } : settings);
+    const content = distribute(group, mainAvailable, settings.mainSizing === 'hug' ? { ...settings, justify: 'start' } : settings, gaps.main);
     let mainCursor = (horizontal ? padding.left : padding.top) + (settings.mainSizing === 'hug' ? 0 : content.start);
     computedMain = Math.max(computedMain, group.reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0) + Math.max(0, group.length - 1) * content.gap);
     for (const item of group) {
@@ -89,7 +233,7 @@ export function applyAutoLayout(frame) {
       }
       mainCursor += mainSize + content.gap;
     }
-    crossCursor += lineCross + gap;
+    crossCursor += lineCross + crossGap;
   }
 
   if (flowItems.length) {
@@ -98,7 +242,7 @@ export function applyAutoLayout(frame) {
       else frame.height = computedMain + padding.top + padding.bottom;
     }
     if (settings.crossSizing === 'hug') {
-      const crossExtent = groups.reduce((sum, group) => sum + group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0), 0) + Math.max(0, groups.length - 1) * gap;
+      const crossExtent = groups.reduce((sum, group) => sum + group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0), 0) + Math.max(0, groups.length - 1) * crossGap;
       if (horizontal) frame.height = crossExtent + padding.top + padding.bottom;
       else frame.width = crossExtent + padding.left + padding.right;
     }

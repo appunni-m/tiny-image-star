@@ -17,6 +17,10 @@ function waitFor(test, label, timeout = 20000) {
     poll();
   });
 }
+async function waitForSaveCycle(app, label) {
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${label} save completion`);
+}
 function fixtureBmp() {
   const width = 64; const height = 32; const pixels = width * height * 3; const bytes = new Uint8Array(54 + pixels); const view = new DataView(bytes.buffer);
   bytes[0] = 66; bytes[1] = 77; view.setUint32(2, bytes.length, true); view.setUint32(10, 54, true); view.setUint32(14, 40, true);
@@ -82,6 +86,7 @@ function buildPackage(documentData, assets) {
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'isolated editor event handlers');
   const app = frame.contentDocument;
+  assert(app.title === 'Tiny Image Star' && app.querySelector('.brand-mark')?.textContent.trim() === '✦', 'the editor branding does not use the Tiny Image Star identity');
   const source = fixtureBmp();
   const files = Array.from({ length: 3 }, (_, index) => new File([source], `local-fixture-${index + 1}.bmp`, { type: 'image/bmp' }));
   imageInput(app, files);
@@ -583,8 +588,28 @@ try {
   savedVariableHeading = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === variableHeading.id);
   assert(getNodePropertyValue(savedVariables, savedVariableSurface, 'visible') === false, 'the Boolean variable did not update layer visibility');
   assert(getNodePropertyValue(savedVariables, savedVariableHeading, 'text') === 'Save changes', 'the string variable did not replace bound text content');
+  dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
+  const enabledValueForLayout = app.querySelector(`[data-variable-value="${actionEnabled.id}"][data-mode-id="${darkMode.id}"]`);
+  enabledValueForLayout.checked = true; enabledValueForLayout.dispatchEvent(new Event('input', { bubbles: true })); enabledValueForLayout.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'grid fixture visibility autosave');
   dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
-  await waitFor(() => app.querySelector(`[data-layer-id="${variableSurface.id}"]`)?.classList.contains('layer-hidden'), 'variable-controlled layer visibility');
+  await waitFor(() => !app.querySelector(`[data-layer-id="${variableSurface.id}"]`)?.classList.contains('layer-hidden'), 'grid fixture variable-controlled layer visibility');
+  dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
+  dispatchClick(app.querySelector('[data-action="auto-layout-toggle"]'));
+  let layoutAxis = app.querySelector('[data-prop="autoLayout.axis"]');
+  assert([...layoutAxis.options].some(option => option.value === 'grid'), 'auto layout flow picker did not offer Grid');
+  layoutAxis.value = 'grid'; layoutAxis.dispatchEvent(new Event('input', { bubbles: true })); layoutAxis.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'grid auto layout');
+  let layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  assert(savedGridFrame?.autoLayout.axis === 'grid' && savedGridFrame.children.every(node => node.gridCell?.row && node.gridCell?.column), 'grid auto layout did not assign stable cell placements');
+  const gridColumns = app.querySelector('[data-prop="autoLayout.columns"]');
+  gridColumns.value = '1'; gridColumns.dispatchEvent(new Event('input', { bubbles: true })); gridColumns.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'grid column resize');
+  layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  const visibleGridChildren = savedGridFrame.children.filter(node => node.visible && node.layoutPositioning !== 'absolute');
+  assert(savedGridFrame.autoLayout.columns === 1 && visibleGridChildren.length >= 2 && visibleGridChildren[1].gridCell.row > visibleGridChildren[0].gridCell.row, `reducing grid columns did not reflow visible children into more rows: ${JSON.stringify({ columns: savedGridFrame.autoLayout.columns, visible: visibleGridChildren.map(node => ({ name: node.name, row: node.gridCell?.row, column: node.gridCell?.column, visible: node.visible })) })}`);
 
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
@@ -647,7 +672,7 @@ try {
   const separated = separatedRecords[0]?.document?.pages[0]?.children;
   assert(separated?.map(node => node.id).join(',') === `${booleanUnderlay.id},${booleanBase.id},${booleanCutter.id}`, 'separation did not restore the original source layers and identities');
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, prototypeConnection: true, prototypeOverlay: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

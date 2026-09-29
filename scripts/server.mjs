@@ -31,4 +31,4 @@ createServer((request, response) => {
   } catch {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not found');
   }
-}).listen(port, '127.0.0.1', () => console.log(`Figma Local is available at http://127.0.0.1:${port}`));
+}).listen(port, '127.0.0.1', () => console.log(`Tiny Image Star is available at http://127.0.0.1:${port}`));

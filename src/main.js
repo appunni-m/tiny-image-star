@@ -181,8 +181,8 @@ function renderLayers() {
 function section(title, body, iconName = null) {
   return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
 }
-function numberField(label, prop, value, step = 1) {
-  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}" value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${label}" /></div>`;
+function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false) {
+  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${label}" /></div>`;
 }
 function sliderField(label, prop, value, min, max, step = 1) {
   return `<div class="slider-row"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"/><output>${Number(value).toFixed(step < 1 ? 2 : 0)}${prop === 'opacity' ? '%' : ''}</output></div>`;
@@ -237,8 +237,19 @@ function autoLayoutSection(node) {
   if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
   const layout = createAutoLayout(node.autoLayout);
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
-  const body = `<div class="property-grid"><span class="field-caption">Direction</span>${select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal']])}${numberField('↕', 'autoLayout.gap', layout.gap)}${numberField('⇳', 'autoLayout.padding', layout.padding.top)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div><button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
+  const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
+  const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 1, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 1, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 1, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 1, 0)}</div>`;
+  const body = layout.axis === 'grid'
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Grid cells flow in layer order. Turn off Auto position to edit a layer’s row and column.</div><button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
+}
+function gridPlacementSection(node, parent) {
+  const cell = { row: 1, column: 1, rowSpan: 1, columnSpan: 1, alignX: 'start', alignY: 'start', ...(node.gridCell || {}) };
+  const automatic = parent.autoLayout.autoPositioning !== false;
+  const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="gridCell.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
+  const sizing = (property, value) => `<select class="prop-input select-field" data-prop="${property}" aria-label="${property}"><option value="fixed"${value !== 'fill' ? ' selected' : ''}>Fixed</option><option value="fill"${value === 'fill' ? ' selected' : ''}>Fill cell</option></select>`;
+  return section('Grid placement', `<div class="property-grid">${numberField('Row', 'gridCell.row', cell.row, 1, 1, 64, automatic)}${numberField('Column', 'gridCell.column', cell.column, 1, 1, 64, automatic)}${numberField('Row span', 'gridCell.rowSpan', cell.rowSpan, 1, 1, 64)}${numberField('Column span', 'gridCell.columnSpan', cell.columnSpan, 1, 1, 64)}<span class="field-caption">Align X</span>${select('alignX', cell.alignX, [['start','Left'],['center','Center'],['end','Right']])}<span class="field-caption">Align Y</span>${select('alignY', cell.alignY, [['start','Top'],['center','Center'],['end','Bottom']])}<span class="field-caption">Width</span>${sizing('layoutSizingX', node.layoutSizingX)}<span class="field-caption">Height</span>${sizing('layoutSizingY', node.layoutSizingY)}</div>${automatic ? '<div class="image-properties-note">Turn off Auto position on the grid frame to edit row and column.</div>' : ''}`);
 }
 function constraintsSection(node) {
   const constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}) };
@@ -351,10 +362,13 @@ function renderInspector() {
   if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
-    const sizing = node.layoutSizingMain || 'hug';
-    const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
-    const cross = node.layoutSizingCross || 'hug';
-    body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
+    if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
+    else {
+      const sizing = node.layoutSizingMain || 'hug';
+      const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
+      const cross = node.layoutSizingCross || 'hug';
+      body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
+    }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
   content.innerHTML = body;
@@ -993,6 +1007,7 @@ function updateInspectorInput(event) {
   const adjustments = prop.startsWith('adjustments.');
   const layoutSetting = prop.startsWith('autoLayout.');
   const constraintSetting = prop.startsWith('constraints.');
+  const gridCellSetting = prop.startsWith('gridCell.');
   const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
@@ -1017,19 +1032,27 @@ function updateInspectorInput(event) {
     }
     else if (layoutSetting) {
       node.autoLayout = createAutoLayout(node.autoLayout || {});
-      node.autoLayout[key] = value;
+      if (key.startsWith('padding.')) {
+        const side = key.slice('padding.'.length);
+        if (['top', 'right', 'bottom', 'left'].includes(side)) node.autoLayout.padding[side] = value;
+      } else node.autoLayout[key] = value;
       applyAutoLayout(node);
+    } else if (gridCellSetting) {
+      const parent = findNode(state.document, node.id)?.parent;
+      node.gridCell ||= {};
+      node.gridCell[key.slice('gridCell.'.length)] = value;
+      if (parent?.autoLayout) applyAutoLayout(parent);
     }
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
     if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, node.width, node.height);
     if (node.type === 'image' && adjustments) schedulePreview(node);
-    if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross') {
+    if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : prop);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop);
   }
   renderer.invalidate();
 }
