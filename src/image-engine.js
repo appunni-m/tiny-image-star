@@ -8,6 +8,10 @@ const MAX_RENDER_SOURCE_PIXELS = 80_000_000;
 // memory-blocked job after a small fixed number of admissions. That bounds
 // starvation when the queue contains a steady stream of small images.
 const MAX_MEMORY_BLOCKED_JOB_BYPASSES = 3;
+// Retry worker crashes a small, fixed number of times per replacement chain.
+// If WASM initialization keeps failing, the pool degrades and reports the
+// number of ready workers instead of respawning forever.
+const MAX_WORKER_RECOVERY_ATTEMPTS = 2;
 // Source + mutable Pillow copy + filter/encoder temporaries. This deliberately
 // overestimates the common 4-byte-per-pixel path so parallel jobs leave room
 // for WASM allocator and PNG output overhead.
@@ -270,6 +274,7 @@ export class LocalImageEngine {
     this.queue = [];
     this.queuedByKey = new Map();
     this.pausedQueueGroups = new Set();
+    this.exhaustedQueueGroups = new Set();
     this.pending = new Map();
     this.nextRequestId = 1;
     this.onChange = onChange;
@@ -287,13 +292,14 @@ export class LocalImageEngine {
     const next = Math.max(1, Math.min(this.maxWorkers, Math.trunc(value) || 1));
     this.concurrency = next;
     while (this.workers.length < next) this.#createWorker();
+    this.#retireExcessWorkers();
     if (next !== previousConcurrency || this.workers.length !== previousPoolSize) this.#configureCachePool();
     this.#dispatch();
     this.#notify();
     return next;
   }
 
-  #createWorker() {
+  #createWorker(recoveryAttempts = 0) {
     const slot = {
       worker: new Worker(new URL('./image-worker.js', import.meta.url), { type: 'module', name: `tiny-image-star-image-${this.workers.length + 1}` }),
       initialized: false,
@@ -304,6 +310,8 @@ export class LocalImageEngine {
       cacheGeneration: 0,
       cacheGenerationSent: 0,
       cacheBudget: 0,
+      retireWhenIdle: false,
+      recoveryAttempts,
     };
     slot.worker.onmessage = event => this.#receive(slot, event.data);
     slot.worker.onerror = event => this.#failWorker(slot, new Error(event.message || 'The local image worker stopped unexpectedly.'));
@@ -362,6 +370,7 @@ export class LocalImageEngine {
       if (message.sourceRetained === undefined) slot.loaded.delete(job.assetId);
       job.reject(new Error(message.message));
     } else job.resolve(message);
+    this.#retireExcessWorkers();
     this.#dispatch();
     this.#notify();
   }
@@ -373,16 +382,32 @@ export class LocalImageEngine {
     slot.loaded.clear();
     slot.worker.terminate();
     const entries = [...this.pending.entries()].filter(([, job]) => job.slot === slot);
+    const failedQueueGroups = new Set(entries.map(([, job]) => job.queueGroup).filter(Boolean));
     for (const [id, job] of entries) {
       this.pending.delete(id);
       this.activeRenderBytes = Math.max(0, this.activeRenderBytes - job.activeRenderBytes);
       slot.busy = false;
       job.reject(error);
     }
+    this.#retireExcessWorkers();
+    const availableWorkers = this.workers.filter(workerSlot => !workerSlot.failed && !workerSlot.retireWhenIdle).length;
+    if (!this.dead && availableWorkers < this.concurrency
+      && slot.recoveryAttempts < MAX_WORKER_RECOVERY_ATTEMPTS) {
+      this.#createWorker(slot.recoveryAttempts + 1);
+    }
     this.#configureCachePool();
-    if (!this.workers.some(workerSlot => !workerSlot.failed)) {
+    const schedulableWorkers = this.workers.filter(workerSlot => !workerSlot.failed && !workerSlot.retireWhenIdle).length;
+    if (schedulableWorkers === 0) {
       const queuedError = new Error('All local image workers stopped unexpectedly.');
-      for (const job of this.queue.splice(0)) {
+      const queued = this.queue.splice(0);
+      for (const job of queued) {
+        if (job.queueGroup) failedQueueGroups.add(job.queueGroup);
+      }
+      for (const queueGroup of failedQueueGroups) {
+        this.exhaustedQueueGroups.add(queueGroup);
+        this.pausedQueueGroups.delete(queueGroup);
+      }
+      for (const job of queued) {
         if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) {
           this.queuedByKey.delete(job.replaceKey);
         }
@@ -403,9 +428,6 @@ export class LocalImageEngine {
 
   #enqueueRender(assetId, sourceBytes, adjustments, transforms, { replaceKey, format = 'png', quality = 90, queueGroup = null } = {}, outputMode) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
-    if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
-      return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
-    }
     if (replaceKey !== undefined && (typeof replaceKey !== 'string' || !replaceKey)) {
       return Promise.reject(new TypeError('A queued render replacement key must be a nonempty string.'));
     }
@@ -414,6 +436,12 @@ export class LocalImageEngine {
     }
     if (!['png', 'jpeg', 'webp'].includes(format)) return Promise.reject(new TypeError('Image output format must be PNG, JPEG, or WebP.'));
     if (!Number.isInteger(quality) || quality < 1 || quality > 100) return Promise.reject(new TypeError('Image output quality must be an integer from 1 to 100.'));
+    if (queueGroup && this.exhaustedQueueGroups.has(queueGroup)) {
+      return Promise.reject(new Error('All local image workers stopped unexpectedly. Start a new batch to retry.'));
+    }
+    if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
+      return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
+    }
     let activeRenderBytes;
     try {
       if (!bytesView(sourceBytes)) throw new TypeError('Image source data must be an ArrayBuffer or an ArrayBuffer view.');
@@ -562,7 +590,7 @@ export class LocalImageEngine {
   }
 
   #configureCachePool() {
-    const pool = this.workers.filter(slot => !slot.failed);
+    const pool = this.workers.filter(slot => !slot.failed && !slot.retireWhenIdle);
     const activeCount = Math.min(this.concurrency, pool.length);
     const generation = ++this.cacheGeneration;
     this.poolConfigured = pool.length === 0;
@@ -592,6 +620,37 @@ export class LocalImageEngine {
     slot.worker.postMessage({ type: 'configure-cache', generation: this.cacheGeneration, pixelBudget: slot.cacheBudget });
   }
 
+  #retireExcessWorkers() {
+    let retired = false;
+    let retained = 0;
+    for (const slot of [...this.workers]) {
+      if (!slot.failed && retained < this.concurrency) {
+        slot.retireWhenIdle = false;
+        retained += 1;
+        continue;
+      }
+      if (slot.busy) {
+        slot.retireWhenIdle = true;
+        continue;
+      }
+      slot.retireWhenIdle = true;
+      slot.ready = false;
+      slot.loaded.clear();
+      slot.worker.terminate();
+      this.cacheConfigurationPending.delete(slot);
+      const index = this.workers.indexOf(slot);
+      if (index >= 0) this.workers.splice(index, 1);
+      retired = true;
+    }
+    if (this.cacheConfigurationPending.size === 0 && !this.poolConfigured) {
+      this.poolConfigured = true;
+      for (const slot of this.workers) {
+        slot.ready = !slot.failed && slot.initialized && slot.cacheGeneration === this.cacheGeneration;
+      }
+    }
+    return retired;
+  }
+
   pause() { this.paused = true; this.#notify(); }
   resume() { this.paused = false; this.#dispatch(); this.#notify(); }
 
@@ -613,6 +672,16 @@ export class LocalImageEngine {
     return true;
   }
 
+  /** Release per-run failure state after a batch has fully drained. */
+  releaseQueueGroup(queueGroup) {
+    if (typeof queueGroup !== 'string' || !queueGroup) throw new TypeError('A released render group must be a nonempty string.');
+    const wasPaused = this.pausedQueueGroups.delete(queueGroup);
+    const wasExhausted = this.exhaustedQueueGroups.delete(queueGroup);
+    const changed = wasPaused || wasExhausted;
+    if (changed) this.#notify();
+    return changed;
+  }
+
   cancelQueued(error = new DOMException('The image operation was cancelled.', 'AbortError')) {
     for (const job of this.queue.splice(0)) job.reject(error);
     this.queuedByKey.clear();
@@ -627,12 +696,21 @@ export class LocalImageEngine {
     return { concurrency: this.concurrency, workersReady: this.workers.filter(item => item.ready).length, active: this.workers.filter(item => item.busy).length, activeRenderBytes: this.activeRenderBytes, maxActiveRenderBytes: this.maxActiveRenderBytes, queued: this.queue.length, paused: this.paused };
   }
 
+  queueGroupMetrics(queueGroup) {
+    if (typeof queueGroup !== 'string' || !queueGroup) throw new TypeError('A queue group needs a nonempty ID.');
+    return {
+      active: [...this.pending.values()].filter(job => job.queueGroup === queueGroup).length,
+      queued: this.queue.filter(job => job.queueGroup === queueGroup).length,
+    };
+  }
+
   #notify() { this.onChange(this.metrics()); }
 
   destroy() {
     this.dead = true;
     this.cancelQueued(new Error('The local image engine was closed.'));
     this.pausedQueueGroups.clear();
+    this.exhaustedQueueGroups.clear();
     for (const slot of this.workers) slot.worker.terminate();
     for (const job of this.pending.values()) job.reject(new Error('The local image engine was closed.'));
     this.pending.clear(); this.workers.length = 0;

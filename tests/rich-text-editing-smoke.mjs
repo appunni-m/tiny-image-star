@@ -176,8 +176,27 @@ try {
   const lineHeight = toolbar.querySelector('#text-format-line-height'); lineHeight.value = '1.6'; lineHeight.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   editorRange('yours');
   const color = toolbar.querySelector('#text-format-color'); color.value = '#f0123c'; color.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  editorRange(originalText);
+  const mixedWeight = toolbar.querySelector('#text-format-weight');
+  const mixedFamily = toolbar.querySelector('#text-format-family');
+  const mixedSize = toolbar.querySelector('#text-format-size');
+  const mixedColor = toolbar.querySelector('#text-format-color');
+  const mixedSpacing = toolbar.querySelector('#text-format-spacing');
+  assert(mixedWeight.dataset.mixed === 'true' && mixedWeight.value === '' && /mixed values/i.test(mixedWeight.getAttribute('aria-label')),
+    'a range spanning different weights should expose an accessible Mixed state instead of the first run value.');
+  assert(mixedFamily.dataset.mixed === 'true' && mixedFamily.value === '' && mixedFamily.placeholder === 'Mixed',
+    'a range spanning different font families should display Mixed.');
+  assert(mixedSize.dataset.mixed === 'true' && mixedSize.value === '' && mixedSize.placeholder === 'Mixed',
+    'a range spanning different font sizes should display Mixed.');
+  assert(mixedColor.dataset.mixed === 'true' && /mixed values/i.test(mixedColor.getAttribute('aria-label')),
+    'a range spanning different colors should identify the color control as mixed.');
+  assert(mixedSpacing.dataset.mixed === 'true' && mixedSpacing.value === '',
+    'a range spanning different letter spacing should display Mixed.');
+  mixedSpacing.value = '2.4'; mixedSpacing.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  assert([...editor.querySelectorAll('[data-text-run="true"]')].every(span => span.dataset.runLetterSpacing === '2.4'),
+    'applying a new value from a mixed field should format the entire selected range.');
   const editSpans = [...editor.querySelectorAll('[data-text-run="true"]')];
-  assert(editSpans.some(span => span.textContent === 'images' && span.getAttribute('data-run-font-weight') === '800' && span.dataset.runTextDecoration === 'underline' && span.dataset.runFontFamily === 'Georgia, serif' && span.dataset.runLetterSpacing === '1.2'), 'the editor did not apply the selected word weight, decoration, family, and spacing.');
+  assert(editSpans.some(span => span.textContent === 'images' && span.getAttribute('data-run-font-weight') === '800' && span.dataset.runTextDecoration === 'underline' && span.dataset.runFontFamily === 'Georgia, serif' && span.dataset.runLetterSpacing === '2.4'), 'the editor did not apply the selected word weight, decoration, family, and spacing.');
   assert(editSpans.some(span => span.textContent === 'feel' && span.getAttribute('data-run-font-style') === 'italic'), 'the editor did not wrap the selected word in italic formatting.');
   assert(editSpans.some(span => span.textContent === 'yours' && span.getAttribute('data-run-font-size') === '36' && span.getAttribute('data-run-line-height') === '1.6' && span.getAttribute('data-run-color') === '#f0123c'),
     'font size, line height, and color were not applied to the same selected range.');
@@ -189,7 +208,7 @@ try {
   const boldRun = richNode.textRuns.find(run => run.text === 'images');
   const italicRun = richNode.textRuns.find(run => run.text === 'feel');
   const coloredRun = richNode.textRuns.find(run => run.text === 'yours');
-  assert(boldRun?.fontWeight === 800 && boldRun.textDecoration === 'underline' && boldRun.fontFamily === 'Georgia, serif' && boldRun.letterSpacing === 1.2 && italicRun?.fontStyle === 'italic', 'saved weight, decoration, family, spacing, or italic styles did not match the selection.');
+  assert(boldRun?.fontWeight === 800 && boldRun.textDecoration === 'underline' && boldRun.fontFamily === 'Georgia, serif' && boldRun.letterSpacing === 2.4 && italicRun?.fontStyle === 'italic', 'saved weight, decoration, family, spacing, or italic styles did not match the selection.');
   assert(coloredRun?.fontSize === 36 && coloredRun?.lineHeight === 1.6 && coloredRun?.color === '#f0123c', 'saved range size/line-height/color did not match the selected text.');
 
   const beforeFirstReload = app;
@@ -201,7 +220,7 @@ try {
   assert(app.querySelector('#document-name').value === smokeDocumentName, 'reload opened a different local document during the rich text smoke.');
   const reloaded = await documentById(app, smokeDocumentId);
   richNode = textNode(reloaded, originalText);
-  assert(richNode?.textRuns?.some(run => run.fontWeight === 800 && run.textDecoration === 'underline' && run.fontFamily === 'Georgia, serif' && run.letterSpacing === 1.2 && run.text === 'images'), 'reload lost the formatted range.');
+  assert(richNode?.textRuns?.some(run => run.fontWeight === 800 && run.textDecoration === 'underline' && run.fontFamily === 'Georgia, serif' && run.letterSpacing === 2.4 && run.text === 'images'), 'reload lost the formatted range.');
   assert(richNode?.textRuns?.some(run => run.fontStyle === 'italic' && run.text === 'feel'), 'reload lost the italic range.');
   assert(richNode?.textRuns?.some(run => run.fontSize === 36 && run.lineHeight === 1.6 && run.color === '#f0123c' && run.text === 'yours'), 'reload lost the size/line-height/color range.');
 
@@ -214,7 +233,7 @@ try {
   await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'reopened rich text editor');
   editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
   assert(editor.textContent === originalText, 'reopened text did not match the saved content.');
-  const reopenedFormatted = editor.querySelector('[data-run-font-weight="800"][data-run-text-decoration="underline"][data-run-font-family="Georgia, serif"][data-run-letter-spacing="1.2"]');
+  const reopenedFormatted = editor.querySelector('[data-run-font-weight="800"][data-run-text-decoration="underline"][data-run-font-family="Georgia, serif"][data-run-letter-spacing="2.4"]');
   assert(reopenedFormatted?.textContent === 'images', 'reopening the editor did not render saved weight, decoration, family, and spacing spans.');
   assert(editor.querySelector('[data-run-font-style="italic"]')?.textContent === 'feel', 'reopening the editor did not render saved italic spans.');
   const reopenedColor = editor.querySelector('[data-run-color="#f0123c"]');

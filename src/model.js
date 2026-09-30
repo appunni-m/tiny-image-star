@@ -1616,7 +1616,7 @@ export function createComponentProperty(document, componentId, { id = null, name
 function findInstancePropertyTarget(instance, targetSourceId) {
   let found = null;
   const visit = (node, isRoot = false) => {
-    if (node.componentSourceId === targetSourceId) { found = node; return; }
+    if (node.componentSourceId === targetSourceId || node.nestedComponentSourceId === targetSourceId) { found = node; return; }
     if (!isRoot && node.isInstance) return;
     for (const child of node.children || []) visit(child);
   };
@@ -1947,6 +1947,161 @@ export function createComponentSet(document, componentIds, name = null) {
   return set;
 }
 
+function componentVariantSet(document, setId) {
+  const set = document.componentSets?.find(item => item.id === setId);
+  if (!set) throw new Error('This component set is no longer available.');
+  const members = set.componentIds.map(id => document.components?.find(component => component.id === id));
+  if (members.length < 2 || members.some(component => !component || component.componentSetId !== set.id)) {
+    throw new Error('This component set has missing or mismatched variants.');
+  }
+  return { set, members };
+}
+
+function normalizedVariantValues(set, sourceComponent, overrides) {
+  if (overrides == null) overrides = {};
+  if (typeof overrides !== 'object' || Array.isArray(overrides)) throw new TypeError('Variant values must be an object keyed by axis name.');
+  const propertyNames = new Set(set.properties.map(property => property.name));
+  for (const name of Object.keys(overrides)) {
+    if (!propertyNames.has(name)) throw new Error(`Variant property “${name}” does not exist in this set.`);
+  }
+  const values = Object.fromEntries(set.properties.map(property => {
+    const raw = Object.hasOwn(overrides, property.name)
+      ? overrides[property.name]
+      : sourceComponent.variantProperties?.[property.name];
+    const value = String(raw ?? '').trim();
+    if (!value || value.length > 80 || /[\x00-\x1f\x7f]/u.test(value)) {
+      throw new TypeError(`Variant value for “${property.name}” must contain 1–80 printable characters.`);
+    }
+    return [property.name, value];
+  }));
+  return values;
+}
+
+/**
+ * Create a new main component by copying a set member's design, then add it to
+ * the same set with the supplied axis values. Values omitted from `values`
+ * inherit from the source variant; the resulting combination must be unique.
+ * The source is not changed, and cloned layer IDs plus internal mask/interaction
+ * references are remapped before the new component is committed.
+ */
+export function addComponentVariantFromMaster(document, setId, sourceComponentId, values = {}, name = null) {
+  const { set, members } = componentVariantSet(document, setId);
+  const sourceComponent = members.find(component => component.id === sourceComponentId);
+  if (!sourceComponent) throw new Error('Choose a source variant from this component set.');
+  const variantValues = normalizedVariantValues(set, sourceComponent, values);
+  const combination = JSON.stringify(set.properties.map(property => variantValues[property.name]));
+  if (members.some(component => JSON.stringify(set.properties.map(property => component.variantProperties?.[property.name])) === combination)) {
+    throw new Error('That combination already exists in this component set.');
+  }
+  const sourceEntry = findNodeAcrossPages(document, sourceComponent.rootNodeId);
+  if (!sourceEntry?.node.isComponent || sourceEntry.node.componentId !== sourceComponent.id) {
+    throw new Error('The source variant no longer has a valid main component layer.');
+  }
+  if (sourceEntry.parents.some(parent => parent.isInstance)) {
+    throw new Error('A variant cannot be created inside a component instance.');
+  }
+  const changedValues = set.properties
+    .filter(property => variantValues[property.name] !== sourceComponent.variantProperties?.[property.name])
+    .map(property => `${property.name}=${variantValues[property.name]}`);
+  const defaultName = `${set.name} / ${changedValues.join(', ')}`;
+  const componentName = String(name ?? defaultName).trim();
+  if (!componentName || componentName.length > 160 || /[\x00-\x1f\x7f]/u.test(componentName)) {
+    throw new TypeError('Variant name must contain 1–160 printable characters.');
+  }
+
+  // Build a fresh tree through the normal instance path so every node receives
+  // a valid new ID and nested component instances retain their own links.
+  const cloneRoot = createComponentInstance(document, sourceComponent.id, {
+    pageId: sourceEntry.page.id,
+    parentId: sourceEntry.parent?.id ?? null,
+    x: sourceEntry.node.x + sourceEntry.node.width + 32,
+    y: sourceEntry.node.y
+  });
+  const cloneBySourceId = new Map();
+  walkNodes([cloneRoot], ({ node }) => {
+    if (node.componentSourceId) cloneBySourceId.set(node.componentSourceId, node.id);
+  });
+  const sourceProperties = (sourceComponent.componentProperties || []).map(property => {
+    const targetSourceId = cloneBySourceId.get(property.targetSourceId);
+    if (!targetSourceId) throw new Error(`Cannot copy component property “${property.name}” because its target is outside the source variant.`);
+    return { ...clone(property), id: createId('component-property'), targetSourceId };
+  });
+  detachComponentInstance(document, cloneRoot.id, sourceEntry.page.id);
+  if (sourceEntry.parent?.autoLayout) {
+    // The variant master is a sibling on the canvas, but should not perturb an
+    // existing auto-layout flow just because it was created from an asset.
+    cloneRoot.layoutPositioning = 'absolute';
+  }
+  cloneRoot.name = componentName;
+  const component = createComponent(document, cloneRoot.id, componentName, sourceEntry.page.id);
+  component.componentSetId = set.id;
+  component.variantProperties = variantValues;
+  if (sourceProperties.length) component.componentProperties = sourceProperties;
+  assignVariantNodeKeys(cloneRoot);
+  set.componentIds.push(component.id);
+  for (const property of set.properties) {
+    if (!property.values.includes(variantValues[property.name])) property.values.push(variantValues[property.name]);
+  }
+  // Keep the new master next to its source in layer order.
+  reorderNode(document, cloneRoot.id, sourceEntry.index + 1, sourceEntry.page.id);
+  // If the source is nested in other main components, propagate the new sibling
+  // into their linked instances from the innermost owner outward.
+  for (const parent of [...sourceEntry.parents].reverse()) {
+    if (parent.isComponent && parent.componentId) syncComponentInstances(document, parent.componentId);
+  }
+  return component;
+}
+
+/**
+ * Remove a variant from its set without deleting its master layer or linked
+ * instances. It becomes a standalone main component. Removal is rejected when
+ * the set has only two variants; prototype variant actions that depend on the
+ * removed set membership are cleared so the document remains valid.
+ */
+export function removeComponentVariantFromSet(document, setId, componentId) {
+  const { set, members } = componentVariantSet(document, setId);
+  if (members.length <= 2) throw new Error('A component set must keep at least two variants.');
+  const component = members.find(item => item.id === componentId);
+  if (!component) throw new Error('Choose a variant from this component set.');
+
+  set.componentIds = set.componentIds.filter(id => id !== componentId);
+  delete component.componentSetId;
+  delete component.variantProperties;
+  set.properties = set.properties.map(property => ({
+    ...property,
+    values: [...new Set(set.componentIds.map(id => document.components.find(item => item.id === id)?.variantProperties?.[property.name]).filter(Boolean))]
+  }));
+
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    const interactions = Array.isArray(node.interactions) ? node.interactions : [];
+    const retainedInteractions = interactions.filter(interaction => {
+      if (interaction.action !== 'change-variant') return true;
+      // An instance of the removed variant is now standalone, so it cannot
+      // change to another member of the former set.
+      if (node.isInstance && node.id === interaction.instanceId && node.componentId === componentId) return false;
+      // Existing actions elsewhere cannot target a component outside their set.
+      return interaction.targetVariantId !== componentId;
+    });
+    const changed = retainedInteractions.length !== interactions.length;
+    if (changed) {
+      if (retainedInteractions.length) node.interactions = retainedInteractions;
+      else delete node.interactions;
+    }
+
+    // Prototype interactions edited on an instance are mirrored in the root's
+    // source-keyed override map. Keep that persisted copy in lockstep with the
+    // pruned layer array so validation and reload see the same routes.
+    if (changed && node.componentSourceId) {
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override && Object.hasOwn(override, 'interactions')) {
+        override.interactions = clone(retainedInteractions);
+      }
+    }
+  });
+  return component;
+}
+
 export function setComponentVariantProperty(document, componentId, propertyName, value) {
   const component = document.components?.find(item => item.id === componentId);
   const set = component && document.componentSets?.find(item => item.id === component.componentSetId);
@@ -2082,9 +2237,16 @@ export function createComponentInstance(document, componentId, { pageId = docume
   const targetPage = document.pages.find(page => page.id === pageId);
   if (!targetPage) throw new Error('The target page no longer exists.');
   const instance = clone(master.node);
+  const cloneByOriginalId = new Map();
   const renew = (node, isRoot = false) => {
     const sourceId = node.id;
     node.id = createId(node.type);
+    cloneByOriginalId.set(sourceId, node.id);
+    // A nested linked component needs its own source mapping for component
+    // properties, while componentSourceId tracks this outer instance's tree.
+    const nestedSourceId = node.nestedComponentSourceId || node.componentSourceId;
+    if (nestedSourceId) node.nestedComponentSourceId = nestedSourceId;
+    else delete node.nestedComponentSourceId;
     node.componentSourceId = sourceId;
     if (node.variantNodeKey) node.componentSourceKey = node.variantNodeKey;
     else delete node.componentSourceKey;
@@ -2104,6 +2266,37 @@ export function createComponentInstance(document, componentId, { pageId = docume
     }
   };
   renew(instance, true);
+  const cloneBySourceId = new Map();
+  walkNodes([instance], ({ node }) => {
+    if (node.componentSourceId) cloneBySourceId.set(node.componentSourceId, node.id);
+  });
+  walkNodes([instance], ({ node }) => {
+    const copiedMaskId = cloneByOriginalId.get(node.maskSourceId) || cloneBySourceId.get(node.maskSourceId);
+    if (copiedMaskId) node.maskSourceId = copiedMaskId;
+    for (const interaction of node.interactions || []) {
+      if (interaction.action === 'change-variant') {
+        const copiedInstanceId = cloneByOriginalId.get(interaction.instanceId) || cloneBySourceId.get(interaction.instanceId);
+        if (copiedInstanceId) interaction.instanceId = copiedInstanceId;
+      }
+      const copiedDestinationId = cloneByOriginalId.get(interaction.destinationId) || cloneBySourceId.get(interaction.destinationId);
+      if (copiedDestinationId) {
+        interaction.destinationId = copiedDestinationId;
+        interaction.destinationPageId = pageId;
+      }
+    }
+
+    if (node.isInstance && node.componentPropertyValues) {
+      const nestedComponent = document.components?.find(component => component.id === node.componentId);
+      const slotPropertyIds = new Set((nestedComponent?.componentProperties || [])
+        .filter(property => property.type === 'SLOT')
+        .map(property => property.id));
+      for (const propertyId of slotPropertyIds) {
+        const value = node.componentPropertyValues[propertyId];
+        if (!Array.isArray(value)) continue;
+        node.componentPropertyValues[propertyId] = value.map(id => cloneByOriginalId.get(id) || cloneBySourceId.get(id) || id);
+      }
+    }
+  });
   addNode(document, instance, { pageId, parentId });
   applyComponentPropertyValues(document, instance);
   return instance;
@@ -2120,7 +2313,11 @@ function clearComponentInstanceLink(instance) {
   delete instance.isInstance; delete instance.componentId; delete instance.componentOverrides; delete instance.componentPropertyValues; delete instance.componentNameIsInherited;
   walkNodes(instance.children || [], ({ node, parents }) => {
     const belongsToNestedInstance = parents.some(parent => parent.isInstance && parent.componentId !== componentId);
-    if (!belongsToNestedInstance) { delete node.componentSourceId; delete node.componentSourceKey; }
+    if (!belongsToNestedInstance) {
+      delete node.componentSourceId;
+      delete node.componentSourceKey;
+      delete node.nestedComponentSourceId;
+    }
     if (node.isInstance && node.componentId === componentId) { delete node.isInstance; delete node.componentId; delete node.componentOverrides; delete node.componentPropertyValues; }
   });
   delete instance.componentSourceId; delete instance.componentSourceKey;
@@ -2171,6 +2368,9 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     y: isRoot ? rootY : copy.y,
     name: isRoot ? rootName : copy.name
   });
+  const nestedSourceId = master.nestedComponentSourceId || master.componentSourceId;
+  if (nestedSourceId) target.nestedComponentSourceId = nestedSourceId;
+  else delete target.nestedComponentSourceId;
   if (target.type !== 'frame') delete target.overflowBehavior;
   if (isRoot) {
     target.componentId = componentId;
@@ -2418,6 +2618,7 @@ export function validateDocument(document) {
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
       if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
       if (node.componentSourceKey != null && typeof node.componentSourceKey !== 'string') throw new TypeError(`Invalid component source key on ${node.name || node.id}.`);
+      if (node.nestedComponentSourceId != null && typeof node.nestedComponentSourceId !== 'string') throw new TypeError(`Invalid nested component source layer on ${node.name || node.id}.`);
       if (node.variantNodeKey != null && typeof node.variantNodeKey !== 'string') throw new TypeError(`Invalid variant node key on ${node.name || node.id}.`);
       if (node.linkedComponent != null) {
         try { validateLinkedInstanceSnapshot(node.linkedComponent); }

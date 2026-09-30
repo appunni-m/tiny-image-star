@@ -121,16 +121,22 @@ export function componentSetAssetMarkup(document, set, { open = false, selectedC
     <label class="component-set-axis-name"><span>Axis</span><input type="text" maxlength="${maxVariantNameLength}" value="${escapeHtml(property.name)}" data-component-set-axis-name data-set-id="${setId}" data-axis-old-name="${escapeHtml(property.name)}" aria-label="Rename ${escapeHtml(property.name)} variant axis" /></label>
     <button type="button" class="component-set-remove-axis" data-action="remove-component-variant-axis" data-set-id="${setId}" data-axis-name="${escapeHtml(property.name)}" aria-label="Remove ${escapeHtml(property.name)} axis" title="Remove axis">×</button>
   </div>`).join('');
-  const variantRows = members.map(component => `<div class="component-set-variant" data-component-variant="${escapeHtml(component.id)}">
-    <div class="component-set-variant-heading"><strong>${escapeHtml(component.name || 'Variant')}</strong><button type="button" class="component-set-place-variant" data-place-variant="${escapeHtml(component.id)}" aria-label="Place ${escapeHtml(variantLabel(component, set))}">Place</button></div>
+  const variantRows = members.map(component => {
+    const label = variantLabel(component, set);
+    const cannotRemove = members.length <= 2;
+    return `<div class="component-set-variant" data-component-variant="${escapeHtml(component.id)}">
+    <div class="component-set-variant-heading"><strong>${escapeHtml(component.name || 'Variant')}</strong><button type="button" class="component-set-place-variant" data-place-variant="${escapeHtml(component.id)}" aria-label="Place ${escapeHtml(label)}">Place</button><button type="button" class="component-set-remove-axis component-set-remove-variant" data-action="remove-component-variant-from-set" data-set-id="${setId}" data-component-id="${escapeHtml(component.id)}" aria-label="Remove ${escapeHtml(label)} from set" title="${cannotRemove ? 'A component set must keep at least two variants.' : 'Remove from set; the master and linked instances stay intact.'}"${cannotRemove ? ' disabled' : ''}>Remove</button></div>
     <div class="component-set-variant-values">${set.properties.map(property => `<label><span>${escapeHtml(property.name)}</span><input type="text" maxlength="${maxVariantNameLength}" value="${escapeHtml(component.variantProperties?.[property.name] || '')}" data-variant-master-property="${escapeHtml(property.name)}" data-component-id="${escapeHtml(component.id)}" aria-label="${escapeHtml(component.name)} ${escapeHtml(property.name)} value" /></label>`).join('')}</div>
-  </div>`).join('');
+  </div>`;
+  }).join('');
+  const newVariantValues = set.properties.map(property => `<label><span>${escapeHtml(property.name)} value</span><input type="text" maxlength="${maxVariantNameLength}" data-component-set-new-variant-value="${setId}" data-set-id="${setId}" data-axis-name="${escapeHtml(property.name)}" placeholder="Inherit selected value" aria-label="New ${escapeHtml(property.name)} value; leave blank to inherit from selected master" /></label>`).join('');
   return `<section class="component-set-card" data-component-set-panel="${setId}">
     <header class="component-set-heading"><label><span>Component set</span><input type="text" maxlength="${maxVariantNameLength}" value="${escapeHtml(set.name)}" data-component-set-name data-set-id="${setId}" aria-label="Rename component set ${escapeHtml(set.name)}" /></label><small>${members.length} variants</small></header>
     <div class="component-set-placement"><label><span>Choose variant</span><select class="select-field" data-component-set-placement="${setId}" aria-label="Choose variant from ${escapeHtml(set.name)}">${options}</select></label><button type="button" class="component-set-place-selected" data-component-set-id="${setId}" aria-label="Place selected ${escapeHtml(set.name)} variant">Place selected</button></div>
     <details class="component-set-editor" data-component-set-editor="${setId}"${open ? ' open' : ''}><summary>Manage axes and variant values</summary>
       <div class="component-set-axis-list" aria-label="Variant axes">${axes}</div>
       <div class="component-set-add-axis"><label><span>New axis</span><input type="text" maxlength="${maxVariantNameLength}" data-component-set-new-axis="${setId}" placeholder="e.g. Size" aria-label="New variant axis for ${escapeHtml(set.name)}" /></label><label><span>Starting value</span><input type="text" maxlength="${maxVariantNameLength}" data-component-set-new-value="${setId}" value="Default" aria-label="Starting value for new axis" /></label><button type="button" data-action="add-component-variant-axis" data-set-id="${setId}">Add axis</button></div>
+      <div class="component-set-add-axis component-set-add-variant" data-component-set-add-variant="${setId}" aria-label="Create a variant from the selected master">${newVariantValues}<button type="button" data-action="add-component-variant-from-master" data-set-id="${setId}" aria-label="Add variant from selected master">Add variant from selected</button></div>
       <div class="component-set-variants" aria-label="Variants">${variantRows}</div>
     </details>
   </section>`;

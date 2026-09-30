@@ -15,6 +15,40 @@ import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRo
 import { booleanSourceTransform } from './boolean-geometry.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
+const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
+const MAX_BOOLEAN_SURFACE_AXIS = 4096;
+
+function booleanSurfaceDimensions(logicalWidth, logicalHeight, requestedScale) {
+  const width = Number.isFinite(logicalWidth) && logicalWidth > 0 ? logicalWidth : 1;
+  const height = Number.isFinite(logicalHeight) && logicalHeight > 0 ? logicalHeight : 1;
+  const deviceScale = Math.min(2, Math.max(.08, Number.isFinite(requestedScale) ? requestedScale : 1));
+  // Divide square roots separately so a finite but very large logical area
+  // does not overflow to Infinity and collapse the preview scale to zero.
+  const pixelScale = Math.sqrt(MAX_BOOLEAN_SURFACE_PIXELS) / Math.sqrt(width) / Math.sqrt(height);
+  const axisScale = MAX_BOOLEAN_SURFACE_AXIS / Math.max(width, height);
+  const scale = Math.min(deviceScale, pixelScale, axisScale);
+  let pixelWidth = Math.max(1, Math.min(MAX_BOOLEAN_SURFACE_AXIS, Math.ceil(width * scale)));
+  let pixelHeight = Math.max(1, Math.min(MAX_BOOLEAN_SURFACE_AXIS, Math.ceil(height * scale)));
+
+  // Ceil preserves detail for ordinary surfaces, but can add a few pixels
+  // beyond the area budget. Correct both axes proportionally in one step;
+  // reducing one pixel at a time could require millions of iterations for
+  // very large, equal-aspect inputs.
+  const surfaceArea = pixelWidth * pixelHeight;
+  if (surfaceArea > MAX_BOOLEAN_SURFACE_PIXELS) {
+    const correction = Math.sqrt(MAX_BOOLEAN_SURFACE_PIXELS / surfaceArea);
+    pixelWidth = Math.max(1, Math.floor(pixelWidth * correction));
+    pixelHeight = Math.max(1, Math.floor(pixelHeight * correction));
+  }
+  // Guard against floating-point rounding at the budget boundary.
+  while (pixelWidth * pixelHeight > MAX_BOOLEAN_SURFACE_PIXELS) {
+    if (pixelWidth / width >= pixelHeight / height && pixelWidth > 1) pixelWidth -= 1;
+    else if (pixelHeight > 1) pixelHeight -= 1;
+    else break;
+  }
+  return { width: pixelWidth, height: pixelHeight };
+}
+
 function booleanNodeCacheState(document, node) {
   return {
     ...node,
@@ -157,6 +191,35 @@ function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
   const drawHeight = image.height * scale;
   ctx.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
   return true;
+}
+
+export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0) {
+  if (!image || !bounds || bounds.width <= 0 || bounds.height <= 0) return false;
+  const turn = ((rotation % 360) + 360) % 360;
+  const quarterTurn = turn === 90 || turn === 270;
+  const imageWidth = quarterTurn ? bounds.height : bounds.width;
+  const imageHeight = quarterTurn ? bounds.width : bounds.height;
+  ctx.save();
+  ctx.translate(x + bounds.left + bounds.width / 2, y + bounds.top + bounds.height / 2);
+  ctx.rotate(turn * Math.PI / 180);
+  ctx.drawImage(image, -imageWidth / 2, -imageHeight / 2, imageWidth, imageHeight);
+  ctx.restore();
+  return true;
+}
+
+export function drawCropPreview(ctx, image, x, y, width, height, fit = 'cover', radius = 0) {
+  if (!image || width <= 0 || height <= 0) return false;
+  // The worker output already contains the selected crop and rotation. Show it
+  // exactly as the committed image will render: fitted to the layer frame and
+  // clipped to the same rounded bounds. The uncropped source remains beneath
+  // this overlay to give the crop handles context.
+  ctx.save();
+  ctx.beginPath();
+  roundedRect(ctx, x, y, width, height, radius);
+  ctx.clip();
+  const drawn = drawFittedImage(ctx, image, x, y, width, height, fit);
+  ctx.restore();
+  return drawn;
 }
 
 function imageForNode(node, assets, state, assetId = node.assetId, previewKey = node.id) {
@@ -625,8 +688,9 @@ export class SceneRenderer {
     const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
     const blendMode = node.blendMode || 'normal';
     const compositeBypassed = renderOptions.compositeBypassNodeId === node.id;
+    const cropEditing = !state.presenting && state.imageCropMode && state.imageCropOverlay?.nodeId === node.id;
     if ((effects.length && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed)
-      && !draft && !maskMode && !outline && typeof ctx.filter === 'string') {
+      && !draft && !maskMode && !outline && !cropEditing && typeof ctx.filter === 'string') {
       this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
       return;
     }
@@ -712,12 +776,26 @@ export class SceneRenderer {
 
     if (node.type === 'image') {
       const asset = assets.get(node.assetId);
-      const image = imageForNode(node, assets, this.getState());
+      const cropOverlay = cropEditing ? state.imageCropOverlay : null;
+      const sourceImage = cropOverlay ? asset?.bitmap : null;
+      const image = sourceImage || imageForNode(node, assets, state);
       if (image) {
-        ctx.save();
-        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
-        drawFittedImage(ctx, image, x, y, width, height, node.fit);
-        ctx.restore();
+        if (cropOverlay && sourceImage) {
+          drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation);
+          const cropPreview = state.previews?.get(node.id);
+          const previewAssetId = state.previewAssetIds?.get(node.id);
+          const previewStatus = state.imageStatus?.get(node.id) || '';
+          const previewReady = previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated');
+          if (cropPreview && previewAssetId === node.assetId && previewReady) {
+            drawCropPreview(ctx, cropPreview, x, y, width, height, node.fit, radius || 0);
+          }
+        }
+        else {
+          ctx.save();
+          ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
+          drawFittedImage(ctx, image, x, y, width, height, node.fit);
+          ctx.restore();
+        }
       } else {
         ctx.fillStyle = '#d9d9d9'; ctx.fill();
         ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -979,10 +1057,7 @@ export class SceneRenderer {
     if (!Array.isArray(node.children) || node.children.length < 2 || node.width <= 0 || node.height <= 0) return;
     const transform = ctx.getTransform?.();
     const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
-    const pixelBudget = 4_000_000;
-    const scale = Math.min(2, Math.max(.08, requestedScale), Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
-    const pixelWidth = Math.max(1, Math.ceil(node.width * scale));
-    const pixelHeight = Math.max(1, Math.ceil(node.height * scale));
+    const { width: pixelWidth, height: pixelHeight } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
     const surface = typeof OffscreenCanvas === 'function'
       ? new OffscreenCanvas(pixelWidth, pixelHeight)
       : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
@@ -1011,11 +1086,7 @@ export class SceneRenderer {
     const state = this.getState();
     const fill = maskMode ? '#ffffff' : getNodeColor(state.document, node, 'fill');
     const requestedScale = contextScale ?? (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
-    const deviceScale = Math.min(2, Math.max(.08, requestedScale));
-    const pixelBudget = 4_000_000;
-    const scale = Math.min(deviceScale, Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
-    const width = Math.max(1, Math.ceil(node.width * scale));
-    const height = Math.max(1, Math.ceil(node.height * scale));
+    const { width, height } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
     const fillPreviewVersions = (node.fills || []).filter(fillLayer => fillLayer.type === 'image').map(fillLayer => {
       const previewKey = imagePreviewKey(node.id, fillLayer.id);
       return [previewKey, state.previewVersions?.get(previewKey) || 0, state.previewAssetIds?.get(previewKey) || null];
@@ -1201,11 +1272,119 @@ export class SceneRenderer {
     ctx.restore();
   }
 
+  drawImageCropSelection(ctx, entry, overlay, draft, zoom = 1) {
+    const { node, ancestors } = entry;
+    const nodeTransform = nodeLocalToPageTransform(node, ancestors);
+    const pagePoint = point => transformPoint(nodeTransform, point);
+    const scale = 1 / Math.max(.08, zoom || 1);
+    const isBounds = bounds => bounds
+      && [bounds.left, bounds.top, bounds.width, bounds.height].every(Number.isFinite)
+      && bounds.width > 0 && bounds.height > 0;
+    const cornersFor = bounds => [
+      { x: bounds.left, y: bounds.top },
+      { x: bounds.left + bounds.width, y: bounds.top },
+      { x: bounds.left + bounds.width, y: bounds.top + bounds.height },
+      { x: bounds.left, y: bounds.top + bounds.height }
+    ].map(pagePoint);
+    const drawBoundsPath = (bounds, { color, dash = [], lineWidth = 1.5 } = {}) => {
+      if (!isBounds(bounds)) return false;
+      const corners = cornersFor(bounds);
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+      ctx.closePath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth * scale;
+      ctx.setLineDash?.(dash.map(value => value * scale));
+      ctx.stroke();
+      ctx.setLineDash?.([]);
+      return true;
+    };
+
+    ctx.save();
+    // The virtual outline exposes the full source extent when the current crop
+    // is smaller than the image. Keep the active crop edge visually stronger.
+    const virtual = overlay.virtualBounds;
+    const current = overlay.drawBounds;
+    const boundsDiffer = isBounds(virtual) && isBounds(current)
+      && ['left', 'top', 'width', 'height'].some(key => Math.abs(virtual[key] - current[key]) > 1e-6);
+    if (boundsDiffer) {
+      const virtualCorners = cornersFor(virtual);
+      const currentCorners = cornersFor(current);
+      ctx.beginPath();
+      for (const corners of [virtualCorners, currentCorners]) {
+        ctx.moveTo(corners[0].x, corners[0].y);
+        for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+        ctx.closePath();
+      }
+      ctx.fillStyle = 'rgba(17,24,39,.3)';
+      ctx.fill('evenodd');
+      drawBoundsPath(virtual, { color: 'rgba(255,255,255,.9)', dash: [3, 4], lineWidth: 1 });
+    }
+    const hasCurrentBounds = drawBoundsPath(current, { color: BLUE, dash: [6, 3], lineWidth: 1.5 });
+
+    const selection = draft?.nodeId === node.id ? draft : null;
+    if (selection && [selection.start?.x, selection.start?.y, selection.end?.x, selection.end?.y].every(Number.isFinite)) {
+      const rect = {
+        left: Math.min(selection.start.x, selection.end.x),
+        top: Math.min(selection.start.y, selection.end.y),
+        width: Math.abs(selection.end.x - selection.start.x),
+        height: Math.abs(selection.end.y - selection.start.y)
+      };
+      if (isBounds(rect)) {
+        const corners = cornersFor(rect);
+        ctx.beginPath();
+        ctx.moveTo(corners[0].x, corners[0].y);
+        for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(13,153,255,.14)';
+        ctx.fill();
+        ctx.strokeStyle = BLUE;
+        ctx.lineWidth = 2 * scale;
+        ctx.setLineDash?.([4 * scale, 3 * scale]);
+        ctx.stroke();
+        ctx.setLineDash?.([]);
+      }
+    }
+
+    if (hasCurrentBounds) {
+      const bounds = current;
+      const left = bounds.left; const top = bounds.top;
+      const right = left + bounds.width; const bottom = top + bounds.height;
+      const middleX = (left + right) / 2; const middleY = (top + bottom) / 2;
+      const handles = [
+        { x: left, y: top }, { x: middleX, y: top }, { x: right, y: top },
+        { x: right, y: middleY }, { x: right, y: bottom }, { x: middleX, y: bottom },
+        { x: left, y: bottom }, { x: left, y: middleY }
+      ];
+      const hitSize = 48 * scale;
+      const visibleSize = 10 * scale;
+      for (const point of handles) {
+        const mapped = pagePoint(point);
+        // Match the 24 CSS-pixel radius used by imageCropHandleAt(); this
+        // transparent pad does not obscure the artwork.
+        ctx.beginPath();
+        ctx.rect(mapped.x - hitSize / 2, mapped.y - hitSize / 2, hitSize, hitSize);
+        ctx.fillStyle = 'rgba(13,153,255,.001)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.rect(mapped.x - visibleSize / 2, mapped.y - visibleSize / 2, visibleSize, visibleSize);
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = BLUE;
+        ctx.lineWidth = 1.5 * scale;
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   drawSelection(ctx, nodes, selectedIds, parentX, parentY) {
+    const state = this.getState();
     const selected = [];
     const collect = (list, ancestors = []) => {
       for (const node of list) {
-        const geometry = getNodeGeometry(this.getState().document, node);
+        const geometry = getNodeGeometry(state.document, node);
         const resolvedNode = { ...node, ...geometry };
         if (selectedIds.includes(node.id)) selected.push({ node: resolvedNode, ancestors });
         collect(node.children || [], [...ancestors, resolvedNode]);
@@ -1213,10 +1392,14 @@ export class SceneRenderer {
     };
     collect(nodes, []);
     if (!selected.length) return;
-    const zoom = Math.max(.08, this.getState().zoom || 1);
+    const zoom = Math.max(.08, state.zoom || 1);
     const size = 6 / zoom;
+    const cropOverlay = state.imageCropMode ? state.imageCropOverlay : null;
+    const cropEntry = cropOverlay?.nodeId
+      ? selected.find(entry => entry.node.id === cropOverlay.nodeId && entry.node.type === 'image') || null
+      : null;
     ctx.save();
-    ctx.strokeStyle = BLUE; ctx.fillStyle = '#ffffff'; ctx.lineWidth = 1 / (this.getState().zoom || 1);
+    ctx.strokeStyle = BLUE; ctx.fillStyle = '#ffffff'; ctx.lineWidth = 1 / (state.zoom || 1);
     for (const entry of selected) {
       const { corners } = selectionOverlayGeometry(entry.node, entry.ancestors, { zoom, rotateOffset: 0 });
       ctx.beginPath();
@@ -1224,13 +1407,15 @@ export class SceneRenderer {
       for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
       ctx.closePath(); ctx.stroke();
     }
+    if (cropEntry) this.drawImageCropSelection(ctx, cropEntry, cropOverlay, state.imageCropDraftSelection, zoom);
     const selectedIdsSet = new Set(selectedIds);
     const roots = selected.filter(entry => !entry.ancestors.some(parent => selectedIdsSet.has(parent.id)));
     const groupTransformAllowed = roots.length > 1 && roots.every(({ node, ancestors }) =>
       !node.locked && !ancestors.some(parent => parent.locked)
       && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
       && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
-    if (roots.length > 1 && groupTransformAllowed) {
+    const cropTargetIsRoot = cropEntry && roots.some(entry => entry.node.id === cropEntry.node.id);
+    if (roots.length > 1 && groupTransformAllowed && !cropTargetIsRoot) {
       const bounds = selectionBounds(roots);
       const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / zoom });
       const north = handles.resize.n;
@@ -1242,7 +1427,7 @@ export class SceneRenderer {
         ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
       }
       ctx.beginPath(); ctx.arc(handles.rotate.x, handles.rotate.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    } else if (roots.length === 1) {
+    } else if (roots.length === 1 && roots[0].node.id !== cropEntry?.node.id) {
       const { node, ancestors } = roots[0];
       const overlay = selectionOverlayGeometry(node, ancestors, { zoom });
       const resizePoints = Object.values(overlay.handles.resize);

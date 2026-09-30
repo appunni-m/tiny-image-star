@@ -29,6 +29,22 @@ function setInput(app, selector, value) {
   input.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
   input.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
 }
+function screenPointForWorld(app, point) {
+  const canvas = app.querySelector('#scene-canvas');
+  const rect = canvas.getBoundingClientRect();
+  const transform = canvas.getContext('2d').getTransform();
+  const dpr = app.defaultView.devicePixelRatio || 1;
+  return { x: rect.left + (transform.e + point.x * transform.a) / dpr, y: rect.top + (transform.f + point.y * transform.d) / dpr };
+}
+function dispatchCanvasPointer(app, type, point, pointerId = 141) {
+  const canvas = app.querySelector('#scene-canvas');
+  Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
+  const screen = screenPointForWorld(app, point);
+  canvas.dispatchEvent(new app.defaultView.PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', button: 0,
+    clientX: screen.x, clientY: screen.y
+  }));
+}
 function rootNodes(doc) { return doc.pages.find(page => page.id === doc.activePageId)?.children || []; }
 function boundsFor(nodes) { return selectionBounds(nodes.map(node => ({ node, ancestors: [] }))); }
 
@@ -57,7 +73,8 @@ try {
     autoLayout: createAutoLayout({ axis: 'horizontal', mainSizing: 'hug', crossSizing: 'fixed', padding: 0, gap: 0 })
   });
   addNode(design, hugFrame);
-  addNode(design, createNode('rectangle', { name: 'Hug child', x: 0, y: 0, width: 60, height: 24 }), { parentId: hugFrame.id });
+  const hugChild = createNode('rectangle', { name: 'Hug child', x: 0, y: 0, width: 60, height: 24 });
+  addNode(design, hugChild, { parentId: hugFrame.id });
   applyAutoLayout(hugFrame);
   const boundHugFrame = createNode('frame', {
     name: 'Variable-bound Hug frame', x: 420, y: 150, width: 150, height: 70, fill: '#ffffff',
@@ -65,6 +82,8 @@ try {
   });
   addNode(design, boundHugFrame);
   addNode(design, createNode('rectangle', { name: 'Variable Hug child', x: 0, y: 0, width: 60, height: 24 }), { parentId: boundHugFrame.id });
+  const lockedNode = createNode('rectangle', { name: 'Locked nudge target', x: 500, y: -120, width: 42, height: 36, locked: true });
+  addNode(design, lockedNode);
   const layoutVariables = createVariableCollection(design, 'Layout sizing');
   const verticalAxis = createVariable(design, layoutVariables.id, 'Vertical axis', 'string', 'vertical');
   const hugSizing = createVariable(design, layoutVariables.id, 'Hug sizing', 'string', 'hug');
@@ -191,6 +210,35 @@ try {
   assert(childOverride && Object.keys(childOverride).join(',') === 'width', 'a constrained instance child should record only its changed width override.');
 
   click(app, app.querySelector(`.layer-row[data-layer-id="${hugFrame.id}"]`));
+  assert(app.querySelector('[data-prop="width"]')?.disabled, 'a single Hug width field should be disabled in the inspector.');
+  assert(!app.querySelector('[data-prop="height"]')?.disabled, 'the fixed height field should stay editable on a Hug width frame.');
+  const hugFrameBeforeDrag = await loadDocumentById(designId);
+  const savedHugBeforeDrag = hugFrameBeforeDrag.pages[0].children.find(node => node.id === hugFrame.id);
+  const hugHandleStart = { x: savedHugBeforeDrag.x + savedHugBeforeDrag.width, y: savedHugBeforeDrag.y + savedHugBeforeDrag.height / 2 };
+  dispatchCanvasPointer(app, 'pointerdown', hugHandleStart, 141);
+  dispatchCanvasPointer(app, 'pointermove', { x: hugHandleStart.x + 28, y: hugHandleStart.y }, 141);
+  dispatchCanvasPointer(app, 'pointerup', { x: hugHandleStart.x + 28, y: hugHandleStart.y }, 141);
+  await new Promise(resolve => setTimeout(resolve, 260));
+  const hugFrameAfterDrag = await loadDocumentById(designId);
+  assert(hugFrameAfterDrag.pages[0].children.find(node => node.id === hugFrame.id)?.width === savedHugBeforeDrag.width,
+    'Dragging the disabled east resize handle must not change a Hug width.');
+
+  click(app, app.querySelector(`.layer-row[data-layer-id="${lockedNode.id}"]`));
+  const lockedBeforeNudge = await loadDocumentById(designId);
+  const lockedX = lockedBeforeNudge.pages[0].children.find(node => node.id === lockedNode.id).x;
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  click(app, app.querySelector(`.layer-row[data-layer-id="${hugChild.id}"]`));
+  const childBeforeNudge = await loadDocumentById(designId);
+  const childX = childBeforeNudge.pages[0].children.find(node => node.id === hugFrame.id).children.find(node => node.id === hugChild.id).x;
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 260));
+  const afterBlockedNudges = await loadDocumentById(designId);
+  assert(afterBlockedNudges.pages[0].children.find(node => node.id === lockedNode.id)?.x === lockedX,
+    'Arrow-key nudging must reject locked layers.');
+  assert(afterBlockedNudges.pages[0].children.find(node => node.id === hugFrame.id)?.children.find(node => node.id === hugChild.id)?.x === childX,
+    'Arrow-key nudging must reject auto-layout-managed children.');
+
+  click(app, app.querySelector(`.layer-row[data-layer-id="${hugFrame.id}"]`));
   click(app, app.querySelector(`.layer-row[data-layer-id="${nodes[0].id}"]`), { ctrlKey: true });
   assert(app.querySelector('[data-prop="selection.width"]')?.disabled, 'an auto-layout Hug width should not expose an overwritten shared width edit.');
   assert(!app.querySelector('[data-prop="selection.height"]')?.disabled, 'a fixed auto-layout height should remain editable.');
@@ -199,7 +247,7 @@ try {
   await waitFor(() => app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 2, 'variable-bound Hug multi-selection');
   assert(app.querySelector('[data-prop="selection.height"]')?.disabled, 'a variable-bound vertical main-axis Hug height should not expose an overwritten shared edit.');
   assert(!app.querySelector('[data-prop="selection.width"]')?.disabled, 'a variable-bound vertical cross-axis fixed width should remain editable.');
-  outcome = `PASS\n${JSON.stringify({ sharedPosition: true, sharedSize: true, exactRotatedBounds: true, mixedRotation: true, mixedOpacity: true, componentChildOverrides: true, hugSizingDisabled: true, variableBoundHugSizingDisabled: true, inPlaceNodes: 3, savedLocally: true })}`;
+  outcome = `PASS\n${JSON.stringify({ sharedPosition: true, sharedSize: true, exactRotatedBounds: true, mixedRotation: true, mixedOpacity: true, componentChildOverrides: true, hugSizingDisabled: true, hugResizeHandleBlocked: true, lockedNudgeBlocked: true, autoLayoutNudgeBlocked: true, variableBoundHugSizingDisabled: true, inPlaceNodes: 3, savedLocally: true })}`;
 } catch (error) {
   outcome = `FAIL\n${error?.stack || error}`;
 } finally {

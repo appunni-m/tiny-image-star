@@ -42,6 +42,10 @@ When moving layers, the canvas snaps selection edges and centers to visible peer
 
 Compound vector paths keep each contour editable inside one layer. Select a contour by clicking one of its anchors, then add or remove contours, insert and delete anchors, and change that contour's open or closed state in the Vector inspector. Closed contours can use the nonzero or even-odd fill rule; SVG import, canvas fills, image-fill clipping, Boolean operands, masks, Smart Animate, local saves, and SVG export preserve the supported contour geometry.
 
+## Bulk recipe recovery
+
+Before an image recipe batch changes a layer, Tiny Image Star stores a small local recovery record for the recipe, page, and target image layers. If a batch is left open or the browser closes unexpectedly, reopening that design offers two choices: resume the saved recipe across the original targets, or keep the image edits that were already saved. The result bar saves the final document before it clears the recovery record.
+
 ## Run locally
 
 ```sh

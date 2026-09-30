@@ -132,6 +132,91 @@ test('LocalImageEngine rejects invalid worker limits before allocating a pool', 
   }
 });
 
+test('lowering image concurrency retires idle excess Pillow workers', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(4);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const workers = engine.workers.map(slot => slot.worker);
+    assert.equal(engine.workers.length, 4);
+    assert.equal(engine.metrics().workersReady, 4);
+
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 1, 'idle slots above the restored limit must be terminated');
+    assert.equal(engine.workers[0].worker, workers[0], 'the first warm worker remains available for future image edits');
+    assert.deepEqual(workers.map(worker => worker.terminated), [false, true, true, true]);
+    assert.equal(engine.metrics().workersReady, 1);
+  }, { maxWorkers: 4 });
+});
+
+test('lowering image concurrency retires busy excess workers after their current render drains', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(4);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const workers = engine.workers.map(slot => slot.worker);
+    const renders = Array.from({ length: 4 }, (_, index) => engine.render(`retire-${index}`, pngHeader(1, 1), {}));
+    assert.equal(engine.metrics().active, 4);
+
+    engine.setConcurrency(1);
+    assert.equal(engine.workers.length, 4, 'in-use workers stay alive until their current render settles');
+    assert.deepEqual(engine.workers.slice(1).map(slot => slot.retireWhenIdle), [true, true, true]);
+    for (const slot of [...engine.workers].slice(1).reverse()) {
+      assert.equal(slot.worker.completeNextRender(), true);
+      await renders[workers.indexOf(slot.worker)];
+    }
+    assert.equal(engine.workers.length, 1, 'busy excess slots should retire as soon as they become idle');
+    assert.equal(engine.workers[0].worker, workers[0]);
+    assert.deepEqual(workers.map(worker => worker.terminated), [false, true, true, true]);
+
+    assert.equal(engine.workers[0].worker.completeNextRender(), true);
+    await renders[0];
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.metrics().active, 0);
+    assert.equal(engine.metrics().workersReady, 1);
+  }, { maxWorkers: 4, deferRenders: true });
+});
+
+test('worker retirement keeps healthy capacity when an early slot has failed', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(3);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const [failedWorker, firstHealthy, excessHealthy] = engine.workers.map(slot => slot.worker);
+    failedWorker.crash('failed first worker');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 3, 'a bounded replacement should restore configured capacity after an initialized worker crashes');
+    assert.equal(engine.metrics().workersReady, 3);
+    const replacement = engine.workers.find(slot => slot.worker !== firstHealthy && slot.worker !== excessHealthy)?.worker;
+    assert.ok(replacement, 'a fresh worker should replace the failed slot');
+    assert.equal(failedWorker.terminated, true);
+
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 1);
+    assert.equal(engine.workers[0].worker, firstHealthy);
+    assert.equal(excessHealthy.terminated, true);
+    assert.equal(replacement.terminated, true, 'lowering concurrency also retires an idle replacement');
+    await engine.render('after-retirement', bytesFor(1), {});
+    assert.equal(firstHealthy.renderRequests.at(-1).assetId, 'after-retirement');
+  }, { maxWorkers: 4 });
+});
+
+test('repeated worker failures stop after a bounded recovery chain', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    let failures = 0;
+    while (engine.workers.length) {
+      assert.equal(engine.workers.length, 1);
+      engine.workers[0].worker.crash(`bounded failure ${failures + 1}`);
+      failures += 1;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    assert.equal(failures, 3, 'one initial worker and at most two replacement workers may fail in one recovery chain');
+    assert.equal(engine.metrics().concurrency, 1);
+    assert.equal(engine.metrics().workersReady, 0, 'the degraded pool must report its actual ready capacity');
+  }, { maxWorkers: 1 });
+});
+
 function pngHeader(width, height) {
   const bytes = new Uint8Array(24);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -284,6 +369,7 @@ test('a paused queue group holds queued work while unrelated jobs run, then resu
     const secondBlocker = engine.render('blocker-second', pngHeader(1, 1), {});
     const pausedBatch = engine.render('paused-batch', pngHeader(1, 1), {}, {}, { queueGroup: 'batch:test' });
     assert.equal(engine.metrics().queued, 1);
+    assert.deepEqual(engine.queueGroupMetrics('batch:test'), { active: 0, queued: 1 });
     assert.equal(engine.pauseQueueGroup('batch:test'), true);
     assert.equal(engine.pauseQueueGroup('batch:test'), false, 'pausing an already-held group is idempotent');
 
@@ -320,6 +406,7 @@ test('a paused queue group holds queued work while unrelated jobs run, then resu
     assert.equal(engine.resumeQueueGroup('batch:test'), false, 'resuming an already-running group does not redispatch it');
     assert.equal(engine.metrics().active, 1);
     assert.equal(engine.metrics().queued, 0);
+    assert.deepEqual(engine.queueGroupMetrics('batch:test'), { active: 1, queued: 0 });
     assert.equal(submitted().filter(assetId => assetId === 'paused-batch').length, 1,
       'the queued batch target is dispatched exactly once after resume');
     await finish('paused-batch');
@@ -422,7 +509,7 @@ test('worker cache shares are rebalanced on concurrency changes and report budge
   }, { maxWorkers: 2, maxCachedPixels: 10 });
 });
 
-test('reducing concurrency drops idle worker caches and keeps the aggregate budget bounded', async () => {
+test('reducing concurrency drops idle worker caches and retires the excess WASM worker', async () => {
   await withEngine(async engine => {
     await Promise.all([
       engine.render('a', bytesFor(4), {}),
@@ -433,10 +520,10 @@ test('reducing concurrency drops idle worker caches and keeps the aggregate budg
 
     engine.setConcurrency(1);
     await new Promise(resolve => setTimeout(resolve, 0));
-    assert.deepEqual([firstWorker.cache.pixelBudget, secondWorker.cache.pixelBudget], [5, 0]);
-    assert.equal(firstWorker.cache.pixels + secondWorker.cache.pixels <= 5, true);
-    assert.equal(secondWorker.cache.pixels, 0);
-    assert.equal(engine.workers[1].loaded.size, 0);
+    assert.deepEqual([firstWorker.cache.pixelBudget, secondWorker.cache.pixelBudget], [5, 2]);
+    assert.equal(firstWorker.cache.pixels <= 5, true);
+    assert.equal(secondWorker.terminated, true, 'the idle worker is terminated to release its initialized WASM runtime');
+    assert.equal(engine.workers.length, 1);
   }, { maxWorkers: 2, maxCachedPixels: 5 });
 });
 
@@ -720,22 +807,75 @@ test('default active render memory budget scales conservatively with reported de
   assert.equal(defaultActiveRenderMemoryBudget({ deviceMemory: null }), 256 * 1024 * 1024);
 });
 
-test('last worker failure rejects queued work and later requests instead of hanging', async () => {
+test('bounded worker recovery rejects a queued tail, then later requests can restart the pool', async () => {
   await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
     const queued = [
-      engine.render('a', bytesFor(2), {}, {}, { replaceKey: 'preview:a' }),
-      engine.render('b', bytesFor(2), {}, {}, { replaceKey: 'preview:b' }),
-      engine.render('c', bytesFor(2), {}, {}, { replaceKey: 'preview:c' }),
+      engine.render('a', bytesFor(2), {}, {}, { replaceKey: 'preview:a', queueGroup: 'recipe-batch:failed' }),
+      engine.render('b', bytesFor(2), {}, {}, { replaceKey: 'preview:b', queueGroup: 'recipe-batch:failed' }),
+      engine.render('c', bytesFor(2), {}, {}, { replaceKey: 'preview:c', queueGroup: 'recipe-batch:failed' }),
+      engine.render('d', bytesFor(2), {}, {}, { replaceKey: 'preview:d', queueGroup: 'recipe-batch:failed' }),
     ];
-    for (const slot of engine.workers) slot.worker.crash();
+    const resultsPromise = Promise.allSettled(queued);
+    for (let recoveryRound = 0; recoveryRound <= 2; recoveryRound += 1) {
+      const active = engine.workers.find(slot => slot.busy);
+      assert.ok(active, `recovery round ${recoveryRound + 1} should have one active render to interrupt`);
+      active.worker.crash(`pool failure ${recoveryRound + 1}`);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
 
-    const results = await Promise.allSettled(queued);
-    assert.equal(results.length, 3);
+    const results = await resultsPromise;
+    assert.equal(results.length, 4);
     assert.ok(results.every(result => result.status === 'rejected'));
-    assert.match(results[2].reason.message, /All local image workers stopped unexpectedly/);
+    assert.match(results[3].reason.message, /All local image workers stopped unexpectedly/);
     assert.equal(engine.metrics().activeRenderBytes, 0, 'worker failure releases every active memory reservation');
     assert.equal(engine.metrics().queued, 0);
     assert.equal(engine.queuedByKey.size, 0, 'failure releases canceled preview keys and their retained source buffers');
-    await assert.rejects(engine.render('later', bytesFor(2), {}), /All local image workers stopped unexpectedly/);
-  }, { maxWorkers: 2, maxCachedPixels: 10 });
+    await assert.rejects(
+      engine.render('same-batch-retry', bytesFor(2), {}, {}, { queueGroup: 'recipe-batch:failed' }),
+      /Start a new batch to retry/,
+      'a persistent worker failure must not restart the full recovery budget for every target in the same bulk run',
+    );
+    assert.equal(engine.workers.length, 0, 'same-batch retries do not allocate another recovery chain');
+    const later = engine.render('later', bytesFor(2), {}, {}, { queueGroup: 'recipe-batch:retry' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 1, 'a new batch can start a fresh, bounded worker pool');
+    assert.equal(engine.workers[0].worker.completeNextRender(), true);
+    assert.equal((await later).mode, 'preview');
+  }, { maxWorkers: 2, maxCachedPixels: 10, deferRenders: true });
+});
+
+test('a healthy busy worker promoted from retirement keeps the bulk queue moving after another worker fails', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(2);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const options = { queueGroup: 'recipe-batch:retiree' };
+    const tinyPng = pngHeader(1, 1);
+    const first = engine.render('first', tinyPng, {}, {}, options);
+    const retiring = engine.render('retiring', tinyPng, {}, {}, options);
+    const queued = engine.render('queued', tinyPng, {}, {}, options);
+    const resultsPromise = Promise.allSettled([first, retiring, queued]);
+    assert.equal(engine.metrics().active, 2, 'both workers must be processing before the concurrency reduction');
+    const retiringSlot = engine.workers[1];
+    engine.setConcurrency(1);
+    assert.equal(retiringSlot.retireWhenIdle, true, 'the second busy worker should be scheduled for retirement');
+
+    const retainedSlot = engine.workers[0];
+    retainedSlot.recoveryAttempts = 2;
+    retainedSlot.worker.crash('exhausted retained worker');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(engine.workers.length, 1);
+    assert.equal(retiringSlot.retireWhenIdle, false, 'the remaining healthy worker must be promoted into active capacity');
+    assert.equal(engine.metrics().queued, 1, 'queued work waits for the busy worker to drain rather than hanging or being discarded');
+
+    assert.equal(retiringSlot.worker.completeNextRender(), true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(retiringSlot.worker.completeNextRender(), true, 'the queued target should dispatch as soon as the survivor becomes idle');
+    const results = await resultsPromise;
+    assert.equal(results[0].status, 'rejected');
+    assert.equal(results[1].status, 'fulfilled');
+    assert.equal(results[2].status, 'fulfilled');
+    assert.equal(engine.metrics().activeRenderBytes, 0);
+  }, { maxWorkers: 2, maxCachedPixels: 10, deferRenders: true });
 });

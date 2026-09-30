@@ -155,6 +155,16 @@
         <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action" id="bulk-retry" hidden>Retry failed</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
       </div>
 
+      <dialog class="modal recipe-recovery-dialog" id="recipe-recovery-dialog" aria-labelledby="recipe-recovery-title">
+        <section class="recipe-recovery-content">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL RECIPE RECOVERY</span><h2 id="recipe-recovery-title">Continue your image recipe?</h2></div></div>
+          <p class="modal-copy">Tiny Image Star saved a recovery point before this batch began.</p>
+          <div class="recipe-recovery-card"><strong id="recipe-recovery-recipe">Image recipe</strong><span id="recipe-recovery-copy"></span></div>
+          <p class="recipe-recovery-status" id="recipe-recovery-status" role="status" aria-live="polite"></p>
+          <div class="dialog-actions"><button class="secondary-button" id="recipe-recovery-keep" type="button">Keep current edits</button><button class="primary-button" id="recipe-recovery-resume" type="button">Resume recipe</button></div>
+        </section>
+      </dialog>
+
       <div class="context-menu" id="context-menu" role="menu" hidden></div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />

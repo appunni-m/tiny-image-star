@@ -5,17 +5,21 @@ import { validateLocalFontAsset } from './font-assets.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const COMPONENT_LIBRARY_DB_VERSION = 1;
 export const MAX_LOCAL_DOCUMENT_VERSIONS = 30;
 export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
+const MAX_RECIPE_BATCH_TARGET_IDS = 100_000;
+const MAX_RECIPE_BATCH_ID_LENGTH = 256;
+const MAX_RECIPE_BATCH_RECIPE_BYTES = 256 * 1024;
+const RECIPE_BATCH_STATUSES = new Set(['running', 'paused', 'cancelled', 'complete']);
 const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
 const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
 const dbPromises = new Map();
 let assetMetadataMigrationPromise = null;
 let fontMetadataMigrationPromise = null;
 
-function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions'], version = DB_VERSION) {
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
@@ -45,7 +49,7 @@ function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'asse
       const db = request.result;
       for (const storeName of storeNames) {
         if (!db.objectStoreNames.contains(storeName)) {
-          const store = db.createObjectStore(storeName, { keyPath: 'id' });
+          const store = db.createObjectStore(storeName, { keyPath: storeName === 'recipeBatchRecovery' ? 'documentId' : 'id' });
           if (storeName === 'versions') store.createIndex('byDocument', 'documentId', { unique: false });
         }
       }
@@ -213,6 +217,78 @@ export async function saveDocument(document) {
   const tx = db.transaction('documents', 'readwrite');
   tx.objectStore('documents').put({ id: document.id, savedAt: Date.now(), document });
   await transactionDone(tx);
+}
+
+function validRecipeBatchId(value) {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_RECIPE_BATCH_ID_LENGTH;
+}
+
+function cloneRecipeBatchRecovery(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || !validRecipeBatchId(input.documentId) || !validRecipeBatchId(input.pageId)
+    || !input.recipe || typeof input.recipe !== 'object' || Array.isArray(input.recipe)
+    || !Array.isArray(input.targetIds) || input.targetIds.length < 1 || input.targetIds.length > MAX_RECIPE_BATCH_TARGET_IDS
+    || !RECIPE_BATCH_STATUSES.has(input.status)) return null;
+  const recipePrototype = Object.getPrototypeOf(input.recipe);
+  if (recipePrototype !== Object.prototype && recipePrototype !== null) return null;
+
+  const targetIds = new Set();
+  for (const id of input.targetIds) {
+    if (!validRecipeBatchId(id) || targetIds.has(id)) return null;
+    targetIds.add(id);
+  }
+
+  try {
+    const recipe = structuredClone(input.recipe);
+    const serializedRecipe = JSON.stringify(recipe);
+    if (serializedRecipe === undefined || new TextEncoder().encode(serializedRecipe).byteLength > MAX_RECIPE_BATCH_RECIPE_BYTES) return null;
+    return {
+      documentId: input.documentId,
+      recipe,
+      pageId: input.pageId,
+      targetIds: [...input.targetIds],
+      status: input.status
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Save the local recovery journal for one image-recipe batch. */
+export async function saveRecipeBatchRecovery({ documentId, recipe, pageId, targetIds, status } = {}) {
+  const recovery = cloneRecipeBatchRecovery({ documentId, recipe, pageId, targetIds, status });
+  if (!recovery) throw new TypeError('Invalid image recipe batch recovery data.');
+  const db = await openDatabase();
+  const tx = db.transaction('recipeBatchRecovery', 'readwrite');
+  tx.objectStore('recipeBatchRecovery').put({ ...recovery, savedAt: Date.now() });
+  await transactionDone(tx);
+}
+
+/** Read a validated local recovery journal without removing corrupt rows. */
+export async function loadRecipeBatchRecovery(documentId) {
+  if (!validRecipeBatchId(documentId)) return null;
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('recipeBatchRecovery').objectStore('recipeBatchRecovery').get(documentId));
+  if (!record || record.documentId !== documentId) return null;
+  const recovery = cloneRecipeBatchRecovery(record);
+  return recovery ? { ...recovery, savedAt: Number.isFinite(record.savedAt) ? record.savedAt : 0 } : null;
+}
+
+/** Remove a recovery journal after the batch result is safely resolved. */
+export async function deleteRecipeBatchRecovery(documentId) {
+  if (!validRecipeBatchId(documentId)) return false;
+  const db = await openDatabase();
+  const tx = db.transaction('recipeBatchRecovery', 'readwrite');
+  const store = tx.objectStore('recipeBatchRecovery');
+  let found = false;
+  const request = store.get(documentId);
+  request.onsuccess = () => {
+    if (!request.result) return;
+    found = true;
+    store.delete(documentId);
+  };
+  await transactionDone(tx);
+  return found;
 }
 
 export async function loadLatestDocument() {

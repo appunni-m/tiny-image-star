@@ -25,7 +25,10 @@ function createIndexedDbMock({ documentVersion = 1, documents = [], assets = [] 
       stores,
       objectStoreNames: { contains: storeName => stores.has(storeName) },
       close() { this.closed = true; },
-      createObjectStore(storeName, { keyPath }) { addStore(storeName, keyPath); },
+      createObjectStore(storeName, { keyPath }) {
+        addStore(storeName, keyPath);
+        return { createIndex() { /* The tests need schema-upgrade support, not index queries. */ } };
+      },
       transaction(names) {
         const transaction = {};
         let completionScheduled = false;
@@ -71,14 +74,16 @@ function createIndexedDbMock({ documentVersion = 1, documents = [], assets = [] 
     return database;
   };
   const indexedDB = {
-    open(name) {
+    open(name, requestedVersion) {
       const request = {};
       queueMicrotask(() => {
         const database = databases.get(name) || createDatabase(name);
         request.result = database;
-        if (database.version === 0) {
-          database.version = 1;
-          request.onupgradeneeded?.();
+        const targetVersion = requestedVersion ?? database.version;
+        if (targetVersion > database.version) {
+          const oldVersion = database.version;
+          database.version = targetVersion;
+          request.onupgradeneeded?.({ oldVersion, newVersion: targetVersion });
         }
         request.onsuccess?.();
       });
@@ -107,7 +112,7 @@ async function loadStorageForTest() {
   return import(`../src/storage.js?component-library-storage-${Math.random()}`);
 }
 
-test('component libraries use a separate local database and leave existing document storage at v1', async () => {
+test('component libraries use a separate local database and upgrade legacy document storage to v6', async () => {
   const document = createDocument();
   document.name = 'Existing local design';
   const imageBytes = new Uint8Array([3, 1, 4, 1, 5]);
@@ -120,10 +125,12 @@ test('component libraries use a separate local database and leave existing docum
 
   assert.deepEqual(await storage.listComponentLibraries(), []);
   assert.equal((await storage.loadDocumentById(document.id)).name, 'Existing local design');
-  assert.equal(mock.databaseFor('figma-local-documents').version, 1);
+  assert.equal(mock.databaseFor('figma-local-documents').version, 6);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('documents'), true);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('assets'), true);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('componentLibraries'), false);
+  assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('recipeBatchRecovery'), true);
+  assert.equal(mock.databaseFor('figma-local-documents').stores.get('recipeBatchRecovery').keyPath, 'documentId');
   assert.equal(mock.databaseFor('tiny-image-star-component-libraries').version, 1);
   assert.equal(mock.databaseFor('tiny-image-star-component-libraries').objectStoreNames.contains('componentLibraries'), true);
   const loadedAsset = await storage.loadImageAsset('existing-image');
@@ -132,7 +139,7 @@ test('component libraries use a separate local database and leave existing docum
   assert.equal(mock.records('figma-local-documents', 'assets').length, 1);
 });
 
-test('opening a legacy v2 document database without a pinned version remains compatible', async () => {
+test('opening a legacy v2 document database upgrades without losing designs or legacy stores', async () => {
   const document = createDocument();
   document.name = 'Existing upgraded local design';
   const mock = createIndexedDbMock({ documentVersion: 2, documents: [{ id: document.id, savedAt: 123, document }] });
@@ -140,10 +147,78 @@ test('opening a legacy v2 document database without a pinned version remains com
   const storage = await loadStorageForTest();
 
   assert.equal((await storage.loadDocumentById(document.id)).name, 'Existing upgraded local design');
-  assert.equal(mock.databaseFor('figma-local-documents').version, 2);
+  assert.equal(mock.databaseFor('figma-local-documents').version, 6);
   assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('componentLibraries'), true);
+  assert.equal(mock.databaseFor('figma-local-documents').objectStoreNames.contains('recipeBatchRecovery'), true);
   await storage.saveComponentLibrary(makeLibrary());
-  assert.equal(mock.databaseFor('figma-local-documents').version, 2, 'saving a library does not request an older or newer document-schema version');
+  assert.equal(mock.databaseFor('figma-local-documents').version, 6, 'saving a library does not alter the document-schema version');
+});
+
+test('recipe batch recovery round-trips defensive copies and is keyed by document ID', async () => {
+  const mock = createIndexedDbMock({ documentVersion: 5 });
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const input = {
+    documentId: 'design-recovery', recipe: { id: 'recipe-1', name: 'Warm', adjustments: { exposure: 0.25 } },
+    pageId: 'page-1', targetIds: ['image-a', 'image-b'], status: 'running'
+  };
+
+  await storage.saveRecipeBatchRecovery(input);
+  input.recipe.adjustments.exposure = 0.9;
+  input.targetIds.push('image-c');
+  const loaded = await storage.loadRecipeBatchRecovery('design-recovery');
+  assert.deepEqual(loaded, {
+    documentId: 'design-recovery', recipe: { id: 'recipe-1', name: 'Warm', adjustments: { exposure: 0.25 } },
+    pageId: 'page-1', targetIds: ['image-a', 'image-b'], status: 'running', savedAt: loaded.savedAt
+  });
+  loaded.recipe.adjustments.exposure = -1;
+  loaded.targetIds.pop();
+  assert.equal((await storage.loadRecipeBatchRecovery('design-recovery')).recipe.adjustments.exposure, 0.25);
+  assert.deepEqual((await storage.loadRecipeBatchRecovery('design-recovery')).targetIds, ['image-a', 'image-b']);
+  assert.equal(mock.records('figma-local-documents', 'recipeBatchRecovery').length, 1);
+});
+
+test('recipe batch recovery rejects malformed input and ignores corrupt stored records without deleting them', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const valid = {
+    documentId: 'design-recovery', recipe: { id: 'recipe-1' }, pageId: 'page-1',
+    targetIds: ['image-a'], status: 'running'
+  };
+  const invalid = [
+    { ...valid, documentId: ' ' }, { ...valid, pageId: '' }, { ...valid, recipe: [] },
+    { ...valid, recipe: null }, { ...valid, targetIds: [] }, { ...valid, targetIds: ['image-a', 'image-a'] },
+    { ...valid, targetIds: [' '] }, { ...valid, targetIds: ['x'.repeat(257)] }, { ...valid, status: 'unknown' },
+    { ...valid, recipe: new Date() }, { ...valid, recipe: { text: 'x'.repeat(256 * 1024 + 1) } },
+    { ...valid, targetIds: Array.from({ length: 100_001 }, (_, index) => `image-${index}`) }
+  ];
+  for (const item of invalid) await assert.rejects(storage.saveRecipeBatchRecovery(item), /Invalid image recipe batch recovery data/);
+  const cyclicRecipe = { id: 'cycle' }; cyclicRecipe.self = cyclicRecipe;
+  await assert.rejects(storage.saveRecipeBatchRecovery({ ...valid, recipe: cyclicRecipe }), /Invalid image recipe batch recovery data/);
+  assert.equal(await storage.loadRecipeBatchRecovery('missing-design'), null);
+  assert.equal(mock.records('figma-local-documents', 'recipeBatchRecovery').length, 0);
+  assert.equal(await storage.loadRecipeBatchRecovery(' '), null);
+
+  mock.inject('figma-local-documents', 'recipeBatchRecovery', {
+    documentId: 'broken-design', recipe: [], pageId: 'page-1', targetIds: ['image-a'], status: 'running', savedAt: 1
+  });
+  assert.equal(await storage.loadRecipeBatchRecovery('broken-design'), null);
+  assert.equal(mock.records('figma-local-documents', 'recipeBatchRecovery').length, 1, 'invalid data stays available for recovery or inspection');
+});
+
+test('recipe batch recovery delete reports whether a record existed', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), false);
+  await storage.saveRecipeBatchRecovery({
+    documentId: 'design-recovery', recipe: { id: 'recipe-1' }, pageId: 'page-1',
+    targetIds: ['image-a'], status: 'complete'
+  });
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), true);
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), false);
+  assert.equal(await storage.loadRecipeBatchRecovery('design-recovery'), null);
 });
 
 test('libraries persist and reload by stable identity, list as summaries, and delete independently', async () => {

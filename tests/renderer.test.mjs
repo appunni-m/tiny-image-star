@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
@@ -168,6 +168,73 @@ test('Boolean source pixels scale and reposition into the resized group bounds',
     assert.deepEqual(transforms[0], [1, 0, 0, 1, 0, 0], 'the raster starts in the group box coordinate system');
     assert.deepEqual(transforms[1], [2, 0, 0, 1.5, -20, -7.5], 'source visual bounds are translated to the origin and stretched to the current group size');
     assert.deepEqual(transforms.at(-1), [1, 0, 0, 1, 0, 0], 'the composite paint resets to the destination box after drawing operands');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('Boolean paint and mask surfaces cap extreme axes and total pixels without shrinking normal previews', () => {
+  const created = [];
+  class RecordingContext {
+    constructor(scale = 1) { this.scale = scale; }
+    getTransform() { return { a: this.scale, b: 0 }; }
+    setTransform() {} save() {} restore() {} clearRect() {} fillRect() {} drawImage() {}
+  }
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width;
+      this.height = height;
+      this.context = new RecordingContext();
+      created.push(this);
+    }
+    getContext() { return this.context; }
+  }
+
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const document = createDocument();
+    const cases = [
+      { name: 'extreme horizontal', width: 100_000, height: 1, requestedScale: 2, expected: [4096, 1] },
+      { name: 'pixel budget', width: 5_000, height: 5_000, requestedScale: 2, expected: [2000, 2000] },
+      { name: 'huge equal aspect', width: 1e300, height: 1e300, requestedScale: 2, expected: [2000, 2000] },
+      { name: 'ordinary', width: 80, height: 60, requestedScale: 1.5, expected: [120, 90] }
+    ];
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, assets: new Map(), zoom: 1 });
+    renderer.booleanCache = new Map();
+    renderer.booleanCachePixels = 0;
+    renderer.drawNode = () => {};
+
+    for (const item of cases) {
+      const group = createNode('boolean', {
+        name: item.name, width: item.width, height: item.height,
+        children: [createNode('rectangle'), createNode('rectangle', { x: 1 })]
+      });
+      addNode(document, group);
+      for (const maskMode of [false, true]) {
+        const surface = renderer.getBooleanSurface(group, new Map(), maskMode, item.requestedScale);
+        assert.deepEqual([surface.width, surface.height], item.expected,
+          `${item.name} ${maskMode ? 'mask' : 'paint'} surface should use the bounded, aspect-preserving dimensions`);
+        assert.ok(surface.width <= 4096 && surface.height <= 4096,
+          `${item.name} ${maskMode ? 'mask' : 'paint'} surface exceeded the per-axis limit`);
+        assert.ok(surface.width * surface.height <= 4_000_000,
+          `${item.name} ${maskMode ? 'mask' : 'paint'} surface exceeded the total pixel budget`);
+      }
+      const children = [createNode('rectangle'), createNode('rectangle', { x: 1 })];
+      const maskGroup = createNode('group', {
+        name: `${item.name} alpha mask`, width: item.width, height: item.height,
+        mask: true, maskSourceId: children[0].id, children
+      });
+      renderer.drawMaskGroup(new RecordingContext(item.requestedScale), maskGroup, 0, 0, new Map());
+      const maskSurface = created.at(-1);
+      assert.deepEqual([maskSurface.width, maskSurface.height], item.expected,
+        `${item.name} alpha mask should obey the same bounded dimensions`);
+      assert.ok(maskSurface.width * maskSurface.height <= 4_000_000,
+        `${item.name} alpha mask exceeded the total pixel budget`);
+    }
+    assert.equal(created.length, cases.length * 3, 'paint, Boolean mask, and alpha-mask requests should each allocate one bounded surface');
   } finally {
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
@@ -941,4 +1008,119 @@ test('selection overlay corners and transform handles include nested ancestor ro
   closePoint(overlay.handles.resize.se, overlay.corners[2]);
   assert.ok(Math.abs(Math.hypot(overlay.handles.rotate.x - overlay.handles.resize.n.x, overlay.handles.rotate.y - overlay.handles.resize.n.y) - 12) < 1e-9,
     'The rotation handle offset should remain 24 screen pixels at 200% zoom.');
+});
+
+test('image crop selection renders node-local crop and live drag bounds with zoom-sized handles', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 80, y: 35, width: 180, height: 140, rotation: 90 });
+  const image = createNode('image', { x: 18, y: 22, width: 90, height: 64, rotation: 15 });
+  addNode(document, frame);
+  addNode(document, image, { parentId: frame.id });
+
+  const state = {
+    document, zoom: 2, selectedIds: [image.id], imageCropMode: true,
+    imageCropOverlay: {
+      nodeId: image.id,
+      drawBounds: { left: 12, top: 8, width: 54, height: 38 },
+      virtualBounds: { left: 0, top: 0, width: 90, height: 64 },
+      crop: { left: .1, top: .1, right: .7, bottom: .7 }
+    },
+    imageCropDraftSelection: {
+      nodeId: image.id, start: { x: 16, y: 13 }, end: { x: 41, y: 39 }
+    }
+  };
+  const strokes = [];
+  const rects = [];
+  let path = [];
+  let arcs = 0;
+  const context = {
+    lineWidth: 1, fillStyle: '', strokeStyle: '',
+    save() {}, restore() {},
+    beginPath() { path = []; },
+    moveTo(x, y) { path.push({ type: 'move', x, y }); },
+    lineTo(x, y) { path.push({ type: 'line', x, y }); },
+    closePath() { path.push({ type: 'close' }); },
+    rect(x, y, width, height) { rects.push({ x, y, width, height }); path.push({ type: 'rect', x, y, width, height }); },
+    setLineDash() {}, fill() {},
+    stroke() { strokes.push(path.map(command => ({ ...command }))); },
+    arc() { arcs += 1; }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+
+  renderer.drawSelection(context, document.pages[0].children, state.selectedIds, 0, 0);
+
+  assert.equal(arcs, 0, 'crop mode suppresses the standard rotation handle');
+  assert.equal(rects.filter(rect => Math.abs(rect.width - 24) < 1e-9 && Math.abs(rect.height - 24) < 1e-9).length, 8,
+    'each crop edge/corner has a 48 CSS-pixel hit target at 200% zoom');
+  assert.equal(rects.filter(rect => Math.abs(rect.width - 3) < 1e-9 && Math.abs(rect.height - 3) < 1e-9).length, 0,
+    'standard resize handles are suppressed while cropping');
+  const expectedCrop = [
+    nodeLocalToPage(image, { x: 12, y: 8 }, [frame]),
+    nodeLocalToPage(image, { x: 66, y: 8 }, [frame]),
+    nodeLocalToPage(image, { x: 66, y: 46 }, [frame]),
+    nodeLocalToPage(image, { x: 12, y: 46 }, [frame])
+  ];
+  const currentCropPath = strokes.find(candidate => candidate.length === 5
+    && candidate[0].type === 'move' && candidate.at(-1).type === 'close'
+    && Math.abs(candidate[0].x - expectedCrop[0].x) < 1e-9
+    && Math.abs(candidate[0].y - expectedCrop[0].y) < 1e-9);
+  assert.ok(currentCropPath, 'the current crop bounds render in node-local coordinates');
+  for (let index = 1; index < expectedCrop.length; index += 1) {
+    assert.ok(Math.hypot(currentCropPath[index].x - expectedCrop[index].x, currentCropPath[index].y - expectedCrop[index].y) < 1e-9,
+      `current crop corner ${index} should use node-local to page-space mapping`);
+  }
+  const expectedDraft = [
+    nodeLocalToPage(image, { x: 16, y: 13 }, [frame]),
+    nodeLocalToPage(image, { x: 41, y: 13 }, [frame]),
+    nodeLocalToPage(image, { x: 41, y: 39 }, [frame]),
+    nodeLocalToPage(image, { x: 16, y: 39 }, [frame])
+  ];
+  const draftPath = strokes.find(candidate => candidate.length === 5
+    && candidate[0].type === 'move' && candidate.at(-1).type === 'close'
+    && Math.abs(candidate[0].x - expectedDraft[0].x) < 1e-9
+    && Math.abs(candidate[0].y - expectedDraft[0].y) < 1e-9);
+  assert.ok(draftPath, 'the live draft rectangle is transformed through the image and its rotated frame');
+  for (let index = 1; index < expectedDraft.length; index += 1) {
+    assert.ok(Math.hypot(draftPath[index].x - expectedDraft[index].x, draftPath[index].y - expectedDraft[index].y) < 1e-9,
+      `draft corner ${index} should use node-local to page-space mapping`);
+  }
+});
+
+test('crop editing draws the full original bitmap in stable quarter-turn source bounds', () => {
+  const calls = [];
+  const context = {
+    save() { calls.push(['save']); }, restore() { calls.push(['restore']); },
+    translate(...args) { calls.push(['translate', ...args]); }, rotate(...args) { calls.push(['rotate', ...args]); },
+    drawImage(...args) { calls.push(['drawImage', ...args]); }
+  };
+  const original = { width: 64, height: 32 };
+  assert.equal(drawCropSourceImage(context, original, 10, 20, { left: -5, top: 8, width: 100, height: 200 }, 90), true);
+  assert.deepEqual(calls, [
+    ['save'], ['translate', 55, 128], ['rotate', Math.PI / 2],
+    ['drawImage', original, -100, -50, 200, 100], ['restore']
+  ], 'the unrotated source is shown over its stable, fully visible 90° display rectangle');
+});
+
+test('crop editing shows cover previews at the same scale they will have after commit', () => {
+  const calls = [];
+  const context = {
+    save() { calls.push(['save']); }, restore() { calls.push(['restore']); },
+    beginPath() { calls.push(['beginPath']); }, rect(...args) { calls.push(['rect', ...args]); },
+    clip() { calls.push(['clip']); }, drawImage(...args) { calls.push(['drawImage', ...args]); }
+  };
+  const preview = { width: 400, height: 100 };
+  assert.equal(drawCropPreview(context, preview, 14, 25, 100, 100, 'cover'), true);
+  assert.deepEqual(calls, [
+    ['save'], ['beginPath'], ['rect', 14, 25, 100, 100], ['clip'],
+    ['drawImage', preview, -136, 25, 400, 100], ['restore']
+  ], 'a wide aspect-changing crop should have exactly the same cover fit and frame clip before and after commit');
+  calls.length = 0;
+  const quarterTurnPreview = { width: 100, height: 400 };
+  assert.equal(drawCropPreview(context, quarterTurnPreview, 14, 25, 100, 100, 'contain'), true);
+  assert.deepEqual(calls, [
+    ['save'], ['beginPath'], ['rect', 14, 25, 100, 100], ['clip'],
+    ['drawImage', quarterTurnPreview, 51.5, 25, 25, 100], ['restore']
+  ], 'a quarter-turned contain preview should match the committed layer fit');
+  assert.equal(drawCropPreview(context, null, 0, 0, 1, 1), false);
 });

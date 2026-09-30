@@ -405,6 +405,33 @@ export function removePrototypeInteraction(document, sourceId, interactionId, pa
   return true;
 }
 
+/** Replace one interaction atomically while keeping its stable identifier and list position. */
+export function updatePrototypeInteraction(document, sourceId, interactionId, destinationId, options = {}, pageId = document.activePageId) {
+  const source = findNode(document, sourceId, pageId)?.node;
+  if (!source?.interactions) throw new Error('The interaction source no longer exists.');
+  const index = source.interactions.findIndex(item => item.id === interactionId);
+  if (index < 0) throw new Error('This prototype interaction no longer exists.');
+
+  // Validate and normalize against a private copy. No partial update should be
+  // observable if an action, condition, destination, or component variant is
+  // no longer valid while the editor is open.
+  const candidate = structuredClone(document);
+  const candidateSource = findNode(candidate, sourceId, pageId)?.node;
+  candidateSource.interactions.splice(index, 1);
+  const remainingCount = candidateSource.interactions.length;
+  const replacement = addPrototypeInteraction(candidate, sourceId, destinationId, {
+    ...options,
+    sourcePageId: pageId
+  });
+  if (candidateSource.interactions.length === remainingCount) {
+    throw new Error('An interaction with these settings already exists on this layer.');
+  }
+
+  replacement.id = source.interactions[index].id;
+  source.interactions[index] = structuredClone(replacement);
+  return source.interactions[index];
+}
+
 export function findFrameAtPoint(page, point, document = null) {
   const matches = [];
   const visit = (nodes, parentX = 0, parentY = 0, depth = 0) => {

@@ -1,12 +1,13 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
-  resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
+  removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
+import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
 import { createFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
@@ -14,11 +15,12 @@ import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
+import { summarizeTextRunRange } from './text-run-selection.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
 import { encodeRenderedImageOutput, MAX_CANVAS_OUTPUT_EDGE, MAX_CANVAS_OUTPUT_PIXELS } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
-import { buildLocalPackageBlob, deleteFontAsset, deleteImageAsset, deleteStoredDocument, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -29,7 +31,7 @@ import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { importSvgToLayers } from './svg-import.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
@@ -60,7 +62,7 @@ const state = {
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   componentSetSelectedVariants: new Map(),
-  bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
+  bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
@@ -69,10 +71,12 @@ const state = {
   pendingLocalShareTimer: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
-  prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
+  prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
+  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null,
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   prototypeVariantTargetId: null,
+  imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   componentLibraries: [], componentLibraryTargetId: null,
   componentSlotDialog: null,
@@ -87,6 +91,7 @@ const canvasScroll = $('#canvas-scroll');
 let renderer;
 let pendingRecipeNodeId = null;
 let bulkBarTicker = null;
+let bulkConcurrencyTimer = 0;
 let latestPageLayerIds = [];
 let layerRowsById = new Map();
 let currentToastTimer = 0;
@@ -359,27 +364,66 @@ function queueSave({ refreshLayerTree = true } = {}) {
     if (refreshLayerTree) renderLayers();
     renderer?.invalidate();
   }
+  const saveOwner = state.bulk || null;
+  if (saveOwner) {
+    saveOwner.savePending = true;
+    saveOwner.saveError = null;
+  }
   setSaveState('saving', 'Saving locally…');
-  if (state.documentTransitioning) return;
+  if (state.documentTransitioning) {
+    if (saveOwner && state.bulk === saveOwner) saveOwner.savePending = false;
+    return;
+  }
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(async () => {
+    state.saveTimer = null;
+    const revision = state.saveRevision;
     try {
       reconcileImageAssetRuntime();
       const snapshot = JSON.parse(serializeDocument(state.document));
       const { versionError } = await enqueueDocumentSave(snapshot, state.versionSaveLabel, !isImageRecipeBatchActive(state.bulk));
-      setSaveState('saved', versionError ? 'Saved · history unavailable' : 'Saved locally');
-      if ($('#version-history-dialog')?.open) void renderDocumentVersionHistory();
+      if (revision === state.saveRevision) {
+        setSaveState('saved', versionError ? 'Saved · history unavailable' : 'Saved locally');
+        if (saveOwner && state.bulk === saveOwner) {
+          saveOwner.savePending = false;
+          saveOwner.saveError = null;
+          renderBulkBar();
+        }
+        if ($('#version-history-dialog')?.open) void renderDocumentVersionHistory();
+      }
     } catch (error) {
-      setSaveState('error', 'Could not save');
-      showToast(error.message || 'Could not save this design locally.');
+      if (revision === state.saveRevision) {
+        setSaveState('error', 'Could not save');
+        showToast(error.message || 'Could not save this design locally.');
+        if (saveOwner && state.bulk === saveOwner) {
+          saveOwner.savePending = false;
+          saveOwner.saveError = error.message || 'The local save failed.';
+          renderBulkBar();
+        }
+      }
     }
   }, 260);
 }
 function checkpoint(label) { history.checkpoint(state.document, label); state.versionSaveLabel = label; }
+function beginCanvasHistoryTransaction(label) { return history.beginTransaction(state.document, label); }
+function commitCanvasHistoryTransaction(interaction) {
+  const transaction = interaction?.historyTransaction;
+  const committed = history.commitTransaction(transaction, state.document);
+  if (interaction) interaction.historyTransaction = null;
+  if (!committed) return false;
+  state.versionSaveLabel = transaction.label;
+  return true;
+}
 function setSelection(ids, { keepInspector = false, refreshLayers = true } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
-  state.selectedIds = [...new Set(valid)];
+  const nextSelectedIds = [...new Set(valid)];
+  if (state.imageCropMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
+    if (state.interaction?.kind === 'image-crop') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageCropMode = false;
+    state.imageCropDraftSelection = null;
+  }
+  state.selectedIds = nextSelectedIds;
   syncActiveImageSource();
   if (refreshLayers) renderLayers();
   else {
@@ -388,6 +432,7 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   }
   state.smartGuides = [];
   if (state.selectedVectorPoint && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.selectedVectorPoint.nodeId)) state.selectedVectorPoint = null;
+  syncImageCropOverlay();
   if (!keepInspector) renderInspector();
   updateSelectionStatus();
   renderer?.invalidate();
@@ -601,17 +646,31 @@ function syncImageToneControls(input, adjustments, disabled = false) {
   threshold.value = String(adjustments.solarizeThreshold);
   if (threshold.nextElementSibling) threshold.nextElementSibling.value = String(adjustments.solarizeThreshold);
 }
-function imageTransformControls(transforms, target, disabled = false, fillId = '') {
+function imageTransformControls(transforms, target, disabled = false, fillId = '', nodeId = null) {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
+  const imageNode = nodeId ? findNode(state.document, nodeId)?.node : null;
+  const imageAsset = imageNode?.assetId ? state.assets.get(imageNode.assetId) : null;
+  const cropAvailable = imageNode?.type === 'image'
+    && Number.isSafeInteger(imageAsset?.sourceWidth || imageNode.sourceWidth)
+    && Number.isSafeInteger(imageAsset?.sourceHeight || imageNode.sourceHeight);
+  const cropTool = target === 'layer'
+    ? `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" aria-pressed="${state.imageCropMode && state.selectedIds[0] === nodeId}"${disabled || !cropAvailable ? ' disabled' : ''}>${state.imageCropMode && state.selectedIds[0] === nodeId ? 'Done cropping' : 'Crop on canvas'}</button>${state.imageCropMode && state.selectedIds[0] === nodeId ? '<div class="image-properties-note image-crop-mode-hint">The full source stays visible. The current edit appears inside the crop; the uncropped image provides context. Drag to choose a crop or move a handle; Escape finishes the crop.</div>' : ''}`
+    : '';
   const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
     `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="1" value="${Math.round(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
-  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div><div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation) ? ' disabled' : ''}>Reset crop/rotation</button><div class="image-properties-note">Crop and rotation stay editable and are included in saved recipes.</div></div>`;
+  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div>${cropTool}<div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation) ? ' disabled' : ''}>Reset crop/rotation</button><div class="image-properties-note">Crop and rotation stay editable and are included in saved recipes.</div></div>`;
 }
 function transformSection(node) {
   const geometry = resolvedGeometry(node);
   const opacity = getNodePropertyValue(state.document, node, 'opacity');
-  const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width)}${numberField('H', 'height', geometry.height)}${numberField('↻', 'rotation', geometry.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
+  const entry = transformEntriesForSelection().find(item => item.node.id === node.id);
+  const hugAxes = node.type === 'frame' && node.autoLayout && entry
+    ? ['width', 'height'].filter(property => selectionDimensionIsHugged([entry], property)) : [];
+  const hugNote = hugAxes.length
+    ? `<div class="image-properties-note">Resize handles for ${hugAxes.join(' and ')} are disabled while this frame hugs that axis. Set the matching Hug sizing to Fixed first.</div>`
+    : '';
+  const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width, 1, null, null, node.locked || hugAxes.includes('width'), 'Width')}${numberField('H', 'height', geometry.height, 1, null, null, node.locked || hugAxes.includes('height'), 'Height')}${numberField('↻', 'rotation', geometry.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${hugNote}${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
   return section('Position', body);
 }
 function blendingSection(node) {
@@ -717,8 +776,11 @@ function imageAdjustmentsSection(node) {
   const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const body = `${imageTransformControls(node.transforms, 'layer', node.locked, '', node.id)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
+}
+function isActiveImageRecipeTarget(nodeId) {
+  return isImageRecipeBatchActive(state.bulk) && state.bulk.targets.includes(nodeId);
 }
 function imageRecipeOptions(selectedId = '') {
   const recipes = state.document.recipes || [];
@@ -1117,6 +1179,12 @@ function cancelPrototypeConnection() {
 
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
+  const nodeInteractions = node?.interactions || [];
+  const editingInteraction = nodeInteractions.find(interaction => interaction.id === state.prototypeEditingInteractionId) || null;
+  if (state.prototypeEditingInteractionId && !editingInteraction) {
+    state.prototypeEditingInteractionId = null;
+    state.prototypeDestinationId = null;
+  }
   const entry = node ? findNode(state.document, node.id) : null;
   const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
   const variantSourceComponent = node?.isInstance ? state.document.components?.find(item => item.id === node.componentId) : null;
@@ -1127,7 +1195,7 @@ function prototypeInspector() {
   const startBody = frame
     ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start">${state.document.prototypeStartPoint?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
     : `<p class="prototype-hint">${start ? `Present starts at “${escapeHtml(start.frame.name)}”.` : 'Create a frame to make a prototype.'}</p>`;
-  const interactions = (node?.interactions || []).map(interaction => {
+  const interactions = nodeInteractions.map(interaction => {
     const target = interaction.destinationId ? findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node : null;
     const targetPage = interaction.destinationPageId ? state.document.pages.find(page => page.id === interaction.destinationPageId) : null;
     const variableCollection = state.document.variableCollections?.find(collection => collection.id === interaction.collectionId);
@@ -1138,10 +1206,11 @@ function prototypeInspector() {
     const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'change-variant' ? `${targetVariant?.name || 'Missing variant'} · ${variantSourceSet?.name || 'Component set'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
     const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
     const conditionLabel = conditionVariable ? ` · If ${conditionVariable.name} ${interaction.condition.operator === 'equals' ? 'is' : 'is not'} ${String(interaction.condition.value)}` : '';
-    return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    const selected = interaction.id === state.prototypeEditingInteractionId;
+    return `<div class="prototype-interaction-row${selected ? ' is-editing' : ''}"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="prototype-edit-button" type="button" data-action="edit-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Edit ${escapeHtml(triggerLabel)} ${escapeHtml(actionLabel)} interaction">${selected ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
   const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
-  const connectState = state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : state.prototypeAction === 'swap-overlay' ? 'Click the frame to swap into the overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
+  const connectState = !editingInteraction && state.prototypeSourceId === node?.id ? `<div class="prototype-connect-hint">${state.prototypeAction === 'open-overlay' ? 'Click the frame to show as an overlay.' : state.prototypeAction === 'swap-overlay' ? 'Click the frame to swap into the overlay.' : 'Click a destination frame on the canvas.'} Press Escape to cancel.</div>` : '';
   const overlayControls = state.prototypeAction === 'open-overlay' ? `<label>Position<select id="prototype-overlay-position" class="select-field">${[['center','Center'],['top-left','Top left'],['top-center','Top center'],['top-right','Top right'],['left-center','Left center'],['right-center','Right center'],['bottom-left','Bottom left'],['bottom-center','Bottom center'],['bottom-right','Bottom right']].map(([value, label]) => `<option value="${value}"${state.prototypeOverlayPosition === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label><label><span>Dismiss on outside click</span><input id="prototype-overlay-outside" type="checkbox"${state.prototypeOverlayOutsideClick ? ' checked' : ''}/></label><label><span>Show background</span><input id="prototype-overlay-background" type="checkbox"${state.prototypeOverlayBackground ? ' checked' : ''}/></label>${state.prototypeOverlayBackground ? `<label>Background<input id="prototype-overlay-color" type="color" value="${state.prototypeOverlayBackgroundColor}"/><input id="prototype-overlay-opacity" type="range" min="0" max="100" value="${Math.round(state.prototypeOverlayBackgroundOpacity * 100)}" aria-label="Overlay background opacity"/></label>` : ''}` : '';
   const transitionOptions = [['instant', 'Instant'], ['dissolve', 'Dissolve'], ['move-left', 'Move in · left'], ['move-right', 'Move in · right'], ...(state.prototypeAction === 'navigate' ? [['smart-animate', 'Smart animate']] : [])]
     .map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
@@ -1180,7 +1249,12 @@ function prototypeInspector() {
       : '<p class="prototype-hint">Select a linked component instance in a variant set to add this action.</p>'
     : '';
   const needsVariantTarget = state.prototypeAction === 'change-variant' && !selectedVariantTarget;
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${conditionControls}${variableModeControls}${variantControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || needsVariantTarget ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const destinationFrames = listPrototypeFrames(state.document);
+  const destinationControl = editingInteraction && needsDestination
+    ? `<label>Destination<select id="prototype-destination" class="select-field" aria-label="Prototype destination"><option value="" disabled${state.prototypeDestinationId ? '' : ' selected'}>Choose a frame</option>${destinationFrames.map(({ page, frame }) => `<option value="${escapeHtml(frame.id)}"${frame.id === state.prototypeDestinationId ? ' selected' : ''}>${escapeHtml(page.name)} · ${escapeHtml(frame.name)}</option>`).join('')}</select></label>`
+    : '';
+  const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${variableModeControls}${variantControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || needsVariantTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -1312,6 +1386,7 @@ function renderInspector() {
   }
   if (entries.length > 1) {
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
+    const activeImageBatchSelected = entries.some(entry => entry.node.type === 'image' && isActiveImageRecipeTarget(entry.node.id));
     const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
     const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
     const transformEntries = transformEntriesForSelection();
@@ -1340,10 +1415,20 @@ function renderInspector() {
     const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
     content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${transformNote}</div>`)}`;
+    if (activeImageBatchSelected) {
+      const note = document.createElement('div');
+      note.className = 'image-properties-note image-batch-edit-lock';
+      note.textContent = 'Selected images are in the active recipe batch. Inspector controls unlock after the batch finishes.';
+      content.prepend(note);
+      for (const control of content.querySelectorAll('input, select, textarea, button')) control.disabled = true;
+    }
     return;
   }
   const node = entries[0].node;
   let body = componentSection(node) + transformSection(node) + blendingSection(node);
+  if (node.type === 'image' && isActiveImageRecipeTarget(node.id)) {
+    body = `<div class="image-properties-note image-batch-edit-lock">This image is in the active recipe batch. Manual edits remain available, and newer edits replace stale batch previews.</div>${body}`;
+  }
   if (node.type === 'boolean') {
     const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
     body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><button class="add-fill" data-action="bake-boolean" style="margin-top:8px">Bake to vector path</button><div class="image-properties-note">Baking preserves supported cubic Bézier paths as editable curves. Ellipses, rounded rectangles, vector networks, tangent or ambiguous intersections, transparency, mode-bound geometry, and blended operands are refused with an explanation.</div>`);
@@ -1587,6 +1672,7 @@ function renderAssetsTab() {
 
 function renderUI() {
   syncActiveImageSource();
+  syncImageCropOverlay();
   $('#document-name').value = state.document.name;
   $('#canvas-file-name').textContent = state.document.name;
   renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
@@ -1686,11 +1772,12 @@ function startPenPath(world, pointerType = 'mouse') {
       finishPenPath(true);
       return;
     }
+    const penDraftBefore = structuredClone(draft);
     const pointPosition = world;
     const point = { ...pointPosition, in: { ...pointPosition }, out: { ...pointPosition } };
     draft.anchors.push(point);
     const pointIndex = draft.anchors.length - 1;
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex, moved: false, penDraftBefore };
   } else {
     const existing = targetNetwork ? networkAnchorAt(world, targetNetwork, pointerType) : null;
     const point = existing ? existing.pagePoint : world;
@@ -1698,7 +1785,7 @@ function startPenPath(world, pointerType = 'mouse') {
       ...(targetNetwork ? { targetNetworkId: targetNetwork.id } : {}),
       anchors: [{ ...point, in: { ...point }, out: { ...point }, ...(existing ? { vertexId: existing.vertexId } : {}) }]
     };
-    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false };
+    state.interaction = { kind: 'pen-anchor', start: world, pointIndex: 0, moved: false, penDraftBefore: null };
     showToast(existing ? 'Starting at a shared point · add a branch, connect another point, then press Enter.' : 'Click to add points · drag for curves · Enter to finish · Escape to cancel.', 5000);
   }
   state.penHover = world;
@@ -2248,6 +2335,12 @@ function resizeHandleAt(event) {
   const handles = getTransformHandles(geometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
   const hit = nearestHandle(handles);
   if (!hit) return null;
+  if (hit.kind === 'resize') {
+    const entry = { node, ancestors };
+    const horizontalHug = selectionDimensionIsHugged([entry], 'width');
+    const verticalHug = selectionDimensionIsHugged([entry], 'height');
+    if ((horizontalHug && /[ew]/.test(hit.name)) || (verticalHug && /[ns]/.test(hit.name))) return null;
+  }
   if (hit.kind === 'rotate') return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
   return { kind: 'resize', name: hit.name, node, entry, geometry, ancestors };
 }
@@ -2278,8 +2371,7 @@ function selectedNodeDragStart(node, world, shiftKey) {
     return;
   }
   if (state.selectedIds.length === 1 && entry?.parent?.autoLayout && node.layoutPositioning !== 'absolute') {
-    checkpoint('Reorder auto layout items');
-    state.interaction = { kind: 'reorder', node, parent: entry.parent };
+    state.interaction = { kind: 'reorder', node, parent: entry.parent, historyTransaction: beginCanvasHistoryTransaction('Reorder auto layout items') };
     return;
   }
   if (moveBlockReason === 'auto-layout') {
@@ -2290,7 +2382,7 @@ function selectedNodeDragStart(node, world, shiftKey) {
     showToast('Unlink position variables before moving layers together.');
     return;
   }
-  checkpoint('Move layers');
+  const historyTransaction = beginCanvasHistoryTransaction('Move layers');
   const originals = new Map(entries.map(item => {
     const geometry = { ...item.node, ...resolvedGeometry(item.node) };
     const ancestors = item.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
@@ -2299,7 +2391,36 @@ function selectedNodeDragStart(node, world, shiftKey) {
   const movingBounds = entries.map(pageBoundsForEntry);
   const targetBounds = alignmentTargetBounds(entries);
   state.smartGuides = [];
-  state.interaction = { kind: 'move', start: world, originals, movingBounds, targetBounds, shiftKey };
+  state.interaction = { kind: 'move', start: world, originals, movingBounds, targetBounds, shiftKey, historyTransaction };
+}
+
+function beginImageCropInteraction(event, world) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  const context = syncImageCropOverlay();
+  if (!node || !context) { showToast('Select an image with loaded dimensions to crop it on canvas.'); return; }
+  const local = pageToNodeLocal(context.geometry, world, context.ancestors);
+  const handle = imageCropHandleAt(event, context);
+  const visibleBounds = imageCropVisibleBounds(context);
+  const withinImage = local.x >= visibleBounds.left && local.x <= visibleBounds.left + visibleBounds.width
+    && local.y >= visibleBounds.top && local.y <= visibleBounds.top + visibleBounds.height;
+  if (!handle && !withinImage) return;
+  const transforms = createImageTransforms(node.transforms || {});
+  state.imageCropDraftSelection = null;
+  state.interaction = {
+    kind: 'image-crop', mode: handle ? 'handle' : 'select', pointerId: event.pointerId,
+    node, geometry: context.geometry, ancestors: context.ancestors,
+    sourceWidth: context.sourceWidth, sourceHeight: context.sourceHeight,
+    rotation: transforms.rotation, bounds: context.virtualBounds,
+    visibleBounds,
+    originalTransforms: transforms, transforms,
+    crop: transforms.crop || { left: 0, top: 0, right: 1, bottom: 1 },
+    handle: handle?.name || null,
+    handleOffset: handle ? { x: local.x - handle.localPoint.x, y: local.y - handle.localPoint.y } : { x: 0, y: 0 },
+    start: local, end: local, moved: false,
+    changed: false, lastPreviewAt: 0
+  };
+  renderer.invalidate();
+  event.preventDefault();
 }
 
 function onCanvasPointerDown(event) {
@@ -2332,11 +2453,19 @@ function onCanvasPointerDown(event) {
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
   }
-  if (event.button === 1 || state.spaceDown || state.tool === 'hand') {
+  if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
     canvas.classList.add('is-panning'); event.preventDefault(); return;
   }
+  if (isImageRecipeBatchActive(state.bulk)) {
+    showToast('Canvas edits are paused while the image recipe batch is running. You can still pan and use the Layers panel.');
+    state.pointerMap.delete(event.pointerId);
+    return;
+  }
   const world = screenToWorld(event, canvas, state);
+  // Crop mode owns ordinary canvas taps regardless of the active drawing or
+  // prototype tool. Space/middle-button pan and two-finger pinch remain usable.
+  if (state.imageCropMode) { beginImageCropInteraction(event, world); return; }
   const commentPin = commentPinAt(world);
   if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
   if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
@@ -2381,35 +2510,29 @@ function onCanvasPointerDown(event) {
     if (vectorControl) {
       if (vectorControl.node.type === 'network') {
         state.selectedVectorPoint = vectorControl.part === 'anchor' ? { nodeId: vectorControl.node.id, vertexId: vectorControl.vertexId } : null;
-        checkpoint('Edit vector network');
-        state.interaction = { kind: 'network-control', ...vectorControl };
+        state.interaction = { kind: 'network-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector network') };
       } else {
         state.selectedVectorPoint = { nodeId: vectorControl.node.id, contourIndex: vectorControl.contourIndex || 0, index: vectorControl.index };
-        checkpoint('Edit vector path');
-        state.interaction = { kind: 'vector-control', ...vectorControl };
+        state.interaction = { kind: 'vector-control', ...vectorControl, historyTransaction: beginCanvasHistoryTransaction('Edit vector path') };
       }
       event.preventDefault(); return;
     }
     const handle = resizeHandleAt(event);
     if (handle) {
       if (handle.kind === 'rotate') {
-        checkpoint('Rotate layer');
         const angle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
-        state.interaction = { kind: 'rotate', node: handle.node, entry: handle.entry, center: handle.center, startAngle: angle, lastAngle: angle, rotationDelta: 0, rotation: handle.geometry.rotation || 0 };
+        state.interaction = { kind: 'rotate', node: handle.node, entry: handle.entry, center: handle.center, startAngle: angle, lastAngle: angle, rotationDelta: 0, rotation: handle.geometry.rotation || 0, historyTransaction: beginCanvasHistoryTransaction('Rotate layer') };
       } else if (handle.kind === 'group-rotate') {
-        checkpoint('Rotate layers');
         const startAngle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
-        state.interaction = { ...handle, kind: 'group-rotate', lastAngle: startAngle, delta: 0 };
+        state.interaction = { ...handle, kind: 'group-rotate', lastAngle: startAngle, delta: 0, historyTransaction: beginCanvasHistoryTransaction('Rotate layers') };
       } else if (handle.kind === 'group-resize') {
-        checkpoint('Resize layers');
         const frameStates = new Map(handle.entries
           .filter(({ node }) => node.type === 'frame')
           .map(({ node }) => [node.id, { width: node.width, height: node.height, childGeometry: captureChildGeometry(node) }]));
-        state.interaction = { ...handle, kind: 'group-resize', frameStates };
+        state.interaction = { ...handle, kind: 'group-resize', frameStates, historyTransaction: beginCanvasHistoryTransaction('Resize layers') };
       } else {
-        checkpoint('Resize layer');
         const geometry = handle.geometry;
-        state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, ancestors: handle.ancestors, rect: geometry, width: geometry.width, height: geometry.height };
+        state.interaction = { kind: 'resize', handle: handle.name, node: handle.node, entry: handle.entry, ancestors: handle.ancestors, rect: geometry, width: geometry.width, height: geometry.height, historyTransaction: beginCanvasHistoryTransaction('Resize layer') };
         if (handle.node.type === 'frame') state.interaction.childGeometry = captureChildGeometry(handle.node);
       }
       event.preventDefault(); return;
@@ -2424,9 +2547,10 @@ function onCanvasPointerDown(event) {
       if (!hit.locked) selectedNodeDragStart(hit, world, event.shiftKey);
       return;
     }
+    const previousSelection = [...state.selectedIds];
     if (!event.shiftKey) setSelection([]);
     state.marquee = { x1: world.x, y1: world.y, x2: world.x, y2: world.y };
-    state.interaction = { kind: 'marquee', start: world, additive: event.shiftKey };
+    state.interaction = { kind: 'marquee', start: world, additive: event.shiftKey, previousSelection };
     renderer.invalidate(); return;
   }
   if (state.tool === 'image') { $('#image-input').click(); return; }
@@ -2473,6 +2597,44 @@ function onCanvasPointerMove(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'image-crop') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (!state.imageCropMode || state.selectedIds.length !== 1 || state.selectedIds[0] !== interaction.node.id) {
+      cancelCanvasInteraction({ pointerId: event.pointerId });
+      return;
+    }
+    const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+    const cropPoint = interaction.mode === 'select' ? clampImageCropPoint(local, interaction.visibleBounds) : local;
+    interaction.end = cropPoint;
+    interaction.moved ||= checkPointDistance(interaction.start, cropPoint) > 2 / Math.max(.08, state.zoom);
+    if (interaction.mode === 'select') {
+      state.imageCropDraftSelection = { nodeId: interaction.node.id, start: interaction.start, end: cropPoint };
+      renderer.invalidate();
+      return;
+    }
+    if (!interaction.moved) return;
+    const crop = moveImageCropHandle({
+      crop: interaction.crop, handle: interaction.handle,
+      point: { x: local.x - interaction.handleOffset.x, y: local.y - interaction.handleOffset.y },
+      bounds: interaction.bounds, rotation: interaction.rotation,
+      sourceWidth: interaction.sourceWidth, sourceHeight: interaction.sourceHeight
+    });
+    const transforms = createImageTransforms({ ...interaction.transforms, crop });
+    if (JSON.stringify(transforms) === JSON.stringify(interaction.node.transforms || createImageTransforms())) return;
+    if (!interaction.changed) interaction.historyTransaction = beginCanvasHistoryTransaction('Crop image');
+    interaction.changed = true;
+    interaction.crop = transforms.crop;
+    interaction.transforms = transforms;
+    interaction.node.transforms = transforms;
+    syncImageCropOverlay();
+    const now = performance.now();
+    if (now - interaction.lastPreviewAt >= 140) {
+      interaction.lastPreviewAt = now;
+      schedulePreview(interaction.node, true);
+    }
+    renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'pen-anchor') {
     const point = state.penDraft?.anchors[interaction.pointIndex];
     if (!point) return;
@@ -2608,6 +2770,46 @@ function onCanvasPointerUp(event) {
   state.pointerMap.delete(event.pointerId);
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'image-crop') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (!state.imageCropMode || state.selectedIds.length !== 1 || state.selectedIds[0] !== interaction.node.id) {
+      cancelCanvasInteraction({ pointerId: event.pointerId });
+      return;
+    }
+    let changed = interaction.changed;
+    if (interaction.mode === 'select' && interaction.moved) {
+      const world = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? screenToWorld(event, canvas, state) : null;
+      const pointer = world ? pageToNodeLocal(interaction.geometry, world, interaction.ancestors) : interaction.end;
+      const end = clampImageCropPoint(pointer, interaction.visibleBounds);
+      const crop = imageCropFromDisplayDrag({
+        start: interaction.start, end, bounds: interaction.bounds,
+        rotation: interaction.rotation, sourceWidth: interaction.sourceWidth,
+        sourceHeight: interaction.sourceHeight
+      });
+      if (crop) {
+        const transforms = createImageTransforms({ ...interaction.originalTransforms, crop });
+        if (JSON.stringify(transforms) !== JSON.stringify(interaction.node.transforms || createImageTransforms())) {
+          interaction.historyTransaction = beginCanvasHistoryTransaction('Crop image');
+          interaction.node.transforms = transforms;
+          interaction.transforms = transforms;
+          changed = true;
+        }
+      }
+    }
+    state.interaction = null;
+    state.imageCropDraftSelection = null;
+    if (changed) {
+      commitCanvasHistoryTransaction(interaction);
+      recordNodeComponentOverrides(interaction.node, ['transforms']);
+      schedulePreview(interaction.node, true);
+      renderInspector();
+      queueSave();
+    }
+    syncImageCropOverlay();
+    renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'pencil-stroke') {
     if (interaction.pointerId === event.pointerId) finishPencilStroke(event);
     return;
@@ -2620,14 +2822,19 @@ function onCanvasPointerUp(event) {
     state.interaction = null; renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-control') {
+    if (!commitCanvasHistoryTransaction(interaction)) { state.interaction = null; renderInspector(); renderer.invalidate(); return; }
     recordNodeComponentOverrides(interaction.node, (interaction.contourIndex || 0) === 0 ? ['points'] : ['subpaths']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'network-control') {
+    if (!commitCanvasHistoryTransaction(interaction)) { state.interaction = null; renderInspector(); renderer.invalidate(); return; }
     recordNodeComponentOverrides(interaction.node, ['vertices', 'edges', 'faces']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (['move', 'resize', 'rotate', 'group-resize', 'group-rotate', 'reorder'].includes(interaction.kind)) {
+    if (!commitCanvasHistoryTransaction(interaction)) {
+      state.interaction = null; state.smartGuides = []; renderer.invalidate(); return;
+    }
     const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()]
       : interaction.kind === 'group-resize' || interaction.kind === 'group-rotate' ? [...interaction.ids]
         : interaction.node ? [interaction.node.id] : [];
@@ -2701,6 +2908,68 @@ function onCanvasPointerUp(event) {
     const parent = node.type === 'section' ? null : deepestContainerAt(center);
     localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
     setSelection([node.id]); queueSave(); renderer.invalidate(); return;
+  }
+}
+
+function cancelCanvasInteraction(event) {
+  const interaction = state.interaction;
+  if (event?.pointerId != null) state.pointerMap.delete(event.pointerId);
+  if (!interaction || (interaction.pointerId != null && event?.pointerId != null && interaction.pointerId !== event.pointerId)) return;
+  if (interaction.kind === 'pencil-stroke') {
+    cancelPencilStroke();
+    state.pointerMap.clear();
+    return;
+  }
+
+  let restoredDocument = false;
+  if (interaction.historyTransaction) {
+    const snapshot = history.cancelTransaction(interaction.historyTransaction);
+    if (snapshot) {
+      state.document = snapshot;
+      state.selectedIds = state.selectedIds.filter(id => findNode(state.document, id));
+      state.selectedVectorPoint = null;
+      restoredDocument = true;
+    }
+  }
+  state.interaction = null;
+  if (interaction.kind === 'pan') { state.panX = interaction.panX; state.panY = interaction.panY; }
+  if (interaction.kind === 'pinch') {
+    state.zoom = interaction.zoom; state.panX = interaction.panX; state.panY = interaction.panY;
+    updateZoomUI();
+  }
+  if (interaction.kind === 'draw') state.draftNode = null;
+  if (interaction.kind === 'marquee') {
+    state.marquee = null;
+    setSelection(interaction.previousSelection || []);
+  }
+  if (interaction.kind === 'pen-anchor') {
+    state.penDraft = interaction.penDraftBefore ? structuredClone(interaction.penDraftBefore) : null;
+    state.penHover = null;
+  }
+  if (interaction.kind === 'image-crop') state.imageCropDraftSelection = null;
+  state.pointerMap.clear();
+  state.smartGuides = [];
+  canvas.classList.remove('is-panning');
+
+  if (restoredDocument) {
+    reconcileImagePreviewRuntime();
+    if (event?.preserveUI) {
+      // A panel pointerdown cancels the canvas gesture before the browser sends
+      // that same pointer sequence to the panel. Keep its target mounted so the
+      // user's intended click/tap is not swallowed by this rollback render.
+      syncImageCropOverlay();
+      updateSelectionStatus();
+      renderer.invalidate();
+    } else renderUI();
+    if (interaction.node?.type === 'image') {
+      const restoredNode = findNode(state.document, interaction.node.id)?.node;
+      if (restoredNode) schedulePreview(restoredNode, true);
+    }
+    queueSave();
+  } else {
+    syncImageCropOverlay();
+    updateSelectionStatus();
+    renderer.invalidate();
   }
 }
 
@@ -3105,6 +3374,51 @@ function positionTextFormatToolbar() {
   const top = above >= 8 ? above : Math.min(below, canvasScroll.clientHeight - toolbarHeight - 8);
   toolbar.style.left = `${left}px`; toolbar.style.top = `${Math.max(8, top)}px`;
 }
+function setTextFormatControlValue(control, value, mixed = false) {
+  if (!control) return;
+  const baseLabel = control.dataset.baseAriaLabel || control.getAttribute('aria-label') || control.id;
+  control.dataset.baseAriaLabel = baseLabel;
+  control.dataset.mixed = String(Boolean(mixed));
+  control.setAttribute('aria-label', mixed ? `${baseLabel}, mixed values` : baseLabel);
+  if (mixed) control.title = 'Mixed formatting';
+  else control.removeAttribute('title');
+
+  if (control.type === 'color') {
+    if (!mixed && /^#[0-9a-f]{6}$/i.test(String(value))) control.value = value;
+    return;
+  }
+  if (control.tagName === 'SELECT') {
+    let mixedOption = control.querySelector('[data-mixed-option]');
+    if (mixed) {
+      if (!mixedOption) {
+        mixedOption = document.createElement('option');
+        mixedOption.value = '';
+        mixedOption.textContent = 'Mixed';
+        mixedOption.disabled = true;
+        mixedOption.dataset.mixedOption = 'true';
+        control.prepend(mixedOption);
+      }
+      control.value = '';
+      return;
+    }
+    mixedOption?.remove();
+    control.querySelectorAll('[data-dynamic-value]').forEach(option => option.remove());
+    const nextValue = String(value ?? '');
+    let option = [...control.options].find(item => item.value === nextValue);
+    if (!option && nextValue) {
+      option = document.createElement('option');
+      option.value = nextValue;
+      option.textContent = nextValue;
+      option.dataset.dynamicValue = 'true';
+      control.append(option);
+    }
+    control.value = nextValue;
+    return;
+  }
+  control.value = mixed ? '' : String(value ?? '');
+  if (mixed) control.placeholder = 'Mixed';
+  else control.removeAttribute('placeholder');
+}
 function updateTextFormatToolbar() {
   const toolbar = $('#text-format-toolbar'); const editor = $('#text-editor-overlay');
   if (!state.textNodeId || editor.hidden) { toolbar.hidden = true; return; }
@@ -3143,23 +3457,25 @@ function updateTextFormatToolbar() {
   const family = $('#text-format-family'); const weight = $('#text-format-weight');
   const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration');
   for (const control of [size, lineHeight, color, family, weight, spacing, decoration]) control.disabled = !selected;
-  let firstRun = {};
-  if (selected) {
-    let cursor = 0;
-    firstRun = current.runs.find(run => {
-      const inRange = cursor + run.text.length > range.start && cursor < range.end;
-      cursor += run.text.length;
-      return inRange;
-    }) || {};
-  }
   const base = textBaseStyle(node);
-  family.value = String(effectiveTextRunValue(firstRun, 'fontFamily', node) || base.fontFamily);
-  weight.value = String(effectiveTextRunValue(firstRun, 'fontWeight', node) || base.fontWeight);
-  size.value = String(Math.max(1, Math.min(512, Math.round(effectiveTextRunValue(firstRun, 'fontSize', node) || base.fontSize))));
-  lineHeight.value = String(effectiveTextRunValue(firstRun, 'lineHeight', node) || base.lineHeight);
-  spacing.value = String(effectiveTextRunValue(firstRun, 'letterSpacing', node) ?? base.letterSpacing);
-  decoration.value = effectiveTextRunValue(firstRun, 'textDecoration', node) || base.textDecoration;
-  color.value = parseTextRunColor(effectiveTextRunValue(firstRun, 'color', node)) || '#1e1e1e';
+  const summarize = (property, normalize = value => value) => selected
+    ? summarizeTextRunRange(current.runs, range.start, range.end,
+      run => effectiveTextRunValue(run, property, node), normalize)
+    : { selected: false, mixed: false, value: null };
+  const familyState = summarize('fontFamily', value => String(value).trim());
+  const weightState = summarize('fontWeight', value => Number(value));
+  const sizeState = summarize('fontSize', value => Number(value));
+  const lineHeightState = summarize('lineHeight', value => Number(value));
+  const spacingState = summarize('letterSpacing', value => Number(value));
+  const decorationState = summarize('textDecoration');
+  const colorState = summarize('color', value => String(value).toLowerCase());
+  setTextFormatControlValue(family, familyState.selected ? familyState.value : base.fontFamily, familyState.mixed);
+  setTextFormatControlValue(weight, weightState.selected ? weightState.value : base.fontWeight, weightState.mixed);
+  setTextFormatControlValue(size, sizeState.selected ? Math.max(1, Math.min(512, Math.round(sizeState.value))) : base.fontSize, sizeState.mixed);
+  setTextFormatControlValue(lineHeight, lineHeightState.selected ? lineHeightState.value : base.lineHeight, lineHeightState.mixed);
+  setTextFormatControlValue(spacing, spacingState.selected ? spacingState.value : base.letterSpacing, spacingState.mixed);
+  setTextFormatControlValue(decoration, decorationState.selected ? decorationState.value : base.textDecoration, decorationState.mixed);
+  setTextFormatControlValue(color, parseTextRunColor(colorState.selected ? colorState.value : base.color) || '#1e1e1e', colorState.mixed);
   positionTextFormatToolbar();
 }
 function transformTextRunsInRange(runs, start, end, property, value) {
@@ -3376,16 +3692,19 @@ function initRichTextEditorEvents() {
       const value = Number(event.target.value);
       if (Number.isInteger(value) && value >= 1 && value <= 1000) applyTextFormat('fontWeight', value);
     } else if (event.target.id === 'text-format-spacing') {
+      if (!event.target.value.trim()) { updateTextFormatToolbar(); return; }
       const value = Number(event.target.value);
       if (Number.isFinite(value) && Math.abs(value) <= 10_000) applyTextFormat('letterSpacing', value);
       else updateTextFormatToolbar();
     } else if (event.target.id === 'text-format-decoration') {
       if (['none', 'underline', 'line-through'].includes(event.target.value)) applyTextFormat('textDecoration', event.target.value);
     } else if (event.target.id === 'text-format-size') {
+      if (!event.target.value.trim()) { updateTextFormatToolbar(); return; }
       const value = Number(event.target.value);
       if (Number.isFinite(value) && value > 0 && value <= 512) applyTextFormat('fontSize', value);
       else updateTextFormatToolbar();
     } else if (event.target.id === 'text-format-line-height') {
+      if (!event.target.value.trim()) { updateTextFormatToolbar(); return; }
       const value = Number(event.target.value);
       if (Number.isFinite(value) && value > 0 && value <= 100) applyTextFormat('lineHeight', value);
       else updateTextFormatToolbar();
@@ -3586,6 +3905,102 @@ function imageTransformTarget(node, target, fillId = '') {
   return node?.type === 'image' ? node : null;
 }
 
+function imageCropContext(node) {
+  if (node?.type !== 'image') return null;
+  const context = nodeTransformContext(node);
+  const asset = state.assets.get(node.assetId);
+  const sourceWidth = asset?.sourceWidth || node.sourceWidth;
+  const sourceHeight = asset?.sourceHeight || node.sourceHeight;
+  if (!context || !Number.isSafeInteger(sourceWidth) || !Number.isSafeInteger(sourceHeight)) return null;
+  const transforms = createImageTransforms(node.transforms || {});
+  const sourceGeometry = calculateImageCropDisplayBounds({
+    frameWidth: context.geometry.width,
+    frameHeight: context.geometry.height,
+    sourceWidth,
+    sourceHeight,
+    crop: null,
+    rotation: transforms.rotation,
+    fit: node.fit === 'contain' ? 'contain' : 'cover'
+  });
+  const virtualBounds = sourceGeometry.drawBounds;
+  return {
+    ...context, ...sourceGeometry,
+    sourceWidth, sourceHeight, rotation: transforms.rotation, crop: transforms.crop,
+    virtualBounds,
+    drawBounds: imageCropRectInBounds(transforms.crop, transforms.rotation, virtualBounds)
+  };
+}
+
+function imageCropRectInBounds(crop, rotation, bounds) {
+  const displayed = imageCropToDisplayRect(crop || { left: 0, top: 0, right: 1, bottom: 1 }, rotation);
+  return {
+    left: bounds.left + displayed.left * bounds.width,
+    top: bounds.top + displayed.top * bounds.height,
+    width: (displayed.right - displayed.left) * bounds.width,
+    height: (displayed.bottom - displayed.top) * bounds.height
+  };
+}
+
+function syncImageCropOverlay() {
+  if (!state.imageCropMode || state.selectedIds.length !== 1) {
+    state.imageCropOverlay = null;
+    state.imageCropDraftSelection = null;
+    return null;
+  }
+  const node = findNode(state.document, state.selectedIds[0])?.node;
+  if (!node || node.type !== 'image' || node.locked) {
+    state.imageCropMode = false;
+    state.imageCropOverlay = null;
+    state.imageCropDraftSelection = null;
+    return null;
+  }
+  const context = imageCropContext(node);
+  const interaction = state.interaction?.kind === 'image-crop' && state.interaction.node.id === node.id
+    ? state.interaction : null;
+  const virtualBounds = interaction?.bounds || context?.virtualBounds;
+  const crop = interaction?.crop || context?.crop || null;
+  state.imageCropOverlay = context ? {
+    nodeId: node.id,
+    drawBounds: imageCropRectInBounds(crop, interaction?.rotation ?? context.rotation, virtualBounds),
+    virtualBounds,
+    crop,
+    rotation: interaction?.rotation ?? context.rotation
+  } : null;
+  return context;
+}
+
+function imageCropHandlePoints(bounds) {
+  const left = bounds.left; const top = bounds.top;
+  const right = left + bounds.width; const bottom = top + bounds.height;
+  const middleX = (left + right) / 2; const middleY = (top + bottom) / 2;
+  return {
+    nw: { x: left, y: top }, n: { x: middleX, y: top }, ne: { x: right, y: top },
+    e: { x: right, y: middleY }, se: { x: right, y: bottom }, s: { x: middleX, y: bottom },
+    sw: { x: left, y: bottom }, w: { x: left, y: middleY }
+  };
+}
+
+function imageCropHandleAt(event, context) {
+  if (!context) return null;
+  const handles = Object.entries(imageCropHandlePoints(context.drawBounds)).map(([name, localPoint]) => ({
+    kind: 'image-crop-handle', name,
+    localPoint,
+    point: worldToScreen(nodeLocalToPage(context.geometry, localPoint, context.ancestors), canvas, state)
+  }));
+  return nearestScreenHandle({ x: event.clientX, y: event.clientY }, handles, event.pointerType === 'touch' ? 24 : 12);
+}
+
+function imageCropVisibleBounds(context) {
+  return { ...context.virtualBounds };
+}
+
+function clampImageCropPoint(point, bounds) {
+  return {
+    x: Math.max(bounds.left, Math.min(bounds.left + bounds.width, point.x)),
+    y: Math.max(bounds.top, Math.min(bounds.top + bounds.height, point.y))
+  };
+}
+
 function updateImageTransformInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
   const targetName = input.dataset.imageTransformTarget;
@@ -3623,6 +4038,7 @@ function updateImageTransformInput(input) {
   } else {
     recordNodeComponentOverrides(node, ['transforms']);
     schedulePreview(node);
+    syncImageCropOverlay();
   }
   renderer.invalidate();
 }
@@ -3648,15 +4064,23 @@ function applyImageTransformAction(node, targetName, action, direction, fillId =
   } else {
     recordNodeComponentOverrides(node, ['transforms']);
     schedulePreview(node, true);
+    syncImageCropOverlay();
   }
   renderInspector(); queueSave(); renderer.invalidate();
 }
 
 function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
-  if (!input || !selectedNodes().length) return;
+  const selected = selectedNodes();
+  if (!input || !selected.length) return;
+  if (selected.length > 1 && selected.some(node => node.type === 'image' && isActiveImageRecipeTarget(node.id))) return;
   const prop = input.dataset.prop;
   if (prop.startsWith('selection.')) { updateSelectionInspectorInput(input); return; }
+  if (['width', 'height'].includes(prop) && selectedNodes().some(node => selectionDimensionIsHugged([{ node }], prop))) {
+    const node = selectedNodes()[0];
+    input.value = String(resolvedGeometry(node)[prop]);
+    return;
+  }
   if (prop === 'fontFamily' && !input.value.trim()) {
     if (event.type === 'change') input.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
     return;
@@ -4204,18 +4628,103 @@ function syncBulkBarTicker() {
   bulkBarTicker = null;
 }
 
+function scheduleBulkConcurrency(bulk, immediate = false) {
+  if (bulkConcurrencyTimer) window.clearTimeout(bulkConcurrencyTimer);
+  bulkConcurrencyTimer = 0;
+  const apply = () => {
+    bulkConcurrencyTimer = 0;
+    if (state.bulk !== bulk || bulk.done || bulk.cancelled) return;
+    imageEngine.setConcurrency(bulk.concurrency);
+    renderBulkBar();
+  };
+  if (immediate) apply();
+  else bulkConcurrencyTimer = window.setTimeout(apply, 100);
+}
+
+async function recipeRecoveryForDocument(documentId) {
+  try {
+    const recovery = await loadRecipeBatchRecovery(documentId);
+    if (recovery?.status === 'complete') {
+      await deleteRecipeBatchRecovery(documentId).catch(() => {});
+      return null;
+    }
+    return recovery;
+  } catch (error) {
+    console.warn('Could not check for an interrupted image recipe', error);
+    showToast('Could not check this design for an interrupted image recipe. Your saved image edits are unchanged.');
+    return null;
+  }
+}
+
+function renderRecipeRecoveryPrompt(recovery = state.pendingRecipeRecovery) {
+  const dialog = $('#recipe-recovery-dialog');
+  if (!recovery) {
+    if (dialog.open) dialog.close();
+    return;
+  }
+  $('#recipe-recovery-recipe').textContent = recovery.recipe.name || 'Image recipe';
+  $('#recipe-recovery-copy').textContent = `${recovery.targetIds.length} image layer${recovery.targetIds.length === 1 ? '' : 's'} were in this batch. You can safely resume the saved recipe, or keep the image edits that were already saved.`;
+  if (!dialog.open) {
+    $('#recipe-recovery-status').textContent = '';
+    $('#recipe-recovery-keep').disabled = false; $('#recipe-recovery-resume').disabled = false;
+    setDocumentEditingBlocked(true);
+    dialog.showModal();
+  }
+}
+
+async function keepInterruptedRecipeChanges() {
+  const recovery = state.pendingRecipeRecovery;
+  if (!recovery) return false;
+  const keepButton = $('#recipe-recovery-keep'); const resumeButton = $('#recipe-recovery-resume');
+  keepButton.disabled = true; resumeButton.disabled = true;
+  $('#recipe-recovery-status').textContent = 'Keeping the saved image edits…';
+  try {
+    await deleteRecipeBatchRecovery(recovery.documentId);
+    state.pendingRecipeRecovery = null;
+    $('#recipe-recovery-dialog').close();
+    setDocumentEditingBlocked(false);
+    return true;
+  } catch (error) {
+    $('#recipe-recovery-status').textContent = error.message || 'Could not clear the recovery record. Your saved edits are unchanged; try again.';
+    keepButton.disabled = false; resumeButton.disabled = false;
+    return false;
+  }
+}
+
+function resumeInterruptedRecipe() {
+  const recovery = state.pendingRecipeRecovery;
+  if (!recovery) return false;
+  const started = startRecipe(structuredClone(recovery.recipe), recovery.targetIds, {
+    concurrency: Math.min(2, CPU_LIMIT), pageId: recovery.pageId, recoveryOnFailure: recovery
+  });
+  if (!started) return false;
+  state.pendingRecipeRecovery = null;
+  $('#recipe-recovery-dialog').close();
+  setDocumentEditingBlocked(false);
+  return true;
+}
+
 function renderBulkBar() {
   const bar = $('#bulk-bar'); const bulk = state.bulk;
   bar.hidden = !bulk;
   if (!bulk) { syncBulkBarTicker(); return; }
   const engineMetrics = imageEngine.metrics();
+  const batchMetrics = imageEngine.queueGroupMetrics(bulk.queueGroup);
   const total = bulk.targets.length;
   const skipped = bulk.skipped || 0;
   const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0) - skipped);
   const lockedSkipped = (bulk.excludedLocked || 0) + (bulk.skippedLocked || 0);
-  const dismissible = canDismissImageRecipeBatch(bulk);
-  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
-  $('#bulk-subtitle').textContent = bulk.cancelled
+  const drained = canDismissImageRecipeBatch(bulk);
+  const dismissible = drained && !bulk.savePending && !bulk.journalPending;
+  const normalTitle = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
+  $('#bulk-title').textContent = bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
+  $('#bulk-subtitle').textContent = bulk.saveError
+    ? bulk.recoveryError ? 'The image edits are saved, but the recovery marker could not be cleared. Retry to finish safely.' : drained ? 'The edits remain in this tab. Retry the local save before closing this bar.' : 'A local save failed. The batch will drain before retry is offered.'
+    : bulk.journalPending && !bulk.done
+      ? 'Saving a recovery point before any image is changed…'
+    : bulk.savePending && bulk.done
+      ? 'Writing the completed recipe state to this device…'
+      : bulk.cancelled
     ? `${updated} updated · ${bulk.targets.length - bulk.completed} left untouched${bulk.failed ? ` · ${bulk.failed} failed` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}${skipped ? ` · ${skipped} removed or unavailable skipped` : ''}`
     : bulk.done
       ? `${updated} updated in place${bulk.failed ? ` · ${bulk.failed} failed` : ''}${bulk.superseded ? ` · ${bulk.superseded} newer edits preserved` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}${skipped ? ` · ${skipped} removed or unavailable skipped` : ''}`
@@ -4228,17 +4737,20 @@ function renderBulkBar() {
   const timing = imageRecipeBatchTiming(bulk);
   $('#bulk-rate').title = `Average batch throughput. Paused time and paused completions are excluded.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
-  $('#bulk-speed-value').textContent = `${bulk.concurrency} max worker${bulk.concurrency === 1 ? '' : 's'} · ${engineMetrics.active} active`;
-  $('#bulk-speed-value').title = `Estimated WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+  $('#bulk-speed-value').textContent = `${bulk.concurrency} max worker${bulk.concurrency === 1 ? '' : 's'} · ${engineMetrics.active} active · ${engineMetrics.workersReady} ready`;
+  $('#bulk-speed-value').title = `Engine limit: ${engineMetrics.concurrency} worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued in this batch; ${engineMetrics.active} total active jobs. Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
   $('#bulk-pause').textContent = bulk.paused ? 'Resume' : 'Pause';
   $('#bulk-cancel').hidden = bulk.done || bulk.cancelled;
-  $('#bulk-speed').disabled = bulk.done || bulk.cancelled;
+  $('#bulk-cancel').disabled = Boolean(bulk.journalPending);
+  $('#bulk-speed').disabled = bulk.done || bulk.cancelled || Boolean(bulk.journalPending);
   $('#bulk-retry').hidden = !dismissible || !bulk.failedTargets?.length;
   $('#bulk-retry').textContent = `Retry failed${bulk.failedTargets?.length ? ` (${bulk.failedTargets.length})` : ''}`;
-  $('#bulk-done').hidden = !dismissible;
+  $('#bulk-done').hidden = !drained || bulk.savePending || bulk.journalPending;
+  $('#bulk-done').disabled = false;
+  $('#bulk-done').textContent = bulk.recoveryError ? 'Retry cleanup' : bulk.saveError ? 'Retry save' : 'Done';
   syncBulkBarTicker();
 }
 
@@ -4304,7 +4816,7 @@ function isEditableImageRecipeTarget(entry) {
 
 function scheduleBulk() {
   const bulk = state.bulk;
-  if (!bulk || bulk.paused || bulk.cancelled || bulk.done) return;
+  if (!bulk || bulk.journalPending || bulk.paused || bulk.cancelled || bulk.done) return;
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
     const entry = findNode(state.document, id, bulk.pageId);
@@ -4329,6 +4841,9 @@ function scheduleBulk() {
       bulk.restorePreviews.add(id);
     }
     applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId);
+    // Persist in-place recipe state as soon as it is admitted. A slow first
+    // render must not leave already-edited targets only in volatile memory.
+    queueSave({ refreshLayerTree: false });
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     updateSelectedImageStatus(id);
@@ -4393,19 +4908,46 @@ function scheduleBulk() {
       queueSave({ refreshLayerTree: false }); renderer.invalidate();
       if (!bulk.paused && !bulk.cancelled) scheduleBulk();
       completeImageRecipeBatchIfDrained(bulk);
-      if (bulk.done) { bulk.paused = false; imageEngine.resumeQueueGroup(bulk.queueGroup); }
+      if (bulk.done) {
+        bulk.paused = false;
+        imageEngine.resumeQueueGroup(bulk.queueGroup);
+        restoreImageRecipeBatchConcurrency(bulk);
+      }
       renderBulkBar();
     });
   }
   completeImageRecipeBatchIfDrained(bulk);
-  if (bulk.done) { bulk.paused = false; imageEngine.resumeQueueGroup(bulk.queueGroup); }
+  if (bulk.done) {
+    bulk.paused = false;
+    imageEngine.resumeQueueGroup(bulk.queueGroup);
+    restoreImageRecipeBatchConcurrency(bulk);
+  }
   renderBulkBar();
 }
 
-function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pageId = state.document.activePageId } = {}) {
+function restoreImageRecipeBatchConcurrency(bulk) {
+  if (!bulk || bulk.concurrencyRestored || !Number.isSafeInteger(bulk.previousEngineConcurrency)) return false;
+  bulk.concurrencyRestored = true;
+  if (bulkConcurrencyTimer) window.clearTimeout(bulkConcurrencyTimer);
+  bulkConcurrencyTimer = 0;
+  imageEngine.releaseQueueGroup(bulk.queueGroup);
+  imageEngine.setConcurrency(bulk.previousEngineConcurrency);
+  renderInspector();
+  return true;
+}
+
+function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pageId = state.document.activePageId, replaceCompletedBatch = false, recoveryOnFailure = null } = {}) {
+  if (state.interaction || state.imageCropMode) {
+    showToast('Finish the current canvas edit before starting an image recipe batch.');
+    return false;
+  }
   if (isImageRecipeBatchActive(state.bulk)) {
-    showToast('A recipe batch is active. Finish or stop it before starting another.');
+    showToast('The current recipe batch is active and will keep processing. Finish or stop it before starting another.');
     renderBulkBar();
+    return false;
+  }
+  if (state.bulk && (!replaceCompletedBatch || !canDismissImageRecipeBatch(state.bulk) || state.bulk.savePending || state.bulk.journalPending)) {
+    showToast('Finish the current recipe result before starting another image recipe batch.');
     return false;
   }
   const entries = [...new Set(targets)].map(id => ({ id, entry: findNode(state.document, id, pageId) }))
@@ -4415,14 +4957,40 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pa
   if (!unique.length) { showToast('Select one or more unlocked image layers first.'); return false; }
   if (lockedCount) showToast(`${lockedCount} locked image${lockedCount === 1 ? '' : 's'} skipped.`);
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
+  const replacedBulk = replaceCompletedBatch ? state.bulk : null;
   state.bulk = {
-    recipe, pageId, targets: unique, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
-    paused: false, cancelled: false, done: false,
-    previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: []
+    recipe: structuredClone(recipe), pageId, targets: unique, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
+    previousEngineConcurrency: imageEngine.concurrency, concurrencyRestored: false,
+    paused: false, cancelled: false, done: false, journalPending: true, savePending: false, saveError: null,
+    previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: [],
+    recoveryOnFailure: recoveryOnFailure ? structuredClone(recoveryOnFailure) : null
   };
-  startImageRecipeBatchClock(state.bulk);
-  imageEngine.setConcurrency(concurrency);
-  renderBulkBar(); scheduleBulk();
+  const bulk = state.bulk;
+  startImageRecipeBatchClock(bulk);
+  renderInspector();
+  renderBulkBar();
+  void saveRecipeBatchRecovery({
+    documentId: state.document.id,
+    recipe: bulk.recipe,
+    pageId: bulk.pageId,
+    targetIds: bulk.targets,
+    status: 'running'
+  }).then(() => {
+    if (state.bulk !== bulk) return;
+    bulk.journalPending = false;
+    imageEngine.setConcurrency(bulk.concurrency);
+    renderBulkBar(); scheduleBulk();
+  }).catch(error => {
+    if (state.bulk !== bulk) return;
+    state.bulk = replacedBulk;
+    restoreImageRecipeBatchConcurrency(bulk);
+    renderBulkBar(); renderInspector();
+    if (bulk.recoveryOnFailure && state.document.id === bulk.recoveryOnFailure.documentId) {
+      state.pendingRecipeRecovery = bulk.recoveryOnFailure;
+      renderRecipeRecoveryPrompt();
+    }
+    showToast(`The recipe was not started because its recovery point could not be saved: ${error.message || 'Local storage failed.'}`);
+  });
   return true;
 }
 
@@ -4435,6 +5003,7 @@ function cancelBulkRecipe() {
     imageEngine.cancelQueuedByKey(`preview:${imagePreviewKey(id)}`);
   }
   imageEngine.resumeQueueGroup(bulk.queueGroup);
+  if (bulk.done) restoreImageRecipeBatchConcurrency(bulk);
   renderBulkBar();
   return true;
 }
@@ -4442,7 +5011,7 @@ function cancelBulkRecipe() {
 function retryFailedRecipeTargets() {
   const previous = state.bulk;
   if (!canDismissImageRecipeBatch(previous) || !previous.failedTargets?.length) return false;
-  return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency, pageId: previous.pageId });
+  return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency, pageId: previous.pageId, replaceCompletedBatch: true });
 }
 
 function saveRecipeFor(nodeId) {
@@ -5354,6 +5923,7 @@ function refreshHistoryImagePreviews(previousDocument) {
   }
 }
 function undo() {
+  if (state.interaction) { showToast('Finish or cancel the current canvas gesture before undoing.'); return; }
   if (isImageRecipeBatchActive(state.bulk)) { showToast('Pause or stop the active image recipe, then wait for its workers to finish before undoing.'); return; }
   const previousDocument = state.document;
   const next = history.undo(previousDocument);
@@ -5366,6 +5936,7 @@ function undo() {
   state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function redo() {
+  if (state.interaction) { showToast('Finish or cancel the current canvas gesture before redoing.'); return; }
   if (isImageRecipeBatchActive(state.bulk)) { showToast('Pause or stop the active image recipe, then wait for its workers to finish before redoing.'); return; }
   const previousDocument = state.document;
   const next = history.redo(previousDocument);
@@ -6014,6 +6585,12 @@ function exportDesignTokens() {
 }
 async function persistCurrentDocumentNow() {
   if (!state.ready) return true;
+  const saveOwner = state.bulk || null;
+  if (saveOwner) {
+    saveOwner.savePending = true;
+    saveOwner.saveError = null;
+    renderBulkBar();
+  }
   clearTimeout(state.saveTimer);
   state.saveTimer = null;
   setSaveState('saving', 'Saving locally…');
@@ -6026,6 +6603,11 @@ async function persistCurrentDocumentNow() {
         clearTimeout(state.saveTimer);
         state.saveTimer = null;
         setSaveState('saved', versionError ? 'Saved · history unavailable' : 'Saved locally');
+        if (saveOwner && state.bulk === saveOwner) {
+          saveOwner.savePending = false;
+          saveOwner.saveError = null;
+          renderBulkBar();
+        }
         return true;
       }
       clearTimeout(state.saveTimer);
@@ -6034,6 +6616,11 @@ async function persistCurrentDocumentNow() {
   } catch (error) {
     setSaveState('error', 'Could not save');
     showToast(error.message || 'Could not save this design before switching files.');
+    if (saveOwner && state.bulk === saveOwner) {
+      saveOwner.savePending = false;
+      saveOwner.saveError = error.message || 'The local save failed.';
+      renderBulkBar();
+    }
     return false;
   }
 }
@@ -6070,6 +6657,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
   try {
     if (saveCurrent && !(await persistCurrentDocumentNow())) return false;
     if (beforeSwitch) await beforeSwitch(nextDocument);
+    const nextRecipeRecovery = await recipeRecoveryForDocument(nextDocument.id);
     clearTimeout(state.pendingLocalShareTimer);
     state.pendingLocalShareTimer = 0;
     state.pendingLocalShare = null;
@@ -6077,18 +6665,25 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.clipboard = [];
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
+    state.componentSetSelectedVariants.clear();
     state.versionSaveLabel = versionLabel;
+    state.prototypeEditingInteractionId = null;
+    state.prototypeDestinationId = null;
+    state.prototypeSourceId = null;
     state.prototypeConditionVariableId = null;
     state.prototypeConditionOperator = 'equals';
     state.prototypeConditionValue = null;
+    state.imageCropMode = false; state.imageCropOverlay = null; state.imageCropDraftSelection = null;
     state.selectedIds = []; state.selectedVectorPoint = null; state.smartGuides = []; state.pendingCommentAnchor = null; state.activeCommentId = null;
     state.draftNode = null; state.penDraft = null; state.penHover = null; state.pencilDraft = null; state.marquee = null; state.interaction = null;
     state.pointerMap.clear(); clearPrototypeConnectPrompt(); state.textNodeId = null; state.textSelection = null;
-    state.bulk = null; state.inspectorTab = 'design';
+    state.bulk = null; state.pendingRecipeRecovery = nextRecipeRecovery; state.inspectorTab = 'design';
+    if (nextRecipeRecovery) setDocumentEditingBlocked(true);
     state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
     history.undoStack.length = 0; history.redoStack.length = 0;
     renderBulkBar(); renderUI();
     await restoreImageAssets(generation);
+    renderRecipeRecoveryPrompt();
     showToast(message);
     return true;
   } catch (error) {
@@ -6096,7 +6691,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     return false;
   } finally {
     state.documentTransitioning = false;
-    setDocumentEditingBlocked(false);
+    setDocumentEditingBlocked(Boolean(state.pendingRecipeRecovery));
     if (state.document === nextDocument) queueSave();
   }
 }
@@ -6785,6 +7380,18 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'toggle-image-crop-mode') {
+    if (node?.type !== 'image' || node.locked || !imageCropContext(node)) return;
+    if (state.imageCropMode && state.interaction?.kind === 'image-crop') {
+      cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    }
+    state.imageCropMode = !state.imageCropMode;
+    state.imageCropDraftSelection = null;
+    syncImageCropOverlay();
+    renderInspector();
+    renderer.invalidate();
+    return;
+  }
   if (['add-stroke', 'remove-stroke', 'move-stroke'].includes(action)) {
     if (!node || node.locked) return;
     const strokes = ensureStrokeStack(node);
@@ -6976,8 +7583,75 @@ function applyInspectorAction(action, details = {}) {
     checkpoint('Set prototype starting point');
     setPrototypeStartPoint(state.document, frame.id);
     renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
+  } else if (action === 'edit-prototype-interaction') {
+    const interaction = node?.interactions?.find(item => item.id === details.interactionId);
+    if (!node || !interaction) { showToast('This prototype interaction no longer exists.'); return; }
+    state.prototypeEditingInteractionId = interaction.id;
+    state.prototypeDestinationId = interaction.destinationId || null;
+    state.prototypeAction = interaction.action;
+    state.prototypeTrigger = interaction.trigger;
+    state.prototypeTransition = interaction.transition || 'instant';
+    state.prototypeEasing = interaction.easing || 'ease-in-out';
+    state.prototypeDuration = Number.isFinite(interaction.duration) ? interaction.duration : 300;
+    state.prototypeDelay = Number.isFinite(interaction.delay) ? interaction.delay : 1000;
+    state.prototypeUrl = interaction.url || 'https://';
+    state.prototypeVariableCollectionId = interaction.collectionId || null;
+    state.prototypeVariableModeId = interaction.modeId || null;
+    state.prototypeVariantTargetId = interaction.targetVariantId || null;
+    state.prototypeConditionVariableId = interaction.condition?.variableId || null;
+    state.prototypeConditionOperator = interaction.condition?.operator || 'equals';
+    state.prototypeConditionValue = interaction.condition ? String(interaction.condition.value) : null;
+    state.prototypeOverlayPosition = interaction.overlayPosition || 'center';
+    state.prototypeOverlayOutsideClick = interaction.overlayOutsideClick !== false;
+    state.prototypeOverlayBackground = interaction.overlayBackground !== false;
+    state.prototypeOverlayBackgroundColor = interaction.overlayBackgroundColor || '#000000';
+    state.prototypeOverlayBackgroundOpacity = Number.isFinite(interaction.overlayBackgroundOpacity) ? interaction.overlayBackgroundOpacity : 0.32;
+    state.prototypeSourceId = null;
+    renderInspector();
+  } else if (action === 'cancel-prototype-interaction-edit') {
+    state.prototypeEditingInteractionId = null;
+    state.prototypeDestinationId = null;
+    renderInspector();
   } else if (action === 'prototype-connect') {
     if (!node) { showToast('Select a layer to add an interaction.'); return; }
+    if (state.prototypeEditingInteractionId) {
+      try {
+        const target = state.prototypeAction === 'navigate' || state.prototypeAction === 'open-overlay' || state.prototypeAction === 'swap-overlay'
+          ? listPrototypeFrames(state.document).find(item => item.frame.id === ($('#prototype-destination')?.value || state.prototypeDestinationId))
+          : null;
+        const needsTarget = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
+        if (needsTarget && !target) { showToast('Choose a destination frame for this interaction.'); return; }
+        const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
+        const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
+        const condition = buildPrototypeInteractionCondition();
+        const updateOptions = {
+          action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
+          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
+          condition, url: $('#prototype-url')?.value ?? state.prototypeUrl,
+          collectionId: selectedCollection?.id, modeId: selectedMode?.id,
+          targetVariantId: $('#prototype-variant-target')?.value || state.prototypeVariantTargetId,
+          overlayPosition: state.prototypeOverlayPosition,
+          overlayOutsideClick: state.prototypeOverlayOutsideClick,
+          overlayBackground: state.prototypeOverlayBackground,
+          overlayBackgroundColor: state.prototypeOverlayBackgroundColor,
+          overlayBackgroundOpacity: state.prototypeOverlayBackgroundOpacity
+        };
+        // Validate the whole replacement on a private copy before recording
+        // history. Invalid settings must not create a no-op undo step or clear
+        // the redo stack.
+        const updatedDocument = structuredClone(state.document);
+        updatePrototypeInteraction(updatedDocument, node.id, state.prototypeEditingInteractionId, target?.frame.id || null, updateOptions, state.document.activePageId);
+        checkpoint('Edit prototype interaction');
+        state.document = updatedDocument;
+        const updatedNode = findNode(state.document, node.id)?.node;
+        if (updatedNode) recordNodeComponentOverrides(updatedNode, ['interactions']);
+        state.prototypeEditingInteractionId = null;
+        state.prototypeDestinationId = null;
+        renderInspector(); queueSave(); renderer.invalidate();
+        showToast('Prototype interaction updated.');
+      } catch (error) { showToast(error.message); }
+      return;
+    }
     if (['close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant'].includes(state.prototypeAction)) {
       try {
         const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
@@ -7012,6 +7686,10 @@ function applyInspectorAction(action, details = {}) {
     if (!node || !interactionId) return;
     checkpoint('Remove prototype interaction');
     removePrototypeInteraction(state.document, node.id, interactionId);
+    if (state.prototypeEditingInteractionId === interactionId) {
+      state.prototypeEditingInteractionId = null;
+      state.prototypeDestinationId = null;
+    }
     recordNodeComponentOverrides(node, ['interactions']);
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
@@ -7134,8 +7812,8 @@ function applyInspectorAction(action, details = {}) {
 function updateImageEngineState(metrics) {
   const output = $('#bulk-speed-value');
   if (output && state.bulk) {
-    output.textContent = `${state.bulk.concurrency} max worker${state.bulk.concurrency === 1 ? '' : 's'} · ${metrics.active} active`;
-    output.title = `Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+    output.textContent = `${state.bulk.concurrency} max worker${state.bulk.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready · ${metrics.active} active`;
+    output.title = `Engine limit: ${metrics.concurrency} worker${metrics.concurrency === 1 ? '' : 's'} · ${metrics.workersReady} ready. Estimated WASM working set: ${Math.round(metrics.activeRenderBytes / 1048576)} of ${Math.round(metrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   }
 }
 
@@ -7189,19 +7867,28 @@ function closeMobilePanels({ restoreFocus = true } = {}) {
 
 function initEvents() {
   for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
+  document.addEventListener('pointerdown', event => {
+    if (!state.interaction || canvas.contains(event.target)) return;
+    // A canvas gesture owns the document until it ends. If the user starts a
+    // second action in a panel or toolbar, cancel the gesture before that UI
+    // can mutate the document behind its rollback snapshot.
+    cancelCanvasInteraction({ pointerId: state.interaction.pointerId, preserveUI: true });
+  }, true);
   $$('.tool-button').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.tool === 'image') chooseImageFiles(); else setTool(button.dataset.tool);
   }));
   canvas.addEventListener('pointerdown', onCanvasPointerDown);
   canvas.addEventListener('pointermove', onCanvasPointerMove);
   canvas.addEventListener('pointerup', onCanvasPointerUp);
-  canvas.addEventListener('pointercancel', onCanvasPointerUp);
+  canvas.addEventListener('pointercancel', cancelCanvasInteraction);
   canvas.addEventListener('lostpointercapture', event => {
-    if (state.pencilDraft?.pointerId === event.pointerId) cancelPencilStroke();
+    if (state.interaction && (state.pointerMap.has(event.pointerId) || state.interaction.kind === 'pinch')) cancelCanvasInteraction(event);
   });
   canvas.addEventListener('dblclick', event => {
     if (state.tool !== 'select') return;
     const world = screenToWorld(event, canvas, state);
+    const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document);
+    if (hit?.type === 'text') { editTextNode(hit.id); event.preventDefault(); return; }
     if (insertPathPointAtWorld(world)) event.preventDefault();
   });
   canvas.addEventListener('contextmenu', event => {
@@ -7478,6 +8165,7 @@ function initEvents() {
     }
     if (event.target.id === 'prototype-variable-mode') state.prototypeVariableModeId = event.target.value;
     if (event.target.id === 'prototype-variant-target') state.prototypeVariantTargetId = event.target.value;
+    if (event.target.id === 'prototype-destination') state.prototypeDestinationId = event.target.value || null;
     if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
@@ -7587,7 +8275,7 @@ function initEvents() {
       .catch(error => showToast(error.message || 'Could not place this local component.'));
   });
   $('#components-list').addEventListener('click', event => {
-    const action = event.target.closest('[data-action="add-component-variant-axis"], [data-action="remove-component-variant-axis"]');
+    const action = event.target.closest('[data-action="add-component-variant-axis"], [data-action="remove-component-variant-axis"], [data-action="add-component-variant-from-master"], [data-action="remove-component-variant-from-set"]');
     if (action) {
       const setId = action.dataset.setId;
       if (action.dataset.action === 'add-component-variant-axis') {
@@ -7595,6 +8283,30 @@ function initEvents() {
         const name = card?.querySelector(`[data-component-set-new-axis="${setId}"]`)?.value;
         const value = card?.querySelector(`[data-component-set-new-value="${setId}"]`)?.value;
         editComponentSet('Add component variant axis', document => addComponentVariantAxis(document, setId, name, value), 'Variant axis added to every variant.');
+      } else if (action.dataset.action === 'add-component-variant-from-master') {
+        const card = action.closest('.component-set-card');
+        const sourceComponentId = card?.querySelector(`[data-component-set-placement="${setId}"]`)?.value;
+        const values = Object.fromEntries([...(card?.querySelectorAll(`[data-component-set-new-variant-value="${setId}"]`) || [])]
+          .filter(input => input.value.trim())
+          .map(input => [input.dataset.axisName, input.value]));
+        let added = null;
+        const committed = editComponentSet('Add component variant', document => {
+          added = addComponentVariantFromMaster(document, setId, sourceComponentId, values);
+        }, 'Variant added from the selected master.');
+        if (committed && added) {
+          state.componentSetSelectedVariants.set(setId, added.id);
+          renderAssetsTab();
+        }
+      } else if (action.dataset.action === 'remove-component-variant-from-set') {
+        const componentId = action.dataset.componentId;
+        const committed = editComponentSet('Remove component variant from set', document => removeComponentVariantFromSet(document, setId, componentId), 'Variant removed from the set; its master and linked instances were kept.');
+        if (committed) {
+          const set = state.document.componentSets?.find(item => item.id === setId);
+          if (set && !set.componentIds.includes(state.componentSetSelectedVariants.get(setId))) {
+            state.componentSetSelectedVariants.set(setId, set.componentIds[0]);
+          }
+          renderAssetsTab();
+        }
       } else {
         const axisName = action.dataset.axisName;
         editComponentSet(`Remove ${axisName} variant axis`, document => removeComponentVariantAxis(document, setId, axisName), `Variant axis “${axisName}” removed.`);
@@ -7741,9 +8453,13 @@ function initEvents() {
   $('#variable-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#variable-dialog').returnValue = 'save'; });
   $('#bulk-speed').max = String(CPU_LIMIT);
   $('#bulk-speed').addEventListener('input', event => {
-    if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
+    if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled || state.bulk.journalPending) return;
     state.bulk.concurrency = Math.max(1, Math.min(CPU_LIMIT, Math.trunc(Number(event.currentTarget.value)) || 1));
-    imageEngine.setConcurrency(state.bulk.concurrency); renderBulkBar(); scheduleBulk();
+    scheduleBulkConcurrency(state.bulk); renderBulkBar(); scheduleBulk();
+  });
+  $('#bulk-speed').addEventListener('change', () => {
+    if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled || state.bulk.journalPending) return;
+    scheduleBulkConcurrency(state.bulk, true);
   });
   $('#bulk-pause').addEventListener('click', () => {
     if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
@@ -7759,7 +8475,40 @@ function initEvents() {
   });
   $('#bulk-cancel').addEventListener('click', cancelBulkRecipe);
   $('#bulk-retry').addEventListener('click', retryFailedRecipeTargets);
-  $('#bulk-done').addEventListener('click', () => { if (!canDismissImageRecipeBatch(state.bulk)) return; state.bulk = null; renderBulkBar(); });
+  $('#bulk-done').addEventListener('click', async () => {
+    const bulk = state.bulk;
+    if (!bulk) return;
+    if (!canDismissImageRecipeBatch(bulk) || bulk.savePending || bulk.journalPending) return;
+    if (bulk.saveError && !bulk.recoveryError) {
+      if (await persistCurrentDocumentNow() && state.bulk === bulk) renderBulkBar();
+      return;
+    }
+    bulk.journalPending = true;
+    bulk.recoveryError = false;
+    renderBulkBar();
+    if (!(await persistCurrentDocumentNow()) || state.bulk !== bulk) {
+      bulk.journalPending = false;
+      renderBulkBar();
+      return;
+    }
+    try {
+      await deleteRecipeBatchRecovery(state.document.id);
+      if (state.bulk !== bulk) return;
+      state.bulk = null;
+      renderBulkBar(); renderInspector();
+    } catch (error) {
+      if (state.bulk !== bulk) return;
+      bulk.journalPending = false;
+      bulk.recoveryError = true;
+      bulk.saveError = error.message || 'Could not clear the recipe recovery record.';
+      showToast('The edits are saved, but the recipe recovery record could not be cleared. Retry cleanup before dismissing the batch.');
+      renderBulkBar();
+    }
+  });
+  const recoveryDialog = $('#recipe-recovery-dialog');
+  recoveryDialog.addEventListener('cancel', event => event.preventDefault());
+  $('#recipe-recovery-keep').addEventListener('click', () => { void keepInterruptedRecipeChanges(); });
+  $('#recipe-recovery-resume').addEventListener('click', resumeInterruptedRecipe);
   $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
   $('#outline-mode').addEventListener('click', toggleOutlineMode);
   $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
@@ -7799,6 +8548,22 @@ function onKeyDown(event) {
     return;
   }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && state.imageCropMode && !editing && !document.querySelector('dialog[open]')) {
+    if (state.interaction?.kind === 'image-crop') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageCropMode = false;
+    state.imageCropDraftSelection = null;
+    syncImageCropOverlay();
+    renderInspector();
+    renderer.invalidate();
+    canvas.focus({ preventScroll: true });
+    event.preventDefault();
+    return;
+  }
+  if (event.key === 'Escape' && state.interaction && !editing && !document.querySelector('dialog[open]')) {
+    cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && state.imageExportAbortController && !editing && !document.querySelector('dialog[open]')) {
     state.imageExportAbortController.abort();
     showToast('Image export stopped. Any active render will finish without downloading its result.');
@@ -7827,6 +8592,7 @@ function onKeyDown(event) {
     return;
   }
   if (event.code === 'Space' && !editing) { state.spaceDown = true; event.preventDefault(); }
+  if (state.interaction) { event.preventDefault(); return; }
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key.toLowerCase();
@@ -7850,21 +8616,26 @@ function onKeyDown(event) {
     return;
   }
   if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
-  if (key === 'escape') { closeMenu(); if (isImageRecipeBatchActive(state.bulk)) cancelBulkRecipe(); setSelection([]); return; }
+  if (key === 'escape') { closeMenu(); setSelection([]); return; }
   if (event.shiftKey && !mod && key === 's' && !event.altKey) { event.preventDefault(); setTool('section'); return; }
   if (event.shiftKey && mod && key === 'k' && !event.altKey) { event.preventDefault(); chooseImageFiles(); return; }
   const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;
   if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key) && selectedNodes().length) {
-    checkpoint('Nudge layers');
+    const entries = orderedRootSelectedEntries();
+    const blocked = selectionMoveBlockReason(entries.map(item => ({ node: item.node, ancestors: item.parents })));
+    if (blocked) {
+      const message = blocked === 'locked' ? 'Unlock the selected layers and parent frames before moving them.'
+        : blocked === 'auto-layout' ? 'Auto layout controls these positions. Select absolute-positioned layers to nudge them.'
+          : 'Unlink position variables before nudging these layers.';
+      showToast(message); event.preventDefault(); return;
+    }
     const dx = key === 'arrowleft' ? -delta : key === 'arrowright' ? delta : 0;
     const dy = key === 'arrowup' ? -delta : key === 'arrowdown' ? delta : 0;
-    for (const node of selectedNodes()) {
-      const geometry = resolvedGeometry(node);
-      setNodePropertyValue(node, 'x', geometry.x + dx);
-      setNodePropertyValue(node, 'y', geometry.y + dy);
-    }
+    const patches = translateSelection(entries.map(item => ({ node: item.node, ancestors: item.parents })), { x: dx, y: dy });
+    checkpoint('Nudge layers');
+    applyInspectorSelectionPatches(patches, ['x', 'y']);
     renderer.invalidate(); renderLayers(); renderInspector(); queueSave(); event.preventDefault();
   }
 }
@@ -7876,14 +8647,19 @@ function onKeyUp(event) {
 async function boot() {
   try {
     const saved = await loadLatestDocument();
-    if (saved) state.document = parseDocument(saved);
+    if (saved) {
+      state.document = parseDocument(saved);
+      state.pendingRecipeRecovery = await recipeRecoveryForDocument(state.document.id);
+    }
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
   try { await refreshLocalFontAssets({ showFailureToast: true }); }
   catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   initEvents(); renderUI(); state.ready = true;
+  if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
   try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
+  renderRecipeRecoveryPrompt();
   if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
   else setSaveState('saved', 'Saved locally');
   document.documentElement.dataset.appReady = 'true';

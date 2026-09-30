@@ -281,7 +281,7 @@ test('font catalog migration stays metadata-only, writes cannot replace faces, a
 
   const catalog = await storage.listFontAssets();
   assert.deepEqual(catalog.map(font => [font.id, font.byteLength]), [['old-display', 12], ['old-other', 12]]);
-  assert.equal(indexedDb.observations.openVersion, 5, 'the local version history store is added by a forward-only database upgrade');
+  assert.equal(indexedDb.observations.openVersion, 6, 'the local version history and recipe recovery stores use a forward-only database upgrade');
   assert.equal(indexedDb.observations.fontCursorRecordsRead, 2, 'existing font metadata is backfilled one record at a time');
   assert.equal(indexedDb.observations.fontBinaryGetAllCalls, 0, 'font catalogs never materialize all installed binaries');
   assert.deepEqual(indexedDb.observations.fontBinaryGets, [], 'the migration cursor avoids point reads and duplicate copies');
@@ -474,7 +474,7 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.equal(Object.hasOwn(metadata, 'bytes'), false, 'catalog reads never return source image bytes');
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
-  assert.equal(indexedDb.observations.openVersion, 5, 'opening the store upgrades the legacy database schema for local fonts, metadata, and versions');
+  assert.equal(indexedDb.observations.openVersion, 6, 'opening the store upgrades the legacy database schema for local fonts, metadata, versions, and recipe recovery');
 });
 
 test('legacy asset metadata is backfilled once, one source record at a time', async () => {

@@ -224,6 +224,9 @@ try {
   assert(app.querySelector('#bulk-rate')?.textContent.trim(), 'The in-place progress bar did not show a speed/ETA status.');
   assert(app.querySelector('#bulk-title').textContent.includes('Desktop context recipe'),
     'The progress bar did not identify the active recipe.');
+  assert([...app.querySelectorAll('#inspector-content input, #inspector-content select, #inspector-content textarea, #inspector-content button')]
+    .every(control => control.disabled),
+  'The inspector should lock selected recipe targets while the batch owns their edits.');
   assert(app.querySelector('#bulk-speed').min === '1' && Number(app.querySelector('#bulk-speed').max) === workerBudget,
     'The live speed slider did not expose the browser worker budget.');
   const startConcurrency = Math.min(2, workerBudget);
@@ -235,6 +238,14 @@ try {
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'recipe batch pause');
   assert(app.querySelector('#bulk-rate')?.textContent.startsWith('Paused ·'), 'The progress rate did not enter its paused state.');
+  await waitFor(async () => {
+    const nodes = imageNodes(await latestDocument(app));
+    return targetLayerIds.every(id => nodes.find(node => node.id === id)?.adjustments?.brightness === -65);
+  }, 'admitted recipe values to persist before their held worker outputs settle');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert(app.querySelector('#bulk-title')?.textContent === 'Processing paused'
+    && !app.querySelector('#bulk-cancel')?.hidden,
+  'Escape should leave the paused batch available to resume or cancel explicitly.');
   click(app, app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`));
   await waitFor(() => app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`)?.getAttribute('aria-selected') === 'true', 'page switch during paused recipe batch');
   releaseResults(workerGate);
@@ -258,6 +269,8 @@ try {
   'resumed recipe batch completion');
   assert(/^(Complete · .*average|Complete · no timed renders)$/.test(app.querySelector('#bulk-rate')?.textContent || ''),
     'The completed recipe bar did not show its final average processing speed.');
+  assert(app.querySelector('#bulk-speed-value')?.title.startsWith(`Engine limit: ${startConcurrency} worker`),
+    'Completing the batch should restore the image engine’s pre-batch worker limit.');
   click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
   await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true'
     && app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,
@@ -275,6 +288,8 @@ try {
       && targetLayerIds.every(id => nodes.find(node => node.id === id)?.adjustments?.brightness === -65)
       && nodes.find(node => node.id === layerIds[2])?.adjustments?.brightness === 17;
   }, 'persisted in-place image recipe results');
+  click(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar')?.hidden, 'multi-image recipe result dismissal');
 
   // A target can disappear after its worker has accepted the request. Its
   // eventual aborted preview must be counted as unavailable, not as a newer
@@ -299,6 +314,8 @@ try {
     && app.querySelector('#bulk-progress-label')?.textContent === '1 / 1'
     && app.querySelector('#bulk-subtitle')?.textContent.includes('1 removed or unavailable skipped'),
   'deleted recipe target to settle as skipped');
+  click(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar')?.hidden, 'removed-target result dismissal');
 
   result.textContent = `PASS\n${JSON.stringify({
     workflow: 'right-click save → multi-select → canvas right-click apply',
@@ -308,7 +325,9 @@ try {
     canvasMenuKeptMultiSelection: true,
     progressBar: true,
     pauseHeldQueuedBatchWork: true,
+    escapeKeepsBatchActive: true,
     liveSpeedControl: workerBudget,
+    restoredEngineConcurrency: startConcurrency,
     resumeCompletedAll: true,
     pageSwitchPreservedBatch: true,
     updatedInPlace: true,

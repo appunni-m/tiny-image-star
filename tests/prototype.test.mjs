@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, switchComponentInstanceVariant, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -129,6 +129,57 @@ test('prototype links persist as local navigation to a destination frame', () =>
   assert.equal(findNode(reloaded, source.id).node.interactions[0].transition, 'dissolve');
   assert.equal(removePrototypeInteraction(reloaded, source.id, interaction.id), true);
   assert.equal(findNode(reloaded, source.id).node.interactions.length, 0);
+});
+
+test('prototype interaction edits preserve identity and position while replacing validated settings', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home' });
+  const source = createNode('rectangle', { name: 'Open details' });
+  const firstTarget = createNode('frame', { name: 'Details', x: 500 });
+  const secondTarget = createNode('frame', { name: 'Help', x: 1000 });
+  home.children.push(source);
+  addNode(document, home); addNode(document, firstTarget); addNode(document, secondTarget);
+  const first = addPrototypeInteraction(document, source.id, firstTarget.id, { duration: 300 });
+  const second = addPrototypeInteraction(document, source.id, secondTarget.id, { trigger: 'on-press', transition: 'move-left' });
+
+  const updated = updatePrototypeInteraction(document, source.id, first.id, secondTarget.id, {
+    action: 'open-overlay', trigger: 'after-delay', delay: 1800,
+    transition: 'dissolve', easing: 'ease-out', duration: 600,
+    overlayPosition: 'bottom-right', overlayOutsideClick: false,
+    overlayBackground: true, overlayBackgroundColor: '#123456', overlayBackgroundOpacity: .4
+  });
+
+  assert.equal(updated.id, first.id, 'editing keeps the interaction identity stable');
+  assert.equal(updated.action, 'open-overlay');
+  assert.equal(updated.destinationId, secondTarget.id);
+  assert.equal(updated.destinationPageId, document.activePageId);
+  assert.equal(updated.trigger, 'after-delay');
+  assert.equal(updated.delay, 1800);
+  assert.equal(updated.overlayPosition, 'bottom-right');
+  assert.equal(updated.overlayOutsideClick, false);
+  assert.equal(updated.overlayBackgroundColor, '#123456');
+  assert.equal(updated.overlayBackgroundOpacity, .4);
+  assert.deepEqual(source.interactions.map(item => item.id), [first.id, second.id], 'editing keeps the original list position');
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-press').interaction.id, second.id);
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'after-delay').interaction.id, first.id);
+});
+
+test('prototype interaction edits reject invalid and duplicate routes atomically', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Routes' });
+  const firstTarget = createNode('frame', { name: 'First', x: 500 });
+  const secondTarget = createNode('frame', { name: 'Second', x: 1000 });
+  addNode(document, source); addNode(document, firstTarget); addNode(document, secondTarget);
+  const first = addPrototypeInteraction(document, source.id, firstTarget.id);
+  const second = addPrototypeInteraction(document, source.id, secondTarget.id);
+  const before = structuredClone(source.interactions);
+
+  assert.throws(() => updatePrototypeInteraction(document, source.id, second.id, firstTarget.id, {}), /already exists/);
+  assert.deepEqual(source.interactions, before, 'a duplicate route does not mutate the original document');
+  assert.throws(() => updatePrototypeInteraction(document, source.id, second.id, 'missing-frame', {}), /must end at a frame/);
+  assert.deepEqual(source.interactions, before, 'invalid destinations do not mutate the original document');
+  assert.throws(() => updatePrototypeInteraction(document, source.id, 'missing-interaction', firstTarget.id, {}), /no longer exists/);
+  assert.deepEqual(source.interactions, before, 'a stale edit does not mutate the original document');
 });
 
 test('press and drag prototype triggers are validated and resolve independently from click', () => {

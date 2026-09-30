@@ -283,6 +283,7 @@ try {
     return source?.adjustments?.brightness === -65 && source?.transforms?.rotation === 90;
   }, 'quick recipe values to remain applied after the old preview delay');
   tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'single-image recipe result dismissal');
 
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
@@ -315,7 +316,10 @@ try {
   const bulkBar = app.querySelector('#bulk-bar');
   assert(!bulkBar.hidden, 'the recipe action should open the in-place processing bar immediately.');
   const initialBatchProgress = app.querySelector('#bulk-progress-label').textContent;
-  tap(app, applyRecipe);
+  // Starting the batch rerenders and locks the inspector, so route a second
+  // synthetic request through its current delegated action instead of using
+  // the detached pre-batch button reference.
+  tap(app, app.querySelector('[data-action="apply-selection-image-recipe"]'));
   assert(app.querySelector('#toast-region')?.textContent.includes('batch is active'), 'a second recipe request must clearly explain that the current batch remains active.');
   assert(app.querySelector('#bulk-progress-label').textContent === initialBatchProgress, 'a rejected overlapping start must preserve the in-flight batch progress.');
   assert(bulkBar.getBoundingClientRect().left >= 0 && bulkBar.getBoundingClientRect().right <= 390, 'the bulk controls should stay inside the phone viewport.');
@@ -351,6 +355,7 @@ try {
     && node.transforms?.crop?.left === 0.2 && node.transforms?.rotation === 90), 'the image layers should retain recipe adjustments, crop, and rotation in local storage.');
 
   tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'multi-image recipe result dismissal');
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
   const failureTargetId = imageIds[0];
@@ -401,6 +406,8 @@ try {
       && target?.opacity === 0.37
       && target?.fit === 'contain';
   }, 'newer edits and remaining recipe fields to persist after the superseded render');
+  tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'superseded recipe result dismissal');
   tap(app, app.querySelector('#inspector-toggle'));
   await waitForPhonePanel(app, '#right-panel', 'right');
   const hardFailureRecipePicker = app.querySelector('#selection-image-recipe');
@@ -431,6 +438,8 @@ try {
   // Seed direct and ancestor locks in the persisted fixture because lock
   // state is intentionally not toggled by this mobile recipe workflow.
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'all prior image recipe changes saved');
+  tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'failed recipe result dismissal before reload');
   const storedRecords = await readDocuments(app);
   storedRecords.sort((left, right) => right.savedAt - left.savedAt);
   const lockRecord = storedRecords[0];
@@ -502,6 +511,8 @@ try {
   const parentResult = findNode(lockedResultDocument, imageIds[1]);
   assert(parentResult?.parents.some(parent => parent.id === 'locked-recipe-parent-fixture' && parent.locked),
     'the skipped nested image should remain inside its locked parent.');
+  tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'locked recipe result dismissal');
 
   result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, stalePendingPreviewCannotOverwriteRecipe: true, lockedTargetsSkipped: { directlyLocked: true, lockedAncestor: true, appliedCount: 1 }, sharpnessPreview: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, supersededRecipeRender: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], untouchedRecipeFieldsPreserved: ['contrast', 'sharpness'], nonSupersededRecipeFailureRollback: true, liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
 } catch (error) {

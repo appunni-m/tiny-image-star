@@ -36,7 +36,7 @@ function validateEntries(entries) {
 export function selectionMoveBlockReason(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return 'empty';
   if (entries.some(({ node, ancestors = [] }) => node?.locked || ancestors.some(parent => parent.locked))) return 'locked';
-  if (entries.length > 1 && entries.some(({ node, ancestors = [] }) =>
+  if (entries.some(({ node, ancestors = [] }) =>
     ancestors.at(-1)?.autoLayout && node?.layoutPositioning !== 'absolute')) return 'auto-layout';
   if (entries.length > 1 && entries.some(({ node }) => node?.variableBindings?.x || node?.variableBindings?.y)) return 'shared-position-variable';
   return null;

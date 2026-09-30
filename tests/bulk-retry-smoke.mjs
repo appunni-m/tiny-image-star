@@ -1,5 +1,5 @@
 import { addNode, createDocument, createImageRecipe, createNode } from '../src/model.js';
-import { deleteStoredDocument, loadDocumentById, saveDocument } from '../src/storage.js';
+import { deleteRecipeBatchRecovery, deleteStoredDocument, loadDocumentById, loadRecipeBatchRecovery, saveDocument, saveRecipeBatchRecovery } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -42,6 +42,9 @@ try {
   design.recipes.push(recipe);
   designId = design.id;
   await saveDocument(design);
+  await saveRecipeBatchRecovery({
+    documentId: design.id, recipe, pageId: design.activePageId, targetIds: [image.id], status: 'running'
+  });
 
   const app = frame.contentDocument;
   await waitFor(() => app?.documentElement.dataset.appReady === 'true', 'editor startup');
@@ -52,11 +55,11 @@ try {
   const designButton = await waitFor(() => libraryDialog.open && libraryDialog.querySelector(`[data-design-id="${designId}"][data-design-action="open"]`), 'smoke design in local library');
   tap(app, designButton);
   await waitFor(() => app.querySelector('#document-name')?.value === design.name, 'smoke design open');
-  tap(app, app.querySelector(`[data-layer-id="${image.id}"]`));
-  await waitFor(() => app.querySelector('[data-action="apply-image-recipe"]'), 'image recipe action');
-  const picker = app.querySelector('#selection-image-recipe');
-  picker.value = recipe.id;
-  tap(app, app.querySelector('[data-action="apply-image-recipe"]'));
+  const recoveryDialog = await waitFor(() => app.querySelector('#recipe-recovery-dialog')?.open && app.querySelector('#recipe-recovery-resume'), 'interrupted recipe recovery prompt');
+  assert(app.querySelector('#recipe-recovery-recipe').textContent === recipe.name
+    && app.querySelector('#recipe-recovery-copy').textContent.includes('1 image layer'),
+  'The recovery prompt did not describe the saved recipe and target count.');
+  tap(app, recoveryDialog);
 
   const retry = app.querySelector('#bulk-retry');
   await waitFor(() => !retry.hidden && retry.textContent.includes('(1)'), 'first failed target and retry action');
@@ -66,6 +69,8 @@ try {
   const failedImage = beforeRetry.pages[0].children.find(node => node.id === image.id);
   assert(imageRecipeState(failedImage) === originalRecipeState,
     `A failed preview should roll back all image recipe fields. Expected ${originalRecipeState}; got ${imageRecipeState(failedImage)}.`);
+  assert((await loadRecipeBatchRecovery(designId))?.targetIds.includes(image.id),
+    'An interrupted batch should keep its recovery journal until the user resolves the result.');
 
   tap(app, retry);
   await waitFor(() => !retry.hidden && retry.textContent.includes('(1)'), 'retry batch failure');
@@ -75,6 +80,8 @@ try {
   assert(imageRecipeState(finalImage) === originalRecipeState,
     'A repeated failure should continue preserving the original image recipe state.');
   tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'recovered batch result dismissal');
+  assert((await loadRecipeBatchRecovery(designId)) === null, 'Dismissing the saved result should clear its recovery journal.');
   assert(app.querySelector('#bulk-bar').hidden, 'The drained retry result should be dismissible.');
   outcome = `PASS\n${JSON.stringify({ failedTargetsRetained: 1, retryTargets: 1, failureRollback: true, retryResultDismissed: true })}`;
 } catch (error) {
@@ -82,6 +89,9 @@ try {
 } finally {
   frame.src = 'about:blank';
   await new Promise(resolve => setTimeout(resolve, 50));
-  if (designId) await deleteStoredDocument(designId).catch(() => {});
+  if (designId) {
+    await deleteRecipeBatchRecovery(designId).catch(() => {});
+    await deleteStoredDocument(designId).catch(() => {});
+  }
 }
 result.textContent = outcome;

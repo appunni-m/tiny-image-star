@@ -436,12 +436,17 @@ try {
     return nodes.length === BATCH_SIZE && nodes.every(node => originalLayerIds.has(node.id)
       && node.adjustments?.brightness === -55 && node.adjustments?.blur === 24);
   }, 'persisted results for every image layer');
+  click(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar')?.hidden, 'first large-batch result dismissal');
 
   // A second, distinct recipe makes cancellation observable: only the images
   // already in flight may receive it; the remaining selected images stay at -55.
   const modeForCancel = app.querySelector('#layer-select-mode');
   if (modeForCancel.getAttribute('aria-pressed') === 'true') click(app, modeForCancel);
   const speed = app.querySelector('#bulk-speed');
+  const previousEngineConcurrency = Number(app.querySelector('#bulk-speed-value')?.title.match(/^Engine limit: (\d+)/)?.[1]);
+  assert(Number.isSafeInteger(previousEngineConcurrency) && previousEngineConcurrency > 0,
+    'The batch UI did not expose the actual pre-cancel engine limit.');
   speed.value = String(initialConcurrency);
   speed.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
   await waitFor(() => requestedWorkers(app) === initialConcurrency, 'reset worker count before cancellation');
@@ -462,6 +467,11 @@ try {
   startFromLayerMenu(app, cancelRows[0], 'Cancel recipe');
   await waitFor(() => workerGate.held.length >= initialConcurrency && activeWorkers(app) === initialConcurrency,
     'cancel batch in-flight renders');
+  if (previousEngineConcurrency > 1) {
+    speed.value = '1';
+    speed.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
+    await waitFor(() => requestedWorkers(app) === 1, 'lower cancellation batch worker limit');
+  }
   click(app, app.querySelector('#bulk-cancel'));
   assert(app.querySelector('#bulk-title')?.textContent === 'Recipe stopped', 'The cancel control did not mark the active batch stopped.');
   await waitFor(() => {
@@ -471,6 +481,8 @@ try {
     return app.querySelector('#bulk-title')?.textContent === 'Recipe stopped'
       && activeWorkers(app) === 0 && workerGate.held.length === 0;
   }, 'cancelled batch worker cleanup');
+  await waitFor(() => app.querySelector('#bulk-speed-value')?.title.startsWith(`Engine limit: ${previousEngineConcurrency} worker`),
+    'cancelled batch to restore the prior shared image worker limit');
   const cancelledSubmissions = workerGate.submissions.slice(cancelStart);
   assert(cancelledSubmissions.length === initialConcurrency,
     `Cancel dispatched ${cancelledSubmissions.length} renders; expected only ${initialConcurrency} already-in-flight renders.`);
@@ -495,6 +507,8 @@ try {
     ? afterCancel.find(node => node.assetId === assetId)?.adjustments?.brightness === -82
     : afterCancel.find(node => node.assetId === assetId)?.adjustments?.brightness === -55),
   'Cancellation did not leave in-flight and not-yet-started targets in their expected states.');
+  click(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar')?.hidden, 'cancelled batch result dismissal');
 
   result.textContent = `PASS\n${JSON.stringify({
     images: BATCH_SIZE,
@@ -511,6 +525,7 @@ try {
     pauseDrainedWithoutDispatch: true,
     resumeCompletedAll: true,
     cancelDrainedWithoutDispatch: true,
+    cancellationRestoredEngineConcurrency: previousEngineConcurrency,
     cancelledInFlightPreserved: initialConcurrency,
     originalImageLayersPreserved: true,
     persistedRecipeResults: true

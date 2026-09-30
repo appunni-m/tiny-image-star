@@ -246,6 +246,9 @@ test('group movement blocks locked layers, flow-managed children, and shared pos
     { node: { ...sibling, id: 'other' }, ancestors: [] }
   ]), 'auto-layout');
   assert.equal(selectionMoveBlockReason([
+    { node: sibling, ancestors: [{ id: 'flow', autoLayout: { axis: 'vertical' } }] }
+  ]), 'auto-layout', 'a single flow-managed child cannot be nudged out of its assigned position.');
+  assert.equal(selectionMoveBlockReason([
     { node: { ...sibling, variableBindings: { x: 'shared-x' } }, ancestors: [] },
     { node: { ...sibling, id: 'other' }, ancestors: [] }
   ]), 'shared-position-variable');
