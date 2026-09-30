@@ -37,13 +37,20 @@ test('a drained batch finishes when its remaining targets are skipped without st
   assert.equal(canDismissImageRecipeBatch(batch), true);
 });
 
-test('recipe progress distinguishes successful, failed, superseded, and canceled queued targets', () => {
-  const batch = { completed: 0, failed: 0, superseded: 0 };
+test('recipe progress distinguishes successful, failed, superseded, skipped, and canceled queued targets', () => {
+  const batch = { completed: 0, failed: 0, superseded: 0, skipped: 0, failedTargets: [] };
   recordImageRecipeBatchTarget(batch);
-  recordImageRecipeBatchTarget(batch, { failed: true });
+  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-failed' });
   recordImageRecipeBatchTarget(batch, { superseded: true });
-  assert.equal(recordImageRecipeBatchTarget(batch, { canceled: true }), false);
-  assert.deepEqual(batch, { completed: 3, failed: 1, superseded: 1 });
+  recordImageRecipeBatchTarget(batch, { skipped: true, targetId: 'image-removed' });
+  assert.equal(recordImageRecipeBatchTarget(batch, { canceled: true, failed: true, skipped: true, targetId: 'image-canceled' }), false);
+  assert.deepEqual(batch, {
+    completed: 4,
+    failed: 1,
+    superseded: 1,
+    skipped: 1,
+    failedTargets: ['image-failed'],
+  });
 });
 
 test('failed image IDs are retained once for targeted retry after the batch drains', () => {

@@ -138,6 +138,15 @@ try {
   click(app, newDesign);
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'fresh design');
   await waitFor(() => app.querySelectorAll('#layers-list .layer-row[data-layer-id]').length === 0, 'empty design');
+  const originPageId = app.querySelector('#pages-list [data-page-id]')?.dataset.pageId;
+  assert(originPageId, 'The new design did not expose its starting page.');
+  click(app, app.querySelector('#add-page'));
+  await waitFor(() => app.querySelectorAll('#pages-list [data-page-id]').length === 2, 'second page creation');
+  const otherPageId = [...app.querySelectorAll('#pages-list [data-page-id]')]
+    .map(row => row.dataset.pageId).find(id => id !== originPageId);
+  assert(otherPageId, 'The new design did not expose its second page.');
+  click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true', 'starting page selection');
 
   const bytes = fixtureBmp();
   addImages(app, Array.from({ length: IMAGE_COUNT }, (_, index) =>
@@ -170,24 +179,38 @@ try {
   await waitFor(async () => (await latestDocument(app))?.recipes?.some(recipe => recipe.name === 'Desktop context recipe'),
     'saved context-menu recipe');
 
+  // Hold an unrelated third image render so the second batch render queues in
+  // the shared engine behind it. Pause must hold that queued recipe job even
+  // after the unrelated render and the first recipe render finish.
+  assert(layerIds.length === IMAGE_COUNT, 'The initial image rows were not available for the scoped pause check.');
+  const targetLayerIds = layerIds.slice(0, 2);
+  workerGate.hold = true;
+  click(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${layerIds[2]}"]`));
+  setInput(app, app.querySelector('[data-prop="adjustments.brightness"]'), 17);
+  // The batch speed readout is not mounted until a recipe job starts, so the
+  // worker count cannot be observed through the progress bar yet. A held
+  // render response proves the unrelated job occupies its engine worker.
+  await waitFor(() => workerGate.held.length >= 1 && workerGate.workerCount >= 1,
+    'unrelated image preview to occupy a worker');
+
   click(app, app.querySelector('#layer-select-mode'));
-  for (const id of layerIds) {
+  click(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${layerIds[2]}"]`));
+  for (const id of targetLayerIds) {
     const row = app.querySelector(`#layers-list .layer-row[data-layer-id="${id}"]`);
     if (!row.classList.contains('is-selected')) click(app, row);
   }
-  assert(app.querySelectorAll('#layers-list .layer-row.is-selected[data-layer-type="image"]').length === IMAGE_COUNT,
-    'The multi-selection did not contain every image target.');
-  const originalRows = new Map([...app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]')]
-    .map(row => [row.dataset.layerId, row]));
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected[data-layer-type="image"]').length === targetLayerIds.length,
+    'The multi-selection did not contain the two recipe targets.');
+  const originalLayerIds = [...app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]')]
+    .map(row => row.dataset.layerId);
 
   const speed = app.querySelector('#bulk-speed');
   const workerBudget = Number(speed.max);
   assert(Number.isSafeInteger(workerBudget) && workerBudget > 0, 'The progress bar reported an invalid worker budget.');
   const batchStart = workerGate.submissions.length;
-  workerGate.hold = true;
   canvasContextMenu(app);
   const menuLabel = app.querySelector('#context-menu .menu-label')?.textContent.trim();
-  assert(menuLabel === `Apply recipe to ${IMAGE_COUNT} images`,
+  assert(menuLabel === `Apply recipe to ${targetLayerIds.length} images`,
     `The canvas context menu lost the multi-selection (${menuLabel || 'no target label'}).`);
   const applyAction = [...app.querySelectorAll('#context-menu button')]
     .find(button => button.textContent.trim() === 'Desktop context recipe');
@@ -196,26 +219,30 @@ try {
 
   const bulkBar = app.querySelector('#bulk-bar');
   assert(!bulkBar.hidden, 'Applying from the canvas menu did not show the in-place progress bar.');
-  assert(app.querySelector('#bulk-progress-label').textContent === `0 / ${IMAGE_COUNT}`,
+  assert(app.querySelector('#bulk-progress-label').textContent === `0 / ${targetLayerIds.length}`,
     'The progress bar did not start at zero with the correct target count.');
   assert(app.querySelector('#bulk-title').textContent.includes('Desktop context recipe'),
     'The progress bar did not identify the active recipe.');
   assert(app.querySelector('#bulk-speed').min === '1' && Number(app.querySelector('#bulk-speed').max) === workerBudget,
     'The live speed slider did not expose the browser worker budget.');
   const startConcurrency = Math.min(2, workerBudget);
-  await waitFor(() => workerGate.held.length >= startConcurrency && activeWorkers(app) === startConcurrency,
-    `${startConcurrency} in-flight recipe previews`);
+  const activeBatchRenders = Math.max(0, startConcurrency - 1);
+  await waitFor(() => workerGate.held.length >= startConcurrency && activeWorkers(app) === startConcurrency
+    && workerGate.submissions.length - batchStart === activeBatchRenders,
+  'recipe work to queue behind the unrelated preview under the reported worker budget');
 
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'recipe batch pause');
+  click(app, app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`)?.getAttribute('aria-selected') === 'true', 'page switch during paused recipe batch');
   releaseResults(workerGate);
-  await waitFor(() => activeWorkers(app) === 0 && app.querySelector('#bulk-subtitle')?.textContent.includes('0 images queued'),
-    'in-flight previews to drain after pause');
+  await waitFor(() => activeWorkers(app) === 0 && app.querySelector('#bulk-subtitle')?.textContent.includes('1 admitted image'),
+    'active previews to drain while the queued batch render stays held');
   const pausedSubmissions = workerGate.submissions.length;
   await new Promise(resolve => setTimeout(resolve, 120));
   assert(workerGate.submissions.length === pausedSubmissions,
-    'The paused progress bar continued dispatching image renders.');
-  assert(app.querySelector('#bulk-progress-label').textContent !== `${IMAGE_COUNT} / ${IMAGE_COUNT}`,
+    'The paused progress bar dispatched a recipe render that was already queued in the image engine.');
+  assert(app.querySelector('#bulk-progress-label').textContent !== `${targetLayerIds.length} / ${targetLayerIds.length}`,
     'The test paused after the batch had already completed.');
 
   speed.value = String(workerBudget);
@@ -225,29 +252,64 @@ try {
   workerGate.hold = false;
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied'
-    && app.querySelector('#bulk-progress-label')?.textContent === `${IMAGE_COUNT} / ${IMAGE_COUNT}`,
+    && app.querySelector('#bulk-progress-label')?.textContent === `${targetLayerIds.length} / ${targetLayerIds.length}`,
   'resumed recipe batch completion');
+  click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true'
+    && app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,
+  'original recipe page after page switch');
 
   assert(app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,
     'Recipe processing replaced or dropped the original image layers.');
-  assert([...originalRows].every(([id, row]) => row.isConnected && row === app.querySelector(`#layers-list .layer-row[data-layer-id="${id}"]`)),
-    'Recipe processing replaced the existing image rows instead of editing them in place.');
+  const currentLayerIds = [...app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]')]
+    .map(row => row.dataset.layerId);
+  assert(JSON.stringify(currentLayerIds) === JSON.stringify(originalLayerIds),
+    'Recipe processing changed the original image layer identities or ordering.');
   await waitFor(async () => {
     const nodes = imageNodes(await latestDocument(app));
-    return nodes.length === IMAGE_COUNT && nodes.every(node => layerIds.includes(node.id) && node.adjustments?.brightness === -65);
+    return nodes.length === IMAGE_COUNT
+      && targetLayerIds.every(id => nodes.find(node => node.id === id)?.adjustments?.brightness === -65)
+      && nodes.find(node => node.id === layerIds[2])?.adjustments?.brightness === 17;
   }, 'persisted in-place image recipe results');
+
+  // A target can disappear after its worker has accepted the request. Its
+  // eventual aborted preview must be counted as unavailable, not as a newer
+  // user edit that should be retried.
+  const layerSelectionMode = app.querySelector('#layer-select-mode');
+  if (layerSelectionMode?.getAttribute('aria-pressed') === 'true') click(app, layerSelectionMode);
+  await waitFor(() => layerSelectionMode?.getAttribute('aria-pressed') === 'false', 'single-image selection mode');
+  click(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${layerIds[2]}"]`));
+  await waitFor(() => app.querySelector('[data-action="apply-image-recipe"]'), 'single-image recipe action');
+  const picker = app.querySelector('#selection-image-recipe');
+  picker.value = (await latestDocument(app)).recipes.find(recipe => recipe.name === 'Desktop context recipe')?.id;
+  assert(picker.value, 'The saved recipe was not available for the removed-target check.');
+  workerGate.hold = true;
+  const heldBeforeRemoval = workerGate.held.length;
+  click(app, app.querySelector('[data-action="apply-image-recipe"]'));
+  await waitFor(() => workerGate.held.length > heldBeforeRemoval, 'removed-target recipe render admission');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+  await waitFor(() => !app.querySelector(`#layers-list .layer-row[data-layer-id="${layerIds[2]}"]`), 'recipe target deletion');
+  workerGate.hold = false;
+  releaseResults(workerGate);
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe finished · unavailable images skipped'
+    && app.querySelector('#bulk-progress-label')?.textContent === '1 / 1'
+    && app.querySelector('#bulk-subtitle')?.textContent.includes('1 removed or unavailable skipped'),
+  'deleted recipe target to settle as skipped');
 
   result.textContent = `PASS\n${JSON.stringify({
     workflow: 'right-click save → multi-select → canvas right-click apply',
     images: IMAGE_COUNT,
+    recipeTargets: targetLayerIds.length,
     savedRecipe: true,
     canvasMenuKeptMultiSelection: true,
     progressBar: true,
-    pauseDrainedWithoutDispatch: true,
+    pauseHeldQueuedBatchWork: true,
     liveSpeedControl: workerBudget,
     resumeCompletedAll: true,
+    pageSwitchPreservedBatch: true,
     updatedInPlace: true,
-    originalLayerIdsPreserved: true
+    originalLayerIdsPreserved: true,
+    deletedAdmittedTargetSkipped: true
   })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;

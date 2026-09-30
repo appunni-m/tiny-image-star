@@ -76,7 +76,7 @@
             <div class="canvas-top-actions"><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Toggle rulers">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
           </div>
           <div class="canvas-scroll" id="canvas-scroll">
-            <canvas id="scene-canvas" aria-label="Design canvas"></canvas>
+            <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
             <div class="text-editor-overlay" id="text-editor-overlay" contenteditable="true" spellcheck="false" hidden aria-label="Edit text layer"></div>
             <div class="text-format-toolbar" id="text-format-toolbar" role="toolbar" aria-label="Format selected text" hidden>
               <button class="text-format-button" type="button" data-text-format="bold" aria-label="Bold" aria-pressed="false" title="Bold"><strong>B</strong></button>
@@ -99,6 +99,10 @@
               <button class="text-format-done" type="button" data-text-format-done>Done</button>
             </div>
             <div class="canvas-drop-overlay" id="canvas-drop-overlay">Drop images to place them on the canvas</div>
+            <div class="prototype-connect-prompt" id="prototype-connect-prompt" role="group" aria-label="Prototype connection" hidden>
+              <span class="prototype-connect-message" id="prototype-connect-message" role="status" aria-live="polite"></span>
+              <button type="button" id="prototype-connect-cancel" aria-label="Cancel prototype connection">Cancel</button>
+            </div>
             <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" hidden></div>
             <div class="canvas-ruler ruler-vertical" id="ruler-vertical" hidden></div>
           </div>

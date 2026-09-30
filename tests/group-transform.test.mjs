@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
-import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason } from '../src/group-transform.js';
+import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from '../src/group-transform.js';
 
 function close(actual, expected, epsilon = 1e-8) {
   assert.ok(Math.abs(actual - expected) <= epsilon, `expected ${actual} to be within ${epsilon} of ${expected}`);
@@ -156,6 +156,61 @@ test('rotating a nested selected parent and child does not double the world rota
   close(newWorldRotation - oldWorldRotation, 30);
 });
 
+test('translation moves sibling layers by the same page-space delta', () => {
+  const entries = [
+    { node: { id: 'left', x: 0, y: 5, width: 20, height: 10, rotation: 0 }, ancestors: [] },
+    { node: { id: 'right', x: 35, y: -10, width: 12, height: 16, rotation: 20 }, ancestors: [] }
+  ];
+  const patches = new Map(translateSelection(entries, { x: 14, y: -7 }).map(patch => [patch.id, patch]));
+
+  for (const { node, ancestors } of entries) {
+    const original = pageCenter(node, ancestors);
+    const moved = pageCenter({ ...node, ...patches.get(node.id) }, ancestors);
+    close(moved.x - original.x, 14);
+    close(moved.y - original.y, -7);
+  }
+  assert.deepEqual(patches.get('left'), { id: 'left', x: 14, y: -2 });
+  assert.deepEqual(patches.get('right'), { id: 'right', x: 49, y: -17 });
+});
+
+test('translation preserves page-space movement through nested rotated ancestors', () => {
+  const ancestors = [
+    { id: 'outer', x: 100, y: 50, width: 300, height: 200, rotation: 35 },
+    { id: 'inner', x: 30, y: 20, width: 100, height: 80, rotation: -20 }
+  ];
+  const node = { id: 'child', x: 10, y: 15, width: 40, height: 20, rotation: 75 };
+  const originalCenter = pageCenter(node, ancestors);
+  const [patch] = translateSelection([{ node, ancestors }], { x: 23.5, y: -11.25 });
+  const movedCenter = pageCenter({ ...node, ...patch }, ancestors);
+
+  close(movedCenter.x - originalCenter.x, 23.5);
+  close(movedCenter.y - originalCenter.y, -11.25);
+});
+
+test('translation of a selected parent and child does not move the child twice', () => {
+  const outer = { id: 'outer', x: 100, y: 60, width: 260, height: 180, rotation: 24 };
+  const parent = { id: 'parent', x: 40, y: 20, width: 100, height: 60, rotation: 10 };
+  const child = { id: 'child', x: 15, y: 12, width: 20, height: 10, rotation: 5 };
+  const entries = [
+    { node: child, ancestors: [outer, parent] },
+    { node: parent, ancestors: [outer] }
+  ];
+  const originalCenters = new Map(entries.map(({ node, ancestors }) => [node.id, pageCenter(node, ancestors)]));
+  const patches = new Map(translateSelection(entries, { x: -18, y: 31 }).map(patch => [patch.id, patch]));
+  const movedOuter = outer;
+  const movedParent = { ...parent, ...patches.get(parent.id) };
+  const movedChild = { ...child, ...patches.get(child.id) };
+  const movedCenters = new Map([
+    ['parent', pageCenter(movedParent, [movedOuter])],
+    ['child', pageCenter(movedChild, [movedOuter, movedParent])]
+  ]);
+
+  for (const id of ['parent', 'child']) {
+    close(movedCenters.get(id).x - originalCenters.get(id).x, -18);
+    close(movedCenters.get(id).y - originalCenters.get(id).y, 31);
+  }
+});
+
 test('resize and rotation reject invalid entries, handles, bounds, and coordinates', () => {
   assert.throws(() => selectionBounds([]), /at least one selected entry/);
   assert.throws(() => selectionBounds([{ node: { id: 'bad', x: NaN, y: 0, width: 1, height: 1 } }]), /finite/);
@@ -168,6 +223,18 @@ test('resize and rotation reject invalid entries, handles, bounds, and coordinat
   assert.throws(() => resizeSelection(entries, bounds, 'se', { x: 2, y: 2 }, { aspectRatio: 0 }), /Aspect ratio/);
   assert.throws(() => rotateSelection(entries, { x: 0, y: NaN }, 10), /finite page-space/);
   assert.throws(() => rotateSelection(entries, { x: 0, y: 0 }, Infinity), /finite degrees/);
+});
+
+test('translation rejects invalid deltas and entries without unique stable IDs', () => {
+  const entries = [{ node: { id: 'ok', x: 0, y: 0, width: 10, height: 10, rotation: 0 }, ancestors: [] }];
+  for (const delta of [{ x: NaN, y: 0 }, { x: 0, y: Infinity }, null]) {
+    assert.throws(() => translateSelection(entries, delta), /finite page-space/);
+  }
+  assert.throws(() => translateSelection([{ node: { x: 0, y: 0, width: 10, height: 10 } }], { x: 1, y: 1 }), /stable ID/);
+  assert.throws(() => translateSelection([
+    entries[0],
+    { node: { ...entries[0].node }, ancestors: [] }
+  ], { x: 1, y: 1 }), /duplicated/);
 });
 
 test('group movement blocks locked layers, flow-managed children, and shared position variables', () => {

@@ -252,8 +252,92 @@ test('LocalImageEngine rejects unsupported recipe output options before admittin
   await withEngine(async engine => {
     await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { format: 'gif' }), /PNG, JPEG, or WebP/);
     await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { format: 'jpeg', quality: 0 }), /1 to 100/);
+    await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { queueGroup: '' }), /group must be a nonempty string or null/);
     assert.equal(engine.metrics().queued, 0);
   });
+});
+
+test('a paused queue group holds queued work while unrelated jobs run, then resumes once in FIFO order', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(2);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const firstBlocker = engine.render('blocker-first', pngHeader(1, 1), {});
+    const secondBlocker = engine.render('blocker-second', pngHeader(1, 1), {});
+    const pausedBatch = engine.render('paused-batch', pngHeader(1, 1), {}, {}, { queueGroup: 'batch:test' });
+    assert.equal(engine.metrics().queued, 1);
+    assert.equal(engine.pauseQueueGroup('batch:test'), true);
+    assert.equal(engine.pauseQueueGroup('batch:test'), false, 'pausing an already-held group is idempotent');
+
+    const unrelatedFirst = engine.render('unrelated-first', pngHeader(1, 1), {});
+    const unrelatedSecond = engine.render('unrelated-second', pngHeader(1, 1), {});
+    const finish = async assetId => {
+      const slot = engine.workers.find(item => item.worker.pendingRenderMessages.some(message => message.assetId === assetId));
+      assert.ok(slot, `Expected ${assetId} to be active.`);
+      const message = slot.worker.pendingRenderMessages.find(item => item.assetId === assetId);
+      slot.worker.completeRender(message.requestId);
+      return slot;
+    };
+    const submitted = () => engine.workers.flatMap(slot => slot.worker.renderRequests.map(request => request.assetId));
+
+    const firstWorker = await finish('blocker-first');
+    await firstBlocker;
+    assert.deepEqual(firstWorker.worker.renderRequests.map(request => request.assetId), ['blocker-first', 'unrelated-first'],
+      'the oldest unrelated job bypasses the held batch job');
+    assert.equal(submitted().includes('paused-batch'), false, 'the held batch job is not dispatched');
+
+    await finish('unrelated-first');
+    await unrelatedFirst;
+    assert.deepEqual(firstWorker.worker.renderRequests.map(request => request.assetId), ['blocker-first', 'unrelated-first', 'unrelated-second'],
+      'later unrelated work continues in FIFO order while the batch is paused');
+    await finish('blocker-second');
+    await secondBlocker;
+    await finish('unrelated-second');
+    await unrelatedSecond;
+    assert.equal(engine.metrics().active, 0);
+    assert.equal(engine.metrics().queued, 1);
+    assert.equal(submitted().includes('paused-batch'), false, 'the held batch remains queued after all unrelated work drains');
+
+    assert.equal(engine.resumeQueueGroup('batch:test'), true);
+    assert.equal(engine.resumeQueueGroup('batch:test'), false, 'resuming an already-running group does not redispatch it');
+    assert.equal(engine.metrics().active, 1);
+    assert.equal(engine.metrics().queued, 0);
+    assert.equal(submitted().filter(assetId => assetId === 'paused-batch').length, 1,
+      'the queued batch target is dispatched exactly once after resume');
+    await finish('paused-batch');
+    await pausedBatch;
+    assert.equal(engine.metrics().active, 0);
+    assert.equal(engine.metrics().queued, 0);
+  }, { maxWorkers: 2, maxCachedPixels: 10, deferRenders: true });
+});
+
+test('paused queue groups retain replacement and cancellation behavior', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const active = engine.render('active', pngHeader(1, 1), {});
+    const oldQueued = engine.render('preview', pngHeader(1, 1), {}, {}, {
+      queueGroup: 'batch:replace', replaceKey: 'preview:layer',
+    });
+    assert.equal(engine.pauseQueueGroup('batch:replace'), true);
+    const oldRejected = assert.rejects(oldQueued, { name: 'AbortError' });
+    const latestQueued = engine.render('preview', pngHeader(1, 1), { brightness: 20 }, {}, {
+      queueGroup: 'batch:replace', replaceKey: 'preview:layer',
+    });
+    await oldRejected;
+    assert.equal(engine.metrics().queued, 1, 'replacing a paused queued job keeps only the latest request');
+    const latestRejected = assert.rejects(latestQueued, { name: 'AbortError' });
+    assert.equal(engine.cancelQueuedByKey('preview:layer'), true);
+    await latestRejected;
+    assert.equal(engine.metrics().queued, 0, 'keyed cancellation removes a paused queue entry');
+
+    const blocker = engine.workers[0].worker;
+    blocker.completeNextRender();
+    await active;
+    assert.deepEqual(blocker.renderRequests.map(request => request.assetId), ['active'],
+      'replaced or canceled paused work never reaches the worker');
+    assert.equal(engine.resumeQueueGroup('batch:replace'), true);
+  }, { maxWorkers: 1, maxCachedPixels: 10, deferRenders: true });
 });
 
 test('queued renders with the same replacement key keep only the latest preview', async () => {

@@ -26,8 +26,8 @@ export function completeImageRecipeBatchIfDrained(batch) {
   return true;
 }
 
-/** Count one terminal target result; a canceled queued render is not completed. */
-export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, canceled = false, targetId = null } = {}) {
+/** Count one terminal target result; canceled work is not completed or skipped. */
+export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, canceled = false, targetId = null } = {}) {
   if (canceled) return false;
   batch.completed += 1;
   if (failed) {
@@ -37,5 +37,6 @@ export function recordImageRecipeBatchTarget(batch, { failed = false, superseded
     }
   }
   if (superseded) batch.superseded = (batch.superseded || 0) + 1;
+  if (skipped) batch.skipped = (batch.skipped || 0) + 1;
   return true;
 }

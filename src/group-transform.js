@@ -75,6 +75,33 @@ function selectedAncestorPatches(ancestors, patches) {
   });
 }
 
+/**
+ * Translate selected layers by one page-space vector. Ancestor patches are
+ * applied top-down so a selection containing both a parent and its child
+ * moves each layer by the same page-space delta instead of moving the child
+ * twice.
+ */
+export function translateSelection(entries, delta) {
+  validateEntries(entries);
+  validatePagePoint(delta, 'Translation delta');
+
+  const patches = new Map();
+  const ordered = [...entries].sort((left, right) => (left.ancestors?.length || 0) - (right.ancestors?.length || 0));
+  for (const { node, ancestors = [] } of ordered) {
+    const currentCenter = nodeLocalToPage(node, centerOf(node), ancestors);
+    const targetCenter = { x: currentCenter.x + delta.x, y: currentCenter.y + delta.y };
+    validatePagePoint(targetCenter, 'Translated layer center');
+    const updatedAncestors = selectedAncestorPatches(ancestors, patches);
+    const local = pageToParentLocal(targetCenter, updatedAncestors);
+    const patch = { id: node.id, x: local.x - node.width / 2, y: local.y - node.height / 2 };
+    if (!Number.isFinite(patch.x) || !Number.isFinite(patch.y)) {
+      throw new TypeError(`Translation for ${node.id} produced non-finite parent-space coordinates.`);
+    }
+    patches.set(node.id, patch);
+  }
+  return [...patches.values()];
+}
+
 function localSizeScales(node, ancestors, scaleX, scaleY) {
   const pageRotation = [...ancestors, node].reduce((total, item) => total + Number(item.rotation || 0), 0);
   const radians = pageRotation * Math.PI / 180;

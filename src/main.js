@@ -35,7 +35,7 @@ import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
 import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, isImageRecipeBatchActive, recordImageRecipeBatchTarget } from './bulk-recipe-state.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect, shortestAngleDelta } from './transform-geometry.js';
-import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason } from './group-transform.js';
+import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from './group-transform.js';
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
@@ -492,6 +492,10 @@ function section(title, body, iconName = null) {
 }
 function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false, ariaLabel = label) {
   return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${ariaLabel}" /></div>`;
+}
+function selectionNumberField(label, property, value, { step = 1, min = null, max = null, disabled = false, mixed = false } = {}) {
+  const shownValue = !mixed && Number.isFinite(value) ? ` value="${value}"` : '';
+  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
 }
 function optionalNumberField(label, prop, value) {
   return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="1" value="${Number.isFinite(value) ? value : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
@@ -1043,6 +1047,45 @@ function buildPrototypeInteractionCondition() {
   return { variableId: variable.id, type: variable.type, operator: state.prototypeConditionOperator, value };
 }
 
+function syncPrototypeConnectPrompt() {
+  const prompt = $('#prototype-connect-prompt');
+  const message = $('#prototype-connect-message');
+  if (!prompt || !message) return;
+  if (!state.prototypeSourceId) {
+    prompt.hidden = true;
+    canvas.removeAttribute('aria-describedby');
+    return;
+  }
+  const verb = innerWidth <= 820 ? 'Tap' : 'Click';
+  const instruction = state.prototypeAction === 'open-overlay'
+    ? `${verb} a frame on this page to show as an overlay.`
+    : state.prototypeAction === 'swap-overlay'
+      ? `${verb} a frame on this page to swap into the overlay.`
+      : `${verb} a destination frame on this page to connect.`;
+  message.textContent = `${instruction} Press Escape or Cancel to stop.`;
+  prompt.hidden = false;
+  canvas.setAttribute('aria-describedby', message.id);
+}
+
+function clearPrototypeConnectPrompt() {
+  state.prototypeSourceId = null;
+  syncPrototypeConnectPrompt();
+}
+
+function clearPrototypeConnectPromptIfSourceMissing() {
+  if (!state.prototypeSourceId || findNode(state.document, state.prototypeSourceId)) return false;
+  clearPrototypeConnectPrompt();
+  return true;
+}
+
+function cancelPrototypeConnection() {
+  if (!state.prototypeSourceId) return;
+  clearPrototypeConnectPrompt();
+  renderInspector();
+  renderer?.invalidate();
+  canvas.focus({ preventScroll: true });
+}
+
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const entry = node ? findNode(state.document, node.id) : null;
@@ -1146,7 +1189,7 @@ function commentPanel() {
 
 function setInspectorTab(tab) {
   state.inspectorTab = tab;
-  if (tab !== 'prototype') state.prototypeSourceId = null;
+  if (tab !== 'prototype') clearPrototypeConnectPrompt();
   $$('.inspector-tab').forEach(item => {
     item.classList.toggle('is-active', item.dataset.inspectorTab === tab);
     item.setAttribute('aria-selected', String(item.dataset.inspectorTab === tab));
@@ -1242,8 +1285,32 @@ function renderInspector() {
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
     const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
     const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
-    const layoutNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Use Image recipes below to apply a look without a keyboard or context menu.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${layoutNote}</div>`)}${section('Selection', `<div class="property-grid">${numberField('X', 'selectionX', 0)}${numberField('Y', 'selectionY', 0)}</div>`)}`;
+    const transformEntries = transformEntriesForSelection();
+    const bounds = selectionBounds(transformEntries);
+    const canTransform = canTransformSelectionTogether(transformEntries);
+    const movementBlock = selectionInspectorMovementBlock(transformEntries);
+    const isLocked = transformEntries.some(({ node, ancestors }) => node.locked || ancestors.some(parent => parent.locked));
+    const commonValue = values => values.every(value => Math.abs(value - values[0]) < 1e-6) ? values[0] : null;
+    const rotations = transformEntries.map(({ node }) => Number(node.rotation) || 0);
+    const opacities = transformEntries.map(({ node }) => Number(getNodePropertyValue(state.document, node, 'opacity') ?? 1) * 100);
+    const rotation = commonValue(rotations);
+    const opacity = commonValue(opacities);
+    const hugWidth = selectionDimensionIsHugged(transformEntries, 'width');
+    const hugHeight = selectionDimensionIsHugged(transformEntries, 'height');
+    const transformNote = movementBlock === 'auto-layout'
+      ? 'Auto layout controls these positions. Change spacing or alignment in the parent frame.'
+      : movementBlock === 'locked' || isLocked
+        ? 'Unlock every selected layer and its parent before editing shared properties.'
+        : movementBlock === 'shared-position-variable'
+          ? 'Position is controlled by a variable. Unbind it before moving the selection.'
+          : !canTransform
+            ? 'Some selected geometry is variable-bound or managed by auto layout.'
+            : hugWidth || hugHeight
+              ? `Position and size use page-space visual bounds. Auto layout Hug controls ${[hugWidth && 'width', hugHeight && 'height'].filter(Boolean).join(' and ')}; edit its sizing mode first.`
+              : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
+    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked, mixed: opacity == null })}`;
+    const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Use Image recipes below to apply a look without a keyboard or context menu.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${transformNote}</div>`)}`;
     return;
   }
   const node = entries[0].node;
@@ -1970,11 +2037,149 @@ function transformEntriesForSelection() {
     ancestors: entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }))
   }));
 }
+function applyInspectorSelectionPatches(patches, properties, frameStates = new Map()) {
+  for (const patch of patches) {
+    const node = findNode(state.document, patch.id)?.node;
+    if (!node) continue;
+    const changedProperties = properties.filter(property => Object.hasOwn(patch, property)
+      && !Object.is(getNodePropertyValue(state.document, node, property), patch[property]));
+    for (const property of properties) {
+      if (!Object.hasOwn(patch, property)) continue;
+      if (property === 'opacity') setNodePropertyValue(node, property, patch[property]);
+      else node[property] = patch[property];
+    }
+    const frameState = frameStates.get(node.id);
+    if (frameState) {
+      const geometry = resolvedGeometry(node);
+      if (node.autoLayout) applyAutoLayout(node);
+      else applyFrameConstraints(node, frameState.width, frameState.height, geometry.width, geometry.height, frameState.childGeometry);
+    }
+    const boundProperties = changedProperties.filter(property => node.variableBindings?.[property]);
+    if (boundProperties.length) recordNodeComponentOverrides(node, ['variableBindings']);
+    recordNodeComponentOverrides(node, changedProperties.filter(property => !node.variableBindings?.[property]));
+    if (frameState) {
+      const instanceRoot = componentInstanceRoot(node.id);
+      if (instanceRoot) for (const child of node.children || []) {
+        const before = frameState.childGeometry.get(child.id);
+        if (!before) continue;
+        const changedChildGeometry = ['x', 'y', 'width', 'height'].filter(property => !Object.is(before[property], child[property]));
+        if (changedChildGeometry.length) recordNodeComponentOverrides(child, changedChildGeometry);
+      }
+    }
+  }
+  renderer.invalidate();
+}
+function selectionResizeBounds(entries, bounds, property, targetSize) {
+  const handle = property === 'width' ? 'e' : 's';
+  const origin = property === 'width' ? bounds.x : bounds.y;
+  const center = property === 'width' ? bounds.center.y : bounds.center.x;
+  const makePatches = candidateSize => resizeSelection(entries, bounds, handle,
+    property === 'width' ? { x: origin + candidateSize, y: center } : { x: center, y: origin + candidateSize }, { minSize: 1 });
+  const measure = patches => {
+    const byId = new Map(patches.map(patch => [patch.id, patch]));
+    const updated = entries.map(({ node, ancestors }) => ({
+      node: { ...node, ...byId.get(node.id) },
+      ancestors: ancestors.map(parent => ({ ...parent, ...byId.get(parent.id) }))
+    }));
+    const nextBounds = selectionBounds(updated);
+    return { patches, value: nextBounds[property] };
+  };
+  const rotated = entries.some(({ node, ancestors }) => [node, ...ancestors].some(item => Math.abs(Number(item.rotation) || 0) > 1e-7));
+  if (!rotated) {
+    const exact = measure(makePatches(targetSize));
+    if (Math.abs(exact.value - targetSize) > Math.max(1e-4, targetSize * 1e-7)) {
+      throw new RangeError(`The selected layers cannot reach a ${property} of ${targetSize}.`);
+    }
+    return exact.patches;
+  }
+  let low = 0;
+  let high = Math.max(1, bounds[property], targetSize);
+  let highResult = measure(makePatches(high));
+  while (highResult.value < targetSize && high < 1_000_000) {
+    high = Math.min(1_000_000, high * 2);
+    highResult = measure(makePatches(high));
+  }
+  const lowResult = measure(makePatches(low));
+  if (lowResult.value > targetSize + 1e-5 || highResult.value < targetSize - 1e-5) {
+    throw new RangeError(`The selected layers cannot reach a ${property} of ${targetSize} with their current rotations.`);
+  }
+  let best = Math.abs(lowResult.value - targetSize) <= Math.abs(highResult.value - targetSize) ? lowResult : highResult;
+  for (let iteration = 0; iteration < 48; iteration += 1) {
+    const middle = (low + high) / 2;
+    const candidate = measure(makePatches(middle));
+    if (Math.abs(candidate.value - targetSize) < Math.abs(best.value - targetSize)) best = candidate;
+    if (candidate.value < targetSize) low = middle;
+    else high = middle;
+  }
+  if (Math.abs(best.value - targetSize) > Math.max(1e-4, targetSize * 1e-7)) {
+    throw new RangeError(`The selected layers cannot reach a ${property} of ${targetSize} with their current rotations.`);
+  }
+  return best.patches;
+}
+function updateSelectionInspectorInput(input) {
+  const property = input.dataset.prop.slice('selection.'.length);
+  if (!['x', 'y', 'width', 'height', 'rotation', 'opacity'].includes(property) || !input.value.trim()) return;
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) return;
+  const entries = transformEntriesForSelection();
+  if (!entries.length) return;
+  const bounds = selectionBounds(entries);
+  let patches;
+  let properties;
+  let frameStates = new Map();
+  if (property === 'opacity') {
+    if (entries.some(({ node, ancestors }) => node.locked || ancestors.some(parent => parent.locked))) return;
+    const opacity = Math.max(0, Math.min(100, value)) / 100;
+    patches = entries.map(({ node }) => ({ id: node.id, opacity }));
+    properties = ['opacity'];
+  } else if (property === 'x' || property === 'y') {
+    if (selectionInspectorMovementBlock(entries)) return;
+    const delta = { x: property === 'x' ? value - bounds.x : 0, y: property === 'y' ? value - bounds.y : 0 };
+    patches = translateSelection(entries, delta);
+    properties = ['x', 'y'];
+  } else {
+    if (!canTransformSelectionTogether(entries)) return;
+    if (property === 'width' || property === 'height') {
+      const size = Math.max(1, Math.min(100_000, value));
+      if (selectionDimensionIsHugged(entries, property)) return;
+      try { patches = selectionResizeBounds(entries, bounds, property, size); }
+      catch (error) { showToast(error.message || `Could not set selection ${property}.`); return; }
+      properties = ['x', 'y', 'width', 'height'];
+      frameStates = new Map(entries.filter(({ node }) => node.type === 'frame')
+        .map(({ node }) => [node.id, { width: node.width, height: node.height, childGeometry: captureChildGeometry(node) }]));
+    } else {
+      const rotation = value;
+      patches = entries.map(({ node }) => ({ id: node.id, x: node.x, y: node.y, rotation }));
+      properties = ['rotation'];
+    }
+  }
+  if (!state.controlEdit) { checkpoint('Edit selection properties'); state.controlEdit = true; }
+  applyInspectorSelectionPatches(patches, properties, frameStates);
+}
 function canTransformSelectionTogether(entries) {
-  return entries.length > 1 && entries.every(({ node, ancestors }) =>
+  return entries.length > 0 && entries.every(({ node, ancestors }) =>
     !node.locked && !ancestors.some(parent => parent.locked)
     && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
     && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
+}
+function selectionDimensionIsHugged(entries, property) {
+  return entries.some(({ node }) => {
+    if (node.type !== 'frame' || !node.autoLayout) return false;
+    const layout = resolveAutoLayoutSettings(node);
+    if (layout.axis === 'grid') return false;
+    const horizontal = layout.axis === 'horizontal';
+    const sizing = property === 'width'
+      ? horizontal ? layout.mainSizing : layout.crossSizing
+      : horizontal ? layout.crossSizing : layout.mainSizing;
+    return sizing === 'hug';
+  });
+}
+function selectionInspectorMovementBlock(entries) {
+  if (!entries.length) return 'empty';
+  if (entries.some(({ node, ancestors }) => node.locked || ancestors.some(parent => parent.locked))) return 'locked';
+  if (entries.some(({ node, ancestors }) => ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')) return 'auto-layout';
+  if (entries.some(({ node }) => node.variableBindings?.x || node.variableBindings?.y)) return 'shared-position-variable';
+  return null;
 }
 function commentPinAt(world) {
   const comments = [...pageComments()].sort((a, b) => a.createdAt - b.createdAt);
@@ -2076,6 +2281,11 @@ function onCanvasPointerDown(event) {
   const commentPin = commentPinAt(world);
   if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
   if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
+  if (clearPrototypeConnectPromptIfSourceMissing()) {
+    renderInspector();
+    showToast('The prototype source was removed. Select a layer to start a new connection.');
+    event.preventDefault(); return;
+  }
   if (state.prototypeSourceId) {
     const target = findFrameAtPoint(activePage(), world, state.document);
     if (!target) { showToast('Choose a frame as the interaction destination.'); return; }
@@ -2099,7 +2309,7 @@ function onCanvasPointerDown(event) {
       });
       const interactionSource = findNode(state.document, state.prototypeSourceId)?.node;
       if (interactionSource) recordNodeComponentOverrides(interactionSource, ['interactions']);
-      state.prototypeSourceId = null;
+      clearPrototypeConnectPrompt();
       renderInspector(); queueSave(); renderer.invalidate();
       showToast(state.prototypeAction === 'open-overlay' ? `Overlay “${target.name}” added.` : `Connected to “${target.name}”.`);
     } catch (error) { showToast(error.message); }
@@ -2377,8 +2587,14 @@ function onCanvasPointerUp(event) {
         const properties = interaction.kind === 'resize' || interaction.kind === 'group-resize' ? ['x', 'y', 'width', 'height']
           : interaction.kind === 'rotate' ? ['rotation']
             : interaction.kind === 'group-rotate' ? ['x', 'y', 'rotation'] : ['x', 'y'];
-        if (properties.some(property => node.variableBindings?.[property])) recordNodeComponentOverrides(node, ['variableBindings']);
-        recordNodeComponentOverrides(node, properties.filter(property => !node.variableBindings?.[property]));
+        const original = interaction.kind === 'move' ? interaction.originals.get(id)
+          : interaction.kind === 'group-resize' || interaction.kind === 'group-rotate'
+            ? interaction.entries.find(entry => entry.node.id === id)?.node
+            : interaction.geometry || interaction.node;
+        const changedProperties = properties.filter(property => original
+          && !Object.is(getNodePropertyValue(state.document, node, property), original[property]));
+        if (changedProperties.some(property => node.variableBindings?.[property])) recordNodeComponentOverrides(node, ['variableBindings']);
+        recordNodeComponentOverrides(node, changedProperties.filter(property => !node.variableBindings?.[property]));
       }
     }
     const resizedFrameIds = interaction.kind === 'resize' && interaction.node?.type === 'frame' ? [interaction.node.id]
@@ -2386,7 +2602,13 @@ function onCanvasPointerUp(event) {
     for (const frameId of resizedFrameIds) {
       const frameNode = findNode(state.document, frameId)?.node;
       const instanceRoot = componentInstanceRoot(frameId);
-      if (instanceRoot && frameNode) walkNodes(frameNode.children || [], ({ node }) => recordNodeComponentOverrides(node, ['x', 'y', 'width', 'height']));
+      const frameState = interaction.kind === 'group-resize' ? interaction.frameStates.get(frameId) : { childGeometry: interaction.childGeometry };
+      if (instanceRoot && frameNode && frameState?.childGeometry) for (const child of frameNode.children || []) {
+        const before = frameState.childGeometry.get(child.id);
+        if (!before) continue;
+        const changedChildGeometry = ['x', 'y', 'width', 'height'].filter(property => !Object.is(before[property], child[property]));
+        if (changedChildGeometry.length) recordNodeComponentOverrides(child, changedChildGeometry);
+      }
     }
     state.interaction = null; state.smartGuides = []; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return;
   }
@@ -3375,6 +3597,7 @@ function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
   if (!input || !selectedNodes().length) return;
   const prop = input.dataset.prop;
+  if (prop.startsWith('selection.')) { updateSelectionInspectorInput(input); return; }
   if (prop === 'fontFamily' && !input.value.trim()) {
     if (event.type === 'change') input.value = selectedNodes()[0]?.fontFamily || 'Inter, Arial, sans-serif';
     return;
@@ -3548,6 +3771,7 @@ function finishInspectorInput() {
 }
 function schedulePreview(node, immediate = false, fillId = null) {
   const previewKey = imagePreviewKey(node.id, fillId);
+  const pageId = findNodeAcrossPages(state.document, node.id)?.page.id || state.document.activePageId;
   const fill = fillId ? node.fills?.find(item => item.id === fillId) : null;
   const previous = previewTimers.get(previewKey);
   if (previous) clearTimeout(previous);
@@ -3559,7 +3783,7 @@ function schedulePreview(node, immediate = false, fillId = null) {
   const assetId = imageFill?.assetId || node.assetId;
   const adjustments = imageFill?.adjustments || node.adjustments;
   const transforms = imageFill?.transforms || node.transforms;
-  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); renderInspector(); });
+  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId, null, pageId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); renderInspector(); });
   let timer;
   timer = setTimeout(() => {
     if (previewTimers.get(previewKey) !== timer) return;
@@ -3615,7 +3839,7 @@ function releasePreviewResources(previewKey) {
   renderer?.invalidate();
 }
 
-async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null) {
+async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null, queueGroup = null, pageId = state.document.activePageId) {
   const previewKey = imagePreviewKey(nodeId, fillId);
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
@@ -3635,11 +3859,12 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   let previewUrl = null;
   let releasedPreviewForCapacity = false;
   try {
-    const imageNode = !fillId ? findNode(state.document, nodeId)?.node : null;
+    const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
     const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
     const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
     const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, {
       replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
+      queueGroup,
     });
     if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
     const retainedBytes = estimatePreviewMemoryBytes({ width: result.width, height: result.height, encodedByteLength: result.bytes.byteLength });
@@ -3910,16 +4135,17 @@ function renderBulkBar() {
   if (!bulk) return;
   const engineMetrics = imageEngine.metrics();
   const total = bulk.targets.length;
-  const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0));
+  const skipped = bulk.skipped || 0;
+  const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0) - skipped);
   const lockedSkipped = (bulk.excludedLocked || 0) + (bulk.skippedLocked || 0);
   const dismissible = canDismissImageRecipeBatch(bulk);
-  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
+  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
   $('#bulk-subtitle').textContent = bulk.cancelled
-    ? `${updated} updated · ${bulk.targets.length - bulk.completed} left untouched${bulk.failed ? ` · ${bulk.failed} failed` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}`
+    ? `${updated} updated · ${bulk.targets.length - bulk.completed} left untouched${bulk.failed ? ` · ${bulk.failed} failed` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}${skipped ? ` · ${skipped} removed or unavailable skipped` : ''}`
     : bulk.done
-      ? `${updated} updated in place${bulk.failed ? ` · ${bulk.failed} failed` : ''}${bulk.superseded ? ` · ${bulk.superseded} newer edits preserved` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}`
+      ? `${updated} updated in place${bulk.failed ? ` · ${bulk.failed} failed` : ''}${bulk.superseded ? ` · ${bulk.superseded} newer edits preserved` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}${skipped ? ` · ${skipped} removed or unavailable skipped` : ''}`
       : bulk.paused
-        ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} queued or finishing before pause`
+        ? `Queue held · ${bulk.inflight} admitted image${bulk.inflight === 1 ? '' : 's'} may still be finishing`
         : `Editing original layers · ${bulk.inflight} queued or processing`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
@@ -4002,9 +4228,9 @@ function scheduleBulk() {
   if (!bulk || bulk.paused || bulk.cancelled || bulk.done) return;
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
-    const entry = findNode(state.document, id);
+    const entry = findNode(state.document, id, bulk.pageId);
     if (!entry || entry.node.type !== 'image') {
-      recordImageRecipeBatchTarget(bulk, { failed: true, targetId: id });
+      recordImageRecipeBatchTarget(bulk, { skipped: true });
       continue;
     }
     if (!isEditableImageRecipeTarget(entry)) {
@@ -4023,12 +4249,12 @@ function scheduleBulk() {
     if (pendingPreview || previousStatus === 'Updating preview…' || previousStatus === 'Processing locally…') {
       bulk.restorePreviews.add(id);
     }
-    applyImageRecipe(state.document, id, bulk.recipe);
+    applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId);
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     updateSelectedImageStatus(id);
     const previousRenderVersion = state.renderVersion.get(id);
-    const preview = renderImagePreview(id, node.assetId, node.adjustments, node.transforms);
+    const preview = renderImagePreview(id, node.assetId, node.adjustments, node.transforms, null, bulk.queueGroup, bulk.pageId);
     const recipeRenderVersion = state.renderVersion.get(id);
     if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
     preview.then(rendered => {
@@ -4044,7 +4270,9 @@ function scheduleBulk() {
       if (state.bulk !== bulk) return;
       const wasCanceledBeforeRender = bulk.cancelled && error.name === 'AbortError' && !error.superseded;
       const renderStillCurrent = bulk.renderVersions.get(id) === state.renderVersion.get(id);
-      const canRestoreBeforeState = renderStillCurrent && !error.superseded;
+      const currentEntry = findNode(state.document, id, bulk.pageId);
+      const targetRemovedOrChanged = !currentEntry || currentEntry.node.type !== 'image';
+      const canRestoreBeforeState = renderStillCurrent && !error.superseded && !targetRemovedOrChanged;
       if (canRestoreBeforeState) rollbackRecipeStateIfUnchanged(node, before, applied);
       if (wasCanceledBeforeRender) {
         if (renderStillCurrent) {
@@ -4062,7 +4290,12 @@ function scheduleBulk() {
         recordImageRecipeBatchTarget(bulk, { canceled: true });
         return;
       }
-      if (error.superseded) {
+      if (targetRemovedOrChanged) {
+        recordImageRecipeBatchTarget(bulk, { skipped: true });
+        return;
+      }
+      const replacedByNewerEdit = !bulk.cancelled && error.name === 'AbortError' && !renderStillCurrent;
+      if (error.superseded || replacedByNewerEdit) {
         // Keep recipe values beneath the user's newer edit and preserve its status.
         recordImageRecipeBatchTarget(bulk, { superseded: true });
       } else {
@@ -4081,20 +4314,22 @@ function scheduleBulk() {
       queueSave({ refreshLayerTree: false }); renderer.invalidate();
       if (!bulk.paused && !bulk.cancelled) scheduleBulk();
       completeImageRecipeBatchIfDrained(bulk);
+      if (bulk.done) { bulk.paused = false; imageEngine.resumeQueueGroup(bulk.queueGroup); }
       renderBulkBar();
     });
   }
   completeImageRecipeBatchIfDrained(bulk);
+  if (bulk.done) { bulk.paused = false; imageEngine.resumeQueueGroup(bulk.queueGroup); }
   renderBulkBar();
 }
 
-function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT) } = {}) {
+function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pageId = state.document.activePageId } = {}) {
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('A recipe batch is active. Finish or stop it before starting another.');
     renderBulkBar();
     return false;
   }
-  const entries = [...new Set(targets)].map(id => ({ id, entry: findNode(state.document, id) }))
+  const entries = [...new Set(targets)].map(id => ({ id, entry: findNode(state.document, id, pageId) }))
     .filter(item => item.entry?.node.type === 'image');
   const lockedCount = entries.filter(item => !isEditableImageRecipeTarget(item.entry)).length;
   const unique = entries.filter(item => isEditableImageRecipeTarget(item.entry)).map(item => item.id);
@@ -4102,7 +4337,7 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT) } =
   if (lockedCount) showToast(`${lockedCount} locked image${lockedCount === 1 ? '' : 's'} skipped.`);
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
   state.bulk = {
-    recipe, targets: unique, next: 0, completed: 0, failed: 0, superseded: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
+    recipe, pageId, targets: unique, queueGroup: createId('recipe-batch'), next: 0, completed: 0, failed: 0, superseded: 0, skipped: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
     paused: false, cancelled: false, done: false,
     previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: []
   };
@@ -4119,6 +4354,7 @@ function cancelBulkRecipe() {
     if (recipeVersion == null || recipeVersion !== state.renderVersion.get(id)) continue;
     imageEngine.cancelQueuedByKey(`preview:${imagePreviewKey(id)}`);
   }
+  imageEngine.resumeQueueGroup(bulk.queueGroup);
   renderBulkBar();
   return true;
 }
@@ -4126,7 +4362,7 @@ function cancelBulkRecipe() {
 function retryFailedRecipeTargets() {
   const previous = state.bulk;
   if (!canDismissImageRecipeBatch(previous) || !previous.failedTargets?.length) return false;
-  return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency });
+  return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency, pageId: previous.pageId });
 }
 
 function saveRecipeFor(nodeId) {
@@ -4604,6 +4840,7 @@ function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
   checkpoint('Delete layers');
   for (const id of ids) removeNode(state.document, id);
+  clearPrototypeConnectPromptIfSourceMissing();
   reconcileImagePreviewRuntime();
   state.selectedIds = []; state.selectedVectorPoint = null; renderUI(); queueSave();
 }
@@ -4632,6 +4869,7 @@ function cutSelected() {
     validateDocument(nextDocument);
     checkpoint('Cut layers');
     state.document = nextDocument;
+    clearPrototypeConnectPromptIfSourceMissing();
     reconcileImagePreviewRuntime();
     state.clipboard = clipboard;
     reconcileImageAssetRuntime();
@@ -5612,7 +5850,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.prototypeConditionValue = null;
     state.selectedIds = []; state.selectedVectorPoint = null; state.smartGuides = []; state.pendingCommentAnchor = null; state.activeCommentId = null;
     state.draftNode = null; state.penDraft = null; state.penHover = null; state.pencilDraft = null; state.marquee = null; state.interaction = null;
-    state.pointerMap.clear(); state.prototypeSourceId = null; state.textNodeId = null; state.textSelection = null;
+    state.pointerMap.clear(); clearPrototypeConnectPrompt(); state.textNodeId = null; state.textSelection = null;
     state.bulk = null; state.inspectorTab = 'design';
     state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
     history.undoStack.length = 0; history.redoStack.length = 0;
@@ -6461,7 +6699,11 @@ function applyInspectorAction(action, details = {}) {
     state.prototypeSourceId = node.id;
     state.inspectorTab = 'prototype';
     $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === 'prototype'); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === 'prototype')); });
-    renderInspector(); renderer.invalidate(); showToast('Choose a destination frame on the canvas.');
+    renderInspector();
+    syncPrototypeConnectPrompt();
+    if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    canvas.focus({ preventScroll: true });
+    renderer.invalidate(); showToast('Choose a destination frame on the canvas.');
   } else if (action === 'remove-prototype-interaction') {
     const interactionId = details.interactionId;
     if (!node || !interactionId) return;
@@ -6700,7 +6942,7 @@ function initEvents() {
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { if (state.documentTransitioning) return; const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
   $('#add-page').addEventListener('click', addPage);
-  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
+  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; clearPrototypeConnectPrompt(); state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
   $('#layer-select-mode').addEventListener('click', () => {
     state.layerSelectionMode = !state.layerSelectionMode;
@@ -6870,6 +7112,7 @@ function initEvents() {
     if (event.target.matches('[data-variant-master-property]')) changeMainVariantProperty(event.target.dataset.componentId, event.target.dataset.variantMasterProperty, event.target.value);
     if (event.target.id === 'prototype-action') {
       state.prototypeAction = event.target.value;
+      if (state.prototypeSourceId && !['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction)) clearPrototypeConnectPrompt();
       if (!['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTrigger === 'after-delay') state.prototypeTrigger = 'on-click';
       if (state.prototypeAction !== 'navigate' && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
       if (state.prototypeAction === 'set-variable-mode') {
@@ -6878,6 +7121,7 @@ function initEvents() {
         state.prototypeVariableModeId = defaultVariableMode(collection)?.id || null;
       }
       renderInspector();
+      syncPrototypeConnectPrompt();
     }
     if (event.target.id === 'prototype-variable-collection') {
       state.prototypeVariableCollectionId = event.target.value;
@@ -7033,7 +7277,8 @@ function initEvents() {
     if (button) void restoreDocumentVersion(button.dataset.versionId);
   });
   $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
-  $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; state.prototypeSourceId = null; $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
+  $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; clearPrototypeConnectPrompt(); $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
+  $('#prototype-connect-cancel').addEventListener('click', cancelPrototypeConnection);
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
   $('#present-button').addEventListener('click', () => startPresentation());
   $('#present-back').addEventListener('click', backPresentation);
@@ -7096,7 +7341,10 @@ function initEvents() {
   });
   $('#bulk-pause').addEventListener('click', () => {
     if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
-    state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk();
+    state.bulk.paused = !state.bulk.paused;
+    if (state.bulk.paused) imageEngine.pauseQueueGroup(state.bulk.queueGroup);
+    else imageEngine.resumeQueueGroup(state.bulk.queueGroup);
+    renderBulkBar(); if (!state.bulk.paused) scheduleBulk();
   });
   $('#bulk-cancel').addEventListener('click', cancelBulkRecipe);
   $('#bulk-retry').addEventListener('click', retryFailedRecipeTargets);
@@ -7122,6 +7370,16 @@ function initEvents() {
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
   const contextMenu = $('#context-menu');
+  if (event.key.toLowerCase() === 'escape' && state.prototypeSourceId && !document.querySelector('dialog[open]')) {
+    if (!contextMenu.hidden) closeMenu();
+    clearPrototypeConnectPrompt();
+    if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+    renderInspector();
+    renderer.invalidate();
+    canvas.focus({ preventScroll: true });
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && !contextMenu.hidden) {
     const returnFocus = contextMenu._returnFocusElement;
     closeMenu();
@@ -7167,7 +7425,6 @@ function onKeyDown(event) {
   if (state.pencilDraft && key === 'escape') { event.preventDefault(); cancelPencilStroke(); showToast('Pencil stroke cancelled.'); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
-  if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }
   if (mod && key === 'c') { event.preventDefault(); copySelected(); return; }
   if (mod && key === 'x') { event.preventDefault(); cutSelected(); return; }
   if (mod && key === 'v') { event.preventDefault(); pasteSelectedLayers(); return; }

@@ -269,6 +269,7 @@ export class LocalImageEngine {
     this.workers = [];
     this.queue = [];
     this.queuedByKey = new Map();
+    this.pausedQueueGroups = new Set();
     this.pending = new Map();
     this.nextRequestId = 1;
     this.onChange = onChange;
@@ -391,13 +392,16 @@ export class LocalImageEngine {
     this.#notify();
   }
 
-  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey, format = 'png', quality = 90 } = {}) {
+  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey, format = 'png', quality = 90, queueGroup = null } = {}) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
     }
     if (replaceKey !== undefined && (typeof replaceKey !== 'string' || !replaceKey)) {
       return Promise.reject(new TypeError('A queued render replacement key must be a nonempty string.'));
+    }
+    if (queueGroup !== null && (typeof queueGroup !== 'string' || !queueGroup)) {
+      return Promise.reject(new TypeError('A queued render group must be a nonempty string or null.'));
     }
     if (!['png', 'jpeg', 'webp'].includes(format)) return Promise.reject(new TypeError('Image output format must be PNG, JPEG, or WebP.'));
     if (!Number.isInteger(quality) || quality < 1 || quality > 100) return Promise.reject(new TypeError('Image output quality must be an integer from 1 to 100.'));
@@ -431,6 +435,7 @@ export class LocalImageEngine {
         resolve,
         reject,
         replaceKey,
+        queueGroup,
       };
       if (replaceKey !== undefined) {
         const previous = this.queuedByKey.get(replaceKey);
@@ -478,14 +483,19 @@ export class LocalImageEngine {
     // idle while preserving a finite wait for large images.
     const fitsAvailableMemory = job => this.activeRenderBytes === 0
       || this.activeRenderBytes + job.activeRenderBytes <= this.maxActiveRenderBytes;
-    let queueIndex = this.queue.findIndex(fitsAvailableMemory);
-    if (queueIndex < 0) return;
-    let blockedJobs = [];
-    if (queueIndex > 0) {
-      blockedJobs = this.queue.slice(0, queueIndex);
+    // A paused queue group remains in place for resume, but must not block
+    // unrelated work. Keep original queue indices so FIFO ordering is
+    // preserved among all jobs eligible to run at this moment.
+    const eligible = this.queue
+      .map((job, index) => ({ job, index }))
+      .filter(({ job }) => job.queueGroup === null || !this.pausedQueueGroups.has(job.queueGroup));
+    const eligibleIndex = eligible.findIndex(({ job }) => fitsAvailableMemory(job));
+    if (eligibleIndex < 0) return;
+    const { job, index: queueIndex } = eligible[eligibleIndex];
+    const blockedJobs = eligible.slice(0, eligibleIndex).map(({ job: blockedJob }) => blockedJob);
+    if (blockedJobs.length) {
       if (blockedJobs.some(job => (job.memoryBypasses || 0) >= MAX_MEMORY_BLOCKED_JOB_BYPASSES)) return;
     }
-    const job = this.queue[queueIndex];
     // Keep jobs FIFO, but prefer the worker that already owns this decoded
     // source. An arbitrary free worker would request another byte copy and
     // decode the same original into a second worker-local cache.
@@ -574,6 +584,24 @@ export class LocalImageEngine {
   pause() { this.paused = true; this.#notify(); }
   resume() { this.paused = false; this.#dispatch(); this.#notify(); }
 
+  /** Hold queued jobs in one group while allowing active and unrelated jobs to drain. */
+  pauseQueueGroup(queueGroup) {
+    if (typeof queueGroup !== 'string' || !queueGroup) throw new TypeError('A paused render group must be a nonempty string.');
+    if (this.pausedQueueGroups.has(queueGroup)) return false;
+    this.pausedQueueGroups.add(queueGroup);
+    this.#notify();
+    return true;
+  }
+
+  /** Resume one held group, preserving its original queue order. */
+  resumeQueueGroup(queueGroup) {
+    if (typeof queueGroup !== 'string' || !queueGroup) throw new TypeError('A resumed render group must be a nonempty string.');
+    if (!this.pausedQueueGroups.delete(queueGroup)) return false;
+    this.#dispatch();
+    this.#notify();
+    return true;
+  }
+
   cancelQueued(error = new DOMException('The image operation was cancelled.', 'AbortError')) {
     for (const job of this.queue.splice(0)) job.reject(error);
     this.queuedByKey.clear();
@@ -593,6 +621,7 @@ export class LocalImageEngine {
   destroy() {
     this.dead = true;
     this.cancelQueued(new Error('The local image engine was closed.'));
+    this.pausedQueueGroups.clear();
     for (const slot of this.workers) slot.worker.terminate();
     for (const job of this.pending.values()) job.reject(new Error('The local image engine was closed.'));
     this.pending.clear(); this.workers.length = 0;
