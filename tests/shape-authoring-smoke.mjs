@@ -1,5 +1,6 @@
 import { createDocument } from '../src/model.js';
 import { exportPageToSvg } from '../src/svg-export.js';
+import { deleteStoredDocument } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -153,4 +154,8 @@ try {
   result.textContent = `PASS\n${JSON.stringify({ starTool: true, starInspector: true, polygonInspector: true, liveCanvasRender: true, undoRedo: true, localPersistence: true, svgGeometry: true, starPoints: finalStar.points, starInnerRadius: finalStar.innerRadius, polygonSides: polygon.points })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
+} finally {
+  frame.src = 'about:blank';
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await deleteStoredDocument(documentId).catch(() => {});
 }

@@ -1,4 +1,5 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
+import { deleteStoredDocument } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -127,4 +128,8 @@ try {
   result.textContent = 'PASS · phone-sized accessible anchor mode control, local persistence, and stored smooth drag semantics';
 } catch (error) {
   result.textContent = `FAIL\n${error.stack || error}`;
+} finally {
+  frame.src = 'about:blank';
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await deleteStoredDocument(documentId).catch(() => {});
 }
