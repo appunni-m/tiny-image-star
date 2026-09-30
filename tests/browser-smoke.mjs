@@ -92,7 +92,7 @@ function dispatchCanvasPointer(app, canvas, type, clientX, clientY, pointerId = 
 }
 function readStore(storeName) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('figma-local-documents', 1);
+    const request = indexedDB.open('figma-local-documents');
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result; const get = db.transaction(storeName).objectStore(storeName).getAll();

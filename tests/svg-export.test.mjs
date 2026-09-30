@@ -426,6 +426,25 @@ test('polygon and star point generation matches the editor for fractional counts
   assert.equal(starPoints.length, 11);
 });
 
+test('SVG export honors editable polygon side count and star point depth', () => {
+  const polygon = exportNodeToSvg(createNode('polygon', { width: 120, height: 80, points: 7 }));
+  const polygonCoordinates = polygon.match(/<polygon points="([^"]+)"/)[1].split(' ');
+  assert.equal(polygonCoordinates.length, 7, 'polygon export should use its editable side count');
+
+  const star = exportNodeToSvg(createNode('star', { width: 100, height: 100, points: 8, innerRadius: .25 }));
+  const starCoordinates = star.match(/<polygon points="([^"]+)"/)[1].split(' ');
+  assert.equal(starCoordinates.length, 16, 'star export should create an inner and outer vertex for each editable point');
+  const [innerX, innerY] = starCoordinates[1].split(',').map(Number);
+  const innerAngle = -Math.PI / 2 + Math.PI / 8;
+  assert.ok(Math.abs(innerX - (50 + Math.cos(innerAngle) * 12.5)) < 1e-8
+    && Math.abs(innerY - (50 + Math.sin(innerAngle) * 12.5)) < 1e-8,
+  'the inner-radius ratio should affect exported geometry');
+
+  const zeroRadiusStar = exportNodeToSvg(createNode('star', { width: 100, height: 100, points: 3, innerRadius: 0 }));
+  assert.equal(zeroRadiusStar.match(/<polygon points="([^"]+)"/)[1].split(' ')[1], '50,50',
+    'a zero inner radius should export as an actual center point instead of falling back to the default ratio');
+});
+
 test('rejects XML 1.0 forbidden control characters in exported text and names', () => {
   assert.throws(() => exportNodeToSvg(createNode('text', { text: 'Bad\u0001 copy' }), { measureText: value => value.length * 10 }), /characters forbidden by XML 1\.0/);
   assert.throws(() => exportNodeToSvg(createNode('rectangle', { name: 'Bad\u0001 name' })), /characters forbidden by XML 1\.0/);

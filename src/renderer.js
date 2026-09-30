@@ -8,6 +8,7 @@ import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { selectionBounds } from './group-transform.js';
+import { drawAlignmentGuides } from './smart-guides.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -431,6 +432,7 @@ export class SceneRenderer {
     ctx.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
     this.drawSelection(ctx, page.children, state.selectedIds, 0, 0);
+    drawAlignmentGuides(ctx, state.smartGuides, state.zoom);
     if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);
     if (state.draftNode) this.drawNode(ctx, state.draftNode, 0, 0, state.assets, true);
@@ -515,7 +517,7 @@ export class SceneRenderer {
         ctx.moveTo(x, y); ctx.lineTo(x + width, y + height);
         break;
       case 'star':
-        starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius || 0.48);
+        starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
         break;
       case 'polygon':
         polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);
@@ -708,7 +710,7 @@ export class SceneRenderer {
           ctx.moveTo(x, y); ctx.lineTo(x + width, y + height);
           break;
         case 'star':
-          starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius || 0.48);
+          starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
           break;
         case 'polygon':
           polygonPath(ctx, cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, node.points);

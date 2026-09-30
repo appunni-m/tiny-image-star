@@ -37,7 +37,7 @@ function openDesignRow(app, id) {
 }
 function readSaved(app, id) {
   return new Promise((resolve, reject) => {
-    const request = app.defaultView.indexedDB.open('figma-local-documents', 1);
+    const request = app.defaultView.indexedDB.open('figma-local-documents');
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;

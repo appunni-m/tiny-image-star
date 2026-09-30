@@ -11,6 +11,51 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(validateDocument(document), true);
 });
 
+test('editable polygon and star geometry persists and rejects invalid shape values', () => {
+  const document = createDocument();
+  const polygon = createNode('polygon', { points: 9 });
+  const star = createNode('star', { points: 8, innerRadius: .23 });
+  addNode(document, polygon); addNode(document, star);
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(reopened.pages[0].children[0].points, 9);
+  assert.equal(reopened.pages[0].children[1].points, 8);
+  assert.equal(reopened.pages[0].children[1].innerRadius, .23);
+
+  const zeroRadius = structuredClone(reopened);
+  zeroRadius.pages[0].children[1].innerRadius = 0;
+  assert.equal(validateDocument(zeroRadius), true);
+  assert.equal(parseDocument(serializeDocument(zeroRadius)).pages[0].children[1].innerRadius, 0);
+
+  for (const [nodeIndex, property, invalid] of [
+    [0, 'points', 2], [0, 'points', 33], [1, 'points', 2], [1, 'points', Infinity],
+    [1, 'innerRadius', -0.01], [1, 'innerRadius', 1.01]
+  ]) {
+    const candidate = structuredClone(reopened);
+    candidate.pages[0].children[nodeIndex][property] = invalid;
+    assert.throws(() => validateDocument(candidate), property === 'innerRadius' ? /Invalid star inner radius/ : /Invalid shape point count/);
+  }
+
+  const wrongShapeProperty = structuredClone(reopened);
+  wrongShapeProperty.pages[0].children[0].innerRadius = .5;
+  assert.throws(() => validateDocument(wrongShapeProperty), /Star inner radius is only supported on star layers/);
+});
+
+test('vector path anchor modes are restricted to supported persisted values', () => {
+  const document = createDocument();
+  const path = createNode('path', { points: [
+    { x: 0, y: 0, mode: 'smooth' },
+    { x: 1, y: 1, mode: 'symmetric' }
+  ] });
+  addNode(document, path);
+  assert.equal(validateDocument(document), true);
+  for (const mode of ['automatic', '']) {
+    const invalid = structuredClone(document);
+    invalid.pages[0].children[0].points[0].mode = mode;
+    assert.throws(() => validateDocument(invalid), /Invalid vector path/);
+  }
+});
+
 test('stroke cap, join, and pattern settings persist and reject invalid values', () => {
   const document = createDocument();
   const line = createNode('line', { strokeWidth: 4, strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'dashed', strokeMiterLimit: 4 });

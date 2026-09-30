@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tiny Image Star shape authoring smoke</title></head>
+<body>
+  <h1>Tiny Image Star shape authoring smoke</h1>
+  <pre id="result" aria-live="polite">RUNNING</pre>
+  <iframe id="app-frame" src="../index.html" title="Isolated local design editor" style="position:fixed;left:-1400px;top:0;width:1280px;height:720px;border:0"></iframe>
+  <script>
+    window.addEventListener('error', event => { document.querySelector('#result').textContent = `SCRIPT ERROR\n${event.message}`; });
+    window.addEventListener('unhandledrejection', event => { document.querySelector('#result').textContent = `UNHANDLED REJECTION\n${event.reason?.stack || event.reason}`; });
+  </script>
+  <script type="module" src="./shape-authoring-smoke.mjs"></script>
+</body>
+</html>

@@ -55,6 +55,47 @@ test('component text typography overrides validate with the component property s
   assert.throws(() => validateDocument(document), /Invalid component font style override/);
 });
 
+test('component shape geometry overrides persist and validate against the source shape', () => {
+  const document = createDocument();
+  const master = createNode('star', { name: 'Badge', points: 5, innerRadius: .48 });
+  addNode(document, master);
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  instance.componentOverrides[master.id] = { points: 8, innerRadius: 0 };
+
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[1].componentOverrides[master.id], { points: 8, innerRadius: 0 });
+
+  instance.componentOverrides[master.id].points = 33;
+  assert.throws(() => validateDocument(document), /Invalid component shape point-count override/);
+  instance.componentOverrides[master.id] = { points: 8, innerRadius: 1.01 };
+  assert.throws(() => validateDocument(document), /Invalid component star inner-radius override/);
+});
+
+test('component vector-path point overrides validate and survive document reload', () => {
+  const document = createDocument();
+  const main = createNode('path', { name: 'Badge outline', points: [
+    { x: 0, y: 0, out: { x: .2, y: 0 }, mode: 'smooth' },
+    { x: 1, y: 1, in: { x: -.2, y: 0 }, mode: 'symmetric' }
+  ] });
+  addNode(document, main);
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const editedPoints = structuredClone(main.points);
+  editedPoints[0].out = { x: .35, y: .15 };
+  instance.componentOverrides[main.id] = { points: editedPoints };
+
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[1].componentOverrides[main.id].points, editedPoints);
+
+  instance.componentOverrides[main.id].points[0].mode = 'invalid';
+  assert.throws(() => validateDocument(document), /Invalid component vector path points override/);
+  instance.componentOverrides[main.id].points = null;
+  assert.throws(() => validateDocument(document), /Invalid component vector path points override/);
+});
+
 test('main component edits synchronize while preserving instance placement and stable layer identities', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Card', width: 220, height: 120 });

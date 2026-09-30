@@ -68,7 +68,7 @@ const documentDatabases = new WeakMap();
 function documentDatabase(app) {
   if (documentDatabases.has(app)) return documentDatabases.get(app);
   const pending = new Promise((resolve, reject) => {
-    const request = app.defaultView.indexedDB.open('figma-local-documents', 1);
+    const request = app.defaultView.indexedDB.open('figma-local-documents');
     const deadline = setTimeout(() => reject(new Error('Timed out opening the local document database.')), 5000);
     request.onerror = () => { clearTimeout(deadline); reject(request.error); };
     request.onblocked = () => { clearTimeout(deadline); reject(new Error('Local document database open was blocked.')); };

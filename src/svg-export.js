@@ -250,7 +250,7 @@ function shapeMarkup(node, document, measureText, gradientId = null) {
     case 'star': {
       const count = Math.max(3, Math.min(32, Number(node.points) || 5));
       const radius = Math.min(node.width, node.height) / 2;
-      const inner = Number(node.innerRadius) || 0.48;
+      const inner = node.innerRadius == null ? 0.48 : Number(node.innerRadius);
       if (!Number.isFinite(inner) || inner < 0 || inner > 1) throw new TypeError(`SVG export requires a valid star ratio on layer ${node.name || node.id || '(unnamed)'}.`);
       const points = Array.from({ length: Math.ceil(count * 2) }, (_, index) => {
         const angle = -Math.PI / 2 + index * Math.PI / count;

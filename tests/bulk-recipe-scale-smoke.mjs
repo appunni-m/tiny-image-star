@@ -51,7 +51,7 @@ function addImages(app, files) {
 }
 function readStore(app, storeName) {
   return new Promise((resolve, reject) => {
-    const request = app.defaultView.indexedDB.open('figma-local-documents', 1);
+    const request = app.defaultView.indexedDB.open('figma-local-documents');
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;

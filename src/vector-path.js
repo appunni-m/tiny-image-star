@@ -2,11 +2,47 @@ function finitePoint(point) {
   return point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y));
 }
 
+export const VECTOR_ANCHOR_MODES = Object.freeze(['corner', 'smooth', 'symmetric']);
+const vectorAnchorModes = new Set(VECTOR_ANCHOR_MODES);
+
+function isVectorAnchorMode(mode) {
+  return vectorAnchorModes.has(mode);
+}
+
+function constrainOppositeHandle(point, part, mode, width, height) {
+  const oppositePart = part === 'in' ? 'out' : 'in';
+  const active = point[part];
+  const activeVector = { x: (Number(active?.x) || 0) * width, y: (Number(active?.y) || 0) * height };
+  const activeLength = Math.hypot(activeVector.x, activeVector.y);
+  if (mode === 'symmetric') {
+    point[oppositePart] = { x: -(Number(active?.x) || 0), y: -(Number(active?.y) || 0) };
+    return;
+  }
+  if (mode !== 'smooth') return;
+
+  // Smooth handles share a tangent but keep independent lengths. If the
+  // opposite handle does not yet exist, start it at the active handle's
+  // length so the new tangent is visible immediately.
+  const opposite = point[oppositePart];
+  const oppositeLength = Math.hypot((Number(opposite?.x) || 0) * width, (Number(opposite?.y) || 0) * height) || activeLength;
+  if (activeLength === 0 || oppositeLength === 0) {
+    point[oppositePart] = { x: 0, y: 0 };
+    return;
+  }
+  point[oppositePart] = {
+    x: -activeVector.x / activeLength * oppositeLength / width,
+    y: -activeVector.y / activeLength * oppositeLength / height
+  };
+}
+
 /** Convert absolute anchor/control coordinates into a scalable path layer. */
 export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
   if (!Array.isArray(anchors) || anchors.length < 2) throw new TypeError('A vector path needs at least two points.');
   if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out)))) {
     throw new TypeError('Vector path points must contain finite coordinates.');
+  }
+  if (anchors.some(point => point.mode != null && !isVectorAnchorMode(point.mode))) {
+    throw new TypeError('Vector path anchor modes must be corner, smooth, or symmetric.');
   }
 
   const extents = [];
@@ -27,12 +63,17 @@ export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
     points: anchors.map(point => {
       const anchorX = Number(point.x);
       const anchorY = Number(point.y);
-      return {
+      const converted = {
         x: (anchorX - left) / width,
         y: (anchorY - top) / height,
         in: point.in ? { x: (Number(point.in.x) - anchorX) / width, y: (Number(point.in.y) - anchorY) / height } : { x: 0, y: 0 },
         out: point.out ? { x: (Number(point.out.x) - anchorX) / width, y: (Number(point.out.y) - anchorY) / height } : { x: 0, y: 0 }
       };
+      // Omit the field for legacy/import callers that have no mode data. Once
+      // an anchor mode is explicitly chosen, it remains ordinary path data and
+      // survives document serialization without changing older path behavior.
+      if (point.mode != null) converted.mode = point.mode;
+      return converted;
     })
   };
 }
@@ -53,6 +94,8 @@ export function vectorNodePoint(node, index, part = 'anchor', origin = { x: node
 export function setVectorNodePoint(node, index, part, position, { origin = { x: node.x, y: node.y }, symmetric = false } = {}) {
   const point = node?.points?.[index];
   if (!point || !finitePoint(position) || !['anchor', 'in', 'out'].includes(part)) return false;
+  const mode = point.mode == null ? (symmetric ? 'symmetric' : 'corner') : point.mode;
+  if (!isVectorAnchorMode(mode)) return false;
   const width = Math.max(1, Number(node.width) || 1);
   const height = Math.max(1, Number(node.height) || 1);
   const anchor = vectorNodePoint(node, index, 'anchor', origin);
@@ -63,7 +106,36 @@ export function setVectorNodePoint(node, index, part, position, { origin = { x: 
   }
   const handle = { x: (Number(position.x) - anchor.x) / width, y: (Number(position.y) - anchor.y) / height };
   point[part] = handle;
-  if (symmetric) point[part === 'in' ? 'out' : 'in'] = { x: -handle.x, y: -handle.y };
+  constrainOppositeHandle(point, part, mode, width, height);
+  return true;
+}
+
+/**
+ * Set a persisted path anchor mode and reconcile its handles immediately.
+ * Smooth mode keeps both handle lengths while making them collinear; symmetric
+ * mode mirrors the preferred handle exactly. Corner mode preserves geometry.
+ */
+export function setVectorNodePointMode(node, index, mode, { preferredHandle = 'out' } = {}) {
+  const point = node?.points?.[index];
+  if (!point || !isVectorAnchorMode(mode) || !['in', 'out'].includes(preferredHandle)
+    || (point.mode != null && !isVectorAnchorMode(point.mode))) return false;
+  if (!finitePoint(point) || (point.in != null && !finitePoint(point.in)) || (point.out != null && !finitePoint(point.out))) return false;
+
+  if (mode !== 'corner') {
+    const width = Math.max(1, Number(node.width) || 1);
+    const height = Math.max(1, Number(node.height) || 1);
+    let primary = point[preferredHandle];
+    let secondary = point[preferredHandle === 'in' ? 'out' : 'in'];
+    const length = handle => Math.hypot((Number(handle?.x) || 0) * width, (Number(handle?.y) || 0) * height);
+    if (length(primary) === 0 && length(secondary) > 0) {
+      preferredHandle = preferredHandle === 'in' ? 'out' : 'in';
+      primary = point[preferredHandle];
+    }
+    if (!primary) primary = { x: 0, y: 0 };
+    point[preferredHandle] = primary;
+    constrainOppositeHandle(point, preferredHandle, mode, width, height);
+  }
+  point.mode = mode;
   return true;
 }
 
@@ -149,7 +221,7 @@ export function insertVectorNodePoint(node, segmentIndex, t = .5, origin = { x: 
   const insertedIndex = nextIndex === 0 ? points.length : nextIndex;
   points.splice(insertedIndex, 0, {
     x: (anchor.x - Number(origin.x || 0)) / width, y: (anchor.y - Number(origin.y || 0)) / height,
-    in: handle(d, anchor), out: handle(e, anchor)
+    in: handle(d, anchor), out: handle(e, anchor), mode: 'smooth'
   });
   return insertedIndex;
 }

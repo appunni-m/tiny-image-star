@@ -1,16 +1,21 @@
 import { createId, walkNodes } from './model.js';
+import { publishComponent, validateComponentLibrary } from './component-library.js';
 
 const DB_NAME = 'figma-local-documents';
-const DB_VERSION = 1;
-let dbPromise;
+const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
+const dbPromises = new Map();
 
-function openDatabase() {
-  if (dbPromise) return dbPromise;
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets']) {
+  if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
   let settled = false;
   const pending = new Promise((resolve, reject) => { resolveOpen = resolve; rejectOpen = reject; });
-  dbPromise = pending;
+  dbPromises.set(name, pending);
+
+  const clearPending = () => {
+    if (dbPromises.get(name) === pending) dbPromises.delete(name);
+  };
 
   const fail = error => {
     if (settled) return;
@@ -24,12 +29,13 @@ function openDatabase() {
     }
 
     let request;
-    try { request = indexedDB.open(DB_NAME, DB_VERSION); }
+    try { request = indexedDB.open(name); }
     catch (error) { fail(error); return; }
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains('documents')) db.createObjectStore('documents', { keyPath: 'id' });
-      if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets', { keyPath: 'id' });
+      for (const storeName of storeNames) {
+        if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName, { keyPath: 'id' });
+      }
     };
     request.onsuccess = () => {
       const db = request.result;
@@ -41,7 +47,7 @@ function openDatabase() {
         // Let another tab perform its schema upgrade instead of keeping this
         // connection alive. Future operations will lazily open the new DB.
         db.close();
-        if (dbPromise === pending) dbPromise = null;
+        clearPending();
       };
       resolveOpen(db);
     };
@@ -49,11 +55,13 @@ function openDatabase() {
     request.onblocked = () => fail(new Error('Close other design tabs before upgrading local storage.'));
   };
 
-  pending.then(() => {}, () => {
-    if (dbPromise === pending) dbPromise = null;
-  });
+  pending.then(() => {}, clearPending);
   requestOpen();
   return pending;
+}
+
+function openComponentLibraryDatabase() {
+  return openDatabase(COMPONENT_LIBRARY_DB_NAME, ['componentLibraries']);
 }
 
 function requestResult(request) {
@@ -155,6 +163,122 @@ export async function deleteStoredDocument(id) {
   const db = await openDatabase();
   const tx = db.transaction('documents', 'readwrite');
   const store = tx.objectStore('documents');
+  let found = false;
+  const done = transactionDone(tx);
+  const request = store.get(id);
+  request.onsuccess = () => {
+    if (!request.result) return;
+    found = true;
+    store.delete(id);
+  };
+  await done;
+  return found;
+}
+
+function validComponentLibraryId(id) {
+  return typeof id === 'string' && id.trim() === id && id.length > 0 && id.length <= 200;
+}
+
+function validateStoredComponentLibrary(record) {
+  if (!record || typeof record !== 'object' || !record.library || typeof record.id !== 'string') {
+    throw new TypeError('Stored component library record is invalid.');
+  }
+  validateComponentLibrary(record.library);
+  if (record.id !== record.library.id || record.name !== record.library.name || record.revision !== record.library.revision) {
+    throw new TypeError('Stored component library metadata does not match its snapshot.');
+  }
+  return record.library;
+}
+
+/** Persist one validated component-library snapshot without retaining caller-owned objects. */
+export async function saveComponentLibrary(library) {
+  const snapshot = structuredClone(library);
+  validateComponentLibrary(snapshot);
+  const record = {
+    id: snapshot.id,
+    name: snapshot.name,
+    revision: snapshot.revision,
+    savedAt: Date.now(),
+    library: snapshot
+  };
+  const db = await openComponentLibraryDatabase();
+  const tx = db.transaction('componentLibraries', 'readwrite');
+  tx.objectStore('componentLibraries').put(structuredClone(record));
+  await transactionDone(tx);
+}
+
+/** Publish against the latest on-device library revision in one serialized write transaction. */
+export async function publishStoredComponent(libraryId, component) {
+  if (!validComponentLibraryId(libraryId)) throw new TypeError('A valid local component library ID is required.');
+  const db = await openComponentLibraryDatabase();
+  const tx = db.transaction('componentLibraries', 'readwrite');
+  const done = transactionDone(tx);
+  const store = tx.objectStore('componentLibraries');
+  let result = null;
+  let operationError = null;
+  const request = store.get(libraryId);
+  request.onsuccess = () => {
+    try {
+      const current = validateStoredComponentLibrary(request.result);
+      const published = publishComponent(current, component);
+      const library = structuredClone(published.library);
+      store.put({
+        id: library.id,
+        name: library.name,
+        revision: library.revision,
+        savedAt: Date.now(),
+        library
+      });
+      result = { library, publication: structuredClone(published.publication) };
+    } catch (error) {
+      operationError = error;
+      tx.abort();
+    }
+  };
+  try { await done; }
+  catch (error) { throw operationError || error; }
+  if (!result) throw new Error('The local component publication did not complete.');
+  return result;
+}
+
+/** Load and validate one saved component library, returning a defensive copy. */
+export async function loadComponentLibrary(id) {
+  if (!validComponentLibraryId(id)) return null;
+  const db = await openComponentLibraryDatabase();
+  const record = await requestResult(db.transaction('componentLibraries').objectStore('componentLibraries').get(id));
+  if (!record) return null;
+  return structuredClone(validateStoredComponentLibrary(record));
+}
+
+/** Return validated component-library summaries without loading records into UI state by reference. */
+export async function listComponentLibraries() {
+  const db = await openComponentLibraryDatabase();
+  const records = await requestResult(db.transaction('componentLibraries').objectStore('componentLibraries').getAll());
+  const summaries = [];
+  for (const record of records) {
+    try {
+      const library = validateStoredComponentLibrary(record);
+      summaries.push({
+        id: library.id,
+        name: library.name,
+        revision: library.revision,
+        savedAt: Number.isFinite(record.savedAt) ? record.savedAt : 0
+      });
+    } catch (error) {
+      // A damaged record should not hide healthy libraries or prevent edits in
+      // the active design. The bad entry remains isolated for recovery tools.
+      console.warn('Skipping invalid local component library record', record?.id, error);
+    }
+  }
+  return summaries.sort((left, right) => right.savedAt - left.savedAt || left.name.localeCompare(right.name));
+}
+
+/** Delete one component library by stable ID; returns false when no record exists. */
+export async function deleteComponentLibrary(id) {
+  if (!validComponentLibraryId(id)) return false;
+  const db = await openComponentLibraryDatabase();
+  const tx = db.transaction('componentLibraries', 'readwrite');
+  const store = tx.objectStore('componentLibraries');
   let found = false;
   const done = transactionDone(tx);
   const request = store.get(id);

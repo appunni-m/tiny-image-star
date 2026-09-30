@@ -49,6 +49,8 @@
           <section class="assets-section" id="assets-section" hidden>
             <div class="section-heading"><span>Components</span></div>
             <div id="components-list" class="components-list"></div>
+            <div class="section-heading local-component-library-heading"><span>Local component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
+            <div id="component-library-list" class="component-library-list" aria-live="polite"></div>
             <div class="section-heading"><span>Variables</span><div class="heading-actions"><button class="tiny-icon-button" id="import-design-tokens" type="button" aria-label="Import design tokens" title="Import DTCG tokens">↓</button><button class="tiny-icon-button" id="export-design-tokens" type="button" aria-label="Export design tokens" title="Export DTCG tokens">↑</button><button class="tiny-icon-button" id="add-variable-collection" aria-label="Create variable collection" title="Create variable collection">＋</button></div></div>
             <div class="image-properties-note token-interop-note">Token JSON stays on this device. Tiny Image Star files preserve all modes; other DTCG tools receive the default mode.</div>
             <div id="variable-collections-list" class="variable-collections-list"></div>
@@ -103,6 +105,7 @@
             <button class="tool-button" data-tool="ellipse" title="Ellipse (O)" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
             <button class="tool-button" data-tool="line" title="Line (L)" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
             <button class="tool-button" data-tool="polygon" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="star" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
             <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>

@@ -13,7 +13,7 @@ import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld,
 import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
 import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
-import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listSavedDocuments, loadDocumentById, loadImageAsset, loadLatestDocument, renameStoredDocument, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadImageAsset, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
@@ -30,9 +30,12 @@ import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
-  setVectorNetworkEdgeControlPoint, setVectorNetworkVertexPoint, setVectorNodePoint, vectorGeometryFromAnchors,
+  setVectorNetworkEdgeControlPoint, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
   vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint, vectorNodePoint
 } from './vector-path.js';
+import { snapToAlignmentGuides } from './smart-guides.js';
+import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
+import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -41,7 +44,7 @@ const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
   assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(),
-  draftNode: null, penDraft: null, penHover: null, marquee: null, interaction: null, pointerMap: new Map(),
+  draftNode: null, penDraft: null, penHover: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
@@ -53,6 +56,7 @@ const state = {
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   prototypeVariantTargetId: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
+  componentLibraries: [], componentLibraryTargetId: null,
   componentSlotDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
@@ -81,14 +85,32 @@ function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
 function resolvedGeometry(node) { return getNodeGeometry(state.document, node); }
+function isLocalLinkedComponent(node) { return node?.linkedComponent?.schema === 'tiny-image-star/linked-component-instance/1'; }
+function hasValidLocalComponentSnapshot(node) {
+  if (!isLocalLinkedComponent(node)) return false;
+  try { return validateLinkedInstanceSnapshot(node.linkedComponent); }
+  catch { return false; }
+}
 function componentInstanceRoot(nodeId) {
   const entry = findNode(state.document, nodeId);
   if (!entry) return null;
-  return [...entry.parents, entry.node].reverse().find(node => node.isInstance) || null;
+  return [...entry.parents, entry.node].reverse().find(node => node.isInstance || isLocalLinkedComponent(node)) || null;
 }
 function recordComponentOverride(instanceRoot, node, property) {
   if (!instanceRoot || !node.componentSourceId) return;
   const key = property.split('.')[0];
+  if (isLocalLinkedComponent(instanceRoot)) {
+    if (!hasValidLocalComponentSnapshot(instanceRoot)) return;
+    if (key === 'id' || key === 'type' || key === 'children' || key === 'componentId' || key === 'componentOverrides'
+      || key === 'componentPropertyValues' || key === 'isComponent' || key === 'isInstance'
+      || (node.id === instanceRoot.id && ['x', 'y', 'name'].includes(key))) return;
+    try {
+      recordLinkedComponentOverride(instanceRoot.linkedComponent, node.componentSourceId, key, node[key]);
+    } catch (error) {
+      console.warn('Could not record local component override', error);
+    }
+    return;
+  }
   if (node.id === instanceRoot.id && (key === 'x' || key === 'y')) return;
   instanceRoot.componentOverrides ||= {};
   instanceRoot.componentOverrides[node.componentSourceId] ||= {};
@@ -164,6 +186,7 @@ function checkpoint(label) { history.checkpoint(state.document, label); }
 function setSelection(ids, { keepInspector = false } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
   state.selectedIds = [...new Set(valid)];
+  state.smartGuides = [];
   if (state.selectedVectorPoint && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.selectedVectorPoint.nodeId)) state.selectedVectorPoint = null;
   renderLayers();
   if (!keepInspector) renderInspector();
@@ -581,9 +604,29 @@ function componentPropertyDefinitions(component, root) {
     : '';
   return `<div class="component-property-editor-wrap"><div class="component-property-heading">Component properties <span>${(component.componentProperties || []).length}/100</span></div>${definitions || '<div class="image-properties-note">Expose text, visibility, a nested instance, or a content slot as a reusable control.</div>'}${component.componentProperties?.length >= 100 ? '<div class="image-properties-note">This component has reached the 100-property limit.</div>' : editor}</div>`;
 }
+function componentLibraryOptions(selectedId = state.componentLibraryTargetId) {
+  const libraries = state.componentLibraries || [];
+  const selected = libraries.some(library => library.id === selectedId) ? selectedId : (libraries[0]?.id || '');
+  state.componentLibraryTargetId = selected || null;
+  return `<option value=""${selected ? '' : ' selected'}>Create a new local library…</option>${libraries.map(library => `<option value="${escapeHtml(library.id)}"${library.id === selected ? ' selected' : ''}>${escapeHtml(library.name)}</option>`).join('')}`;
+}
 function componentSection(node) {
   const linkedInstance = componentInstanceRoot(node.id);
   if (linkedInstance) {
+    if (isLocalLinkedComponent(linkedInstance)) {
+      const link = linkedInstance.linkedComponent;
+      if (!hasValidLocalComponentSnapshot(linkedInstance)) {
+        return section('Local component', `<div class="image-properties-note">This library link is damaged. The editable layers are still here, but this instance cannot be updated.</div><button class="add-fill" data-action="detach-local-component" data-instance-id="${escapeHtml(linkedInstance.id)}">Remove broken link and keep layers</button>`);
+      }
+      const library = state.componentLibraries.find(item => item.id === link.libraryId)?.library;
+      const component = library?.components.find(item => item.id === link.componentId);
+      const latest = component?.versions.at(-1)?.revision ?? link.sourceRevision;
+      const hasUpdate = latest > link.sourceRevision;
+      const updateButton = hasUpdate
+        ? `<button class="add-fill" data-action="update-local-component" data-instance-id="${escapeHtml(linkedInstance.id)}">↻ Update to revision ${latest}</button>`
+        : '<div class="image-properties-note">This instance is on the latest local revision. Layer edits are kept as compatible overrides.</div>';
+      return section('Local component', `<div class="component-link-copy"><strong>${escapeHtml(link.sourceSnapshot.name || linkedInstance.name)}</strong><span>${escapeHtml(library?.name || 'Library unavailable')} · revision ${link.sourceRevision}${hasUpdate ? ` · revision ${latest} available` : ''}</span></div>${updateButton}<button class="add-fill" data-action="publish-local-instance" data-instance-id="${escapeHtml(linkedInstance.id)}">Publish current edits as a new revision</button><button class="add-fill" data-action="detach-local-component" data-instance-id="${escapeHtml(linkedInstance.id)}">Detach from library</button>`);
+    }
     const component = state.document.components?.find(item => item.id === linkedInstance.componentId);
     const set = state.document.componentSets?.find(item => item.id === component?.componentSetId);
     const label = node.id === linkedInstance.id ? 'Linked instance · local edits remain as overrides' : 'Layer inside a linked instance · local edits remain as overrides';
@@ -600,7 +643,9 @@ function componentSection(node) {
     const set = state.document.componentSets?.find(item => item.id === component?.componentSetId);
     const variantFields = set ? set.properties.map(property => `<label class="variant-control"><span>${escapeHtml(property.name)}</span><input class="prop-input" data-variant-master-property="${escapeHtml(property.name)}" data-component-id="${escapeHtml(component.id)}" value="${escapeHtml(component.variantProperties?.[property.name] || '')}" aria-label="${escapeHtml(property.name)} variant value"/></label>`).join('') : '';
     const variantLabel = set ? `Variant in ${set.name} · changes update linked instances` : 'Main component · changes update linked instances';
-    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>${escapeHtml(variantLabel)}</span></div>${variantFields ? `<div class="variant-controls">${variantFields}</div>` : ''}${component ? componentPropertyDefinitions(component, node) : ''}<button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>`);
+    const libraryPublish = `<label class="field-caption" for="component-library-target">Publish to local library</label><select id="component-library-target" class="select-field" aria-label="Target local component library">${componentLibraryOptions()}</select><button class="add-fill" data-action="publish-local-component" data-component-id="${escapeHtml(node.componentId)}">↑ Publish current revision</button>`;
+    const publishedCount = (node.publishedLibraryRefs || []).length;
+    return section('Component', `<div class="component-link-copy"><strong>${escapeHtml(component?.name || node.name)}</strong><span>${escapeHtml(variantLabel)}</span></div>${variantFields ? `<div class="variant-controls">${variantFields}</div>` : ''}${component ? componentPropertyDefinitions(component, node) : ''}<button class="add-fill" data-action="create-component-instance" data-component-id="${escapeHtml(node.componentId)}">＋ Create instance</button>${libraryPublish}${publishedCount ? `<div class="image-properties-note">Published in ${publishedCount} local librar${publishedCount === 1 ? 'y' : 'ies'}.</div>` : ''}`);
   }
   if (node.isInstance) {
     const component = state.document.components?.find(item => item.id === node.componentId);
@@ -891,10 +936,20 @@ function renderInspector() {
   }
   if (node.type === 'text') body += textSection(node);
   if (node.type === 'image') body += imageAdjustmentsSection(node) + singleImageRecipesSection(node);
+  if (node.type === 'polygon') {
+    body += section('Polygon', `${numberField('Sides', 'points', node.points ?? 6, 1, 3, 32, node.locked, 'Polygon sides')}<div class="image-properties-note">Choose between 3 and 32 sides. The shape updates live on the canvas.</div>`);
+  } else if (node.type === 'star') {
+    body += section('Star', `<div class="property-grid">${numberField('Points', 'points', node.points ?? 5, 1, 3, 32, node.locked, 'Star point count')}${numberField('Inner radius', 'innerRadius', node.innerRadius ?? 0.48, .01, 0, 1, node.locked, 'Star inner radius ratio')}</div><div class="image-properties-note">Set 3–32 outer points and an inner radius ratio from 0 to 1.</div>`);
+  }
   if (node.type === 'path') {
     const pointCount = node.points?.length || 0;
     const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
-    body += section('Vector', `<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
+    const selectedAnchorIndex = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.index : -1;
+    const selectedAnchor = Number.isInteger(selectedAnchorIndex) ? node.points?.[selectedAnchorIndex] : null;
+    const pathEntry = entries[0];
+    const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
+    const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
+    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.closed) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   } else if (node.type === 'network') {
@@ -921,6 +976,50 @@ function renderInspector() {
   body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
+}
+
+function renderLocalComponentLibraries() {
+  const list = $('#component-library-list');
+  if (!list) return;
+  list.replaceChildren();
+  const selectedMaster = selectedNodes().length === 1 && selectedNodes()[0].isComponent;
+  if (!(state.componentLibraries || []).length) {
+    const empty = document.createElement('div'); empty.className = 'components-empty local-library-empty';
+    empty.textContent = 'Save a component here to reuse it in any design on this device.';
+    list.append(empty);
+    return;
+  }
+  for (const item of state.componentLibraries) {
+    const library = item.library;
+    if (!library) continue;
+    const card = document.createElement('section'); card.className = 'local-library-card';
+    const header = document.createElement('div'); header.className = 'local-library-header';
+    const title = document.createElement('strong'); title.textContent = library.name;
+    const revision = document.createElement('small'); revision.textContent = `r${library.revision}`;
+    header.append(title, revision);
+    const publish = document.createElement('button'); publish.type = 'button'; publish.className = 'local-library-publish';
+    publish.dataset.publishLocalComponent = library.id; publish.disabled = !selectedMaster;
+    publish.textContent = '＋ Publish selected component';
+    const entries = document.createElement('div'); entries.className = 'local-library-components';
+    const components = library.components.map(component => ({ component, publication: component.versions.at(-1) }))
+      .filter(entry => entry.publication);
+    if (!components.length) {
+      const emptyLibrary = document.createElement('div'); emptyLibrary.className = 'local-library-empty';
+      emptyLibrary.textContent = 'Publish a component from this design to get started.';
+      entries.append(emptyLibrary);
+    }
+    for (const { component, publication } of components) {
+      const place = document.createElement('button'); place.type = 'button'; place.className = 'local-library-component';
+      place.dataset.localLibraryId = library.id; place.dataset.localComponentId = component.id;
+      place.title = `Place ${publication.name} from ${library.name} · revision ${publication.revision}`;
+      const mark = document.createElement('span'); mark.className = 'component-card-icon'; mark.textContent = '◇';
+      const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = publication.name;
+      const version = document.createElement('small'); version.textContent = `r${publication.revision}`;
+      place.append(mark, name, version); entries.append(place);
+    }
+    card.append(header, publish, entries);
+    list.append(card);
+  }
 }
 
 function renderAssetsTab() {
@@ -1006,6 +1105,7 @@ function renderAssetsTab() {
     const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = component.name;
     card.append(mark, name); components.append(card);
   }
+  renderLocalComponentLibraries();
   const styles = $('#color-styles-list'); styles.replaceChildren();
   const colorStyles = state.document.colorStyles || [];
   if (!colorStyles.length) {
@@ -1305,6 +1405,31 @@ function insertPathPointAtWorld(world) {
   return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, context.origin);
 }
 
+function updateVectorAnchorMode(input) {
+  const selected = state.selectedVectorPoint;
+  const entry = selected?.nodeId ? findNode(state.document, selected.nodeId) : null;
+  const node = entry?.node;
+  const point = node?.type === 'path' && Number.isInteger(selected.index) ? node.points?.[selected.index] : null;
+  if (!point) { renderInspector(); return false; }
+  if (node.locked || entry.parents.some(parent => parent.locked)) {
+    renderInspector();
+    showToast('Unlock this path before changing an anchor.');
+    return false;
+  }
+  if (!['corner', 'smooth', 'symmetric'].includes(input.value)) { renderInspector(); return false; }
+  if ((point.mode || 'corner') === input.value) return true;
+
+  checkpoint('Change vector anchor mode');
+  if (!setVectorNodePointMode(node, selected.index, input.value)) {
+    renderInspector();
+    showToast('That anchor mode could not be applied.');
+    return false;
+  }
+  recordNodeComponentOverrides(node, ['points']);
+  renderInspector(); queueSave(); renderer.invalidate();
+  return true;
+}
+
 function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   const index = state.selectedVectorPoint?.index;
@@ -1375,6 +1500,23 @@ function resizeHandleAt(event) {
   for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) return { kind: 'resize', name, node, entry, geometry, ancestors };
   return null;
 }
+function pageBoundsForEntry(entry) {
+  const geometry = { ...entry.node, ...resolvedGeometry(entry.node) };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const corners = selectionOverlayGeometry(geometry, ancestors, { zoom: 1, rotateOffset: 0 }).corners;
+  const left = Math.min(...corners.map(point => point.x));
+  const top = Math.min(...corners.map(point => point.y));
+  const right = Math.max(...corners.map(point => point.x));
+  const bottom = Math.max(...corners.map(point => point.y));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+function alignmentTargetBounds(movingEntries) {
+  const movingIds = new Set(movingEntries.map(entry => entry.node.id));
+  return pageLayerRows().filter(({ node, parents }) => !movingIds.has(node.id)
+    && !parents.some(parent => movingIds.has(parent.id))
+    && [node, ...parents].every(layer => getNodePropertyValue(state.document, layer, 'visible'))
+  ).map(pageBoundsForEntry);
+}
 function selectedNodeDragStart(node, world, shiftKey) {
   if (!shiftKey && !state.selectedIds.includes(node.id)) setSelection([node.id]);
   const entry = findNode(state.document, node.id);
@@ -1403,7 +1545,10 @@ function selectedNodeDragStart(node, world, shiftKey) {
     const ancestors = item.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
     return [item.node.id, { x: geometry.x, y: geometry.y, ancestors }];
   }));
-  state.interaction = { kind: 'move', start: world, originals, shiftKey };
+  const movingBounds = entries.map(pageBoundsForEntry);
+  const targetBounds = alignmentTargetBounds(entries);
+  state.smartGuides = [];
+  state.interaction = { kind: 'move', start: world, originals, movingBounds, targetBounds, shiftKey };
 }
 
 function onCanvasPointerDown(event) {
@@ -1509,7 +1654,7 @@ function onCanvasPointerDown(event) {
   }
   if (state.tool === 'image') { $('#image-input').click(); return; }
   if (state.tool === 'text') { createTextAt(world); return; }
-  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon' };
+  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', star: 'star' };
   const type = typeByTool[state.tool];
   if (!type) return;
   const node = createNode(type, { x: world.x, y: world.y, width: 1, height: 1 });
@@ -1570,18 +1715,24 @@ function onCanvasPointerMove(event) {
   }
   if (interaction.kind === 'move') {
     const pageDx = world.x - interaction.start.x; const pageDy = world.y - interaction.start.y;
+    const movement = event.altKey
+      ? { x: pageDx, y: pageDy, guides: [] }
+      : snapToAlignmentGuides(interaction.movingBounds, interaction.targetBounds,
+        { x: pageDx, y: pageDy }, 7 / Math.max(.08, state.zoom));
+    state.smartGuides = movement.guides;
+    const movedWorld = { x: interaction.start.x + movement.x, y: interaction.start.y + movement.y };
     const grid = state.document.settings.grid || 8;
     for (const [id, original] of interaction.originals) {
       const node = findNode(state.document, id)?.node;
       if (!node) continue;
       const startLocal = pageToParentLocal(interaction.start, original.ancestors);
-      const currentLocal = pageToParentLocal(world, original.ancestors);
+      const currentLocal = pageToParentLocal(movedWorld, original.ancestors);
       let dx = currentLocal.x - startLocal.x; let dy = currentLocal.y - startLocal.y;
-      if (state.document.settings.snap && !event.altKey) { dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
+      if (state.document.settings.snap && !event.altKey && !movement.guides.length) { dx = Math.round(dx / grid) * grid; dy = Math.round(dy / grid) * grid; }
       setNodePropertyValue(node, 'x', original.x + dx);
       setNodePropertyValue(node, 'y', original.y + dy);
     }
-    $('#position-status').textContent = `${Math.round(pageDx)}, ${Math.round(pageDy)} moved`;
+    $('#position-status').textContent = `${Math.round(movement.x)}, ${Math.round(movement.y)} moved${movement.guides.length ? ' · Aligned' : ''}`;
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'group-rotate') {
@@ -1721,7 +1872,7 @@ function onCanvasPointerUp(event) {
       const instanceRoot = componentInstanceRoot(frameId);
       if (instanceRoot && frameNode) walkNodes(frameNode.children || [], ({ node }) => recordNodeComponentOverrides(node, ['x', 'y', 'width', 'height']));
     }
-    state.interaction = null; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return;
+    state.interaction = null; state.smartGuides = []; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'marquee') {
     const rect = { x: Math.min(state.marquee.x1, state.marquee.x2), y: Math.min(state.marquee.y1, state.marquee.y2), width: Math.abs(state.marquee.x2 - state.marquee.x1), height: Math.abs(state.marquee.y2 - state.marquee.y1) };
@@ -2380,7 +2531,10 @@ function updateInspectorInput(event) {
   }
   if (!state.controlEdit) { checkpoint('Edit properties'); state.controlEdit = true; }
   const value = input.dataset.optionalNumber !== undefined && !input.value.trim() ? null : input.type === 'checkbox' ? input.checked : input.type === 'number' || input.type === 'range' || prop === 'fontWeight' ? Number(input.value) : input.value;
-  const propertyValue = prop === 'opacity' ? value / 100 : value;
+  const propertyValue = prop === 'opacity' ? value / 100
+    : prop === 'points' ? Math.max(3, Math.min(32, Math.round(Number.isFinite(value) ? value : 3)))
+    : prop === 'innerRadius' ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : .48))
+        : value;
   if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
   const layoutSetting = prop.startsWith('autoLayout.');
@@ -2453,6 +2607,7 @@ function updateInspectorInput(event) {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
+    else if (prop === 'points' || prop === 'innerRadius') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
     if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
@@ -3432,6 +3587,105 @@ function changeMainVariantProperty(componentId, propertyName, value) {
     renderUI(); queueSave(); showToast(`${propertyName} variant updated.`);
   } catch (error) { showToast(error.message); renderInspector(); }
 }
+async function refreshLocalComponentLibraries({ refreshInspector = true } = {}) {
+  const summaries = await listComponentLibraries();
+  const libraries = await Promise.all(summaries.map(async summary => {
+    try { return { ...summary, library: await loadComponentLibrary(summary.id) }; }
+    catch (error) { console.warn(`Could not load local library “${summary.name}”`, error); return { ...summary, library: null }; }
+  }));
+  state.componentLibraries = libraries.filter(item => item.library);
+  if (!state.componentLibraries.some(item => item.id === state.componentLibraryTargetId)) {
+    state.componentLibraryTargetId = state.componentLibraries[0]?.id || null;
+  }
+  renderAssetsTab();
+  if (refreshInspector) renderInspector();
+  return state.componentLibraries;
+}
+async function createLocalComponentLibrary(name = null) {
+  const value = name ?? prompt('Name this on-device component library', 'My components');
+  if (value == null) return null;
+  const library = createComponentLibrary({ id: createId('library'), name: value });
+  await saveComponentLibrary(library);
+  await refreshLocalComponentLibraries();
+  showToast(`Local library “${library.name}” created on this device.`);
+  return library;
+}
+async function resolveLocalComponentLibrary(id) {
+  if (id) {
+    const cached = state.componentLibraries.find(item => item.id === id)?.library;
+    const library = cached || await loadComponentLibrary(id);
+    if (!library) throw new Error('This local component library is no longer available.');
+    return library;
+  }
+  return createLocalComponentLibrary();
+}
+async function publishComponentToLocalLibrary({ componentId = null, instanceId = null, libraryId = null } = {}) {
+  const linkedRoot = instanceId ? findNode(state.document, instanceId)?.node : null;
+  const isLinked = isLocalLinkedComponent(linkedRoot);
+  if (instanceId && !isLinked) throw new Error('This linked component is no longer available.');
+  const component = componentId ? state.document.components?.find(item => item.id === componentId) : null;
+  const sourceRoot = isLinked ? linkedRoot : component && findNodeAcrossPages(state.document, component.rootNodeId)?.node;
+  if (!sourceRoot || (!isLinked && !sourceRoot.isComponent)) throw new Error('Select a main component to publish to a local library.');
+  const targetId = isLinked ? linkedRoot.linkedComponent.libraryId
+    : libraryId || $('#component-library-target')?.value || state.componentLibraryTargetId || '';
+  const library = await resolveLocalComponentLibrary(targetId);
+  if (!library) return;
+  const refs = sourceRoot.publishedLibraryRefs || [];
+  const componentLibraryId = isLinked
+    ? linkedRoot.linkedComponent.componentId
+    : refs.find(ref => ref.libraryId === library.id)?.componentId || createId('library-component');
+  const root = componentTreeForPublication(sourceRoot, { useSourceIds: isLinked, document: state.document });
+  const name = isLinked ? sourceRoot.linkedComponent.sourceSnapshot.name : component?.name || sourceRoot.name;
+  const result = await publishStoredComponent(library.id, { componentId: componentLibraryId, name, root });
+
+  checkpoint(isLinked ? 'Publish local component revision' : 'Publish component to local library');
+  if (isLinked) {
+    const linked = createLinkedInstanceSnapshot(result.library, componentLibraryId, { instanceId: sourceRoot.linkedComponent.id });
+    applyLinkedComponentUpdate(sourceRoot, linked, { document: state.document });
+  } else {
+    const nextRefs = refs.filter(ref => ref.libraryId !== library.id);
+    sourceRoot.publishedLibraryRefs = [...nextRefs, { libraryId: library.id, componentId: componentLibraryId }];
+  }
+  await refreshLocalComponentLibraries();
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(`“${name}” published to ${library.name} as revision ${result.publication.revision}.`);
+}
+async function placeLocalLibraryComponent(libraryId, componentId) {
+  const library = await resolveLocalComponentLibrary(libraryId);
+  const component = library.components.find(item => item.id === componentId);
+  if (!component) throw new Error('This library component is no longer available.');
+  const x = (canvas.clientWidth / 2 - state.panX) / state.zoom;
+  const y = (canvas.clientHeight / 2 - state.panY) / state.zoom;
+  const snapshot = createLinkedInstanceSnapshot(library, componentId, { instanceId: createId('linked-instance') });
+  const instance = createLinkedEditorInstance(snapshot, { x, y, document: state.document });
+  checkpoint('Place local library component');
+  addNode(state.document, instance, { pageId: activePage().id });
+  setSelection([instance.id]); renderUI(); queueSave(); renderer.invalidate();
+  showToast(`“${snapshot.sourceSnapshot.name}” placed as a linked component.`);
+}
+async function updateLocalComponentInstance(instanceId) {
+  const root = findNode(state.document, instanceId)?.node;
+  if (!isLocalLinkedComponent(root)) throw new Error('This linked component is no longer available.');
+  const library = await loadComponentLibrary(root.linkedComponent.libraryId);
+  if (!library) throw new Error('The local library is unavailable. This instance still keeps its published snapshot.');
+  const update = updateLinkedInstanceSnapshot(root.linkedComponent, library);
+  checkpoint('Update local component instance');
+  applyLinkedComponentUpdate(root, update.instance, { document: state.document });
+  renderUI(); queueSave(); renderer.invalidate();
+  const dropped = update.report.droppedOverrides.length;
+  showToast(dropped
+    ? `Updated to revision ${update.report.toRevision}; ${dropped} incompatible override${dropped === 1 ? ' was' : 's were'} removed.`
+    : `Updated to revision ${update.report.toRevision}; compatible edits were preserved.`);
+}
+function detachLocalComponentInstance(instanceId) {
+  const root = findNode(state.document, instanceId)?.node;
+  if (!isLocalLinkedComponent(root)) { showToast('This linked component is no longer available.'); return; }
+  checkpoint('Detach local component');
+  walkNodes([root], ({ node }) => { delete node.componentSourceId; delete node.componentSourceKey; });
+  delete root.linkedComponent;
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast('Library link removed. The layers remain editable in this design.');
+}
 function makeComponent(nodeId = selectedNodes()[0]?.id) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   if (!node) { showToast('Select a layer to create a component.'); return; }
@@ -3979,7 +4233,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.prototypeConditionVariableId = null;
     state.prototypeConditionOperator = 'equals';
     state.prototypeConditionValue = null;
-    state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null;
+    state.selectedIds = []; state.selectedVectorPoint = null; state.smartGuides = []; state.pendingCommentAnchor = null; state.activeCommentId = null;
     state.draftNode = null; state.penDraft = null; state.penHover = null; state.marquee = null; state.interaction = null;
     state.pointerMap.clear(); state.prototypeSourceId = null; state.textNodeId = null; state.textSelection = null;
     state.bulk = null; state.inspectorTab = 'design';
@@ -4445,6 +4699,16 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'export-svg' && node) {
     try { exportSelectedNodeSvg(node.id); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); }
   } else if (action === 'create-component') makeComponent(node?.id);
+  else if (action === 'publish-local-component') {
+    void publishComponentToLocalLibrary({ componentId: details.componentId, libraryId: details.libraryId || null })
+      .catch(error => showToast(error.message || 'Could not publish this component locally.'));
+  } else if (action === 'publish-local-instance') {
+    void publishComponentToLocalLibrary({ instanceId: details.instanceId })
+      .catch(error => showToast(error.message || 'Could not publish this linked component revision.'));
+  } else if (action === 'update-local-component') {
+    void updateLocalComponentInstance(details.instanceId)
+      .catch(error => showToast(error.message || 'Could not update this linked component.'));
+  } else if (action === 'detach-local-component') detachLocalComponentInstance(details.instanceId);
   else if (action === 'combine-components') combineSelectedComponents();
   else if (action === 'create-component-property') addComponentProperty(details.componentId, details.targetId, details.propertyType);
   else if (action === 'choose-component-slot-content') openComponentSlotDialog(details.instanceId, details.propertyId);
@@ -4738,6 +5002,12 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.id === 'component-library-target') {
+      state.componentLibraryTargetId = event.target.value || null;
+      return;
+    }
+    const vectorAnchorMode = event.target.closest('[data-vector-anchor-mode]');
+    if (vectorAnchorMode) { updateVectorAnchorMode(vectorAnchorMode); return; }
     if (event.target.id === 'prototype-condition-value') { state.prototypeConditionValue = event.target.value; return; }
     if (event.target.id === 'prototype-condition-operator') { state.prototypeConditionOperator = event.target.value; return; }
     if (event.target.id === 'prototype-condition-variable') {
@@ -4905,6 +5175,21 @@ function initEvents() {
     }
   });
   $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
+  $('#create-component-library').addEventListener('click', () => {
+    void createLocalComponentLibrary().catch(error => showToast(error.message || 'Could not create a local component library.'));
+  });
+  $('#component-library-list').addEventListener('click', event => {
+    const publish = event.target.closest('[data-publish-local-component]');
+    if (publish) {
+      const component = selectedNodes()[0]?.componentId;
+      void publishComponentToLocalLibrary({ componentId: component, libraryId: publish.dataset.publishLocalComponent })
+        .catch(error => showToast(error.message || 'Could not publish this component locally.'));
+      return;
+    }
+    const place = event.target.closest('[data-local-library-id][data-local-component-id]');
+    if (place) void placeLocalLibraryComponent(place.dataset.localLibraryId, place.dataset.localComponentId)
+      .catch(error => showToast(error.message || 'Could not place this local component.'));
+  });
   $('#components-list').addEventListener('click', event => {
     const setCard = event.target.closest('[data-component-set-id]');
     if (setCard) { const set = state.document.componentSets?.find(item => item.id === setCard.dataset.componentSetId); if (set) createInstanceAt(set.componentIds[0]); return; }
@@ -5075,6 +5360,7 @@ async function boot() {
   if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
   else setSaveState('saved', 'Saved locally');
   document.documentElement.dataset.appReady = 'true';
+  void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
   window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); });

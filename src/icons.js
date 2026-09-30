@@ -6,6 +6,7 @@ const paths = {
   ellipse: '<circle cx="12" cy="12" r="8"/>',
   line: '<path d="m5 19 14-14"/>',
   polygon: '<path d="m12 3 8 6-3 10H7L4 9l8-6Z"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
   pen: '<path d="m5 19 3.2-7.4L16 4l4 4-7.6 7.8L5 19Z"/><path d="m8.2 11.6 4.2 4.2M16 4l4 4"/>',
   text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
   image: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="9" cy="9" r="1.5"/><path d="m5 17 5-5 3.5 3 2.5-2 3 4"/>',

@@ -3,6 +3,7 @@ import { isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
+import { validateLinkedInstanceSnapshot } from './component-library.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -233,7 +234,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', 'interactions', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'innerRadius', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', 'interactions', '__childOrder'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -2142,6 +2143,9 @@ export function validateDocument(document) {
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
       if (node.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(node.fontWeight))) throw new TypeError(`Invalid font weight on layer ${node.name || node.id}.`);
       if (node.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(node.fontStyle))) throw new TypeError(`Invalid font style on layer ${node.name || node.id}.`);
+      if (['polygon', 'star'].includes(node.type) && node.points != null && (!Number.isFinite(node.points) || node.points < 3 || node.points > 32)) throw new TypeError(`Invalid shape point count on layer ${node.name || node.id}.`);
+      if (node.type === 'star' && node.innerRadius != null && (!Number.isFinite(node.innerRadius) || node.innerRadius < 0 || node.innerRadius > 1)) throw new TypeError(`Invalid star inner radius on layer ${node.name || node.id}.`);
+      if (node.type !== 'star' && node.innerRadius != null) throw new TypeError(`Star inner radius is only supported on star layers (${node.name || node.id}).`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
@@ -2150,7 +2154,10 @@ export function validateDocument(document) {
       if (node.imageFill != null && !isImageFillSupported(node)) throw new TypeError(`Image fill is not supported on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isValidImageFill(node.imageFill)) throw new TypeError(`Invalid image fill on layer ${node.name || node.id}.`);
       if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
-      if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y)) || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))) || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
+      if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
+        || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))
+        || (point.mode != null && !['corner', 'smooth', 'symmetric'].includes(point.mode)))
+        || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
       if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
@@ -2208,11 +2215,42 @@ export function validateDocument(document) {
       if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
       if (node.componentSourceKey != null && typeof node.componentSourceKey !== 'string') throw new TypeError(`Invalid component source key on ${node.name || node.id}.`);
       if (node.variantNodeKey != null && typeof node.variantNodeKey !== 'string') throw new TypeError(`Invalid variant node key on ${node.name || node.id}.`);
+      if (node.linkedComponent != null) {
+        try { validateLinkedInstanceSnapshot(node.linkedComponent); }
+        catch (error) { throw new TypeError(`Invalid local component link on ${node.name || node.id}: ${error.message}`); }
+        const sourceLayers = new Map();
+        walkNodes([node.linkedComponent.root], ({ node: sourceNode }) => sourceLayers.set(sourceNode.id, sourceNode));
+        const editorLayers = new Map();
+        walkNodes([node], ({ node: editorNode }) => {
+          if (typeof editorNode.componentSourceId !== 'string' || !editorNode.componentSourceId || editorLayers.has(editorNode.componentSourceId)) {
+            throw new TypeError(`Invalid local component source-layer mapping on ${node.name || node.id}.`);
+          }
+          editorLayers.set(editorNode.componentSourceId, editorNode);
+        });
+        if (node.componentSourceId !== node.linkedComponent.root.id || editorLayers.size !== sourceLayers.size
+          || [...sourceLayers].some(([sourceId, sourceNode]) => editorLayers.get(sourceId)?.type !== sourceNode.type)) {
+          throw new TypeError(`Local component source-layer mapping does not match its snapshot on ${node.name || node.id}.`);
+        }
+      }
       if (node.componentNameIsInherited != null && (typeof node.componentNameIsInherited !== 'boolean' || !node.isInstance)) throw new TypeError(`Invalid inherited component name on ${node.name || node.id}.`);
       if (node.componentOverrides != null) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+          if (Object.hasOwn(overrides, 'points')) {
+            if (['polygon', 'star'].includes(sourceNode?.type)) {
+              if (!Number.isFinite(overrides.points) || overrides.points < 3 || overrides.points > 32) throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
+            } else if (sourceNode?.type === 'path') {
+              if (!Array.isArray(overrides.points) || overrides.points.some(point => !point
+                || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
+                || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))
+                || (point.mode != null && !['corner', 'smooth', 'symmetric'].includes(point.mode)))) {
+                throw new TypeError(`Invalid component vector path points override on ${node.name || node.id}.`);
+              }
+            } else throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
+          }
+          if (overrides.innerRadius != null && (sourceNode?.type !== 'star' || !Number.isFinite(overrides.innerRadius) || overrides.innerRadius < 0 || overrides.innerRadius > 1)) throw new TypeError(`Invalid component star inner-radius override on ${node.name || node.id}.`);
           if (overrides.interactions != null) {
             if (hasInvalidPrototypeInteractions(overrides.interactions, document)) throw new TypeError(`Invalid component interactions override on ${node.name || node.id}.`);
             const matchingInstanceNodes = [];
@@ -2235,7 +2273,6 @@ export function validateDocument(document) {
             }
           }
           if (overrides.textRuns != null) {
-            const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
             const sourceText = overrides.text ?? sourceNode?.text;
             if ((sourceNode && sourceNode.type !== 'text') || !isValidTextRuns(overrides.textRuns, sourceText)) throw new TypeError(`Invalid component text runs override on ${node.name || node.id}.`);
           }
@@ -2248,7 +2285,6 @@ export function validateDocument(document) {
           if (overrides.textCase != null && (node.type !== 'text' || !textCases.has(overrides.textCase))) throw new TypeError(`Invalid component text case override on ${node.name || node.id}.`);
           if (overrides.textDecoration != null && (node.type !== 'text' || !textDecorations.has(overrides.textDecoration))) throw new TypeError(`Invalid component text decoration override on ${node.name || node.id}.`);
           if (overrides.verticalAlign != null) {
-            const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
             if (sourceNode?.type !== 'text' || !textVerticalAlignments.has(overrides.verticalAlign)) throw new TypeError(`Invalid component text vertical alignment override on ${node.name || node.id}.`);
           }
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
