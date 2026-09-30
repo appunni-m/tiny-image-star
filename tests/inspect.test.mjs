@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindColorVariable, bindVariable, createDocument, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, findNode, setVariableValue } from '../src/model.js';
+import { createAutoLayout } from '../src/layout-engine.js';
 import { createImageFill } from '../src/image-fills.js';
 import { buildInspectOutput } from '../src/inspect.js';
 
@@ -369,6 +370,16 @@ test('Inspect preserves vertical alignment in copyable CSS and typography data',
   assert.match(output.css, /justify-content: center;/);
   assert.equal(output.layers[0].typography.verticalAlign, 'middle');
   assert.equal(JSON.parse(output.json).verticalAlign, 'middle');
+});
+
+test('Inspect emits valid CSS for expanded auto-layout spacing modes and overlap gaps', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { name: 'Overlap row', autoLayout: createAutoLayout({ axis: 'horizontal', justify: 'space-evenly', columnGap: -12 }) });
+  addNode(document, frame);
+  const output = buildInspectOutput(document, [findNode(document, frame.id)]);
+  assert.match(output.css, /justify-content: space-evenly;/);
+  assert.match(output.css, /column-gap: 0px;/);
+  assert.match(output.css, /Negative overlap spacing/);
 });
 
 test('Inspect preserves justified paragraph alignment in copyable CSS and layer data', () => {

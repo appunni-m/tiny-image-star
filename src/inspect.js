@@ -108,12 +108,18 @@ function autoLayoutDeclarations(layout) {
   const horizontal = layout.axis === 'horizontal';
   const padding = layout.padding || {};
   const align = { start: 'flex-start', center: 'center', end: 'flex-end', stretch: 'stretch' }[layout.align] || 'flex-start';
-  const justify = { start: 'flex-start', center: 'center', end: 'flex-end', 'space-between': 'space-between' }[layout.justify] || 'flex-start';
+  const justify = {
+    start: 'flex-start', center: 'center', end: 'flex-end',
+    'space-between': 'space-between', 'space-around': 'space-around', 'space-evenly': 'space-evenly'
+  }[layout.justify] || 'flex-start';
+  const rowGap = Number(layout.rowGap) || 0;
+  const columnGap = Number(layout.columnGap) || 0;
   return [
     'display: flex;',
     `flex-direction: ${horizontal ? 'row' : 'column'};`,
-    `row-gap: ${number(layout.rowGap)}px;`,
-    `column-gap: ${number(layout.columnGap)}px;`,
+    `row-gap: ${number(Math.max(0, rowGap))}px;`,
+    `column-gap: ${number(Math.max(0, columnGap))}px;`,
+    ...(rowGap < 0 || columnGap < 0 ? [`/* Negative overlap spacing (${number(rowGap)}px row, ${number(columnGap)}px column) remains exact in layer JSON; CSS gap cannot be negative. */`] : []),
     `padding: ${number(padding.top)}px ${number(padding.right)}px ${number(padding.bottom)}px ${number(padding.left)}px;`,
     `align-items: ${align};`,
     `justify-content: ${justify};`,

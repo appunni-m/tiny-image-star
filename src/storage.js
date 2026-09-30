@@ -8,6 +8,7 @@ const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
 const DB_VERSION = 5;
 const COMPONENT_LIBRARY_DB_VERSION = 1;
 export const MAX_LOCAL_DOCUMENT_VERSIONS = 30;
+export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
 const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
 const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
 const dbPromises = new Map();
@@ -451,13 +452,13 @@ function assertPackageAssetReferences(document, assets) {
   }
 }
 
-function validatePackageFonts(fonts) {
+function validatePackageFonts(fonts, { copyBytes = true } = {}) {
   if (!Array.isArray(fonts)) throw new TypeError('Local design package fonts must be a list.');
   const seen = new Set();
   const faces = new Set();
   return fonts.map(source => {
     let font;
-    try { font = validateLocalFontAsset(source); }
+    try { font = validateLocalFontAsset(source, { copyBytes }); }
     catch (error) { throw new TypeError(`Local design package contains an invalid font: ${error.message}`); }
     if (seen.has(font.id)) throw new TypeError('Local design package contains a duplicate font asset ID.');
     seen.add(font.id);
@@ -761,7 +762,7 @@ export async function importLocalPackage(document, assets, fonts = []) {
     throw new TypeError('Local design package does not contain a valid design.');
   }
   if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
-  const packageFonts = validatePackageFonts(fonts);
+  const packageFonts = validatePackageFonts(fonts, { copyBytes: false });
   assertPackageAssetReferences(document, assets);
   const seen = new Set();
   for (const asset of assets) {
@@ -946,7 +947,7 @@ export async function deleteImageAsset(id) {
   await transactionDone(tx);
 }
 
-export function packLocalPackage(design, assets, fonts = []) {
+function localPackageParts(design, assets, fonts = [], maxPackageBytes = MAX_LOCAL_PACKAGE_BYTES) {
   if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
   const packageAssets = assets.map(asset => {
     if (!asset || typeof asset.id !== 'string' || !asset.id || typeof asset.name !== 'string' || typeof asset.type !== 'string') {
@@ -962,7 +963,7 @@ export function packLocalPackage(design, assets, fonts = []) {
     if (!bytes) throw new TypeError(`The image source “${asset.id}” has no readable bytes. Restore the source image and try again.`);
     return { id: asset.id, name: asset.name, type: asset.type, bytes };
   });
-  const packageFonts = validatePackageFonts(fonts);
+  const packageFonts = validatePackageFonts(fonts, { copyBytes: false });
   assertPackageAssetReferences(design, packageAssets);
   const manifest = new TextEncoder().encode(JSON.stringify({
     schema: design.schema,
@@ -975,21 +976,54 @@ export function packLocalPackage(design, assets, fonts = []) {
   for (const asset of packageAssets) parts.push(asset.bytes);
   for (const font of packageFonts) parts.push(font.bytes);
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  if (!Number.isSafeInteger(maxPackageBytes) || maxPackageBytes < 11) throw new RangeError('Local design package size limit is invalid.');
+  if (total > maxPackageBytes) {
+    throw new RangeError(`This local design package is ${(total / (1024 * 1024)).toFixed(1)} MiB. The local package limit is ${Math.floor(maxPackageBytes / (1024 * 1024))} MiB; remove unused images or fonts and try again.`);
+  }
+  return parts;
+}
+
+export function packLocalPackage(design, assets, fonts = [], { maxBytes = MAX_LOCAL_PACKAGE_BYTES } = {}) {
+  const parts = localPackageParts(design, assets, fonts, maxBytes);
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
   const packed = new Uint8Array(total); let offset = 0;
   for (const part of parts) { packed.set(part, offset); offset += part.byteLength; }
   return packed;
 }
 
+export function buildLocalPackageBlob(design, assets, fonts = [], { maxBytes = MAX_LOCAL_PACKAGE_BYTES } = {}) {
+  // Passing validated chunks to Blob avoids a second full-size Uint8Array
+  // allocation on top of the immutable Blob data, which matters on phones.
+  return new Blob(localPackageParts(design, assets, fonts, maxBytes), { type: 'application/octet-stream' });
+}
+
+export function localPackageFilename(name) {
+  const suffix = '.flocal';
+  let stem = String(name ?? 'design')
+    .normalize('NFC')
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '-')
+    .replace(/^\.+/, '')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  stem = [...stem].slice(0, 120 - suffix.length).join('').replace(/[. ]+$/g, '');
+  if (!stem) stem = 'design';
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) stem = `_${stem}`;
+  return `${stem}${suffix}`;
+}
+
 export async function downloadLocalPackage(design, assets, fonts = []) {
-  const bytes = packLocalPackage(design, assets, fonts);
-  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-  const anchor = Object.assign(globalThis.document.createElement('a'), { href: url, download: `${design.name || 'design'}.flocal` });
+  const blob = buildLocalPackageBlob(design, assets, fonts);
+  const url = URL.createObjectURL(blob);
+  const anchor = Object.assign(globalThis.document.createElement('a'), { href: url, download: localPackageFilename(design.name) });
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 export function unpackLocalPackage(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (bytes.byteLength > MAX_LOCAL_PACKAGE_BYTES) {
+    throw new RangeError(`This local design package is larger than the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit.`);
+  }
   const magic = [70, 76, 79, 67, 65, 76, 1];
   if (bytes.length < 11 || magic.some((value, index) => bytes[index] !== value)) throw new TypeError('Invalid local design package.');
   const manifestLength = new DataView(bytes.buffer, bytes.byteOffset + 7, 4).getUint32(0, true);
@@ -1008,7 +1042,9 @@ export function unpackLocalPackage(input) {
       throw new TypeError('Invalid local design package asset data.');
     }
     if (seen.has(entry.id)) throw new TypeError('Invalid local design package: duplicate image asset ID.');
-    assets.push({ id: entry.id, name: String(entry.name || 'image'), type: String(entry.type || 'application/octet-stream'), bytes: bytes.slice(offset, offset + entry.length) });
+    // Keep asset payloads as read-only views into the bounded input package;
+    // importLocalPackage makes the durable IndexedDB copy after validation.
+    assets.push({ id: entry.id, name: String(entry.name || 'image'), type: String(entry.type || 'application/octet-stream'), bytes: bytes.subarray(offset, offset + entry.length) });
     seen.add(entry.id);
     offset += entry.length;
   }
@@ -1020,7 +1056,7 @@ export function unpackLocalPackage(input) {
       throw new TypeError('Invalid local design package font data.');
     }
     if (seenFontIds.has(entry.id)) throw new TypeError('Invalid local design package: duplicate font asset ID.');
-    const fontBytes = bytes.slice(offset, offset + entry.length);
+    const fontBytes = bytes.subarray(offset, offset + entry.length);
     let font;
     try {
       font = validateLocalFontAsset({
@@ -1031,7 +1067,7 @@ export function unpackLocalPackage(input) {
         weight: entry.weight,
         style: entry.style,
         bytes: fontBytes
-      });
+      }, { copyBytes: false });
     } catch (error) {
       throw new TypeError(`Invalid local design package font: ${error.message}`);
     }
@@ -1041,6 +1077,6 @@ export function unpackLocalPackage(input) {
   }
   if (offset !== bytes.length) throw new TypeError('Invalid local design package: unexpected trailing data.');
   assertPackageAssetReferences(manifest.document, assets);
-  validatePackageFonts(fonts);
+  validatePackageFonts(fonts, { copyBytes: false });
   return { document: manifest.document, assets, fonts };
 }

@@ -10,6 +10,7 @@ import {
   RetainedImageMemoryBudget,
   transformedImageDimensions,
 } from '../src/image-memory-budget.js';
+import { imageCropPixels } from '../src/image-transforms.js';
 
 test('device tiers keep a hard bounded retained image budget', () => {
   assert.equal(defaultRetainedImageMemoryBudget({ deviceMemory: 2 }), 96 * 1024 * 1024);
@@ -30,6 +31,33 @@ test('crop and right-angle rotation produce safe output dimensions', () => {
     crop: { left: 0.1, top: 0.25, right: 0.9, bottom: 0.75 }, rotation: 90,
   }), { width: 200, height: 640 });
   assert.deepEqual(transformedImageDimensions(800, 400, { rotation: 180 }), { width: 800, height: 400 });
+});
+
+test('cropped output dimensions use the renderer pixel bounds for integer and fractional edges', () => {
+  const cases = [
+    {
+      width: 100, height: 80,
+      crop: { left: 0.01, top: 0.11, right: 0.08, bottom: 0.59 },
+      expected: { width: 7, height: 40 },
+      rotated: { width: 40, height: 7 },
+    },
+    {
+      width: 137, height: 91,
+      crop: { left: 0.013, top: 0.027, right: 0.527, bottom: 0.882 },
+      expected: { width: 72, height: 79 },
+      rotated: { width: 79, height: 72 },
+    },
+  ];
+
+  for (const { width, height, crop, expected, rotated } of cases) {
+    const pixels = imageCropPixels(crop, width, height);
+    assert.deepEqual(transformedImageDimensions(width, height, { crop }), expected);
+    assert.deepEqual(expected, {
+      width: pixels.right - pixels.left,
+      height: pixels.bottom - pixels.top,
+    });
+    assert.deepEqual(transformedImageDimensions(width, height, { crop, rotation: 90 }), rotated);
+  }
 });
 
 test('import payload must match the reserved header dimensions and byte length', () => {

@@ -1228,6 +1228,15 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     border-bottom-color: #dce2e9;
     box-shadow: 0 2px 10px rgba(20, 30, 44, .07);
   }
+  .topbar #share-button {
+    display: flex;
+    min-width: 54px;
+    min-height: 40px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    padding-inline: 8px;
+  }
   .document-title-wrap { min-width: 0; padding-inline: 3px; }
   .document-name { max-width: min(42vw, 180px); }
 

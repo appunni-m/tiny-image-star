@@ -21,6 +21,49 @@ test('horizontal fill children divide remaining main-axis space', () => {
   assert.deepEqual([fixed.x, fill.x, fill.width], [10, 60, 150]);
 });
 
+test('linear auto layout supports explicit negative gaps with correct overlap and Hug bounds', () => {
+  const defaulted = createAutoLayout({ axis: 'horizontal', gap: -12 });
+  assert.deepEqual([defaulted.rowGap, defaulted.columnGap], [-12, -12]);
+
+  const row = createNode('frame', { width: 300, height: 80, autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: -20, padding: 0 }) });
+  const first = createNode('rectangle', { width: 100, height: 20 });
+  const second = createNode('rectangle', { width: 100, height: 20 });
+  row.children.push(first, second);
+  applyAutoLayout(row);
+  assert.deepEqual([first.x, second.x], [0, 80]);
+
+  const hug = createNode('frame', { width: 300, height: 80, autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: -30, mainSizing: 'hug', padding: 0 }) });
+  hug.children.push(createNode('rectangle', { width: 80, height: 20 }), createNode('rectangle', { width: 100, height: 20 }));
+  applyAutoLayout(hug);
+  assert.equal(hug.width, 150, 'Hug size should use the overlapped content bounds');
+});
+
+test('auto layout distributes items with space-around and space-evenly', () => {
+  const positions = (justify, columnGap, itemWidth, frameWidth) => {
+    const frame = createNode('frame', { width: frameWidth, height: 80, autoLayout: createAutoLayout({ axis: 'horizontal', justify, columnGap, padding: 0 }) });
+    const first = createNode('rectangle', { width: itemWidth, height: 20 });
+    const second = createNode('rectangle', { width: itemWidth, height: 20 });
+    frame.children.push(first, second);
+    applyAutoLayout(frame);
+    return [first.x, second.x];
+  };
+  assert.deepEqual(positions('space-between', 10, 40, 300), [0, 260]);
+  assert.deepEqual(positions('space-around', 10, 40, 300), [52.5, 207.5]);
+  assert.deepEqual(positions('space-evenly', 10, 40, 300), [70, 190]);
+});
+
+test('distributed auto layout adds free space to negative overlap gaps', () => {
+  const positions = justify => {
+    const frame = createNode('frame', { width: 300, height: 80, autoLayout: createAutoLayout({ axis: 'horizontal', justify, columnGap: -20, padding: 0 }) });
+    frame.children.push(createNode('rectangle', { width: 100, height: 20 }), createNode('rectangle', { width: 100, height: 20 }));
+    applyAutoLayout(frame);
+    return frame.children.map(item => item.x);
+  };
+  assert.deepEqual(positions('space-between'), [0, 200]);
+  assert.deepEqual(positions('space-around'), [30, 170]);
+  assert.deepEqual(positions('space-evenly'), [40, 160]);
+});
+
 test('resolved variable settings drive layout without overwriting the saved base settings', () => {
   const frame = createNode('frame', {
     width: 220, height: 100,
@@ -188,4 +231,15 @@ test('grid auto layout and cell placement validate and survive document reload',
   misplaced.pages[0].children[0].children[0].autoLayout = null;
   misplaced.pages[0].children[0].autoLayout = null;
   assert.throws(() => validateDocument(misplaced), /Size limits require an auto layout frame/);
+});
+
+test('negative gaps serialize for linear stacks and are rejected for grids', () => {
+  const document = createDocument();
+  const linear = createNode('frame', { autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: -12 }) });
+  addNode(document, linear);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const invalid = structuredClone(document);
+  invalid.pages[0].children[0].autoLayout.axis = 'grid';
+  assert.throws(() => validateDocument(invalid), /Invalid auto layout/);
 });

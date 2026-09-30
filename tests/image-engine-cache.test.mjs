@@ -53,6 +53,7 @@ class CacheWorkerMock {
       transforms: message.transforms,
       format: message.format,
       quality: message.quality,
+      outputMode: message.outputMode,
     });
     this.pendingRenderMessages.push(message);
     if (!CacheWorkerMock.deferRenders) queueMicrotask(() => this.completeRender(message.requestId));
@@ -79,7 +80,7 @@ class CacheWorkerMock {
         if (!(message.sourceBytes instanceof ArrayBuffer)) throw new Error('The original image is no longer available in memory.');
         const pixelCount = new Uint8Array(message.sourceBytes)[0];
         return makeSource(pixelCount);
-      }, source => ({ bytes: new Uint8Array([source.width]), width: source.width, height: 1 }));
+      }, source => ({ bytes: new Uint8Array([source.width]), width: source.width, height: 1, mode: message.outputMode }));
       this.#emit({
         type: 'rendered', requestId: message.requestId, assetId: message.assetId,
         sourceRetained: cachedRender.retained,
@@ -245,6 +246,23 @@ test('LocalImageEngine snapshots recipe format and quality into each worker job'
       [engine.workers[0].worker.renderRequests[0].format, engine.workers[0].worker.renderRequests[0].quality],
       ['webp', 67],
     );
+  });
+});
+
+test('LocalImageEngine queues a full-resolution export job separately from lossless preview renders', async () => {
+  await withEngine(async engine => {
+    const source = bytesFor(3);
+    const output = await engine.renderOutput('asset', source, { brightness: 24 }, {
+      crop: { left: 0, top: 0, right: 0.5, bottom: 1 }, rotation: 90,
+    }, { format: 'webp', quality: 73 });
+    assert.equal(output.mode, 'export');
+    assert.equal(engine.workers[0].worker.renderRequests[0].outputMode, 'export');
+    assert.equal(engine.workers[0].worker.renderRequests[0].format, 'webp');
+    assert.equal(engine.workers[0].worker.renderRequests[0].quality, 73);
+    assert.deepEqual([...source], [3], 'the export job does not detach or replace retained source bytes');
+
+    await engine.render('asset', source, {}, {}, { format: 'webp', quality: 73 });
+    assert.equal(engine.workers[0].worker.renderRequests[1].outputMode, 'preview');
   });
 });
 

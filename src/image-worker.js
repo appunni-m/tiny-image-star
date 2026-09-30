@@ -1,4 +1,4 @@
-import { decodeOriginal, renderImage } from './image-processing.js';
+import { decodeOriginal, renderImage, renderImageOutput } from './image-processing.js';
 import { DecodedSourceCache } from './decoded-source-cache.js';
 
 let pillow;
@@ -34,10 +34,13 @@ self.onmessage = async event => {
   activeRenders.set(message.requestId, render);
   try {
     await ready;
+    if (message.outputMode != null && !['preview', 'export'].includes(message.outputMode)) {
+      throw new TypeError('The local image worker received an unsupported output mode.');
+    }
     const cachedRender = sources.withSource(message.assetId, () => {
       if (!message.sourceBytes) throw new Error('The original image is no longer available in memory.');
       return decodeOriginal(pillow, new Uint8Array(message.sourceBytes));
-    }, source => renderImage(source, message.adjustments, message.transforms, pillow, {
+    }, source => (message.outputMode === 'export' ? renderImageOutput : renderImage)(source, message.adjustments, message.transforms, pillow, {
       format: message.format ?? 'png',
       quality: message.quality ?? 90,
     }), { retain: !render.invalidated });

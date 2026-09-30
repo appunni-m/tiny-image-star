@@ -1,3 +1,5 @@
+import { imageCropPixels } from './image-transforms.js';
+
 const MIB = 1024 * 1024;
 
 export class ImageMemoryLimitError extends Error {
@@ -75,8 +77,9 @@ export function transformedImageDimensions(width, height, transforms = {}) {
   let outputWidth = width;
   let outputHeight = height;
   if (crop && [crop.left, crop.top, crop.right, crop.bottom].every(Number.isFinite)) {
-    outputWidth = Math.max(1, Math.ceil(width * (crop.right - crop.left)));
-    outputHeight = Math.max(1, Math.ceil(height * (crop.bottom - crop.top)));
+    const pixels = imageCropPixels(crop, width, height);
+    outputWidth = Math.max(1, pixels.right - pixels.left);
+    outputHeight = Math.max(1, pixels.bottom - pixels.top);
   }
   if (Math.abs(Number(transforms?.rotation) || 0) % 180 === 90) [outputWidth, outputHeight] = [outputHeight, outputWidth];
   if (!Number.isSafeInteger(outputWidth * outputHeight)) throw new RangeError('The transformed image is too large to estimate safely.');

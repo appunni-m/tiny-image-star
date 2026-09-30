@@ -19,6 +19,14 @@ test('local font validation accepts supported signatures and infers a useful fam
   assert.deepEqual(validateLocalFontAsset(font()), font());
 });
 
+test('local font validation can keep a bounded package view when the caller owns the source bytes', () => {
+  const source = font();
+  const validatedView = validateLocalFontAsset(source, { copyBytes: false });
+  const validatedCopy = validateLocalFontAsset(source);
+  assert.equal(validatedView.bytes.buffer, source.bytes.buffer);
+  assert.notEqual(validatedCopy.bytes.buffer, source.bytes.buffer);
+});
+
 test('local font validation rejects unsupported, mislabeled, oversized, and malformed metadata', () => {
   assert.throws(() => inspectLocalFontFormat('font.otf', fontBytes()), /extension does not match/i);
   assert.throws(() => inspectLocalFontFormat('font.svg', fontBytes([1, 2, 3, 4])), /choose a TrueType/i);

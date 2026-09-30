@@ -16,8 +16,9 @@ import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFra
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
+import { encodeRenderedImageOutput, MAX_CANVAS_OUTPUT_EDGE, MAX_CANVAS_OUTPUT_PIXELS } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
-import { deleteFontAsset, deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, deleteFontAsset, deleteImageAsset, deleteStoredDocument, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -59,6 +60,9 @@ const state = {
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
+  localPackageBuilding: false,
+  pendingLocalShare: null,
+  pendingLocalShareTimer: 0,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
@@ -811,12 +815,13 @@ function autoLayoutSection(node) {
   const layout = resolveAutoLayoutSettings(node);
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${String(value) === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
+  const minimumGap = layout.axis === 'grid' ? 0 : -100_000;
   const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 1, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 1, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 1, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 1, 0)}</div>`;
   const variableProperties = autoLayoutBindingProperties.map(([property, label]) => variablePropertyBindingControl(node, property, label)).filter(Boolean).join('');
   const variableBindings = variableProperties ? `<details class="auto-layout-variable-bindings"><summary>Bind layout properties</summary>${variableProperties}</details>` : '';
   const body = layout.axis === 'grid'
-    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Grid cells flow in layer order. Turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
-    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Grid cells flow in layer order. Turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, minimumGap, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, minimumGap, 100_000)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between'],['space-around','Space around'],['space-evenly','Space evenly']])}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Negative gaps overlap adjacent layers.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
 function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 1) {
@@ -1373,7 +1378,7 @@ function renderInspector() {
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   body += sizeLimitsSection(node, parent);
-  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><div class="image-properties-note">Recipes save these export settings with the image. PNG ignores quality; JPEG and WebP use it when you export.</div>`);
+  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, and adjustments at the original image resolution. JPEG/WebP quality is applied by the local browser encoder. Format and quality are also saved in recipes for batch export.</div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
@@ -2192,7 +2197,8 @@ function resizeHandleAt(event) {
   const point = screenToWorld(event, canvas, state);
   const entries = transformEntriesForSelection();
   if (!entries.length) return null;
-  const tolerance = 8 / Math.max(.08, state.zoom);
+  const hitRadius = event.pointerType === 'touch' ? 22 : 8;
+  const tolerance = hitRadius / Math.max(.08, state.zoom);
   if (entries.length > 1) {
     if (!canTransformSelectionTogether(entries)) return null;
     const bounds = selectionBounds(entries);
@@ -2268,7 +2274,26 @@ function onCanvasPointerDown(event) {
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   canvas.setPointerCapture?.(event.pointerId);
   if (state.pointerMap.size === 2 && [...state.pointerMap.values()].every(point => point.pointerType !== 'mouse')) {
-    if (state.interaction?.kind === 'pencil-stroke') cancelPencilStroke({ retainPointer: true });
+    const interruptedInteraction = state.interaction;
+    if (interruptedInteraction?.kind === 'pencil-stroke') {
+      cancelPencilStroke({ retainPointer: true });
+    } else if (interruptedInteraction?.kind === 'draw') {
+      // A second finger takes over navigation. Discard an unfinished shape so
+      // it cannot remain as a ghost preview after the pinch has ended.
+      state.draftNode = null;
+      state.interaction = null;
+      renderer.invalidate();
+    } else if (interruptedInteraction) {
+      // Finish edits at the last one-finger position before switching gesture
+      // ownership. The ordinary pointer-up path records overrides and saves
+      // moves, transforms, and vector-control edits consistently.
+      const activePointer = [...state.pointerMap.entries()].find(([pointerId]) => pointerId !== event.pointerId);
+      if (activePointer) {
+        const [pointerId, position] = activePointer;
+        onCanvasPointerUp({ pointerId, type: 'pointerup' });
+        state.pointerMap.set(pointerId, position);
+      }
+    }
     const points = [...state.pointerMap.values()];
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
@@ -3984,6 +4009,7 @@ async function importImageFiles(files, point = null) {
     let bitmap = null;
     let bitmapUrl = null;
     let retainedAsset = false;
+    let assetWriteAttempted = false;
     let placed = false;
     try {
       assetId = createId('asset');
@@ -4005,6 +4031,7 @@ async function importImageFiles(files, point = null) {
       if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; imageMemoryBudget.releaseReservation(assetReservation); assetReservation = null; continue; }
       const width = bitmap.width; const height = bitmap.height;
       bitmapUrl = URL.createObjectURL(file);
+      assetWriteAttempted = true;
       await saveImageAssetBytes(assetId, file.name, file.type, sourceBytes);
       if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; URL.revokeObjectURL(bitmapUrl); bitmapUrl = null; imageMemoryBudget.releaseReservation(assetReservation); assetReservation = null; continue; }
       imageMemoryBudget.commit(assetReservation, assetMemoryKey(assetId), { bytes: assetBytes, kind: 'asset' });
@@ -4034,6 +4061,11 @@ async function importImageFiles(files, point = null) {
       }
       if (error instanceof ImageMemoryLimitError) memoryLimitedFiles.push(file.name);
       else showToast(`${file.name}: ${error.message || 'Could not load image.'}`);
+    } finally {
+      if (assetWriteAttempted && !placed && assetId) {
+        try { await deleteImageAsset(assetId); }
+        catch (error) { showToast(`${file.name}: the failed import could not be removed from local storage (${error.message || 'storage error'}).`); }
+      }
     }
   }
   if (imported) { renderUI(); queueSave(); }
@@ -5709,25 +5741,146 @@ function backPresentation() {
   schedulePresentationDelay();
 }
 
+async function buildLocalDesignPackage() {
+  if (state.localPackageBuilding) throw new Error('A local design package is already being prepared. Wait for it to finish, then try again.');
+  state.localPackageBuilding = true;
+  try { return await buildLocalDesignPackageSnapshot(); }
+  finally { state.localPackageBuilding = false; }
+}
+
+async function buildLocalDesignPackageSnapshot() {
+  if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before sharing this design.');
+  if (state.pendingImageImports) throw new Error('Wait for the current image import to finish before sharing this design.');
+  if (isImageRecipeBatchActive(state.bulk)) throw new Error('Finish or stop the active image recipe batch before sharing this design.');
+  const sourceDocument = state.document;
+  const sourceGeneration = state.documentGeneration;
+  const sourceRevision = state.saveRevision;
+  const serializedDesign = serializeDocument(sourceDocument);
+  const design = JSON.parse(serializedDesign);
+  const assetReferences = [];
+  const seenAssets = new Set();
+  for (const reference of imageAssetReferencesAcrossPages(design)) {
+    if (seenAssets.has(reference.assetId)) continue;
+    seenAssets.add(reference.assetId);
+    const metadata = await loadImageAssetMetadata(reference.assetId);
+    if (!metadata) throw new Error(`The local image “${reference.name || reference.assetId}” is missing or damaged. Restore it before sharing this design.`);
+    assetReferences.push({ reference, metadata });
+  }
+  const fontReferences = (await listFontAssets()).filter(font => documentUsesFontFamily(design, font.family));
+  const assetManifestBytes = new TextEncoder().encode(JSON.stringify(assetReferences.map(({ metadata }) => ({
+    id: metadata.id, name: metadata.name, type: metadata.type, length: metadata.byteLength
+  })))).byteLength;
+  const fontManifestBytes = new TextEncoder().encode(JSON.stringify(fontReferences.map(font => ({
+    id: font.id, name: font.name, type: font.type, family: font.family, weight: font.weight, style: font.style, length: font.byteLength
+  })))).byteLength;
+  // The serialized design string can expand by at most three UTF-8 bytes per
+  // UTF-16 code unit. Reserve its full upper bound plus both asset catalogs
+  // and the package envelope before any image/font binary is read.
+  const manifestBudget = serializedDesign.length * 3 + assetManifestBytes + fontManifestBytes + 1024;
+  if (!Number.isSafeInteger(manifestBudget) || manifestBudget > MAX_LOCAL_PACKAGE_BYTES) {
+    throw new RangeError(`This design’s editable data exceeds the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit.`);
+  }
+  let referencedBytes = manifestBudget;
+  const admitBinaryLength = (length, label) => {
+    if (!Number.isSafeInteger(length) || length < 0) throw new Error(`The saved size for ${label} is invalid. Repair the local asset before sharing this design.`);
+    if (length > MAX_LOCAL_PACKAGE_BYTES - referencedBytes) {
+      throw new RangeError(`This design’s images, fonts, and editable data exceed the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit. Remove unused images or fonts and try again.`);
+    }
+    referencedBytes += length;
+  };
+  for (const { reference, metadata } of assetReferences) admitBinaryLength(metadata.byteLength, `image “${reference.name || reference.assetId}”`);
+  for (const font of fontReferences) admitBinaryLength(font.byteLength, `font “${font.family}”`);
+
+  // Check the complete binary budget before retrieving any source bytes. The
+  // package builder applies the same hard limit including serialized design
+  // metadata, and Blob parts avoid a second giant concatenated byte buffer.
+  const assets = [];
+  for (const { reference, metadata } of assetReferences) {
+    const saved = await loadImageAsset(reference.assetId);
+    if (!saved || saved.bytes?.byteLength !== metadata.byteLength) {
+      throw new Error(`The local image “${reference.name || reference.assetId}” is missing or damaged. Restore it before sharing this design.`);
+    }
+    assets.push({ id: saved.id, name: saved.name, type: saved.type, bytes: saved.bytes });
+  }
+  const fonts = [];
+  for (const font of fontReferences) {
+    const saved = await loadFontAsset(font.id);
+    if (!saved || saved.bytes.byteLength !== font.byteLength) throw new Error(`The local font “${font.family}” is missing or damaged. Reinstall it before sharing this design.`);
+    fonts.push(saved);
+  }
+  if (state.document !== sourceDocument || state.documentGeneration !== sourceGeneration || state.saveRevision !== sourceRevision
+    || state.documentTransitioning) {
+    throw new Error('The design changed while its local package was being prepared. Try again to include the latest edits.');
+  }
+  return {
+    blob: buildLocalPackageBlob(design, assets, fonts),
+    filename: localPackageFilename(design.name),
+    title: design.name || 'Tiny Image Star design',
+    sourceDocument, sourceGeneration, sourceRevision
+  };
+}
+
 async function exportDesign() {
   try {
-    const assets = [];
-    for (const reference of imageAssetReferencesAcrossPages()) {
-      if (assets.some(asset => asset.id === reference.assetId)) continue;
-      const saved = await loadImageAsset(reference.assetId);
-      if (saved) assets.push({ id: saved.id, name: saved.name, type: saved.type, bytes: saved.bytes });
-    }
-    const design = JSON.parse(serializeDocument(state.document));
-    const fonts = [];
-    for (const font of await listFontAssets()) {
-      if (!documentUsesFontFamily(design, font.family)) continue;
-      const saved = await loadFontAsset(font.id);
-      if (!saved) throw new Error(`The local font “${font.family}” is missing or damaged. Reinstall it before exporting this design.`);
-      fonts.push(saved);
-    }
-    await downloadLocalPackage(design, assets, fonts);
-    showToast('Local design copy downloaded.');
+    const file = await buildLocalDesignPackage();
+    downloadBlob(file.blob, file.filename);
+    showToast('Local design file downloaded.');
   } catch (error) { showToast(error.message || 'Could not export this local design.'); }
+}
+
+async function attemptNativeDesignShare(packageData, file, { retryOnActivation = false } = {}) {
+  let shareFiles = false;
+  try { shareFiles = Boolean(file && typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })); }
+  catch { shareFiles = false; }
+  if (!shareFiles) return 'unsupported';
+  try {
+    // In the prepared-package retry path this call happens before the first
+    // await, preserving the fresh button activation required by mobile share.
+    const sharePromise = navigator.share({ title: packageData.title, text: 'Editable Tiny Image Star design file', files: [file] });
+    await sharePromise;
+    showToast('Local design file shared.');
+    return 'shared';
+  } catch (error) {
+    if (error?.name === 'AbortError') return 'cancelled';
+    if (retryOnActivation && error?.name === 'NotAllowedError') {
+      clearTimeout(state.pendingLocalShareTimer);
+      const pending = { packageData, file };
+      state.pendingLocalShare = pending;
+      state.pendingLocalShareTimer = setTimeout(() => {
+        if (state.pendingLocalShare === pending) state.pendingLocalShare = null;
+        state.pendingLocalShareTimer = 0;
+      }, 60_000);
+      showToast('Your local package is ready. Tap Share again to open the device share sheet.');
+      return 'retry';
+    }
+    return 'unsupported';
+  }
+}
+
+async function shareDesignFile() {
+  try {
+    let pending = state.pendingLocalShare;
+    clearTimeout(state.pendingLocalShareTimer);
+    state.pendingLocalShareTimer = 0;
+    state.pendingLocalShare = null;
+    if (pending && pending.packageData.sourceDocument === state.document
+      && pending.packageData.sourceGeneration === state.documentGeneration
+      && pending.packageData.sourceRevision === state.saveRevision) {
+      const status = await attemptNativeDesignShare(pending.packageData, pending.file);
+      if (status === 'shared' || status === 'cancelled') return;
+      downloadBlob(pending.packageData.blob, pending.packageData.filename);
+      showToast('Local design file downloaded. You can send the .flocal file from your device.');
+      return;
+    }
+    const packageData = await buildLocalDesignPackage();
+    const canTryNativeShare = typeof File === 'function' && typeof navigator.share === 'function' && typeof navigator.canShare === 'function';
+    const file = canTryNativeShare ? new File([packageData.blob], packageData.filename, { type: packageData.blob.type }) : null;
+    if (file) packageData.blob = file;
+    const status = file ? await attemptNativeDesignShare(packageData, file, { retryOnActivation: true }) : 'unsupported';
+    if (status === 'shared' || status === 'cancelled' || status === 'retry') return;
+    downloadBlob(packageData.blob, packageData.filename);
+    showToast('Local design file downloaded. You can send the .flocal file from your device.');
+  } catch (error) { showToast(error.message || 'Could not share this local design file.'); }
 }
 function tokenCollectionNameFromFile(fileName) {
   const stem = String(fileName || '').replace(/\.tokens\.json$/i, '').replace(/\.json$/i, '');
@@ -5827,6 +5980,7 @@ function releaseImageRuntimeForDocumentSwitch() {
 }
 
 async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, versionLabel = 'Opened design' } = {}) {
+  if (state.localPackageBuilding) { showToast('Wait for the local design package to finish before switching designs.'); return false; }
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('Finish or stop the active image recipe before switching designs.');
     return false;
@@ -5840,6 +5994,9 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
   try {
     if (saveCurrent && !(await persistCurrentDocumentNow())) return false;
     if (beforeSwitch) await beforeSwitch(nextDocument);
+    clearTimeout(state.pendingLocalShareTimer);
+    state.pendingLocalShareTimer = 0;
+    state.pendingLocalShare = null;
     const generation = ++state.documentGeneration;
     state.clipboard = [];
     releaseImageRuntimeForDocumentSwitch();
@@ -6027,9 +6184,9 @@ async function restoreDocumentVersion(versionId) {
 }
 
 function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
-function imageAssetReferencesAcrossPages() {
+function imageAssetReferencesAcrossPages(documentData = state.document) {
   const result = [];
-  for (const page of state.document.pages) walkNodes(page.children, ({ node }) => {
+  for (const page of documentData.pages || []) walkNodes(page.children, ({ node }) => {
     if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms, previewKey: imagePreviewKey(node.id) });
     if (Array.isArray(node.fills)) {
       node.fills.forEach(fill => {
@@ -6196,6 +6353,74 @@ async function exportLayerWithSetting(nodeId, settingId) {
   if (!node || !setting) throw new Error('The export setting no longer exists.');
   const result = await renderAndDownload([nodeId], setting, node.name);
   showToast(`Downloaded ${result.filename} · ${result.width} × ${result.height} px.`);
+}
+
+async function exportEditedImageSource(nodeId) {
+  if (state.imageExportAbortController) {
+    showToast('An image export is already running. Press Escape to cancel it.');
+    return;
+  }
+  const entry = findNode(state.document, nodeId);
+  const node = entry?.node;
+  if (node?.type !== 'image' || !node.assetId) throw new Error('Select an image with a locally saved original.');
+  const asset = state.assets.get(node.assetId);
+  if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
+  const format = node.outputFormat ?? 'png';
+  const quality = node.outputQuality ?? 90;
+  if (!['png', 'jpeg', 'webp'].includes(format) || !Number.isInteger(quality) || quality < 1 || quality > 100) {
+    throw new Error('Choose a supported image format and quality before exporting.');
+  }
+  const dimensions = assertSafeRasterDimensions(asset.sourceBytes);
+  const transformed = transformedImageDimensions(dimensions.width, dimensions.height, node.transforms);
+  if (format !== 'png' && (transformed.width > MAX_CANVAS_OUTPUT_EDGE || transformed.height > MAX_CANVAS_OUTPUT_EDGE
+    || transformed.width * transformed.height > MAX_CANVAS_OUTPUT_PIXELS)) {
+    throw new RangeError(`This ${format.toUpperCase()} export is ${transformed.width.toLocaleString()} × ${transformed.height.toLocaleString()} px. Resize the source below ${MAX_CANVAS_OUTPUT_PIXELS.toLocaleString()} pixels to encode it with the selected quality.`);
+  }
+
+  const documentSnapshot = state.document;
+  const generation = state.documentGeneration;
+  const pageId = state.document.activePageId;
+  const saveRevision = state.saveRevision;
+  const nodeSignature = JSON.stringify(node);
+  const replaceKey = `image-export:${nodeId}`;
+  const controller = new AbortController();
+  state.imageExportAbortController = controller;
+  controller.signal.addEventListener('abort', () => imageEngine.cancelQueuedByKey(replaceKey), { once: true });
+  let memoryReservation = null;
+  const assertCurrent = () => {
+    abortIfExportCanceled(controller.signal);
+    const current = findNode(state.document, nodeId)?.node;
+    if (state.document !== documentSnapshot || state.documentGeneration !== generation || state.documentTransitioning
+      || state.document.activePageId !== pageId || state.saveRevision !== saveRevision
+      || current !== node || JSON.stringify(current) !== nodeSignature) {
+      throw new Error('The image or design changed before the edited original finished exporting. Try again.');
+    }
+  };
+  try {
+    assertCurrent();
+    const memoryBytes = estimateBitmapBytes(transformed.width, transformed.height, 8);
+    memoryReservation = imageMemoryBudget.reserve(memoryBytes, { kind: 'image-export' });
+    if (!memoryReservation) {
+      throw new ImageMemoryLimitError('There is not enough free local image memory for this full-resolution export. Close other large designs or resize the source image.', 'image-export');
+    }
+    showToast(`Rendering ${node.name || 'image'} from its original pixels… Press Escape to discard the result.`, 5000);
+    const rendered = await imageEngine.renderOutput(node.assetId, asset.sourceBytes, node.adjustments, node.transforms, {
+      format: 'png', quality: 100, replaceKey, queueGroup: `image-export:${generation}`,
+    });
+    assertCurrent();
+    if (rendered.width !== transformed.width || rendered.height !== transformed.height) {
+      throw new Error('The full-resolution image dimensions changed during export. Try again.');
+    }
+    const encoded = await encodeRenderedImageOutput(rendered, { format, quality });
+    assertCurrent();
+    const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[format];
+    const filename = `${safeExportName(node.name)}.${extension}`;
+    downloadBlob(encoded.blob, filename);
+    showToast(`Downloaded edited original · ${encoded.width} × ${encoded.height} px · ${filename}.`);
+  } finally {
+    if (memoryReservation) imageMemoryBudget.releaseReservation(memoryReservation);
+    if (state.imageExportAbortController === controller) state.imageExportAbortController = null;
+  }
 }
 
 function downloadSvg(markup, filename) {
@@ -6647,6 +6872,8 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave();
   } else if (action === 'export-setting' && node) {
     exportLayerWithSetting(node.id, details.exportId).catch(error => showToast(error.message || 'Could not export this layer.'));
+  } else if (action === 'export-edited-source' && node?.type === 'image') {
+    void exportEditedImageSource(node.id).catch(error => { if (error?.name !== 'AbortError') showToast(error.message || 'Could not export the edited original.'); });
   } else if (action === 'export-svg' && node) {
     exportSelectedNodeSvg(node.id).catch(error => showToast(error.message || 'Could not export this layer as SVG.'));
   } else if (action === 'create-component') makeComponent(node?.id);
@@ -6894,8 +7121,11 @@ function initEvents() {
     const input = event.currentTarget;
     const file = input.files?.[0]; if (!file) return;
     try {
+      if (file.size > MAX_LOCAL_PACKAGE_BYTES) throw new RangeError(`This local design file is larger than the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit.`);
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
-      await Promise.all(packageData.fonts.map(font => loadLocalFontFace(font, { register: false })));
+      // Keep temporary font decoding serial so imported packages with many
+      // local faces cannot multiply font parser memory on a phone.
+      for (const font of packageData.fonts) await loadLocalFontFace(font, { register: false });
       const importedDocument = parseDocument(packageData.document);
       const switched = await switchToDocument(importedDocument, {
         message: 'Local design opened on this device.',
@@ -7276,7 +7506,7 @@ function initEvents() {
     const button = event.target.closest('[data-version-action="restore"]');
     if (button) void restoreDocumentVersion(button.dataset.versionId);
   });
-  $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
+  $('#share-button').addEventListener('click', () => { void shareDesignFile(); });
   $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; clearPrototypeConnectPrompt(); $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
   $('#prototype-connect-cancel').addEventListener('click', cancelPrototypeConnection);
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
@@ -7390,7 +7620,7 @@ function onKeyDown(event) {
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
   if (event.key === 'Escape' && state.imageExportAbortController && !editing && !document.querySelector('dialog[open]')) {
     state.imageExportAbortController.abort();
-    showToast('Image archive export canceled.');
+    showToast('Image export stopped. Any active render will finish without downloading its result.');
     event.preventDefault();
     return;
   }
@@ -7440,6 +7670,8 @@ function onKeyDown(event) {
   }
   if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
   if (key === 'escape') { closeMenu(); if (isImageRecipeBatchActive(state.bulk)) cancelBulkRecipe(); setSelection([]); return; }
+  if (event.shiftKey && !mod && key === 's' && !event.altKey) { event.preventDefault(); setTool('section'); return; }
+  if (event.shiftKey && mod && key === 'k' && !event.altKey) { event.preventDefault(); chooseImageFiles(); return; }
   const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;

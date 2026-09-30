@@ -3,6 +3,8 @@ import { isValidImageAdjustments, normalizeImageAdjustments } from './image-fill
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value) || 0));
 const outputFormats = new Set(['png', 'jpeg', 'webp']);
+const outputEncoderNames = Object.freeze({ png: 'PNG', jpeg: 'JPEG', webp: 'WEBP' });
+const outputMimeTypes = Object.freeze({ png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' });
 
 function replaceImage(current, next) {
   if (next !== current) current.free();
@@ -57,6 +59,43 @@ function applyToneEffect(api, image, effect, value) {
 }
 
 /**
+ * JPEG cannot represent alpha. Match the editor's raster-export behavior by
+ * compositing transparent pixels over white before passing pixels to Pillow.
+ * The temporary color and mask surfaces are always freed, including when an
+ * encoder or mask operation fails.
+ */
+function encodeJpeg(image, api) {
+  const hasAlphaBand = image.getbands().includes('A');
+  const hasTransparency = hasAlphaBand || Boolean(image.hasTransparencyData?.());
+  if (!hasTransparency) return image.saveWithInput('JPEG', null);
+  if (typeof api?.Image !== 'function') throw new TypeError('Pillow-RS cannot flatten transparency for JPEG output.');
+
+  let rgba;
+  let rgb;
+  let alpha;
+  let matte;
+  try {
+    rgba = image.mode === 'RGBA' ? image.copy() : image.convert('RGBA');
+    rgb = rgba.convert('RGB');
+    alpha = rgba.getchannel(3);
+    matte = new api.Image('RGB', image.width, image.height, null);
+    matte.pasteColor(255, 255, 255, 255, 0, 0, image.width, image.height);
+    matte.pasteImageMasked(rgb, 0, 0, alpha);
+    return matte.saveWithInput('JPEG', null);
+  } finally {
+    matte?.free?.();
+    alpha?.free?.();
+    rgb?.free?.();
+    rgba?.free?.();
+  }
+}
+
+function encodeImageOutput(image, api, format) {
+  if (format === 'jpeg') return encodeJpeg(image, api);
+  return image.saveWithInput(outputEncoderNames[format], null);
+}
+
+/**
  * Resolve an optional normalized crop and clockwise quarter-turn rotation
  * against the original source dimensions. Normalized crop edges make saved
  * recipes portable across sources with different pixel dimensions.
@@ -86,8 +125,10 @@ export function decodeOriginal(api, bytes, { maxPixels = 80_000_000 } = {}) {
 export function renderImage(source, adjustments = {}, transforms = {}, api = null, output = {}) {
   const format = output.format ?? 'png';
   const quality = output.quality ?? 90;
+  const mode = output.mode ?? 'preview';
   if (!outputFormats.has(format)) throw new TypeError('Image output format must be PNG, JPEG, or WebP.');
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image output quality must be an integer from 1 to 100.');
+  if (mode !== 'preview' && mode !== 'export') throw new TypeError('Image render mode must be preview or export.');
   const sourceWidth = source.width;
   const sourceHeight = source.height;
   if (!isValidImageAdjustments(adjustments)) throw new TypeError('Image adjustments contain an unsupported or invalid setting.');
@@ -124,14 +165,21 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     if (settings.invert) image = replaceImage(image, applyToneEffect(api, image, 'invert'));
     if (blur) image = replaceImage(image, image.gaussianBlur(blur));
     // Keep editor previews lossless PNG so the chosen export codec never
-    // compounds across edits. The output settings travel with the job and
-    // image layer; renderAndDownload applies them when the user exports.
-    const bytes = new Uint8Array(image.saveWithInput('PNG', null));
+    // compounds across edits. Standalone image exports can request a real
+    // Pillow-RS PNG/JPEG/WebP encoder over this fresh copy of the source.
+    const bytes = new Uint8Array(mode === 'export'
+      ? encodeImageOutput(image, api, format)
+      : image.saveWithInput('PNG', null));
     return {
       bytes,
-      mimeType: 'image/png',
+      mimeType: mode === 'export' ? outputMimeTypes[format] : 'image/png',
       outputFormat: format,
       outputQuality: quality,
+      // pillow_rs_js exposes saveWithInput(format, extension), without codec
+      // quality options. Keep that limitation explicit instead of implying
+      // that a requested lossy quality was applied by this WASM encoder.
+      qualityApplied: mode === 'export' && format !== 'png' ? false : null,
+      mode,
       width: image.width,
       height: image.height,
       sourceWidth,
@@ -141,4 +189,9 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
       rotation: resolved.rotation,
     };
   } finally { image.free(); }
+}
+
+/** Render the saved recipe from the immutable decoded source as an output file. */
+export function renderImageOutput(source, adjustments = {}, transforms = {}, api = null, output = {}) {
+  return renderImage(source, adjustments, transforms, api, { ...output, mode: 'export' });
 }

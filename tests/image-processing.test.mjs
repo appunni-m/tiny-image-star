@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as pillow from '../wasm/pillow_rs_js.js';
-import { decodeOriginal, renderImage } from '../src/image-processing.js';
+import { decodeOriginal, renderImage, renderImageOutput } from '../src/image-processing.js';
 import { createImageFill } from '../src/image-fills.js';
 
 function twoPixelBmp() {
@@ -79,6 +79,71 @@ test('recipe output format and quality travel through Pillow jobs without lossy 
     }
     assert.throws(() => renderImage(original, {}, {}, pillow, { format: 'gif' }), /PNG, JPEG, or WebP/);
     assert.throws(() => renderImage(original, {}, {}, pillow, { quality: 0 }), /1 to 100/);
+  } finally { original.free(); }
+});
+
+test('Pillow-RS standalone output encodes PNG, JPEG, and WebP at the cropped and rotated source dimensions', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourColorBmp());
+  const formatCases = [
+    { format: 'png', mimeType: 'image/png', signature: [137, 80, 78, 71, 13, 10, 26, 10] },
+    { format: 'jpeg', mimeType: 'image/jpeg', signature: [255, 216, 255] },
+    { format: 'webp', mimeType: 'image/webp', signature: [82, 73, 70, 70] },
+  ];
+  try {
+    for (const output of formatCases) {
+      const rendered = renderImageOutput(original, { brightness: 12 }, {
+        crop: { left: 0, top: 0, right: 0.5, bottom: 1 }, rotation: 90,
+      }, pillow, { format: output.format, quality: 73 });
+      assert.equal(rendered.mode, 'export');
+      assert.equal(rendered.mimeType, output.mimeType);
+      assert.deepEqual([rendered.width, rendered.height], [2, 1]);
+      assert.deepEqual([...rendered.bytes.slice(0, output.signature.length)], output.signature);
+      assert.equal(rendered.outputFormat, output.format);
+      assert.equal(rendered.outputQuality, 73, 'the requested recipe quality remains attached to the result');
+      if (output.format === 'png') assert.equal(rendered.qualityApplied, null, 'PNG has no lossy quality setting');
+      else assert.equal(rendered.qualityApplied, false, 'the deployed Pillow-RS save binding has no quality argument');
+
+      const reopened = decodeOriginal(pillow, rendered.bytes);
+      try { assert.deepEqual([reopened.width, reopened.height], [2, 1], 'the selected Pillow encoder preserves full cropped/rotated pixels'); }
+      finally { reopened.free(); }
+    }
+    assert.deepEqual(pixel(original, 0, 0), [255, 0, 0], 'all output formats render a copy and preserve the decoded original');
+  } finally { original.free(); }
+});
+
+test('Pillow-RS JPEG output flattens transparent source pixels on white before encoding', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  try {
+    const rendered = renderImageOutput(original, {}, {}, pillow, { format: 'jpeg', quality: 90 });
+    assert.equal(rendered.mimeType, 'image/jpeg');
+    assert.deepEqual([...rendered.bytes.slice(0, 3)], [255, 216, 255]);
+    const reopened = decodeOriginal(pillow, rendered.bytes);
+    try {
+      assert.equal(reopened.mode, 'RGB');
+      assert.ok(pixel(reopened, 0, 0).every(channel => channel >= 240), 'fully transparent pixels composite to white');
+      assert.ok(pixel(reopened, 1, 0)[0] > 150, 'partially transparent pixels blend with the white matte');
+      assert.deepEqual([reopened.width, reopened.height], [4, 1]);
+    } finally { reopened.free(); }
+    assert.equal(original.mode, 'RGBA');
+    assert.equal([...original.getpixel(0, 0)][3], 0, 'JPEG encoding must not mutate source alpha');
+  } finally { original.free(); }
+});
+
+test('Pillow-RS WebP output retains RGBA alpha samples', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  try {
+    const rendered = renderImageOutput(original, { contrast: 12 }, {}, pillow, { format: 'webp', quality: 80 });
+    const reopened = decodeOriginal(pillow, rendered.bytes);
+    try {
+      assert.equal(reopened.mode, 'RGBA');
+      assert.deepEqual(Array.from({ length: 4 }, (_, x) => [...reopened.getpixel(x, 0)][3]), [0, 64, 128, 255]);
+    } finally { reopened.free(); }
   } finally { original.free(); }
 });
 

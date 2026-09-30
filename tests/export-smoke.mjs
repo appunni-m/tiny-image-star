@@ -98,21 +98,21 @@ try {
   const group = createNode('group', { name: 'Red parent', x: 100, y: 80, width: 200, height: 160, rotation: 30, fill: '#ff0000' });
   const artwork = createNode('rectangle', { name: 'Artwork', x: 35, y: 42, width: 40, height: 20, rotation: 45, fill: '#0066ff' });
   const caption = createNode('text', { name: 'Vector caption', x: 16, y: 108, width: 150, height: 30, text: 'editable vector text', textCase: 'uppercase', textDecoration: 'underline', fontSize: 16, color: '#224466' });
-  const imageCanvas = document.createElement('canvas'); imageCanvas.width = 4; imageCanvas.height = 2;
-  const imageContext = imageCanvas.getContext('2d'); imageContext.fillStyle = '#e22'; imageContext.fillRect(0, 0, 2, 2); imageContext.fillStyle = '#26c'; imageContext.fillRect(2, 0, 2, 2);
+  const imageCanvas = document.createElement('canvas'); imageCanvas.width = 64; imageCanvas.height = 32;
+  const imageContext = imageCanvas.getContext('2d'); imageContext.fillStyle = '#e22'; imageContext.fillRect(0, 0, 32, 32); imageContext.fillStyle = '#26c'; imageContext.fillRect(32, 0, 32, 32);
   const imageBlob = await new Promise((resolve, reject) => imageCanvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create the local SVG image fixture.')), 'image/png'));
   const imageBytes = new Uint8Array(await imageBlob.arrayBuffer());
   const imageAssetId = 'export-smoke-local-image';
   const localImage = createNode('image', {
-    name: 'Local photo', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    name: 'Local photo', assetId: imageAssetId, sourceWidth: 64, sourceHeight: 32,
     x: 112, y: 20, width: 40, height: 28, rotation: -8, opacity: 0.8, fit: 'cover'
   });
   const batchJpeg = createNode('image', {
-    name: 'Batch JPEG', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    name: 'Batch JPEG', assetId: imageAssetId, sourceWidth: 64, sourceHeight: 32,
     x: 20, y: 360, width: 40, height: 28, outputFormat: 'jpeg', outputQuality: 76
   });
   const batchWebp = createNode('image', {
-    name: 'Batch Edited WebP', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    name: 'Batch Edited WebP', assetId: imageAssetId, sourceWidth: 64, sourceHeight: 32,
     x: 84, y: 360, width: 40, height: 28, outputFormat: 'webp', outputQuality: 61,
     adjustments: { invert: true }
   });
@@ -371,7 +371,27 @@ try {
   const processedPixel = processedContext.getImageData(5, 12, 1, 1).data;
   const originalPixel = originalContext.getImageData(0, 0, 1, 1).data;
   assert(processedPixel.some((channel, index) => index < 3 && channel !== originalPixel[index]), 'The archive should contain the current edited preview, not the untouched source image.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, rasterExportUnaffectedByOutlineView: true })}`;
+  click(app.querySelector(`[data-layer-id="${batchWebp.id}"]`));
+  const sourceExport = app.querySelector('[data-action="export-edited-source"]');
+  assert(sourceExport && Number.parseFloat(view.getComputedStyle(sourceExport).minHeight) >= 40, 'The full-resolution source export action should remain finger-sized on mobile.');
+  const directQualityCalls = [];
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    directQualityCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  try {
+    click(sourceExport);
+    await waitFor(() => downloads.length === 12, 'full-resolution edited source export');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const sourceExported = downloads[11];
+  assert(sourceExported.filename === 'Batch Edited WebP.webp' && sourceExported.blob?.type === 'image/webp', 'The edited original export should use its saved WebP format and sanitized layer name.');
+  bitmap = await view.createImageBitmap(sourceExported.blob);
+  assert(bitmap.width === 64 && bitmap.height === 32, `The edited original should keep its full source resolution; received ${bitmap.width} × ${bitmap.height}.`);
+  bitmap.close();
+  assert(directQualityCalls.some(call => call.type === 'image/webp' && call.quality === 0.61), 'Full-resolution WebP export should apply the saved recipe quality in the local browser encoder.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

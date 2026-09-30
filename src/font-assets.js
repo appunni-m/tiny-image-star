@@ -34,7 +34,7 @@ export function defaultLocalFontFamily(name) {
   return family.slice(0, LOCAL_FONT_FAMILY_LIMIT) || 'Imported Font';
 }
 
-export function validateLocalFontAsset(asset) {
+export function validateLocalFontAsset(asset, { copyBytes = true } = {}) {
   if (!asset || typeof asset !== 'object' || Array.isArray(asset)) throw new TypeError('A local font needs valid metadata and bytes.');
   const { id, name, family, weight, style } = asset;
   if (typeof id !== 'string' || !id.trim() || id.length > 180 || /[\x00-\x1f]/u.test(id)) throw new TypeError('A local font needs a valid ID.');
@@ -56,7 +56,7 @@ export function validateLocalFontAsset(asset) {
     family: family.trim(),
     weight,
     style,
-    bytes: bytes.slice()
+    bytes: copyBytes ? bytes.slice() : bytes
   };
 }
 
@@ -65,12 +65,11 @@ export async function loadLocalFontFace(asset, {
   fontSet = globalThis.document?.fonts,
   register = true
 } = {}) {
-  const font = validateLocalFontAsset(asset);
+  const font = validateLocalFontAsset(asset, { copyBytes: false });
   if (typeof FontFaceConstructor !== 'function' || (register && !fontSet?.add)) {
     throw new Error('This browser does not support locally installed fonts.');
   }
-  const bytes = font.bytes.slice();
-  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const buffer = font.bytes.buffer.slice(font.bytes.byteOffset, font.bytes.byteOffset + font.bytes.byteLength);
   let face;
   try {
     face = new FontFaceConstructor(font.family, buffer, { weight: String(font.weight), style: font.style, display: 'swap' });

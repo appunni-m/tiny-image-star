@@ -1,4 +1,5 @@
 const clamp = (value, min = 0) => Math.max(min, Number.isFinite(Number(value)) ? Number(value) : min);
+const boundedGap = (value, minimum = 0) => Math.min(100_000, clamp(value, minimum));
 const trackCount = (value, fallback) => {
   const count = Math.floor(Number(value));
   return Number.isFinite(count) && count >= 1 ? Math.min(64, count) : fallback;
@@ -44,7 +45,9 @@ function distributeFill(items, available, axis) {
 }
 
 export function createAutoLayout(overrides = {}) {
-  const gap = clamp(overrides.gap ?? 8);
+  const axis = overrides.axis ?? 'vertical';
+  const normalizeGap = axis === 'grid' ? value => boundedGap(value) : value => boundedGap(value, -100_000);
+  const gap = normalizeGap(overrides.gap ?? 8);
   const padding = typeof overrides.padding === 'object'
     ? { top: 16, right: 16, bottom: 16, left: 16, ...overrides.padding }
     : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 };
@@ -54,8 +57,8 @@ export function createAutoLayout(overrides = {}) {
     align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
     ...overrides,
     gap,
-    rowGap: clamp(overrides.rowGap ?? gap),
-    columnGap: clamp(overrides.columnGap ?? gap),
+    rowGap: normalizeGap(overrides.rowGap ?? gap),
+    columnGap: normalizeGap(overrides.columnGap ?? gap),
     columns: trackCount(overrides.columns, 2),
     rows: overrides.rows === 'auto' || overrides.rows == null ? 'auto' : trackCount(overrides.rows, 'auto'),
     autoPositioning: overrides.autoPositioning !== false,
@@ -91,14 +94,35 @@ function groupedItems(frame, settings, flowItems, mainGap) {
 function distribute(items, mainAvailable, settings, mainGap) {
   const horizontal = settings.axis === 'horizontal';
   const sizes = items.map(item => horizontal ? item.width : item.height);
-  const occupied = sizes.reduce((sum, value) => sum + value, 0);
-  const spare = Math.max(0, mainAvailable - occupied);
+  const footprint = linearFootprint(sizes, mainGap);
+  const spare = Math.max(0, mainAvailable - footprint.extent);
   let gap = mainGap;
-  let start = 0;
-  if (settings.justify === 'center') start = spare / 2;
-  else if (settings.justify === 'end') start = spare;
-  else if (settings.justify === 'space-between' && items.length > 1) gap = Math.max(0, spare / (items.length - 1));
+  let start = -footprint.min;
+  if (settings.justify === 'center') start += spare / 2;
+  else if (settings.justify === 'end') start += spare;
+  else if (settings.justify === 'space-between' && items.length > 1) gap += spare / (items.length - 1);
+  else if (settings.justify === 'space-around' && items.length) {
+    const extraGap = spare / items.length;
+    gap += extraGap;
+    start += extraGap / 2;
+  } else if (settings.justify === 'space-evenly' && items.length) {
+    const extraGap = spare / (items.length + 1);
+    gap += extraGap;
+    start += extraGap;
+  }
   return { start, gap };
+}
+
+function linearFootprint(sizes, gap) {
+  let cursor = 0;
+  let min = 0;
+  let max = 0;
+  for (const size of sizes) {
+    min = Math.min(min, cursor);
+    max = Math.max(max, cursor + size);
+    cursor += size + gap;
+  }
+  return { min, max, extent: Math.max(0, max - min) };
 }
 
 function normalizedCell(node) {
@@ -244,11 +268,12 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     ? Math.max(0, frame.height - padding.top - padding.bottom)
     : Math.max(0, frame.width - padding.left - padding.right);
   const naturalCrossSizes = groups.map(group => group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0));
-  const naturalCrossExtent = naturalCrossSizes.reduce((sum, size) => sum + size, 0) + Math.max(0, groups.length - 1) * crossGap;
+  const naturalCrossExtent = linearFootprint(naturalCrossSizes, crossGap).extent;
   const stretchPerGroup = settings.align === 'stretch' && settings.crossSizing !== 'hug' && groups.length
     ? Math.max(0, crossAvailable - naturalCrossExtent) / groups.length
     : 0;
-  let crossCursor = horizontal ? padding.top : padding.left;
+  const crossFootprint = linearFootprint(naturalCrossSizes, crossGap);
+  let crossCursor = (horizontal ? padding.top : padding.left) - crossFootprint.min;
   let computedMain = 0;
 
   for (const [groupIndex, group] of groups.entries()) {
@@ -263,7 +288,7 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     }
     const content = distribute(group, mainAvailable, settings.mainSizing === 'hug' ? { ...settings, justify: 'start' } : settings, gaps.main);
     let mainCursor = (horizontal ? padding.left : padding.top) + (settings.mainSizing === 'hug' ? 0 : content.start);
-    computedMain = Math.max(computedMain, group.reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0) + Math.max(0, group.length - 1) * content.gap);
+    computedMain = Math.max(computedMain, linearFootprint(group.map(item => horizontal ? item.width : item.height), content.gap).extent);
     for (const item of group) {
       const mainSize = horizontal ? item.width : item.height;
       const crossSize = horizontal ? item.height : item.width;
@@ -290,7 +315,7 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
       else frame.height = constrainSize(frame, 'Height', computedMain + padding.top + padding.bottom);
     }
     if (settings.crossSizing === 'hug') {
-      const crossExtent = groups.reduce((sum, group) => sum + group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0), 0) + Math.max(0, groups.length - 1) * crossGap;
+      const crossExtent = linearFootprint(groups.map(group => group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0)), crossGap).extent;
       if (horizontal) frame.height = constrainSize(frame, 'Height', crossExtent + padding.top + padding.bottom);
       else frame.width = constrainSize(frame, 'Width', crossExtent + padding.left + padding.right);
     }

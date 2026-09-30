@@ -392,7 +392,16 @@ export class LocalImageEngine {
     this.#notify();
   }
 
-  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey, format = 'png', quality = 90, queueGroup = null } = {}) {
+  render(assetId, sourceBytes, adjustments, transforms = {}, options = {}) {
+    return this.#enqueueRender(assetId, sourceBytes, adjustments, transforms, options, 'preview');
+  }
+
+  /** Render the recipe into its requested standalone PNG/JPEG/WebP encoding. */
+  renderOutput(assetId, sourceBytes, adjustments, transforms = {}, options = {}) {
+    return this.#enqueueRender(assetId, sourceBytes, adjustments, transforms, options, 'export');
+  }
+
+  #enqueueRender(assetId, sourceBytes, adjustments, transforms, { replaceKey, format = 'png', quality = 90, queueGroup = null } = {}, outputMode) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
@@ -432,6 +441,7 @@ export class LocalImageEngine {
         },
         format,
         quality,
+        outputMode,
         resolve,
         reject,
         replaceKey,
@@ -529,6 +539,7 @@ export class LocalImageEngine {
         transforms: job.transforms,
         format: job.format,
         quality: job.quality,
+        outputMode: job.outputMode,
       }, bytes ? [bytes.buffer] : []);
       for (const blockedJob of blockedJobs) blockedJob.memoryBypasses = (blockedJob.memoryBypasses || 0) + 1;
     } catch (error) {

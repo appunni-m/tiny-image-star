@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createNode, createFillLayer, addNode, serializeDocument } from '../src/model.js';
-import { packLocalPackage, unpackLocalPackage } from '../src/storage.js';
+import { buildLocalPackageBlob, localPackageFilename, packLocalPackage, unpackLocalPackage } from '../src/storage.js';
 
 test('portable local design restores its metadata and byte-exact image assets', () => {
   const document = createDocument();
@@ -11,6 +11,38 @@ test('portable local design restores its metadata and byte-exact image assets', 
   const decoded = unpackLocalPackage(packed);
   assert.equal(decoded.document.pages[0].children[0].fileName, 'photo.png');
   assert.deepEqual(decoded.assets[0].bytes, bytes);
+  assert.equal(decoded.assets[0].bytes.buffer, packed.buffer, 'image payloads should remain views into the bounded package buffer until import persists them');
+});
+
+test('portable package builders enforce a byte limit before allocating a packed payload', () => {
+  const document = createDocument();
+  const image = { id: 'bounded-image', name: 'large.png', type: 'image/png', bytes: new Uint8Array(64) };
+  assert.throws(() => packLocalPackage(document, [image], [], { maxBytes: 32 }), /local package limit/i);
+  assert.throws(() => buildLocalPackageBlob(document, [image], [], { maxBytes: 32 }), /local package limit/i);
+});
+
+test('portable package Blob is shareable and retains its package MIME type and embedded assets', async () => {
+  const document = createDocument();
+  addNode(document, createNode('image', { assetId: 'shared-image', fileName: 'source.png' }));
+  const imageBytes = new Uint8Array([0, 1, 2, 255]);
+  const fontBytes = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 1, 2, 3, 4, 5, 6, 7, 8]);
+  const blob = buildLocalPackageBlob(document, [{ id: 'shared-image', name: 'source.png', type: 'image/png', bytes: imageBytes }], [{
+    id: 'shared-font', name: 'shared.woff2', type: 'font/woff2', family: 'Shared Sans', weight: 400, style: 'normal', bytes: fontBytes
+  }]);
+
+  assert.equal(blob.type, 'application/octet-stream');
+  const packageData = unpackLocalPackage(new Uint8Array(await blob.arrayBuffer()));
+  assert.equal(packageData.document.id, document.id);
+  assert.deepEqual(packageData.assets[0].bytes, imageBytes);
+  assert.deepEqual(packageData.fonts[0].bytes, fontBytes);
+});
+
+test('portable package filename is a bounded safe basename with a stable extension', () => {
+  assert.equal(localPackageFilename('../Résumé: Design. '), '-Résumé- Design.flocal');
+  assert.equal(localPackageFilename('CON'), '_CON.flocal');
+  assert.equal(localPackageFilename('...  '), 'design.flocal');
+  assert.equal(localPackageFilename('x'.repeat(500)).length, 120);
+  assert.equal(localPackageFilename('Project'), 'Project.flocal');
 });
 
 test('portable local design packages byte-exact font faces and remains compatible with fontless files', () => {
@@ -27,6 +59,7 @@ test('portable local design packages byte-exact font faces and remains compatibl
   assert.equal(unpacked.fonts[0].family, 'Display Sans');
   assert.equal(unpacked.fonts[0].weight, 600);
   assert.deepEqual(unpacked.fonts[0].bytes, fontBytes);
+  assert.equal(unpacked.fonts[0].bytes.buffer, packaged.buffer, 'font payloads should remain views until validation or import needs ownership');
 
   const fontless = unpackLocalPackage(packLocalPackage(createDocument(), []));
   assert.deepEqual(fontless.fonts, [], 'older local packages remain readable without a font manifest');

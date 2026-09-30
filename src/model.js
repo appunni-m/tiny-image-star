@@ -67,10 +67,11 @@ function isVariableBindingValue(property, value) {
   if (property.startsWith('autoLayout.')) {
     if (property.endsWith('.axis')) return ['vertical', 'horizontal', 'grid'].includes(value);
     if (property.endsWith('.align')) return ['start', 'center', 'end', 'stretch'].includes(value);
-    if (property.endsWith('.justify')) return ['start', 'center', 'end', 'space-between'].includes(value);
+    if (property.endsWith('.justify')) return ['start', 'center', 'end', 'space-between', 'space-around', 'space-evenly'].includes(value);
     if (property.endsWith('.mainSizing') || property.endsWith('.crossSizing')) return ['fixed', 'hug'].includes(value);
     if (property.endsWith('.columns') || property.endsWith('.rows')) return Number.isInteger(value) && value >= 1 && value <= 64;
-    if (property.endsWith('.rowGap') || property.endsWith('.columnGap') || property.includes('.padding.')) return value >= 0 && value <= 100_000;
+    if (property.endsWith('.rowGap') || property.endsWith('.columnGap')) return value >= 0 && value <= 100_000;
+    if (property.includes('.padding.')) return value >= 0 && value <= 100_000;
   }
   return true;
 }
@@ -2338,12 +2339,13 @@ export function validateDocument(document) {
       if (node.autoLayout) {
         const layout = node.autoLayout;
         const validCount = value => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 64;
-        const validGap = value => Number.isFinite(Number(value)) && Number(value) >= 0;
+        const validGap = value => Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100_000;
+        const validFlowGap = value => Number.isFinite(Number(value)) && Number(value) >= (layout.axis === 'grid' ? 0 : -100_000) && Number(value) <= 100_000;
         const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
         if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)
-          || (layout.gap != null && !validGap(layout.gap))
-          || (layout.rowGap != null && !validGap(layout.rowGap))
-          || (layout.columnGap != null && !validGap(layout.columnGap))
+          || (layout.gap != null && !validFlowGap(layout.gap))
+          || (layout.rowGap != null && !validFlowGap(layout.rowGap))
+          || (layout.columnGap != null && !validFlowGap(layout.columnGap))
           || (layout.columns != null && !validCount(layout.columns))
           || (layout.rows != null && layout.rows !== 'auto' && !validCount(layout.rows))
           || (layout.autoPositioning != null && typeof layout.autoPositioning !== 'boolean')
