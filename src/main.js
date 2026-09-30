@@ -18,7 +18,7 @@ import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, pre
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
-import { encodeRenderedImageOutput, MAX_CANVAS_OUTPUT_EDGE, MAX_CANVAS_OUTPUT_PIXELS } from './image-output.js';
+import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
 import { buildLocalPackageBlob, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
@@ -31,7 +31,9 @@ import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { importSvgToLayers } from './svg-import.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
+import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
@@ -94,6 +96,7 @@ let bulkBarTicker = null;
 let bulkConcurrencyTimer = 0;
 let latestPageLayerIds = [];
 let layerRowsById = new Map();
+const collapsedLayerIds = new Set();
 let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
 let presentationDelayCancel = null;
@@ -474,12 +477,12 @@ function setTool(tool) {
 
 function renderPageList() {
   const list = $('#pages-list'); list.replaceChildren();
-  for (const page of state.document.pages) {
-    const button = document.createElement('button');
-    button.className = `page-row${page.id === state.document.activePageId ? ' is-active' : ''}`;
-    button.dataset.pageId = page.id; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(page.id === state.document.activePageId));
-    button.innerHTML = `<span class="page-row-icon">▧</span><span class="page-row-name">${escapeHtml(page.name)}</span>`;
-    list.append(button);
+  for (const [index, page] of state.document.pages.entries()) {
+    const row = document.createElement('div');
+    row.className = `page-row${page.id === state.document.activePageId ? ' is-active' : ''}`;
+    row.dataset.pageId = page.id; row.setAttribute('role', 'listitem'); row.setAttribute('aria-selected', String(page.id === state.document.activePageId));
+    row.innerHTML = `<button class="page-row-select" type="button" data-page-select="${escapeHtml(page.id)}" aria-current="${page.id === state.document.activePageId ? 'page' : 'false'}"><span class="page-row-icon">▧</span><span class="page-row-name">${escapeHtml(page.name)}</span></button><details class="page-row-menu"><summary aria-label="Actions for ${escapeHtml(page.name)}" title="Page actions">···</summary><div class="page-actions-menu"><button type="button" data-page-action="rename" data-page-id="${escapeHtml(page.id)}">Rename</button><button type="button" data-page-action="duplicate" data-page-id="${escapeHtml(page.id)}">Duplicate</button><button type="button" data-page-action="move-up" data-page-id="${escapeHtml(page.id)}"${index === 0 ? ' disabled' : ''}>Move up</button><button type="button" data-page-action="move-down" data-page-id="${escapeHtml(page.id)}"${index === state.document.pages.length - 1 ? ' disabled' : ''}>Move down</button><button class="page-delete-action" type="button" data-page-action="delete" data-page-id="${escapeHtml(page.id)}"${state.document.pages.length <= 1 ? ' disabled title="A design must keep at least one page"' : ''}>Delete</button></div></details>`;
+    list.append(row);
   }
   const page = activePage();
   $('#canvas-page-name').textContent = page?.name || 'Page';
@@ -513,30 +516,58 @@ function renderLayers() {
   const page = activePage();
   latestPageLayerIds = [];
   const search = state.layerSearch.trim().toLowerCase();
-  const matchingNode = node => !search || node.name.toLowerCase().includes(search) || (node.children || []).some(matchingNode);
-  const addRows = (nodes, depth = 0, lockedParent = false) => {
-    for (const { node, index } of nodes.map((node, index) => ({ node, index })).reverse()) {
+  const matchingSelf = node => !search || node.name.toLowerCase().includes(search);
+  const matchingNode = node => matchingSelf(node) || (node.children || []).some(matchingNode);
+  let firstVisibleId = null;
+  const addRows = (nodes, container, depth = 0, lockedParent = false) => {
+    const visibleNodes = nodes.map((node, index) => ({ node, index })).reverse().filter(({ node }) => matchingNode(node));
+    for (const { node, index } of visibleNodes) {
       if (!matchingNode(node)) continue;
+      const forceExpandedForSearch = Boolean(search && (node.children || []).some(matchingNode));
+      const effectivelyCollapsed = collapsedLayerIds.has(node.id) && !forceExpandedForSearch;
       latestPageLayerIds.push(node.id);
       const row = document.createElement('div');
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${getNodePropertyValue(state.document, node, 'visible') ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
-      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id))); row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = 0; row.draggable = true;
+      row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id)));
+      row.setAttribute('aria-level', String(depth + 1));
+      row.setAttribute('aria-posinset', String(visibleNodes.findIndex(item => item.node === node) + 1));
+      row.setAttribute('aria-setsize', String(visibleNodes.length));
+      if (node.children?.length) {
+        row.setAttribute('aria-expanded', String(!effectivelyCollapsed));
+        row.setAttribute('aria-owns', `layer-children-${encodeURIComponent(node.id)}`);
+      }
+      row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = -1; row.draggable = true;
+      if (!firstVisibleId) firstVisibleId = node.id;
       row.style.paddingLeft = `${7 + depth * 13}px`;
       row.style.setProperty('--layer-indent', `${7 + depth * 13}px`);
       const siblings = nodes;
       const lockedInChain = node.locked || lockedParent;
       const upNeighbor = siblings[index + 1]; const downNeighbor = siblings[index - 1];
       const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
-      const chevron = node.children?.length ? '⌄' : '';
+      const chevron = node.children?.length
+        ? `<button type="button" class="layer-chevron" data-action="layer-toggle" tabindex="-1" aria-label="${effectivelyCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(node.name)}" aria-expanded="${!effectivelyCollapsed}">${effectivelyCollapsed ? '›' : '⌄'}</button>`
+        : '<span class="layer-chevron-placeholder" aria-hidden="true"></span>';
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
-      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button type="button" class="layer-order-control" data-action="layer-move-up" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
-      list.append(row);
+      row.innerHTML = `${chevron}<span class="layer-icon" aria-hidden="true">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button type="button" class="layer-order-control" data-action="layer-move-up" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" tabindex="-1" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" tabindex="-1" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
+      container.append(row);
       layerRowsById.set(node.id, row);
-      if (node.children?.length) addRows(node.children, depth + 1, lockedInChain);
+      if (node.children?.length) {
+        const group = document.createElement('div');
+        group.setAttribute('role', 'group');
+        group.id = `layer-children-${encodeURIComponent(node.id)}`;
+        group.hidden = effectivelyCollapsed;
+        container.append(group);
+        if (!group.hidden) addRows(node.children, group, depth + 1, lockedInChain);
+      }
     }
   };
-  if (page) addRows(page.children);
+  if (page) addRows(page.children, list);
+  const focusedId = document.activeElement?.closest?.('[data-layer-id]')?.dataset.layerId;
+  const rovingId = layerRowsById.has(focusedId) ? focusedId
+    : layerRowsById.has(state.lastLayerSelection) ? state.lastLayerSelection
+      : layerRowsById.has(state.selectedIds[0]) ? state.selectedIds[0] : firstVisibleId;
+  if (rovingId) layerRowsById.get(rovingId).tabIndex = 0;
   $('#empty-layers').hidden = latestPageLayerIds.length > 0;
   $('#layers-list').hidden = latestPageLayerIds.length === 0;
 }
@@ -1192,8 +1223,11 @@ function prototypeInspector() {
   const variantTargets = (variantSourceSet?.componentIds || []).map(id => state.document.components?.find(item => item.id === id)).filter(item => item && item.id !== variantSourceComponent?.id);
   const selectedVariantTarget = variantTargets.find(item => item.id === state.prototypeVariantTargetId) || variantTargets[0] || null;
   const start = getPrototypeStartFrame(state.document, node?.id);
+  const flows = listPrototypeFlows(state.document);
+  const selectedFlow = flows.find(flow => flow.id === state.document.prototypeStartFlowId) || flows[0] || null;
+  const flowControls = `<div class="prototype-flow-controls"><label>Prototype flow<select class="select-field" id="prototype-flow-select" aria-label="Select prototype flow"><option value=""${selectedFlow ? '' : ' selected'}>No saved flows</option>${flows.map(flow => `<option value="${escapeHtml(flow.id)}"${flow.id === selectedFlow?.id ? ' selected' : ''}>${escapeHtml(flow.name)}</option>`).join('')}</select></label><div class="prototype-flow-actions"><button class="secondary-button" type="button" data-action="prototype-create-flow"${frame || start ? '' : ' disabled'}>＋ New flow</button><button class="secondary-button" type="button" data-action="prototype-rename-flow"${selectedFlow ? '' : ' disabled'}>Rename</button><button class="secondary-button" type="button" data-action="prototype-delete-flow"${selectedFlow ? '' : ' disabled'}>Delete</button></div></div>`;
   const startBody = frame
-    ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start">${state.document.prototypeStartPoint?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
+    ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start"${selectedFlow ? '' : ' disabled'}>${selectedFlow?.pageId === state.document.activePageId && selectedFlow?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
     : `<p class="prototype-hint">${start ? `Present starts at “${escapeHtml(start.frame.name)}”.` : 'Create a frame to make a prototype.'}</p>`;
   const interactions = nodeInteractions.map(interaction => {
     const target = interaction.destinationId ? findNode(state.document, interaction.destinationId, interaction.destinationPageId)?.node : null;
@@ -1256,7 +1290,7 @@ function prototypeInspector() {
   const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
   const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${variableModeControls}${variantControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || needsVariantTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
-  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
+  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
 
 function pageComments(pageId = activePage()?.id) {
@@ -1487,7 +1521,7 @@ function renderInspector() {
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   body += sizeLimitsSection(node, parent);
-  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, and adjustments at the original image resolution. JPEG/WebP quality is applied by the local browser encoder. Format and quality are also saved in recipes for batch export.</div>`);
+  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, and adjustments at the original image resolution. JPEG/WebP quality is applied in the local Pillow-RS WASM worker. Format and quality are also saved in recipes for batch export.</div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
@@ -5957,8 +5991,35 @@ function addPage() {
 }
 function renamePage(pageId) {
   const page = state.document.pages.find(item => item.id === pageId); if (!page) return;
-  const name = prompt('Rename page', page.name); if (!name) return;
-  checkpoint('Rename page'); page.name = name.trim() || page.name; renderUI(); queueSave();
+  const name = prompt('Rename page', page.name); if (name == null || !name.trim()) return;
+  checkpoint('Rename page');
+  if (!renameManagedPage(state.document, pageId, name)) return;
+  renderUI(); queueSave();
+}
+function managePageAction(action, pageId) {
+  const page = state.document.pages.find(item => item.id === pageId);
+  if (!page) return;
+  if (action === 'rename') { renamePage(pageId); return; }
+  if (action === 'duplicate') {
+    checkpoint('Duplicate page');
+    const copy = duplicateManagedPage(state.document, pageId);
+    if (!copy) return;
+    state.document.activePageId = copy.id; state.selectedIds = []; state.selectedVectorPoint = null;
+    state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); queueSave();
+    showToast(`Duplicated “${page.name}” as “${copy.name}”.`); return;
+  }
+  if (action === 'delete') {
+    if (state.document.pages.length <= 1) { showToast('A design must keep at least one page.'); return; }
+    if (!confirm(`Delete “${page.name}” and its contents? This removes links targeting the page.`)) return;
+    checkpoint('Delete page');
+    if (!deleteManagedPage(state.document, pageId)) return;
+    state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null;
+    renderUI(); queueSave(); showToast(`Deleted “${page.name}”.`); return;
+  }
+  const from = state.document.pages.findIndex(item => item.id === pageId);
+  const to = from + (action === 'move-up' ? -1 : action === 'move-down' ? 1 : 0);
+  if (to === from || to < 0 || to >= state.document.pages.length) return;
+  checkpoint('Reorder pages'); reorderManagedPage(state.document, pageId, to); renderUI(); queueSave();
 }
 
 function overlayPositionInFrame(position, frame, overlay) {
@@ -6994,10 +7055,32 @@ async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent 
   }
   const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }[setting.format];
   const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[setting.format];
-  const blob = await new Promise((resolve, reject) => {
-    try { output.toBlob(value => value ? resolve(value) : reject(new Error('The browser could not encode this export.')), mime, setting.format === 'png' ? undefined : setting.quality / 100); }
+  // The scene canvas is only a lossless composition surface. Final PNG, JPEG,
+  // and WebP bytes (including lossy quality) are always produced by the
+  // shared Pillow-RS worker, so browser codecs cannot silently change quality
+  // or format support between devices.
+  const rasterized = await new Promise((resolve, reject) => {
+    try { output.toBlob(value => value ? resolve(value) : reject(new Error('The browser could not prepare this export for Pillow-RS.')), 'image/png'); }
     catch (error) { reject(error); }
   });
+  checkCurrent();
+  const sourceBytes = new Uint8Array(await rasterized.arrayBuffer());
+  checkCurrent();
+  const rasterAssetId = createId('raster-export');
+  let rendered = null;
+  let blob;
+  try {
+    rendered = await imageEngine.renderOutput(rasterAssetId, sourceBytes, {}, {}, {
+      format: setting.format,
+      quality: setting.quality,
+    });
+    checkCurrent();
+    blob = encodeRenderedImageOutput(rendered, { format: setting.format, quality: setting.quality }).blob;
+  } finally {
+    rendered?.bytes?.fill(0);
+    sourceBytes.fill(0);
+    imageEngine.dispose(rasterAssetId);
+  }
   checkCurrent();
   if (blob.type !== mime) throw new Error(`${setting.format.toUpperCase()} export is not supported by this browser.`);
   const suffix = String(setting.suffix || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim();
@@ -7043,10 +7126,6 @@ async function exportEditedImageSource(nodeId) {
   }
   const dimensions = assertSafeRasterDimensions(asset.sourceBytes);
   const transformed = transformedImageDimensions(dimensions.width, dimensions.height, node.transforms);
-  if (format !== 'png' && (transformed.width > MAX_CANVAS_OUTPUT_EDGE || transformed.height > MAX_CANVAS_OUTPUT_EDGE
-    || transformed.width * transformed.height > MAX_CANVAS_OUTPUT_PIXELS)) {
-    throw new RangeError(`This ${format.toUpperCase()} export is ${transformed.width.toLocaleString()} × ${transformed.height.toLocaleString()} px. Resize the source below ${MAX_CANVAS_OUTPUT_PIXELS.toLocaleString()} pixels to encode it with the selected quality.`);
-  }
 
   const documentSnapshot = state.document;
   const generation = state.documentGeneration;
@@ -7076,7 +7155,7 @@ async function exportEditedImageSource(nodeId) {
     }
     showToast(`Rendering ${node.name || 'image'} from its original pixels… Press Escape to discard the result.`, 5000);
     const rendered = await imageEngine.renderOutput(node.assetId, asset.sourceBytes, node.adjustments, node.transforms, {
-      format: 'png', quality: 100, replaceKey, queueGroup: `image-export:${generation}`,
+      format, quality, replaceKey, queueGroup: `image-export:${generation}`,
     });
     assertCurrent();
     if (rendered.width !== transformed.width || rendered.height !== transformed.height) {
@@ -7576,14 +7655,38 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'reset-component-slot') resetComponentSlot(details.instanceId, details.propertyId);
   else if (action === 'create-component-instance') createInstanceAt(details.componentId || node?.componentId);
   else if (action === 'detach-component-instance') detachInstance(details.instanceId || node?.id);
-  else if (action === 'prototype-start') {
-    const entry = node ? findNode(state.document, node.id) : null;
+  else if (action === 'prototype-create-flow') {
+    const entry = node ? findNodeAcrossPages(state.document, node.id) : null;
     const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
-    if (!frame) { showToast('Select a frame to set the starting point.'); return; }
-    checkpoint('Set prototype starting point');
-    setPrototypeStartPoint(state.document, frame.id);
-    renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
-  } else if (action === 'edit-prototype-interaction') {
+    const target = frame ? { frame, page: entry?.page || activePage() } : getPrototypeStartFrame(state.document);
+    if (!target) { showToast('Create a frame before adding a prototype flow.'); return; }
+    try {
+      checkpoint('Create prototype flow');
+      const flow = createPrototypeFlow(state.document, target.frame.id, { pageId: target.page.id });
+      setPrototypeStartFlow(state.document, flow.id);
+      renderInspector(); queueSave(); showToast(`Created “${flow.name}”.`);
+    } catch (error) { showToast(error.message || 'Could not create this prototype flow.'); }
+  } else if (action === 'prototype-rename-flow') {
+    const flow = state.document.prototypeFlows?.find(item => item.id === state.document.prototypeStartFlowId);
+    if (!flow) return;
+    const name = prompt('Rename prototype flow', flow.name);
+    if (name == null || !name.trim()) return;
+    try { checkpoint('Rename prototype flow'); renamePrototypeFlow(state.document, flow.id, name); renderInspector(); queueSave(); }
+    catch (error) { showToast(error.message || 'Could not rename this prototype flow.'); }
+  } else if (action === 'prototype-delete-flow') {
+    const flow = state.document.prototypeFlows?.find(item => item.id === state.document.prototypeStartFlowId);
+    if (!flow || !confirm(`Delete the “${flow.name}” prototype flow?`)) return;
+    checkpoint('Delete prototype flow'); deletePrototypeFlow(state.document, flow.id); renderInspector(); queueSave();
+  } else if (action === 'prototype-start') {
+    const entry = node ? findNodeAcrossPages(state.document, node.id) : null;
+    const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
+    const flow = state.document.prototypeFlows?.find(item => item.id === state.document.prototypeStartFlowId);
+    if (!frame || !flow) { showToast('Choose a prototype flow and select a frame first.'); return; }
+    checkpoint('Set prototype flow starting frame');
+    setPrototypeFlowStartPoint(state.document, flow.id, frame.id, entry?.page?.id || activePage().id);
+    renderInspector(); queueSave(); showToast(`“${frame.name}” now starts “${flow.name}”.`);
+  }
+  else if (action === 'edit-prototype-interaction') {
     const interaction = node?.interactions?.find(item => item.id === details.interactionId);
     if (!node || !interaction) { showToast('This prototype interaction no longer exists.'); return; }
     state.prototypeEditingInteractionId = interaction.id;
@@ -7983,15 +8086,91 @@ function initEvents() {
   setZoomButtonHandlers();
   $('#document-name').addEventListener('change', event => { if (state.documentTransitioning) return; const name = event.currentTarget.value.trim() || 'Untitled'; checkpoint('Rename design'); state.document.name = name; renderUI(); queueSave(); });
   $('#add-page').addEventListener('click', addPage);
-  $('#pages-list').addEventListener('click', event => { const row = event.target.closest('[data-page-id]'); if (!row) return; clearPrototypeConnectPrompt(); state.document.activePageId = row.dataset.pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); });
-  $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
+  $('#pages-list').addEventListener('click', event => {
+    const action = event.target.closest('[data-page-action]');
+    if (action) { event.preventDefault(); managePageAction(action.dataset.pageAction, action.dataset.pageId); action.closest('details')?.removeAttribute('open'); return; }
+    if (event.target.closest('.page-row-menu')) return;
+    const selection = event.target.closest('[data-page-select]') || event.target.closest('.page-row')?.querySelector('[data-page-select]');
+    if (!selection) return;
+    const pageId = selection.dataset.pageSelect;
+    if (pageId === state.document.activePageId) return;
+    clearPrototypeConnectPrompt(); state.document.activePageId = pageId; state.selectedIds = []; state.selectedVectorPoint = null; state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI();
+  });
+  $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row && !event.target.closest('.page-row-menu')) renamePage(row.dataset.pageId); });
   $('#layer-select-mode').addEventListener('click', () => {
     state.layerSelectionMode = !state.layerSelectionMode;
     renderLayers();
   });
+  $('#layers-list').addEventListener('focusin', event => {
+    const row = event.target.closest('[data-layer-id]');
+    if (!row) return;
+    for (const candidate of layerRowsById.values()) candidate.tabIndex = candidate === row ? 0 : -1;
+  });
+  $('#layers-list').addEventListener('keydown', event => {
+    const row = event.target.closest('[data-layer-id]');
+    if (!row) return;
+    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+      event.preventDefault(); event.stopPropagation();
+      const node = findNode(state.document, row.dataset.layerId)?.node;
+      if (!node) return;
+      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false });
+      const menuButton = layerRowsById.get(node.id)?.querySelector('[data-action="layer-actions-menu"]');
+      const bounds = row.getBoundingClientRect();
+      openNodeMenu(node.id, bounds.right, bounds.bottom);
+      const menu = $('#context-menu');
+      menu._returnFocusElement = menuButton || row;
+      menuButton?.setAttribute('aria-expanded', 'true');
+      menu.querySelector('button[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault(); event.stopPropagation();
+      setSelection([row.dataset.layerId], { refreshLayers: false });
+      return;
+    }
+    if (event.key === ' ') {
+      event.preventDefault(); event.stopPropagation();
+      const id = row.dataset.layerId;
+      setSelection(state.selectedIds.includes(id)
+        ? state.selectedIds.filter(selectedId => selectedId !== id)
+        : [...state.selectedIds, id], { refreshLayers: false });
+      state.lastLayerSelection = id;
+      return;
+    }
+    const visibleRows = [...layerRowsById.values()].filter(candidate => candidate.getClientRects().length);
+    const index = visibleRows.indexOf(row);
+    let target = null;
+    if (event.key === 'ArrowDown') target = visibleRows[Math.min(index + 1, visibleRows.length - 1)];
+    else if (event.key === 'ArrowUp') target = visibleRows[Math.max(index - 1, 0)];
+    else if (event.key === 'Home') target = visibleRows[0];
+    else if (event.key === 'End') target = visibleRows.at(-1);
+    else if (event.key === 'ArrowRight') {
+      const node = findNode(state.document, row.dataset.layerId)?.node;
+      if (node?.children?.length && collapsedLayerIds.has(node.id)) {
+        collapsedLayerIds.delete(node.id); renderLayers();
+        target = layerRowsById.get(node.id);
+      } else if (node?.children?.length) target = layerRowsById.get(node.children.at(-1)?.id);
+    } else if (event.key === 'ArrowLeft') {
+      const node = findNode(state.document, row.dataset.layerId);
+      if (node?.node.children?.length && !collapsedLayerIds.has(node.node.id)) {
+        collapsedLayerIds.add(node.node.id); renderLayers();
+        target = layerRowsById.get(node.node.id);
+      } else if (node?.parent) target = layerRowsById.get(node.parent.id);
+    } else return;
+    event.preventDefault(); event.stopPropagation();
+    if (target) {
+      target.focus({ preventScroll: true });
+      if (target !== row && !['Home', 'End'].includes(event.key)) setSelection([target.dataset.layerId], { refreshLayers: false });
+    }
+  });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
     const node = findNode(state.document, row.dataset.layerId)?.node; if (!node) return;
+    if (event.target.closest('[data-action="layer-toggle"]')) {
+      if (collapsedLayerIds.has(node.id)) collapsedLayerIds.delete(node.id); else collapsedLayerIds.add(node.id);
+      renderLayers(); layerRowsById.get(node.id)?.focus({ preventScroll: true });
+      return;
+    }
     const actionMenuButton = event.target.closest('[data-action="layer-actions-menu"]');
     if (actionMenuButton) {
       event.preventDefault();
@@ -8017,10 +8196,12 @@ function initEvents() {
     }
     if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); setNodePropertyValue(node, 'visible', !getNodePropertyValue(state.document, node, 'visible')); renderUI(); queueSave(); return; }
     if (state.layerSelectionMode) {
+      row.focus({ preventScroll: true });
       setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
       state.lastLayerSelection = node.id;
       return;
     }
+    row.focus({ preventScroll: true });
     if (event.shiftKey) {
       const rows = latestPageLayerIds; const a = rows.indexOf(state.lastLayerSelection || row.dataset.layerId); const b = rows.indexOf(row.dataset.layerId); const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
       setSelection([...new Set([...state.selectedIds, ...range])], { refreshLayers: false });
@@ -8069,6 +8250,15 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.id === 'prototype-flow-select') {
+      if (event.target.value && event.target.value !== state.document.prototypeStartFlowId) {
+        try {
+          checkpoint('Select prototype flow'); setPrototypeStartFlow(state.document, event.target.value);
+          renderInspector(); queueSave();
+        } catch (error) { showToast(error.message || 'Could not select this prototype flow.'); }
+      }
+      return;
+    }
     if (event.target.id === 'component-library-target') {
       state.componentLibraryTargetId = event.target.value || null;
       return;

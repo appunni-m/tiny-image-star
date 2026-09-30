@@ -62,6 +62,19 @@ function findSavedNode(savedDocument, id) {
   }
   return null;
 }
+function collectPageNodeIds(page) {
+  const ids = new Set();
+  const visit = nodes => { for (const node of nodes || []) { ids.add(node.id); visit(node.children); } };
+  visit(page?.children);
+  return ids;
+}
+function pageAction(app, pageId, actionName) {
+  const row = app.querySelector(`#pages-list [data-page-id="${CSS.escape(pageId)}"]`);
+  assert(row, `Expected page ${pageId} in the page list.`);
+  const menu = row.querySelector('.page-row-menu');
+  if (!menu.open) click(app, menu.querySelector('summary'));
+  click(app, row.querySelector(`[data-page-action="${actionName}"]`));
+}
 function dispatchCanvasPointer(app, canvas, type, point, pointerId = 83, modifiers = {}) {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
   const event = new app.defaultView.PointerEvent(type, {
@@ -427,6 +440,37 @@ async function run(app) {
     assert(Math.hypot(imageCenterPage.x - imagePage.x, imageCenterPage.y - imagePage.y) <= 2,
       'an image dropped inside rotated ancestors should keep its drop-point center within the browser’s rounded drag-event coordinates.');
 
+    result.textContent = 'RUNNING: page lifecycle controls';
+    app.defaultView.prompt = () => `${runId} Home`;
+    const firstPageId = (await readSaved(app, duplicate.id)).pages[0].id;
+    pageAction(app, firstPageId, 'rename');
+    await waitFor(async () => (await readSaved(app, duplicate.id))?.pages[0]?.name === `${runId} Home`, 'page rename persistence');
+    pageAction(app, firstPageId, 'duplicate');
+    await waitFor(async () => (await readSaved(app, duplicate.id))?.pages.length === 2, 'page duplicate persistence');
+    let pageDocument = await readSaved(app, duplicate.id);
+    const duplicatedPage = pageDocument.pages.find(page => page.id !== firstPageId);
+    assert(duplicatedPage?.name === `${runId} Home copy`, 'duplicating a page should assign a distinct copy name.');
+    const originalNodeIds = collectPageNodeIds(pageDocument.pages.find(page => page.id === firstPageId));
+    const duplicatedNodeIds = collectPageNodeIds(duplicatedPage);
+    assert(duplicatedNodeIds.size === originalNodeIds.size && [...duplicatedNodeIds].every(id => !originalNodeIds.has(id)),
+      'duplicated page layers should receive fresh identities independent of their source.');
+    assert(app.querySelector(`#pages-list [data-page-id="${CSS.escape(duplicatedPage.id)}"]`)?.classList.contains('is-active'),
+      'page duplication should switch the canvas to the new copy.');
+    pageAction(app, duplicatedPage.id, 'move-up');
+    await waitFor(async () => (await readSaved(app, duplicate.id))?.pages[0]?.id === duplicatedPage.id, 'page move-up persistence');
+    assert(app.querySelector(`#pages-list [data-page-id="${CSS.escape(duplicatedPage.id)}"]`)?.classList.contains('is-active'),
+      'reordering pages should preserve the active page by identity.');
+    pageAction(app, duplicatedPage.id, 'move-down');
+    await waitFor(async () => (await readSaved(app, duplicate.id))?.pages[1]?.id === duplicatedPage.id, 'page move-down persistence');
+    app.defaultView.confirm = () => true;
+    pageAction(app, duplicatedPage.id, 'delete');
+    await waitFor(async () => (await readSaved(app, duplicate.id))?.pages.length === 1, 'page delete persistence');
+    pageDocument = await readSaved(app, duplicate.id);
+    assert(pageDocument.pages[0].id === firstPageId && pageDocument.activePageId === firstPageId,
+      'deleting the active copy should return to the surviving page.');
+    assert(app.querySelector(`#pages-list [data-page-id="${CSS.escape(firstPageId)}"] [data-page-action="delete"]`)?.disabled,
+      'the final remaining page must not be deletable.');
+
     result.textContent = 'RUNNING: active design deletion';
     clickLibraryMenu(app);
     await waitFor(() => app.querySelector('#design-library-dialog')?.open, 'active design delete dialog');
@@ -460,7 +504,7 @@ async function run(app) {
     await waitFor(async () => (await listSavedDocuments()).some(item => !beforeDeleteIds.has(item.id)), 'replacement design save');
     for (const item of await listSavedDocuments()) if (!beforeDeleteIds.has(item.id)) testDocumentIds.add(item.id);
 
-    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'multi-layer resize', 'multi-layer rotate', 'degenerate Shift multi-layer resize', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement'] };
+    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], pages: ['rename', 'duplicate-fresh-ids', 'move-up', 'move-down', 'delete-last-page-guard'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'multi-layer resize', 'multi-layer rotate', 'degenerate Shift multi-layer resize', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement'] };
   } catch (error) {
     testError = error;
   } finally {
@@ -529,4 +573,4 @@ async function start() {
   }
 }
 
-void start();
+await start();

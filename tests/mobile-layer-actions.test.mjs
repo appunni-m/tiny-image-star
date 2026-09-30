@@ -9,8 +9,16 @@ const [source, stylesheet, mobileSmoke] = await Promise.all([
 ]);
 
 test('layer rows expose a named, keyboard-focusable action-menu button', () => {
-  assert.match(source, /class="layer-actions-menu" data-action="layer-actions-menu" aria-label="More actions for \$\{escapeHtml\(node\.name\)\}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu"/);
+  assert.match(source, /class="layer-actions-menu" data-action="layer-actions-menu" tabindex="-1" aria-label="More actions for \$\{escapeHtml\(node\.name\)\}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu"/);
   assert.match(source, /const actionMenuButton = event\.target\.closest\('\[data-action="layer-actions-menu"\]'\)/);
+  assert.match(source, /event\.key === 'ContextMenu' \|\| \(event\.key === 'F10' && event\.shiftKey\)/,
+    'the tree row must expose its action menu from the keyboard context-menu shortcut');
+  assert.match(source, /menu\._returnFocusElement = menuButton \|\| row;[\s\S]*?menuButton\?\.setAttribute\('aria-expanded', 'true'\)/,
+    'the keyboard-opened menu should restore focus and expose its expanded state');
+  assert.match(source, /if \(event\.key === 'Enter'\)[\s\S]*?setSelection\(\[row\.dataset\.layerId\]/,
+    'Enter should select the focused tree row');
+  assert.match(source, /if \(event\.key === ' '\)[\s\S]*?setSelection\(state\.selectedIds\.includes\(id\)/,
+    'Space should toggle the focused row in the multi-selection');
   assert.match(source, /openNodeMenu\(node\.id, bounds\.right, bounds\.top\)/);
   assert.match(source, /currentButton\.setAttribute\('aria-expanded', 'true'\)/);
   assert.match(source, /returnFocus\?\.setAttribute\('aria-expanded', 'false'\)/);

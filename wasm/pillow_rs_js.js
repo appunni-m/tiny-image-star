@@ -1411,6 +1411,22 @@ export class Image {
         return v1;
     }
     /**
+     * Encodes a browser image with optional JPEG or WebP quality in `0..=100`.
+     * @param {any} format
+     * @param {any} extension
+     * @param {number | null} [quality]
+     * @returns {Uint8Array}
+     */
+    saveWithQuality(format, extension, quality) {
+        const ret = wasm.image_saveWithQuality(this.__wbg_ptr, format, extension, isLikeNone(quality) ? 0xFFFFFF : quality);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * @param {number} f
      */
     seek(f) {

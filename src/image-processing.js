@@ -64,10 +64,10 @@ function applyToneEffect(api, image, effect, value) {
  * The temporary color and mask surfaces are always freed, including when an
  * encoder or mask operation fails.
  */
-function encodeJpeg(image, api) {
+function encodeJpeg(image, api, quality) {
   const hasAlphaBand = image.getbands().includes('A');
   const hasTransparency = hasAlphaBand || Boolean(image.hasTransparencyData?.());
-  if (!hasTransparency) return image.saveWithInput('JPEG', null);
+  if (!hasTransparency) return image.saveWithQuality('JPEG', null, quality);
   if (typeof api?.Image !== 'function') throw new TypeError('Pillow-RS cannot flatten transparency for JPEG output.');
 
   let rgba;
@@ -81,7 +81,7 @@ function encodeJpeg(image, api) {
     matte = new api.Image('RGB', image.width, image.height, null);
     matte.pasteColor(255, 255, 255, 255, 0, 0, image.width, image.height);
     matte.pasteImageMasked(rgb, 0, 0, alpha);
-    return matte.saveWithInput('JPEG', null);
+    return matte.saveWithQuality('JPEG', null, quality);
   } finally {
     matte?.free?.();
     alpha?.free?.();
@@ -90,8 +90,9 @@ function encodeJpeg(image, api) {
   }
 }
 
-function encodeImageOutput(image, api, format) {
-  if (format === 'jpeg') return encodeJpeg(image, api);
+function encodeImageOutput(image, api, format, quality) {
+  if (format === 'jpeg') return encodeJpeg(image, api, quality);
+  if (format === 'webp') return image.saveWithQuality('WEBP', null, quality);
   return image.saveWithInput(outputEncoderNames[format], null);
 }
 
@@ -165,20 +166,17 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     if (settings.invert) image = replaceImage(image, applyToneEffect(api, image, 'invert'));
     if (blur) image = replaceImage(image, image.gaussianBlur(blur));
     // Keep editor previews lossless PNG so the chosen export codec never
-    // compounds across edits. Standalone image exports can request a real
-    // Pillow-RS PNG/JPEG/WebP encoder over this fresh copy of the source.
+    // compounds across edits. Standalone exports run their final codec and
+    // JPEG/WebP quality settings inside the local Pillow-RS WASM worker.
     const bytes = new Uint8Array(mode === 'export'
-      ? encodeImageOutput(image, api, format)
+      ? encodeImageOutput(image, api, format, quality)
       : image.saveWithInput('PNG', null));
     return {
       bytes,
       mimeType: mode === 'export' ? outputMimeTypes[format] : 'image/png',
       outputFormat: format,
       outputQuality: quality,
-      // pillow_rs_js exposes saveWithInput(format, extension), without codec
-      // quality options. Keep that limitation explicit instead of implying
-      // that a requested lossy quality was applied by this WASM encoder.
-      qualityApplied: mode === 'export' && format !== 'png' ? false : null,
+      qualityApplied: mode === 'export' && format !== 'png' ? true : null,
       mode,
       width: image.width,
       height: image.height,

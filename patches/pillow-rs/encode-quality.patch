@@ -1,0 +1,128 @@
+diff --git a/pillow-rs-js/src/lib.rs b/pillow-rs-js/src/lib.rs
+index a2e603b..ca90f6f 100644
+--- a/pillow-rs-js/src/lib.rs
++++ b/pillow-rs-js/src/lib.rs
+@@ -3886,6 +3886,23 @@ impl Image {
+         self.inner.encode(&resolved).map_err(err)
+     }
+ 
++    /// Encodes a browser image with optional JPEG or WebP quality in `0..=100`.
++    #[wasm_bindgen(js_name = "saveWithQuality")]
++    pub fn save_with_quality(
++        &mut self,
++        format: JsValue,
++        extension: JsValue,
++        quality: Option<u8>,
++    ) -> Result<Vec<u8>, JsValue> {
++        let format = js_optional_string(&format, "format")?;
++        let extension = js_optional_string(&extension, "extension")?;
++        let resolved =
++            RsImage::resolve_save_format(format.as_deref(), extension.as_deref()).map_err(err)?;
++        self.inner
++            .encode_with_quality(&resolved, quality)
++            .map_err(err)
++    }
++
+     /// Encode DynamicImage to PNG bytes
+     fn encode_png(img: &mut RsImage) -> Result<Vec<u8>, JsValue> {
+         img.to_png_bytes()
+diff --git a/pillow-rs/src/image.rs b/pillow-rs/src/image.rs
+index 4ef4834..586c305 100644
+--- a/pillow-rs/src/image.rs
++++ b/pillow-rs/src/image.rs
+@@ -29,7 +29,8 @@
+ //! [`Image::tobytes`] forces decoding and pipeline execution.
+ 
+ use image_slash_star::{
+-    Decoded, DecodedImage, EncodedImage, ImageFormat, ImageInfo, ImageMode, ImagePalette,
++    Decoded, DecodedImage, EncodeOptions, EncodedImage, ImageFormat, ImageInfo, ImageMode,
++    ImagePalette,
+ };
+ use std::borrow::Cow;
+ use std::sync::{Arc, OnceLock};
+@@ -3997,9 +3998,43 @@ impl Image {
+     /// Returns [`PilError`] when the format is unsupported or image
+     /// materialization or encoding fails.
+     pub fn encode(&self, format: &str) -> Result<Vec<u8>, PilError> {
++        self.encode_with_quality(format, None)
++    }
++
++    /// Encodes the image with an optional JPEG or WebP quality override.
++    ///
++    /// `quality` follows Pillow's `0..=100` range. Other formats reject a
++    /// supplied quality rather than silently ignoring a setting the caller
++    /// expected to apply.
++    ///
++    /// # Errors
++    ///
++    /// Returns [`PilError`] when the format, quality, image mode, materialized
++    /// pixels, or encoder options are unsupported.
++    pub fn encode_with_quality(
++        &self,
++        format: &str,
++        quality: Option<u8>,
++    ) -> Result<Vec<u8>, PilError> {
+         let save_format = parse_format_str(format)?;
+         let upper_format = format.to_ascii_uppercase();
+         let mode = self.mode()?;
++        if quality.is_some_and(|value| value > 100) {
++            return Err(PilError::ValueError(
++                "quality must be between 0 and 100".to_owned(),
++            ));
++        }
++        let mut options = EncodeOptions::for_format(save_format);
++        match (&mut options, quality) {
++            (EncodeOptions::Jpeg(options), Some(value)) => options.quality = Some(value),
++            (EncodeOptions::WebP(options), Some(value)) => options.quality = Some(value),
++            (_, Some(_)) => {
++                return Err(PilError::ValueError(
++                    "quality is supported only for JPEG and WebP".to_owned(),
++                ));
++            }
++            (_, None) => {}
++        }
+         // Pillow's encoders reject unsupported mode/format combinations with
+         // an OSError naming both; replicate the public messages exactly.
+         let rejection = match upper_format.as_str() {
+@@ -4017,7 +4052,7 @@ impl Image {
+             return self.to_png_bytes();
+         }
+         let decoded = self.decoded_for_encoding()?;
+-        Ok(image_slash_star::encode_default(&decoded, save_format)?)
++        Ok(image_slash_star::encode(&decoded, save_format, &options)?)
+     }
+ 
+     /// Resolves Pillow's explicit save format or a host-supplied path
+@@ -7454,3 +7489,32 @@ mod compatibility_info_tests {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod quality_encode_tests {
++    use super::{Image, PilError};
++
++    #[test]
++    fn jpeg_and_webp_quality_change_encoded_bytes() -> Result<(), PilError> {
++        let pixels: Vec<u8> = (0..128 * 128 * 3)
++            .map(|index| ((index * 73 + index / 11 * 29) % 256) as u8)
++            .collect();
++        let image = Image::frombytes("RGB", (128, 128), &pixels)?;
++
++        for format in ["JPEG", "WEBP"] {
++            let low = image.encode_with_quality(format, Some(20))?;
++            let high = image.encode_with_quality(format, Some(90))?;
++            assert_ne!(low, high, "{format} must apply the requested quality");
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn encode_quality_rejects_unsupported_formats_and_ranges() -> Result<(), PilError> {
++        let image = Image::new(2, 2, "RGB", (40, 80, 120, 255))?;
++        assert!(image.encode_with_quality("PNG", Some(80)).is_err());
++        assert!(image.encode_with_quality("JPEG", Some(101)).is_err());
++        assert!(image.encode_with_quality("PNG", None).is_ok());
++        Ok(())
++    }
++}

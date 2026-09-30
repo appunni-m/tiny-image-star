@@ -137,16 +137,17 @@ try {
   assert(newDesign, 'The File menu did not offer a new local design.');
   click(app, newDesign);
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'fresh design');
+  await waitFor(() => app.querySelector('.workspace')?.inert === false, 'new design switch completion');
   await waitFor(() => app.querySelectorAll('#layers-list .layer-row[data-layer-id]').length === 0, 'empty design');
-  const originPageId = app.querySelector('#pages-list [data-page-id]')?.dataset.pageId;
+  const originPageId = app.querySelector('#pages-list .page-row[data-page-id]')?.dataset.pageId;
   assert(originPageId, 'The new design did not expose its starting page.');
   click(app, app.querySelector('#add-page'));
-  await waitFor(() => app.querySelectorAll('#pages-list [data-page-id]').length === 2, 'second page creation');
-  const otherPageId = [...app.querySelectorAll('#pages-list [data-page-id]')]
+  await waitFor(() => app.querySelectorAll('#pages-list .page-row[data-page-id]').length === 2, 'second page creation');
+  const otherPageId = [...app.querySelectorAll('#pages-list .page-row[data-page-id]')]
     .map(row => row.dataset.pageId).find(id => id !== originPageId);
   assert(otherPageId, 'The new design did not expose its second page.');
-  click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
-  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true', 'starting page selection');
+  click(app, app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true', 'starting page selection');
 
   const bytes = fixtureBmp();
   addImages(app, Array.from({ length: IMAGE_COUNT }, (_, index) =>
@@ -246,8 +247,8 @@ try {
   assert(app.querySelector('#bulk-title')?.textContent === 'Processing paused'
     && !app.querySelector('#bulk-cancel')?.hidden,
   'Escape should leave the paused batch available to resume or cancel explicitly.');
-  click(app, app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`));
-  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`)?.getAttribute('aria-selected') === 'true', 'page switch during paused recipe batch');
+  click(app, app.querySelector(`#pages-list .page-row[data-page-id="${otherPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list .page-row[data-page-id="${otherPageId}"]`)?.getAttribute('aria-selected') === 'true', 'page switch during paused recipe batch');
   releaseResults(workerGate);
   await waitFor(() => activeWorkers(app) === 0 && app.querySelector('#bulk-subtitle')?.textContent.includes('1 admitted image'),
     'active previews to drain while the queued batch render stays held');
@@ -271,8 +272,8 @@ try {
     'The completed recipe bar did not show its final average processing speed.');
   assert(app.querySelector('#bulk-speed-value')?.title.startsWith(`Engine limit: ${startConcurrency} worker`),
     'Completing the batch should restore the image engine’s pre-batch worker limit.');
-  click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
-  await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true'
+  click(app, app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`));
+  await waitFor(() => app.querySelector(`#pages-list .page-row[data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true'
     && app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,
   'original recipe page after page switch');
 

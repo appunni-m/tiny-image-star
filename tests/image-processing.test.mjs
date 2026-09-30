@@ -103,13 +103,34 @@ test('Pillow-RS standalone output encodes PNG, JPEG, and WebP at the cropped and
       assert.equal(rendered.outputFormat, output.format);
       assert.equal(rendered.outputQuality, 73, 'the requested recipe quality remains attached to the result');
       if (output.format === 'png') assert.equal(rendered.qualityApplied, null, 'PNG has no lossy quality setting');
-      else assert.equal(rendered.qualityApplied, false, 'the deployed Pillow-RS save binding has no quality argument');
+      else assert.equal(rendered.qualityApplied, true, 'the Pillow-RS WASM encoder applies the requested quality');
 
       const reopened = decodeOriginal(pillow, rendered.bytes);
       try { assert.deepEqual([reopened.width, reopened.height], [2, 1], 'the selected Pillow encoder preserves full cropped/rotated pixels'); }
       finally { reopened.free(); }
     }
     assert.deepEqual(pixel(original, 0, 0), [255, 0, 0], 'all output formats render a copy and preserve the decoded original');
+  } finally { original.free(); }
+});
+
+test('Pillow-RS WASM quality controls produce distinct JPEG and WebP output from one source', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const source = new pillow.Image('RGB', 128, 128, null);
+  const pixels = new Uint8Array(128 * 128 * 3);
+  for (let index = 0; index < pixels.length; index += 1) pixels[index] = (index * 73 + Math.floor(index / 11) * 29) % 256;
+  source.putdata(pixels);
+  const original = decodeOriginal(pillow, new Uint8Array(source.saveWithInput('PNG', null)));
+  source.free();
+  try {
+    for (const format of ['jpeg', 'webp']) {
+      const low = renderImageOutput(original, {}, {}, pillow, { format, quality: 20 });
+      const high = renderImageOutput(original, {}, {}, pillow, { format, quality: 90 });
+      assert.equal(low.qualityApplied, true);
+      assert.equal(high.qualityApplied, true);
+      assert.notDeepEqual(low.bytes, high.bytes, `${format.toUpperCase()} encoder must apply the selected quality`);
+    }
+    assert.equal(original.width, 128, 'quality exports must keep the decoded source reusable');
   } finally { original.free(); }
 });
 

@@ -1,4 +1,4 @@
-import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, switchComponentInstanceVariant, walkNodes } from './model.js';
+import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, switchComponentInstanceVariant, walkNodes } from './model.js';
 
 const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
@@ -70,7 +70,104 @@ export function setPrototypeStartPoint(document, frameId, pageId = document.acti
   const entry = findNode(document, frameId, pageId);
   if (!entry || entry.node.type !== 'frame') throw new Error('Choose a frame to use as the prototype starting point.');
   document.prototypeStartPoint = { pageId, nodeId: frameId };
+  document.prototypeFlows ??= [];
+  let flow = document.prototypeFlows.find(item => item.id === document.prototypeStartFlowId)
+    ?? document.prototypeFlows[0];
+  if (!flow) {
+    flow = { id: createId('flow'), name: nextPrototypeFlowName(document), pageId, nodeId: frameId };
+    document.prototypeFlows.push(flow);
+  } else {
+    flow.pageId = pageId;
+    flow.nodeId = frameId;
+  }
+  document.prototypeStartFlowId = flow.id;
   return document.prototypeStartPoint;
+}
+
+function normalizeFlowName(name) {
+  if (typeof name !== 'string') throw new TypeError('A prototype flow needs a name.');
+  const normalized = name.trim();
+  if (!normalized || normalized.length > 120 || /[\x00-\x1f\x7f]/.test(normalized)) {
+    throw new TypeError('Prototype flow names must contain 1–120 printable characters.');
+  }
+  return normalized;
+}
+
+function assertUniqueFlowName(document, name, exceptId = null) {
+  const key = name.toLocaleLowerCase();
+  if ((document.prototypeFlows || []).some(flow => flow.id !== exceptId && flow.name.trim().toLocaleLowerCase() === key)) {
+    throw new Error('A prototype flow with that name already exists.');
+  }
+}
+
+function nextPrototypeFlowName(document) {
+  let index = 1;
+  while ((document.prototypeFlows || []).some(flow => flow.name.trim().toLocaleLowerCase() === `flow ${index}`)) index += 1;
+  return `Flow ${index}`;
+}
+
+function requirePrototypeFrame(document, frameId, pageId) {
+  const entry = findNode(document, frameId, pageId);
+  if (!entry || entry.node.type !== 'frame') throw new Error('Choose a frame to use as the prototype starting point.');
+  return entry;
+}
+
+export function listPrototypeFlows(document) {
+  return (document.prototypeFlows || []).map(flow => ({ ...flow }));
+}
+
+export function createPrototypeFlow(document, frameId, { name = null, pageId = document.activePageId } = {}) {
+  requirePrototypeFrame(document, frameId, pageId);
+  document.prototypeFlows ??= [];
+  const flowName = normalizeFlowName(name ?? nextPrototypeFlowName(document));
+  assertUniqueFlowName(document, flowName);
+  const flow = { id: createId('flow'), name: flowName, pageId, nodeId: frameId };
+  document.prototypeFlows.push(flow);
+  if (!document.prototypeStartFlowId) {
+    document.prototypeStartFlowId = flow.id;
+    document.prototypeStartPoint = { pageId, nodeId: frameId };
+  }
+  return flow;
+}
+
+export function renamePrototypeFlow(document, flowId, name) {
+  const flow = document.prototypeFlows?.find(item => item.id === flowId);
+  if (!flow) throw new Error('Prototype flow not found.');
+  const flowName = normalizeFlowName(name);
+  assertUniqueFlowName(document, flowName, flowId);
+  flow.name = flowName;
+  return flow;
+}
+
+export function setPrototypeFlowStartPoint(document, flowId, frameId, pageId = document.activePageId) {
+  const flow = document.prototypeFlows?.find(item => item.id === flowId);
+  if (!flow) throw new Error('Prototype flow not found.');
+  requirePrototypeFrame(document, frameId, pageId);
+  flow.pageId = pageId;
+  flow.nodeId = frameId;
+  if (document.prototypeStartFlowId === flow.id) document.prototypeStartPoint = { pageId, nodeId: frameId };
+  return flow;
+}
+
+export function setPrototypeStartFlow(document, flowId) {
+  const flow = document.prototypeFlows?.find(item => item.id === flowId);
+  if (!flow) throw new Error('Prototype flow not found.');
+  document.prototypeStartFlowId = flow.id;
+  document.prototypeStartPoint = { pageId: flow.pageId, nodeId: flow.nodeId };
+  return flow;
+}
+
+export function deletePrototypeFlow(document, flowId) {
+  const flows = document.prototypeFlows || [];
+  const index = flows.findIndex(item => item.id === flowId);
+  if (index < 0) return false;
+  flows.splice(index, 1);
+  if (document.prototypeStartFlowId === flowId) {
+    const replacement = flows[0] || null;
+    document.prototypeStartFlowId = replacement?.id ?? null;
+    document.prototypeStartPoint = replacement ? { pageId: replacement.pageId, nodeId: replacement.nodeId } : null;
+  }
+  return true;
 }
 
 export function easePrototypeProgress(progress, easing = 'ease-in-out') {
@@ -99,8 +196,9 @@ export function normalizePrototypeLinkUrl(value) {
   return null;
 }
 
-export function getPrototypeStartFrame(document, selectedId = null) {
-  const start = document.prototypeStartPoint;
+export function getPrototypeStartFrame(document, selectedId = null, flowId = document.prototypeStartFlowId) {
+  const flow = flowId && document.prototypeFlows?.find(item => item.id === flowId);
+  const start = flow ? { pageId: flow.pageId, nodeId: flow.nodeId } : document.prototypeStartPoint;
   if (start) {
     const entry = findNode(document, start.nodeId, start.pageId);
     if (entry?.node.type === 'frame') return { page: document.pages.find(page => page.id === start.pageId), frame: entry.node };

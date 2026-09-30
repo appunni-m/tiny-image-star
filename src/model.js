@@ -166,6 +166,8 @@ export function createDocument() {
     variables: [],
     comments: [],
     prototypeStartPoint: null,
+    prototypeFlows: [],
+    prototypeStartFlowId: null,
     settings: { unit: 'px', grid: 8, snap: true }
   };
 }
@@ -524,6 +526,20 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
     removedNodeIds.add(node.id);
     if (node.isComponent && node.componentId) removedComponents.push(node.componentId);
   });
+  if (Array.isArray(document.prototypeFlows)) {
+    document.prototypeFlows = document.prototypeFlows.filter(flow => !(flow.pageId === pageId && removedNodeIds.has(flow.nodeId)));
+    const selectedFlow = document.prototypeFlows.find(flow => flow.id === document.prototypeStartFlowId)
+      || document.prototypeFlows[0]
+      || null;
+    document.prototypeStartFlowId = selectedFlow?.id ?? null;
+    if (selectedFlow) {
+      document.prototypeStartPoint = { pageId: selectedFlow.pageId, nodeId: selectedFlow.nodeId };
+    } else if (document.prototypeStartPoint?.pageId === pageId && removedNodeIds.has(document.prototypeStartPoint.nodeId)) {
+      document.prototypeStartPoint = null;
+    }
+  } else if (document.prototypeStartPoint?.pageId === pageId && removedNodeIds.has(document.prototypeStartPoint.nodeId)) {
+    document.prototypeStartPoint = null;
+  }
   for (const componentId of removedComponents) {
     document.components = (document.components || []).filter(component => component.id !== componentId);
     detachComponentInstances(document, componentId);
@@ -2731,6 +2747,27 @@ export function validateDocument(document) {
     });
   }
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
+  if (document.prototypeFlows != null) {
+    if (!Array.isArray(document.prototypeFlows) || document.prototypeFlows.length > 1000) throw new TypeError('Prototype flows must be a list of up to 1,000 flows.');
+    const flowIds = new Set();
+    const flowNames = new Set();
+    for (const flow of document.prototypeFlows) {
+      const normalizedName = typeof flow?.name === 'string' ? flow.name.trim().toLocaleLowerCase() : '';
+      const target = flow && pageIds.has(flow.pageId) ? findNode(document, flow.nodeId, flow.pageId) : null;
+      if (!flow || typeof flow !== 'object' || Array.isArray(flow)
+        || typeof flow.id !== 'string' || !flow.id.trim() || flowIds.has(flow.id)
+        || !normalizedName || flow.name.length > 120 || /[\x00-\x1f\x7f]/.test(flow.name) || flowNames.has(normalizedName)
+        || target?.node.type !== 'frame') throw new TypeError('Invalid or duplicate prototype flow.');
+      flowIds.add(flow.id);
+      flowNames.add(normalizedName);
+    }
+    if (document.prototypeStartFlowId != null && !flowIds.has(document.prototypeStartFlowId)) throw new TypeError('The prototype start flow does not exist.');
+  }
+  if (document.prototypeStartPoint != null) {
+    const start = document.prototypeStartPoint;
+    const target = start && pageIds.has(start.pageId) ? findNode(document, start.nodeId, start.pageId) : null;
+    if (!start || typeof start !== 'object' || Array.isArray(start) || target?.node.type !== 'frame') throw new TypeError('Invalid prototype starting point.');
+  }
   if (document.comments != null) {
     if (!Array.isArray(document.comments) || document.comments.length > 10_000) throw new TypeError('Comments must be a list of up to 10,000 threads.');
     const threadIds = new Set();
@@ -2999,6 +3036,20 @@ export function serializeDocument(document) {
 
 export function parseDocument(json) {
   const document = typeof json === 'string' ? JSON.parse(json) : clone(json);
+  // Older local files stored only one prototypeStartPoint. Promote that entry to
+  // the named-flow model while retaining the legacy field for older readers.
+  if (!Array.isArray(document.prototypeFlows)) document.prototypeFlows = [];
+  if (document.prototypeStartPoint && document.prototypeFlows.length === 0) {
+    document.prototypeFlows.push({
+      id: 'prototype-flow-legacy',
+      name: 'Flow 1',
+      pageId: document.prototypeStartPoint.pageId,
+      nodeId: document.prototypeStartPoint.nodeId
+    });
+  }
+  if (document.prototypeStartFlowId == null && document.prototypeFlows.length) {
+    document.prototypeStartFlowId = document.prototypeFlows[0].id;
+  }
   validateDocument(document);
   return document;
 }

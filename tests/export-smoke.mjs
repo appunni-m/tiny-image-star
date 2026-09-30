@@ -360,8 +360,7 @@ try {
   const webpBytes = archiveEntries.get('Batch Edited WebP.webp');
   assert(jpegBytes[0] === 0xff && jpegBytes[1] === 0xd8 && jpegBytes[2] === 0xff, 'Each image should use its saved JPEG output format.');
   assert(new TextDecoder().decode(webpBytes.subarray(0, 4)) === 'RIFF' && new TextDecoder().decode(webpBytes.subarray(8, 12)) === 'WEBP', 'Each image should use its saved WebP output format.');
-  assert(encodeCalls.some(call => call.type === 'image/jpeg' && call.quality === 0.76)
-    && encodeCalls.some(call => call.type === 'image/webp' && call.quality === 0.61), 'Batch export should pass each image’s saved quality to its own encoder.');
+  assert(!encodeCalls.some(call => call.type === 'image/jpeg' || call.type === 'image/webp'), 'Batch image formats and quality should be encoded in the local Pillow-RS WASM worker, not Canvas2D.');
   const processedBitmap = await view.createImageBitmap(new Blob([webpBytes], { type: 'image/webp' }));
   const processedCanvas = view.document.createElement('canvas'); processedCanvas.width = processedBitmap.width; processedCanvas.height = processedBitmap.height;
   const processedContext = processedCanvas.getContext('2d', { willReadFrequently: true }); processedContext.drawImage(processedBitmap, 0, 0); processedBitmap.close();
@@ -390,7 +389,7 @@ try {
   bitmap = await view.createImageBitmap(sourceExported.blob);
   assert(bitmap.width === 64 && bitmap.height === 32, `The edited original should keep its full source resolution; received ${bitmap.width} × ${bitmap.height}.`);
   bitmap.close();
-  assert(directQualityCalls.some(call => call.type === 'image/webp' && call.quality === 0.61), 'Full-resolution WebP export should apply the saved recipe quality in the local browser encoder.');
+  assert(!directQualityCalls.some(call => call.type === 'image/webp'), 'Full-resolution WebP output should preserve WASM-encoded quality without a browser re-encode.');
   result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;

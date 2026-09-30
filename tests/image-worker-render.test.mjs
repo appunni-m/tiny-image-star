@@ -59,7 +59,7 @@ test('local image worker returns full-resolution Pillow-RS export bytes in the r
     assert.deepEqual([rendered.width, rendered.height], [1, 1]);
     assert.deepEqual([...rendered.bytes.slice(0, 4)], [82, 73, 70, 70]);
     assert.equal(rendered.mode, 'export');
-    assert.equal(rendered.qualityApplied, false, 'the vendored save binding does not accept codec quality options');
+    assert.equal(rendered.qualityApplied, true, 'the worker applies codec quality inside Pillow-RS WASM');
   } finally {
     globalThis.self = previousSelf;
     globalThis.fetch = previousFetch;
