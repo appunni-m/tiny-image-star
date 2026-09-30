@@ -1,18 +1,20 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  createComponentProperty, createDocument, createExportSetting, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
 import { createImageFill } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
+import { createFallbackImage } from './fallback-image-bitmap.js';
+import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
-import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
+import { collectLiveImagePreviewNodeIds, imagePreviewKey, pruneImagePreviewRuntime } from './image-preview-runtime.js';
 import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadImageAsset, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { icon } from './icons.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
@@ -43,7 +45,7 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
-  assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(),
+  assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
   draftNode: null, penDraft: null, penHover: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
@@ -160,12 +162,12 @@ function setDocumentEditingBlocked(blocked) {
   $('.topbar').inert = blocked;
   $('.workspace').inert = blocked;
 }
-function queueSave() {
+function queueSave({ refreshLayerTree = true } = {}) {
   if (!state.ready) return;
   state.saveRevision += 1;
   if (syncAllComponentInstances(state.document)) {
     reconcileImagePreviewRuntime();
-    renderLayers();
+    if (refreshLayerTree) renderLayers();
     renderer?.invalidate();
   }
   setSaveState('saving', 'Saving locally…');
@@ -321,12 +323,12 @@ function variablePropertyBindingControl(node, property, label) {
   }).join('');
   return `<label class="variable-binding-row"><span>${escapeHtml(label)}</span><select class="select-field" data-variable-property-binding="${property}" aria-label="${escapeHtml(label)} variable"><option value="">No variable</option>${options}</select></label>`;
 }
-function gradientFillControls(node) {
-  const gradient = node.fillGradient;
+function gradientFillControls(node, gradient = node.fillGradient, fillId = '') {
   if (!gradient) return '';
-  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color" data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position" data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
-  const angle = gradient.type === 'linear' ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle" value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
-  return `${angle}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Drag stop positions by changing percentages. Gradients stay editable in the design.</div>`;
+  const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
+  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
+  const angle = gradient.type === 'linear' ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
+  return `${angle}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${fillData}${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Gradients stay editable in the design.</div>`;
 }
 function imageFillSources() {
   const sources = new Map();
@@ -337,20 +339,23 @@ function imageFillSources() {
   }
   return [...sources.values()];
 }
-function imageFillControls(node) {
-  const imageFill = node.imageFill;
+function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   if (!imageFill) return '';
+  const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
   const sources = imageFillSources();
   const options = sources.map(source => `<option value="${escapeHtml(source.assetId)}"${imageFill.assetId === source.assetId ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('');
   const adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...imageFill.adjustments };
-  const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}" aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
-  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${imageTransformControls(imageFill.transforms, 'fill', node.locked)}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
+  const previewKey = imagePreviewKey(node.id, fillId || null);
+  const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}"${fillData} aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
+  const transforms = imageTransformControls(imageFill.transforms, 'fill', node.locked, fillId);
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM.</div></div>`;
 }
-function imageTransformControls(transforms, target, disabled = false) {
+function imageTransformControls(transforms, target, disabled = false, fillId = '') {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
+  const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
   const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
-    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="1" value="${Math.round(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}" aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
-  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div><div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}" aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}" aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${disabled || (!transforms?.crop && !transforms?.rotation) ? ' disabled' : ''}>Reset crop/rotation</button><div class="image-properties-note">Crop and rotation stay editable and are included in saved recipes.</div></div>`;
+    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="1" value="${Math.round(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
+  return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div><div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation) ? ' disabled' : ''}>Reset crop/rotation</button><div class="image-properties-note">Crop and rotation stay editable and are included in saved recipes.</div></div>`;
 }
 function transformSection(node) {
   const geometry = resolvedGeometry(node);
@@ -371,22 +376,45 @@ function strokeStyleControls(node) {
   const select = (property, label, value, options) => `<select class="prop-input select-field stroke-style-select" data-prop="${property}" aria-label="${label}"${node.locked || (property === 'strokeCap' && pattern === 'dotted') ? ' disabled' : ''}>${options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('')}</select>`;
   return `<div class="property-grid stroke-style-grid">${numberField('W', 'strokeWidth', node.strokeWidth ?? 1, .5, 0, 100_000, node.locked, 'Stroke width')}${select('strokePattern', 'Stroke pattern', pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}${select('strokeCap', 'Stroke cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']])}${select('strokeJoin', 'Stroke join', join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}${numberField('Miter', 'strokeMiterLimit', miterLimit, .5, 1, 1000, node.locked, 'Stroke miter limit')}</div>`;
 }
-function appearanceSection(node) {
-  const hasFill = node.type !== 'network' || (node.faces || []).length > 0;
-  const fillType = node.imageFill ? 'image' : node.fillGradient?.type || 'solid';
+function fillStackControls(node) {
+  const fills = fillStackForNode(node);
   const sources = imageFillSources();
-  const imageOption = sources.length || node.imageFill ? `<option value="image"${fillType === 'image' ? ' selected' : ''}>Image</option>` : '<option value="image" disabled>Image · place an image first</option>';
-  const fillTypeControl = hasFill ? `<label class="fill-type-row"><span>Fill type</span><select class="select-field" data-prop="fillType" aria-label="Fill type"${node.locked ? ' disabled' : ''}><option value="solid"${fillType === 'solid' ? ' selected' : ''}>Solid</option><option value="linear"${fillType === 'linear' ? ' selected' : ''}>Linear gradient</option><option value="radial"${fillType === 'radial' ? ' selected' : ''}>Radial gradient</option>${imageOption}</select></label>` : '';
-  const fill = hasFill && !node.fillGradient && !node.imageFill ? colorField('Fill', 'fill', getNodeColor(state.document, node, 'fill'), Math.round((node.fillOpacity ?? 1) * 100)) : '';
-  const fillVariable = hasFill && !node.fillGradient && !node.imageFill ? variableBindingControl(node, 'fill') : '';
-  const gradient = gradientFillControls(node);
-  const image = imageFillControls(node);
-  const gradientOpacity = hasFill && (node.fillGradient || node.imageFill) ? `<div class="property-grid">${numberField('Opacity %', 'fillOpacity', Math.round((node.fillOpacity ?? 1) * 100), 1, 0, 100)}</div>` : '';
+  const rows = fills.map((fill, index) => {
+    const id = escapeHtml(fill.id);
+    const name = fills.length === 1 ? 'Fill' : `Fill ${index + 1}`;
+    const typeOptions = [['solid', 'Solid'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['image', 'Image']]
+      .map(([value, label]) => `<option value="${value}"${fill.type === value ? ' selected' : ''}${value === 'image' && !sources.length && fill.type !== 'image' ? ' disabled' : ''}>${label}</option>`).join('');
+    const paint = fill.type === 'solid'
+      ? `<label class="image-fill-source"><span>Color</span><input type="color" data-fill-field="color" data-fill-id="${id}" value="${/^#[0-9a-f]{6}$/i.test(fill.color) ? escapeHtml(fill.color) : '#d9d9d9'}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`
+      : fill.type === 'linear' || fill.type === 'radial'
+        ? gradientFillControls(node, fill.gradient, fill.id)
+        : imageFillControls(node, fill.imageFill, fill.id);
+    const canAddImage = Boolean(sources.length || fill.type === 'image');
+    return `<div class="layer-effect-card fill-stack-card" data-fill-row="${id}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-fill-field="visible" data-fill-id="${id}"${fill.visible ? ' checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="up" aria-label="Move ${name.toLowerCase()} earlier"${node.locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="down" aria-label="Move ${name.toLowerCase()} later"${node.locked || index === fills.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-fill-layer" data-fill-id="${id}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button></div><label class="fill-type-row"><span>Paint</span><select class="select-field" data-fill-field="type" data-fill-id="${id}" aria-label="${name} type"${node.locked ? ' disabled' : ''}>${typeOptions}</select></label><div class="slider-row"><label for="fill-opacity-${id}">Opacity</label><input id="fill-opacity-${id}" type="range" min="0" max="100" step="1" value="${Math.round(fill.opacity * 100)}" data-fill-field="opacity" data-fill-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${Math.round(fill.opacity * 100)}%</output></div>${paint}</div>`;
+  }).join('');
+  const disabled = node.locked || fills.length >= 32;
+  const imageButton = `<button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="image"${disabled || !sources.length ? ' disabled' : ''}>＋ Image fill</button>`;
+  return `<div class="fill-stack" role="group" aria-label="Ordered fills">${rows}${fills.length >= 32 ? '<div class="image-properties-note">A layer can have up to 32 fills.</div>' : ''}<div class="style-actions fill-stack-actions"><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="solid"${disabled ? ' disabled' : ''}>＋ Solid fill</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="linear"${disabled ? ' disabled' : ''}>＋ Linear</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="radial"${disabled ? ' disabled' : ''}>＋ Radial</button>${imageButton}</div><div class="image-properties-note">Fills render in order; the later fills sit above the earlier ones.</div></div>`;
+}
+function appearanceSection(node) {
+  const hasFill = isFillStackSupported(node);
+  const fills = hasFill ? fillStackControls(node) : '';
+  const canBindPrimaryFill = hasFill && fillStackForNode(node)[0]?.type === 'solid';
+  const fillBinding = canBindPrimaryFill ? variableBindingControl(node, 'fill') : '';
   const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}` : '';
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
-  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill) || node.fillGradient || node.imageFill ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>' : node.type === 'boolean' ? `<div class="style-actions"><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create color variable</button></div>` : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button><button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button></div>`;
-  const body = `${fillTypeControl}${fill}${fillVariable}${gradient}${image}${gradientOpacity}${stroke}${styleActions}${radius}`;
+  const fillStyleActions = canBindPrimaryFill
+    ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
+    : '';
+  const styleActions = node.type === 'text'
+    ? ''
+    : node.type === 'path' || (node.type === 'network' && !hasFill)
+    ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>'
+    : node.type === 'boolean'
+      ? fillStyleActions ? `<div class="style-actions">${fillStyleActions}</div>` : ''
+      : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button>${fillStyleActions}</div>`;
+  const body = `${fills}${fillBinding}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
@@ -446,7 +474,7 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, and blend modes. Vector networks become ordinary SVG paths; their graph editing controls are not retained. Adjusted images, masks, Boolean groups, and unsupported gradient placements are not included.</div>';
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, and blend modes. Edited images are embedded as local PNG previews. Vector networks become ordinary SVG paths; their graph editing controls are not retained. Masks, Boolean groups, and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${svgExport}`);
 }
 const autoLayoutBindingProperties = [
@@ -964,7 +992,9 @@ function renderInspector() {
     const selectedVertex = selectedVertexId ? node.vertices.find(vertex => vertex.id === selectedVertexId) : null;
     const anchorMode = selectedVertex ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${node.locked || entries[0].parents.some(parent => parent.locked) ? ' disabled' : ''}><option value="corner"${getVectorNetworkVertexMode(node, selectedVertexId) === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${getVectorNetworkVertexMode(node, selectedVertexId) === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${getVectorNetworkVertexMode(node, selectedVertexId) === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     body += section('Vector network', `${anchorMode}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; branched junctions remain independently editable.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
-    if (node.faces.length && !node.imageFill) body += section('Region fills', networkFaceControls(node));
+    const primaryFill = fillStackForNode(node)[0];
+    const faceColorsEditable = Array.isArray(node.fills) ? primaryFill?.type === 'solid' : !node.imageFill;
+    if (node.faces.length && faceColorsEditable) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
@@ -1033,6 +1063,7 @@ function renderLocalComponentLibraries() {
 
 function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
+  state.assetThumbnailImages.clear();
   const components = $('#components-list'); components.replaceChildren();
   const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
   const collections = state.document.variableCollections || [];
@@ -1151,6 +1182,7 @@ function renderAssetsTab() {
     const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
     const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
     const image = document.createElement('img'); image.alt = ''; image.src = state.previewUrls.get(node.id) || asset?.bitmapUrl || '';
+    state.assetThumbnailImages.set(node.id, image);
     thumb.append(image);
     const name = document.createElement('span'); name.className = 'asset-card-name'; name.textContent = node.name;
     card.append(thumb, name); list.append(card);
@@ -1162,6 +1194,14 @@ function renderUI() {
   $('#canvas-file-name').textContent = state.document.name;
   renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
   renderer?.invalidate();
+}
+
+function updateImageAssetThumbnail(nodeId) {
+  const thumbnail = state.assetThumbnailImages.get(nodeId);
+  if (!thumbnail) return;
+  const node = findNode(state.document, nodeId)?.node;
+  const asset = node?.assetId ? state.assets.get(node.assetId) : null;
+  thumbnail.src = state.previewUrls.get(nodeId) || asset?.bitmapUrl || '';
 }
 
 function pageLayerRows(page = activePage()) {
@@ -2476,7 +2516,9 @@ function zoomToSelection() {
 
 function updateGradientInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  const gradient = node?.fillGradient;
+  const stack = node && input.dataset.fillId ? ensureFillStack(node) : null;
+  const layer = stack?.find(item => item.id === input.dataset.fillId);
+  const gradient = layer?.gradient || node?.fillGradient;
   if (!gradient || node.locked) return;
   if (!state.controlEdit) { checkpoint('Edit gradient fill'); state.controlEdit = true; }
   if (input.dataset.gradientField === 'angle' && Number.isFinite(Number(input.value))) gradient.angle = Math.max(0, Math.min(359, Number(input.value)));
@@ -2489,7 +2531,56 @@ function updateGradientInput(input) {
       gradient.stops.sort((a, b) => a.position - b.position);
     } else return;
   }
-  recordNodeComponentOverrides(node, ['fillGradient']);
+  if (layer) {
+    syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', 'fillGradient']);
+  } else recordNodeComponentOverrides(node, ['fillGradient']);
+  renderer.invalidate();
+}
+
+function updateFillInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  if (!node || node.locked) return;
+  const fills = ensureFillStack(node);
+  const fill = fills.find(item => item.id === input.dataset.fillId);
+  if (!fill) return;
+  const field = input.dataset.fillField;
+  if (!state.controlEdit) { checkpoint('Edit fill'); state.controlEdit = true; }
+  if (field === 'visible') updateFillLayer(node, fill.id, { visible: input.checked });
+  else if (field === 'opacity' && Number.isFinite(Number(input.value))) {
+    updateFillLayer(node, fill.id, { opacity: Math.max(0, Math.min(1, Number(input.value) / 100)) });
+    if (input.nextElementSibling) input.nextElementSibling.value = `${input.value}%`;
+  } else if (field === 'color' && /^#[0-9a-f]{6}$/i.test(input.value)) {
+    updateFillLayer(node, fill.id, { color: input.value });
+    if (fill === fills[0]) {
+      delete node.fillVariableId;
+      delete node.fillStyleId;
+      if (node.variableBindings) delete node.variableBindings.fill;
+    }
+  }
+  else if (field === 'type') {
+    if (!['solid', 'linear', 'radial', 'image'].includes(input.value)) return;
+    let replacement;
+    if (input.value === 'image') {
+      const source = imageFillSources()[0];
+      if (!source) { showToast('Place an image on the canvas before using it as a fill.'); renderInspector(); return; }
+      replacement = createFillLayer('image', { assetId: source.assetId });
+    } else {
+      const resolvedColor = getNodeColor(state.document, node, 'fill');
+      replacement = createFillLayer(input.value, input.value === 'solid' ? { color: /^#[0-9a-f]{6}$/i.test(resolvedColor) ? resolvedColor : '#d9d9d9' } : {});
+    }
+    const wasPrimary = fill === fills[0];
+    for (const key of ['color', 'gradient', 'imageFill']) delete fill[key];
+    Object.assign(fill, replacement, { id: fill.id, visible: fill.visible, opacity: fill.opacity });
+    if (wasPrimary) {
+      delete node.fillVariableId; delete node.fillStyleId;
+      if (node.variableBindings) delete node.variableBindings.fill;
+    }
+  } else return;
+  const isPrimary = ensureFillStack(node)[0] === fill;
+  if (isPrimary) syncLegacyFillFields(node);
+  if (field === 'type') reconcileImagePreviewRuntime();
+  recordNodeComponentOverrides(node, ['fills', ...(isPrimary ? ['fill', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId', 'variableBindings'] : [])]);
   renderer.invalidate();
 }
 
@@ -2512,34 +2603,45 @@ function updateLayerEffectInput(input) {
 
 function updateImageFillInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  if (!node?.imageFill || node.locked) return;
+  const fill = node && input.dataset.fillId ? ensureFillStack(node).find(item => item.id === input.dataset.fillId) : null;
+  const imageFill = input.dataset.fillId ? fill?.imageFill : node?.imageFill;
+  if (!imageFill || node.locked) return;
   if (!state.controlEdit) { checkpoint('Edit image fill'); state.controlEdit = true; }
   const field = input.dataset.imageFillField;
   if (field === 'assetId') {
     if (!imageFillSources().some(source => source.assetId === input.value)) return;
-    node.imageFill.assetId = input.value;
-    schedulePreview(node, true);
-  } else if (field === 'fit') node.imageFill.fit = input.value;
+    imageFill.assetId = input.value;
+  } else if (field === 'fit') imageFill.fit = input.value;
   else if (field.startsWith('adjustments.')) {
     const key = field.slice('adjustments.'.length);
-    node.imageFill.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...node.imageFill.adjustments };
-    if (!Object.hasOwn(node.imageFill.adjustments, key)) return;
-    node.imageFill.adjustments[key] = Number(input.value);
+    imageFill.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...imageFill.adjustments };
+    if (!Object.hasOwn(imageFill.adjustments, key)) return;
+    imageFill.adjustments[key] = Number(input.value);
     if (input.nextElementSibling) input.nextElementSibling.value = input.value;
-    schedulePreview(node);
   } else return;
-  recordNodeComponentOverrides(node, ['imageFill']);
+  if (fill) {
+    if (fill === ensureFillStack(node)[0]) syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', ...(fill === ensureFillStack(node)[0] ? ['imageFill'] : [])]);
+  } else recordNodeComponentOverrides(node, ['imageFill']);
+  if (field === 'assetId' || field.startsWith('adjustments.')) schedulePreview(node, field === 'assetId', fill?.id || null);
   renderer.invalidate();
 }
 
-function imageTransformTarget(node, target) {
-  if (target === 'fill') return node?.imageFill || null;
+function imageTransformTarget(node, target, fillId = '') {
+  if (target === 'fill') {
+    if (fillId) {
+      const fill = ensureFillStack(node).find(item => item.id === fillId);
+      return fill?.type === 'image' ? fill.imageFill || null : null;
+    }
+    return node?.imageFill || null;
+  }
   return node?.type === 'image' ? node : null;
 }
 
 function updateImageTransformInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  const target = imageTransformTarget(node, input.dataset.imageTransformTarget);
+  const targetName = input.dataset.imageTransformTarget;
+  const target = imageTransformTarget(node, targetName, input.dataset.fillId);
   if (!node || !target || node.locked || input.value.trim() === '') return;
   const edge = input.dataset.imageTransformField;
   if (!['left', 'top', 'right', 'bottom'].includes(edge)) return;
@@ -2563,13 +2665,22 @@ function updateImageTransformInput(input) {
   if (!state.controlEdit) { checkpoint('Crop image'); state.controlEdit = true; }
   target.transforms = transforms;
   if (input.nextElementSibling?.tagName === 'OUTPUT') input.nextElementSibling.value = `${Math.round(crop[edge] * 100)}%`;
-  recordNodeComponentOverrides(node, input.dataset.imageTransformTarget === 'fill' ? ['imageFill'] : ['transforms']);
-  schedulePreview(node);
+  if (targetName === 'fill') {
+    const fills = ensureFillStack(node);
+    const fill = fills.find(item => item.id === input.dataset.fillId);
+    if (!fill) return;
+    if (fill === fills[0]) syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', ...(fill === fills[0] ? ['imageFill'] : [])]);
+    schedulePreview(node, false, fill.id);
+  } else {
+    recordNodeComponentOverrides(node, ['transforms']);
+    schedulePreview(node);
+  }
   renderer.invalidate();
 }
 
-function applyImageTransformAction(node, targetName, action, direction) {
-  const target = imageTransformTarget(node, targetName);
+function applyImageTransformAction(node, targetName, action, direction, fillId = '') {
+  const target = imageTransformTarget(node, targetName, fillId);
   if (!target || node.locked) return;
   const current = createImageTransforms(target.transforms || {});
   let transforms;
@@ -2579,8 +2690,17 @@ function applyImageTransformAction(node, targetName, action, direction) {
   if (JSON.stringify(transforms) === JSON.stringify(current)) return;
   checkpoint(action === 'rotate-image' ? 'Rotate image' : 'Reset image crop and rotation');
   target.transforms = transforms;
-  recordNodeComponentOverrides(node, targetName === 'fill' ? ['imageFill'] : ['transforms']);
-  schedulePreview(node, true);
+  if (targetName === 'fill') {
+    const fills = ensureFillStack(node);
+    const fill = fills.find(item => item.id === fillId);
+    if (!fill) return;
+    if (fill === fills[0]) syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', ...(fill === fills[0] ? ['imageFill'] : [])]);
+    schedulePreview(node, true, fill.id);
+  } else {
+    recordNodeComponentOverrides(node, ['transforms']);
+    schedulePreview(node, true);
+  }
   renderInspector(); queueSave(); renderer.invalidate();
 }
 
@@ -2727,63 +2847,80 @@ function finishInspectorInput() {
   clearTimeout(state.statusTimer);
   state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
 }
-function schedulePreview(node, immediate = false) {
-  const previous = previewTimers.get(node.id);
+function schedulePreview(node, immediate = false, fillId = null) {
+  const previewKey = imagePreviewKey(node.id, fillId);
+  const fill = fillId ? node.fills?.find(item => item.id === fillId) : null;
+  const previous = previewTimers.get(previewKey);
   if (previous) clearTimeout(previous);
-  const replacementKey = `preview:${node.id}`;
-  state.renderVersion.set(node.id, ++nextImageRenderVersion);
+  const replacementKey = `preview:${previewKey}`;
+  state.renderVersion.set(previewKey, ++nextImageRenderVersion);
   imageEngine.cancelQueuedByKey(replacementKey);
-  state.imageStatus.set(node.id, 'Updating preview…');
-  const assetId = node.imageFill?.assetId || node.assetId;
-  const adjustments = node.imageFill?.adjustments || node.adjustments;
-  const transforms = node.imageFill?.transforms || node.transforms;
-  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); renderInspector(); });
+  state.imageStatus.set(previewKey, 'Updating preview…');
+  const imageFill = fill?.imageFill || (!fillId ? node.imageFill : null);
+  const assetId = imageFill?.assetId || node.assetId;
+  const adjustments = imageFill?.adjustments || node.adjustments;
+  const transforms = imageFill?.transforms || node.transforms;
+  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, 'Preview failed'); showToast(error.message); renderInspector(); });
   let timer;
   timer = setTimeout(() => {
-    if (previewTimers.get(node.id) !== timer) return;
-    previewTimers.delete(node.id);
+    if (previewTimers.get(previewKey) !== timer) return;
+    previewTimers.delete(previewKey);
     run();
   }, immediate ? 0 : 110);
-  previewTimers.set(node.id, timer);
+  previewTimers.set(previewKey, timer);
   if (state.selectedIds.includes(node.id)) {
-    for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
+    if (fillId) updateSelectedImageStatus(node.id, previewKey, fillId);
+    else for (const status of [$('#image-engine-status'), $('[data-image-fill-status]')].filter(Boolean)) { status.textContent = 'Updating preview…'; status.classList.remove('image-engine-status'); }
   }
 }
-async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}) {
+function updateSelectedImageStatus(nodeId, previewKey = nodeId, fillId = null) {
+  if (!state.selectedIds.includes(nodeId)) return;
+  const statusText = state.imageStatus.get(previewKey) || '';
+  const isReady = statusText.startsWith('Ready') || statusText.startsWith('Updated');
+  const fillStatus = $$('[data-image-fill-status]').find(status => status.dataset.imageFillStatus === previewKey);
+  const statuses = fillId ? [fillStatus] : [$('#image-engine-status')];
+  for (const status of statuses.filter(Boolean)) {
+    status.textContent = statusText;
+    status.classList.toggle('image-engine-status', isReady);
+  }
+}
+async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null) {
+  const previewKey = imagePreviewKey(nodeId, fillId);
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
   const version = ++nextImageRenderVersion;
-  state.renderVersion.set(nodeId, version);
-  state.imageStatus.set(nodeId, 'Processing locally…');
+  state.renderVersion.set(previewKey, version);
+  state.imageStatus.set(previewKey, 'Processing locally…');
+  updateSelectedImageStatus(nodeId, previewKey, fillId);
   try {
-    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, { replaceKey: `preview:${nodeId}` });
-    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) return false;
+    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, { replaceKey: `preview:${previewKey}` });
+    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
     const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
-    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) { bitmap.close?.(); return false; }
-    state.previews.get(nodeId)?.close?.();
-    const previousUrl = state.previewUrls.get(nodeId); if (previousUrl) URL.revokeObjectURL(previousUrl);
-    state.previewUrls.set(nodeId, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
-    state.previews.set(nodeId, bitmap);
-    state.previewAssetIds.set(nodeId, assetId);
-    state.previewVersions.set(nodeId, (state.previewVersions.get(nodeId) || 0) + 1);
-    state.imageStatus.set(nodeId, 'Updated · Pillow-RS WASM');
-    renderer.invalidate(); renderAssetsTab();
-    if (state.selectedIds.includes(nodeId)) for (const status of [$('#image-engine-status'), $('#image-fill-engine-status')].filter(Boolean)) { status.textContent = 'Updated · Pillow-RS WASM'; status.classList.add('image-engine-status'); }
+    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) { bitmap.close?.(); return false; }
+    state.previews.get(previewKey)?.close?.();
+    const previousUrl = state.previewUrls.get(previewKey); if (previousUrl) URL.revokeObjectURL(previousUrl);
+    state.previewUrls.set(previewKey, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
+    state.previews.set(previewKey, bitmap);
+    state.previewAssetIds.set(previewKey, assetId);
+    state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
+    state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
+    renderer.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
+    updateSelectedImageStatus(nodeId, previewKey, fillId);
     return true;
   } catch (error) {
-    if (generation !== state.documentGeneration || state.renderVersion.get(nodeId) !== version) return false;
+    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
     throw error;
   }
 }
 
 function reconcileImagePreviewRuntime() {
-  const liveNodeIds = collectLiveImagePreviewNodeIds(state.document);
-  for (const nodeId of state.renderVersion.keys()) {
-    if (!liveNodeIds.has(nodeId)) imageEngine.cancelQueuedByKey(`preview:${nodeId}`);
+  const livePreviewKeys = collectLiveImagePreviewNodeIds(state.document);
+  for (const previewKey of state.renderVersion.keys()) {
+    if (!livePreviewKeys.has(previewKey)) imageEngine.cancelQueuedByKey(`preview:${previewKey}`);
   }
   return pruneImagePreviewRuntime({
-    liveNodeIds,
+    liveNodeIds: livePreviewKeys,
     timers: previewTimers,
     previews: state.previews,
     previewUrls: state.previewUrls,
@@ -2826,15 +2963,14 @@ async function importImageFiles(files, point = null) {
       const headerBytes = new Uint8Array(await file.slice(0, IMAGE_HEADER_SCAN_BYTES).arrayBuffer());
       assertSafeRasterDimensions(headerBytes);
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
-      const bitmap = await createImageBitmap(file);
+      const { bitmap, sourceWidth, sourceHeight } = await createFallbackImage(file);
       if (generation !== state.documentGeneration) { bitmap.close?.(); continue; }
-      const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height));
-      const width = Math.max(1, Math.round(bitmap.width * scale)); const height = Math.max(1, Math.round(bitmap.height * scale));
+      const width = bitmap.width; const height = bitmap.height;
       const asset = { id: assetId, name: file.name, type: file.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(file) };
       state.assets.set(assetId, asset);
       await saveImageAsset(assetId, file);
       if (generation !== state.documentGeneration) continue;
-      const node = createNode('image', { id: createId('image'), name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, assetId, width, height, sourceWidth: bitmap.width, sourceHeight: bitmap.height, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
+      const node = createNode('image', { id: createId('image'), name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, assetId, width, height, sourceWidth, sourceHeight, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
       const center = { x: node.x + width / 2, y: node.y + height / 2 };
       const parent = deepestContainerAt(center);
       localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
@@ -2854,21 +2990,21 @@ async function restoreImageAssets(generation = state.documentGeneration) {
   const references = imageAssetReferencesAcrossPages();
   for (const reference of references) {
     if (generation !== state.documentGeneration) return;
-    const { node, assetId, name, adjustments, transforms } = reference;
+    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, name, adjustments, transforms } = reference;
     try {
       const existing = state.assets.get(assetId);
-      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => showToast(error.message)); continue; }
+      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => showToast(error.message)); continue; }
       const saved = await loadImageAsset(assetId);
       if (generation !== state.documentGeneration) return;
-      if (!saved) { state.imageStatus.set(node.id, 'Original image missing'); continue; }
+      if (!saved) { state.imageStatus.set(previewKey, 'Original image missing'); continue; }
       const sourceBytes = new Uint8Array(saved.bytes);
       assertSafeRasterDimensions(sourceBytes);
-      const bitmap = await createImageBitmap(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
+      const { bitmap } = await createFallbackImage(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
       if (generation !== state.documentGeneration) { bitmap.close?.(); return; }
       state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
-      state.imageStatus.set(node.id, 'Restoring local preview…');
-      renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
-    } catch (error) { if (generation !== state.documentGeneration) return; state.imageStatus.set(node.id, 'Could not restore image'); showToast(error.message); }
+      state.imageStatus.set(previewKey, 'Restoring local preview…');
+      renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, 'Preview failed'); showToast(error.message); });
+    } catch (error) { if (generation !== state.documentGeneration) return; state.imageStatus.set(previewKey, 'Could not restore image'); showToast(error.message); }
   }
   if (generation === state.documentGeneration) renderAssetsTab();
 }
@@ -2957,19 +3093,29 @@ function scheduleBulk() {
     applyImageRecipe(state.document, id, bulk.recipe);
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
+    updateSelectedImageStatus(id);
     renderImagePreview(id, node.assetId, node.adjustments, node.transforms).then(rendered => {
       if (state.bulk !== bulk) return;
-      if (!rendered) throw new DOMException('A newer image edit replaced this recipe preview before it could be displayed.', 'AbortError');
+      if (!rendered) {
+        const error = new Error('A newer image edit replaced this recipe preview before it could be displayed.');
+        error.name = 'AbortError';
+        error.superseded = true;
+        throw error;
+      }
       bulk.completed += 1;
     }).catch(error => {
       if (state.bulk !== bulk) return;
       rollbackRecipeStateIfUnchanged(node, before, applied);
-      state.imageStatus.set(id, 'Recipe failed'); bulk.failed += 1; bulk.completed += 1;
+      // A stale recipe result may fail only because a newer edit replaced it.
+      // Preserve the newer render's status rather than labeling that edit as failed.
+      if (!error.superseded) state.imageStatus.set(id, 'Recipe failed');
+      updateSelectedImageStatus(id);
+      bulk.failed += 1; bulk.completed += 1;
       showToast(`${node.name}: ${error.message}`);
     }).finally(() => {
       if (state.bulk !== bulk) return;
       bulk.inflight -= 1;
-      queueSave(); renderLayers(); renderer.invalidate();
+      queueSave({ refreshLayerTree: false }); renderer.invalidate();
       if (!bulk.paused && !bulk.cancelled) scheduleBulk();
       if ((bulk.next >= bulk.targets.length || bulk.cancelled) && bulk.inflight === 0) {
         bulk.done = !bulk.cancelled;
@@ -3403,8 +3549,8 @@ function openFileMenu(x, y, commentAnchor = null) {
     { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
     { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
     { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
-    { label: 'Export selected layer as SVG', action: () => { try { exportSelectedNodeSvg(rootSelectedIds()[0]); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); } }, disabled: rootSelectedIds().length !== 1 },
-    { label: 'Export current page as SVG', action: () => { try { exportActivePageSvg(); } catch (error) { showToast(error.message || 'Could not export this page as SVG.'); } } },
+    { label: 'Export selected layer as SVG', action: () => { exportSelectedNodeSvg(rootSelectedIds()[0]).catch(error => showToast(error.message || 'Could not export this layer as SVG.')); }, disabled: rootSelectedIds().length !== 1 },
+    { label: 'Export current page as SVG', action: () => { exportActivePageSvg().catch(error => showToast(error.message || 'Could not export this page as SVG.')); } },
     { separator: true },
     { label: `${state.showLayoutGuides ? '✓' : '○'} Layout guides`, shortcut: '⇧G', action: toggleLayoutGuides },
     { separator: true },
@@ -3798,32 +3944,34 @@ function reorderSelected(direction) {
 
 function refreshHistoryImagePreviews(previousDocument) {
   for (const reference of imageAssetReferencesAcrossPages()) {
-    const { node, assetId, adjustments, transforms } = reference;
+    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, adjustments, transforms } = reference;
     const previousNode = findNode(previousDocument, node.id)?.node;
-    const previousSource = previousNode?.type === 'image' ? previousNode : previousNode?.imageFill;
+    const previousSource = fillId
+      ? previousNode?.fills?.find(item => item.id === fillId)?.imageFill
+      : previousNode?.type === 'image' ? previousNode : previousNode?.imageFill;
     const previousSettings = previousSource
       ? JSON.stringify([previousSource.assetId, previousSource.adjustments || {}, previousSource.transforms || {}])
       : null;
     const currentSettings = JSON.stringify([assetId, adjustments || {}, transforms || {}]);
     if (previousSettings === currentSettings) continue;
 
-    const timer = previewTimers.get(node.id);
+    const timer = previewTimers.get(previewKey);
     if (timer) clearTimeout(timer);
-    previewTimers.delete(node.id);
+    previewTimers.delete(previewKey);
     const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) {
-      state.previews.get(node.id)?.close?.();
-      state.previews.delete(node.id);
-      state.previewAssetIds.delete(node.id);
-      const url = state.previewUrls.get(node.id);
+      state.previews.get(previewKey)?.close?.();
+      state.previews.delete(previewKey);
+      state.previewAssetIds.delete(previewKey);
+      const url = state.previewUrls.get(previewKey);
       if (url) URL.revokeObjectURL(url);
-      state.previewUrls.delete(node.id);
-      state.imageStatus.set(node.id, 'Original image missing');
+      state.previewUrls.delete(previewKey);
+      state.imageStatus.set(previewKey, 'Original image missing');
       continue;
     }
-    state.imageStatus.set(node.id, 'Updating preview…');
-    renderImagePreview(node.id, assetId, adjustments, transforms).catch(error => {
-      state.imageStatus.set(node.id, 'Preview failed');
+    state.imageStatus.set(previewKey, 'Updating preview…');
+    renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
+      state.imageStatus.set(previewKey, 'Preview failed');
       showToast(`${node.name}: ${error.message || 'Could not restore the image preview.'}`);
       if (state.selectedIds.includes(node.id)) renderInspector();
     });
@@ -4526,8 +4674,15 @@ function imageNodesAcrossPages() { const result = []; for (const page of state.d
 function imageAssetReferencesAcrossPages() {
   const result = [];
   for (const page of state.document.pages) walkNodes(page.children, ({ node }) => {
-    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms });
-    if (node.imageFill?.assetId) result.push({ node, assetId: node.imageFill.assetId, name: node.name, adjustments: node.imageFill.adjustments, transforms: node.imageFill.transforms });
+    if (node.type === 'image' && node.assetId) result.push({ node, assetId: node.assetId, name: node.fileName || node.name, adjustments: node.adjustments, transforms: node.transforms, previewKey: imagePreviewKey(node.id) });
+    if (Array.isArray(node.fills)) {
+      node.fills.forEach(fill => {
+        if (fill.type !== 'image' || !fill.imageFill?.assetId) return;
+        result.push({ node, fillId: fill.id, previewKey: imagePreviewKey(node.id, fill.id), assetId: fill.imageFill.assetId, name: node.name, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
+      });
+    } else if (node.imageFill?.assetId) {
+      result.push({ node, previewKey: imagePreviewKey(node.id), assetId: node.imageFill.assetId, name: node.name, adjustments: node.imageFill.adjustments, transforms: node.imageFill.transforms });
+    }
   });
   return result;
 }
@@ -4590,32 +4745,35 @@ async function refreshImagesForExport(nodeIds) {
     const node = findNode(state.document, id)?.node;
     if (node) walkNodes([node], ({ node: child }) => {
       if (child.type === 'image' && child.assetId) {
-        images.set(child.id, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms });
+        const previewKey = imagePreviewKey(child.id);
+        images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, previewKey });
       }
-      if (child.imageFill?.assetId) {
-        images.set(child.id, {
-          node: child,
-          assetId: child.imageFill.assetId,
-          adjustments: child.imageFill.adjustments,
-          transforms: child.imageFill.transforms
-        });
+      if (Array.isArray(child.fills)) {
+        for (const fill of child.fills) {
+          if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId) continue;
+          const previewKey = imagePreviewKey(child.id, fill.id);
+          images.set(previewKey, { node: child, fillId: fill.id, previewKey, assetId: fill.imageFill.assetId, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
+        }
+      } else if (child.imageFill?.assetId) {
+        const previewKey = imagePreviewKey(child.id);
+        images.set(previewKey, { node: child, previewKey, assetId: child.imageFill.assetId, adjustments: child.imageFill.adjustments, transforms: child.imageFill.transforms });
       }
     });
   }
-  await Promise.all([...images.values()].map(async ({ node, assetId, adjustments, transforms }) => {
+  await Promise.all([...images.values()].map(async ({ node, fillId = null, previewKey, assetId, adjustments, transforms }) => {
     const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
-    const status = state.imageStatus.get(node.id) || '';
-    const timer = previewTimers.get(node.id);
-    if (timer) { clearTimeout(timer); previewTimers.delete(node.id); }
+    const status = state.imageStatus.get(previewKey) || '';
+    const timer = previewTimers.get(previewKey);
+    if (timer) { clearTimeout(timer); previewTimers.delete(previewKey); }
     if (timer || status === 'Updating preview…' || status === 'Processing locally…') {
-      await renderImagePreview(node.id, assetId, adjustments, transforms);
+      await renderImagePreview(node.id, assetId, adjustments, transforms, fillId);
     }
     const hasEdits = Object.values(adjustments || {}).some(value => Number(value) !== 0)
       || Boolean(transforms?.crop || transforms?.rotation);
-    const previewMatchesAsset = state.previews.has(node.id)
-      && (state.previewAssetIds.get(node.id) == null || state.previewAssetIds.get(node.id) === assetId);
-    if (!previewMatchesAsset && hasEdits) await renderImagePreview(node.id, assetId, adjustments, transforms);
+    const previewMatchesAsset = state.previews.has(previewKey)
+      && (state.previewAssetIds.get(previewKey) == null || state.previewAssetIds.get(previewKey) === assetId);
+    if (!previewMatchesAsset && hasEdits) await renderImagePreview(node.id, assetId, adjustments, transforms, fillId);
   }));
 }
 
@@ -4685,19 +4843,97 @@ function createSvgTextMeasurer() {
   };
 }
 
-function exportSelectedNodeSvg(nodeId) {
+function hasRasterImageEdits(adjustments, transforms) {
+  return Object.values(adjustments || {}).some(value => Number(value) !== 0)
+    || Boolean(transforms?.crop || transforms?.rotation);
+}
+
+async function imagePreviewsForSvgExport(rootNodeIds) {
+  await refreshImagesForExport(rootNodeIds);
+  const references = new Map();
+  for (const id of rootNodeIds) {
+    const root = findNode(state.document, id)?.node;
+    if (!root) continue;
+    walkNodes([root], ({ node }) => {
+      if (node.type === 'image' && node.assetId) {
+        const previewKey = imagePreviewKey(node.id);
+        references.set(previewKey, { node, previewKey, assetId: node.assetId, adjustments: node.adjustments, transforms: node.transforms });
+      }
+      if (Array.isArray(node.fills)) {
+        for (const fill of node.fills) {
+          if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId) continue;
+          const previewKey = imagePreviewKey(node.id, fill.id);
+          references.set(previewKey, { node, fillId: fill.id, previewKey, assetId: fill.imageFill.assetId, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
+        }
+      } else if (node.imageFill?.assetId) {
+        const previewKey = imagePreviewKey(node.id);
+        references.set(previewKey, { node, previewKey, assetId: node.imageFill.assetId, adjustments: node.imageFill.adjustments, transforms: node.imageFill.transforms });
+      }
+    });
+  }
+
+  const imagePreviews = new Map();
+  const editedReferences = [...references.values()].filter(({ adjustments, transforms }) => hasRasterImageEdits(adjustments, transforms));
+  const previewsToRefresh = editedReferences.filter(({ previewKey, assetId }) =>
+    state.imageStatus.get(previewKey) !== 'Updated · Pillow-RS WASM'
+    || !state.previews.has(previewKey)
+    || state.previewAssetIds.get(previewKey) !== assetId);
+  const refreshed = await Promise.all(previewsToRefresh.map(({ node, fillId = null, assetId, adjustments, transforms }) =>
+    renderImagePreview(node.id, assetId, adjustments, transforms, fillId)));
+  if (refreshed.some(rendered => rendered !== true)) {
+    throw new Error('An image changed while SVG export was being prepared. Retry the export after its preview updates.');
+  }
+
+  for (const { node, fillId = null, previewKey, assetId, adjustments, transforms } of editedReferences) {
+    const preview = state.previews.get(previewKey);
+    const previewUrl = state.previewUrls.get(previewKey);
+    if (!preview || !previewUrl || state.previewAssetIds.get(previewKey) !== assetId) {
+      throw new Error(`The edited preview for “${node.name}” is not ready for SVG export.`);
+    }
+    const settingsSignature = JSON.stringify([assetId, adjustments || {}, transforms || {}]);
+    const renderVersion = state.renderVersion.get(previewKey);
+    const response = await fetch(previewUrl);
+    if (!response.ok) throw new Error(`The edited preview for “${node.name}” could not be read for SVG export.`);
+    const sourceBytes = new Uint8Array(await response.arrayBuffer());
+    const currentNode = findNode(state.document, node.id)?.node;
+    const currentImageFill = fillId
+      ? currentNode?.fills?.find(fill => fill.id === fillId)?.imageFill
+      : currentNode?.type === 'image' ? currentNode : currentNode?.imageFill;
+    const currentSettings = [currentImageFill?.assetId, currentImageFill?.adjustments || {}, currentImageFill?.transforms || {}];
+    if (!currentNode || state.renderVersion.get(previewKey) !== renderVersion
+      || JSON.stringify(currentSettings) !== settingsSignature
+      || state.imageStatus.get(previewKey) !== 'Updated · Pillow-RS WASM') {
+      throw new Error(`The image “${node.name}” changed while SVG export was being prepared. Retry the export after its preview updates.`);
+    }
+    imagePreviews.set(previewKey, {
+      type: 'image/png',
+      sourceBytes,
+      width: preview.width,
+      height: preview.height,
+    });
+  }
+  return imagePreviews;
+}
+
+async function exportSelectedNodeSvg(nodeId) {
+  const generation = state.documentGeneration;
   const node = findNode(state.document, nodeId)?.node;
   if (!node) throw new Error('The selected layer is no longer available.');
-  const markup = exportNodeToSvg(node, { document: state.document, assets: state.assets, measureText: createSvgTextMeasurer() });
+  const imagePreviews = await imagePreviewsForSvgExport([nodeId]);
+  if (generation !== state.documentGeneration || findNode(state.document, nodeId)?.node !== node) throw new Error('The active design changed before SVG export finished.');
+  const markup = exportNodeToSvg(node, { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(node.name)}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable SVG · ${filename}.`);
 }
 
-function exportActivePageSvg() {
+async function exportActivePageSvg() {
+  const generation = state.documentGeneration;
   const page = activePage();
   if (!page) throw new Error('There is no active page to export.');
-  const markup = exportPageToSvg(page, { document: state.document, assets: state.assets, measureText: createSvgTextMeasurer() });
+  const imagePreviews = await imagePreviewsForSvgExport(page.children.map(node => node.id));
+  if (generation !== state.documentGeneration || activePage() !== page) throw new Error('The active design changed before SVG export finished.');
+  const markup = exportPageToSvg(page, { document: state.document, assets: state.assets, imagePreviews, measureText: createSvgTextMeasurer() });
   const filename = `${safeExportName(page.name || 'Page')}.svg`;
   downloadSvg(markup, filename);
   showToast(`Downloaded editable page SVG · ${filename}.`);
@@ -4782,8 +5018,44 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'add-fill-layer' || action === 'remove-fill-layer' || action === 'move-fill-layer') {
+    if (!node || node.locked) return;
+    const fills = ensureFillStack(node);
+    const previousPrimary = fills[0];
+    const hadPrimaryBinding = Boolean(node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
+    const previousPrimaryColor = hadPrimaryBinding ? getNodeColor(state.document, node, 'fill') : null;
+    let primaryChanged = false;
+    if (action === 'add-fill-layer') {
+      if (fills.length >= 32) { showToast('A layer can have up to 32 fills.'); return; }
+      const type = details.fillType || 'solid';
+      try {
+        const resolvedColor = getNodeColor(state.document, node, 'fill');
+        const fill = type === 'image'
+          ? createFillLayer('image', { assetId: imageFillSources()[0]?.assetId })
+          : createFillLayer(type, type === 'solid' ? { color: /^#[0-9a-f]{6}$/i.test(resolvedColor) ? resolvedColor : '#d9d9d9' } : {});
+        checkpoint('Add fill'); addFillLayer(node, fill);
+      } catch (error) { showToast(error.message); return; }
+    } else {
+      const index = fills.findIndex(fill => fill.id === details.fillId);
+      if (index < 0) return;
+      if (action === 'remove-fill-layer') { checkpoint('Remove fill'); removeFillLayer(node, details.fillId); primaryChanged = fills[0] !== previousPrimary; }
+      else {
+        const nextIndex = index + (details.direction === 'up' ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= fills.length) return;
+        checkpoint('Reorder fills');
+        moveFillLayer(node, details.fillId, details.direction);
+        primaryChanged = fills[0] !== previousPrimary;
+      }
+    }
+    if (primaryChanged && hadPrimaryBinding) detachPrimaryFillBinding(node, previousPrimary, previousPrimaryColor);
+    syncLegacyFillFields(node);
+    reconcileImagePreviewRuntime();
+    recordNodeComponentOverrides(node, ['fills', 'fill', 'fillOpacity', 'fillGradient', 'imageFill', ...(primaryChanged ? ['fillStyleId', 'fillVariableId', 'variableBindings'] : [])]);
+    renderInspector(); queueSave(); renderer.invalidate();
+    return;
+  }
   if (action === 'rotate-image' || action === 'reset-image-transforms') {
-    applyImageTransformAction(node, details.transformTarget, action, details.direction);
+    applyImageTransformAction(node, details.transformTarget, action, details.direction, details.fillId);
     return;
   }
   if (action === 'apply-image-recipe' || action === 'apply-selection-image-recipe') {
@@ -4800,23 +5072,30 @@ function applyInspectorAction(action, details = {}) {
     return;
   }
   if (action === 'align-selection') alignSelectedLayers(details.alignMode);
-  else if (action === 'add-gradient-stop' && node?.fillGradient && !node.locked) {
-    const stops = [...node.fillGradient.stops].sort((a, b) => a.position - b.position);
+  else if (action === 'add-gradient-stop' && node && !node.locked) {
+    const fill = details.fillId ? ensureFillStack(node).find(item => item.id === details.fillId) : null;
+    const gradient = fill?.gradient || node.fillGradient;
+    if (!gradient) return;
+    const stops = [...gradient.stops].sort((a, b) => a.position - b.position);
     if (stops.length >= 8) { showToast('A gradient can have up to 8 color stops.'); return; }
     let left = stops[0]; let right = stops[1];
     for (let index = 1; index < stops.length - 1; index += 1) {
       if (stops[index + 1].position - stops[index].position > right.position - left.position) { left = stops[index]; right = stops[index + 1]; }
     }
     checkpoint('Add gradient stop');
-    node.fillGradient.stops.push({ id: createId('stop'), color: left.color, position: (left.position + right.position) / 2 });
-    node.fillGradient.stops.sort((a, b) => a.position - b.position);
-    recordNodeComponentOverrides(node, ['fillGradient']);
+    gradient.stops.push({ id: createId('stop'), color: left.color, position: (left.position + right.position) / 2 });
+    gradient.stops.sort((a, b) => a.position - b.position);
+    if (fill) { syncLegacyFillFields(node); recordNodeComponentOverrides(node, ['fills', 'fillGradient']); }
+    else recordNodeComponentOverrides(node, ['fillGradient']);
     renderInspector(); queueSave(); renderer.invalidate();
-  } else if (action === 'remove-gradient-stop' && node?.fillGradient && !node.locked) {
-    if (node.fillGradient.stops.length <= 2 || !node.fillGradient.stops.some(stop => stop.id === details.stopId)) return;
+  } else if (action === 'remove-gradient-stop' && node && !node.locked) {
+    const fill = details.fillId ? ensureFillStack(node).find(item => item.id === details.fillId) : null;
+    const gradient = fill?.gradient || node.fillGradient;
+    if (!gradient || gradient.stops.length <= 2 || !gradient.stops.some(stop => stop.id === details.stopId)) return;
     checkpoint('Remove gradient stop');
-    node.fillGradient.stops = node.fillGradient.stops.filter(stop => stop.id !== details.stopId);
-    recordNodeComponentOverrides(node, ['fillGradient']);
+    gradient.stops = gradient.stops.filter(stop => stop.id !== details.stopId);
+    if (fill) { syncLegacyFillFields(node); recordNodeComponentOverrides(node, ['fills', 'fillGradient']); }
+    else recordNodeComponentOverrides(node, ['fillGradient']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
   else if (action === 'add-layer-effect' && node && !node.locked) {
@@ -4876,7 +5155,7 @@ function applyInspectorAction(action, details = {}) {
   } else if (action === 'export-setting' && node) {
     exportLayerWithSetting(node.id, details.exportId).catch(error => showToast(error.message || 'Could not export this layer.'));
   } else if (action === 'export-svg' && node) {
-    try { exportSelectedNodeSvg(node.id); } catch (error) { showToast(error.message || 'Could not export this layer as SVG.'); }
+    exportSelectedNodeSvg(node.id).catch(error => showToast(error.message || 'Could not export this layer as SVG.'));
   } else if (action === 'create-component') makeComponent(node?.id);
   else if (action === 'publish-local-component') {
     void publishComponentToLocalLibrary({ componentId: details.componentId, libraryId: details.libraryId || null })
@@ -5149,6 +5428,8 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    const fillField = event.target.closest('[data-fill-field]');
+    if (fillField) { updateFillInput(fillField); return; }
     const imageTransformField = event.target.closest('[data-image-transform-field]');
     if (imageTransformField) { updateImageTransformInput(imageTransformField); return; }
     const imageFillField = event.target.closest('[data-image-fill-field]');
@@ -5197,6 +5478,7 @@ function initEvents() {
       return;
     }
     if (event.target.matches('[data-image-transform-field]')) { finishInspectorInput(); return; }
+    if (event.target.matches('[data-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }

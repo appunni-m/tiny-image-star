@@ -306,6 +306,9 @@ try {
   tap(app, app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="layer"]'));
   rejectRecipeBitmap(new Error('Injected recipe-render failure for rollback regression.'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe finished with errors', 'failed recipe batch completion');
+  const latestImageStatus = app.querySelector('#image-engine-status')?.textContent;
+  assert(['Updating preview…', 'Processing locally…', 'Updated · Pillow-RS WASM'].includes(latestImageStatus),
+    `the superseded recipe failure must not overwrite the newer image edit status (received ${latestImageStatus || 'no status'}).`);
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'newer image edit preview after failed recipe');
   await waitFor(async () => {
     const stored = await readDocuments(app); stored.sort((a, b) => b.savedAt - a.savedAt);

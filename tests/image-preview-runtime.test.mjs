@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from '../src/image-preview-runtime.js';
+import { collectLiveImagePreviewNodeIds, imagePreviewKey, pruneImagePreviewRuntime } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -23,12 +23,25 @@ test('live preview references include raster and image-fill layers across every 
         { id: 'nested-image-fill', type: 'path', imageFill: { assetId: 'source' }, children: [] }
       ] },
       { id: 'missing-source', type: 'image', assetId: null, children: [] },
+      { id: 'explicit-fill-stack', type: 'rectangle', fills: [
+        { id: 'image-fill-paint', type: 'image', imageFill: { assetId: 'source' } },
+        { id: 'hidden-fill-paint', type: 'image', visible: false, imageFill: { assetId: 'source' } }
+      ], children: [] },
       { id: 'plain-vector', type: 'rectangle', children: [] }
     ] },
     { children: [{ id: 'other-page-image', type: 'image', assetId: 'another-source', children: [] }] }
   ] });
 
-  assert.deepEqual([...live].sort(), ['image-fill', 'nested-image-fill', 'other-page-image', 'source-image']);
+  assert.deepEqual([...live].sort(), [
+    'image-fill',
+    'image-fill:["explicit-fill-stack","hidden-fill-paint"]',
+    'image-fill:["explicit-fill-stack","image-fill-paint"]',
+    'nested-image-fill',
+    'other-page-image',
+    'source-image'
+  ]);
+  assert.equal(imagePreviewKey('shape', 'fill-1'), 'image-fill:["shape","fill-1"]');
+  assert.notEqual(imagePreviewKey('copy-a', 'fill-1'), imagePreviewKey('copy-b', 'fill-1'), 'duplicated layers do not share per-fill preview resources');
 });
 
 test('pruning deleted nodes cancels timers and releases only orphan preview resources', () => {

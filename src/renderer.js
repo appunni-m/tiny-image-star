@@ -3,12 +3,13 @@ import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
-import { createGradientPaint } from './fills.js';
+import { createGradientPaint, fillStackForNode } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
+import { imagePreviewKey } from './image-preview-runtime.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -74,11 +75,46 @@ function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
   return true;
 }
 
-function imageForNode(node, assets, state, assetId = node.assetId) {
-  const cachedAssetId = state.previewAssetIds?.get(node.id);
-  const preview = state.previews?.get(node.id);
+function imageForNode(node, assets, state, assetId = node.assetId, previewKey = node.id) {
+  const cachedAssetId = state.previewAssetIds?.get(previewKey);
+  const preview = state.previews?.get(previewKey);
   if (preview && (cachedAssetId == null || cachedAssetId === assetId)) return preview;
   return assets.get(assetId)?.bitmap ?? null;
+}
+
+function fillLayerColor(document, node, fill, index) {
+  const linkedPrimary = index === 0 && (node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
+  return linkedPrimary || (index === 0 && !Array.isArray(node.fills))
+    ? getNodeColor(document, node, 'fill')
+    : fill.color;
+}
+
+function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null) {
+  const fills = fillStackForNode(node);
+  for (let index = 0; index < fills.length; index += 1) {
+    const fill = fills[index];
+    if (!fill.visible || fill.opacity <= 0) continue;
+    ctx.save();
+    ctx.globalAlpha *= fill.opacity;
+    if (fill.type === 'solid') {
+      const color = colorOverride != null && index === 0
+        ? colorOverride
+        : fillLayerColor(state.document, node, fill, index);
+      if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); ctx.fill(); }
+    } else if (fill.type === 'linear' || fill.type === 'radial') {
+      const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
+      if (paint) { ctx.fillStyle = paint; ctx.fill(); }
+    } else if (fill.type === 'image') {
+      const imageFill = fill.imageFill;
+      const image = imageFill && imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
+      if (image) {
+        ctx.save(); ctx.clip();
+        drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
 }
 
 function roundedRect(ctx, x, y, width, height, radius) {
@@ -533,35 +569,53 @@ export class SceneRenderer {
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else if (node.type === 'network') {
-      const fill = getNodeColor(document, node, 'fill');
-      const fillImage = node.imageFill ? imageForNode(node, assets, this.getState(), node.imageFill.assetId) : null;
+      const fills = fillStackForNode(node);
       for (const face of node.faces || []) {
-        const faceFill = face.fill ?? fill;
-        if ((!faceFill || faceFill === 'transparent') && !node.fillGradient && !node.imageFill) continue;
-        ctx.beginPath();
-        if (traceVectorNetworkFace(ctx, node, face, x, y)) {
-          const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
+        // Keep the original one-fill face behavior for old files: an image fill
+        // always wins over a face color, while gradients yield to explicit
+        // face colors. New stacks only let face colors override a solid first
+        // paint; they must not replace an image or gradient paint.
+        if (!Array.isArray(node.fills)) {
+          const color = getNodeColor(document, node, 'fill');
+          const fillImage = node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
+          const faceFill = face.fill ?? color;
+          if ((!faceFill || faceFill === 'transparent') && !node.fillGradient && !node.imageFill) continue;
+          ctx.beginPath();
+          if (traceVectorNetworkFace(ctx, node, face, x, y)) {
+            const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
+            ctx.save();
+            ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
+            if (node.imageFill && fillImage) { ctx.clip(); drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit); }
+            else { ctx.fillStyle = gradient || rgba(faceFill || color || '#000000', 1); ctx.fill(); }
+            ctx.restore();
+          }
+          continue;
+        }
+        for (let index = 0; index < fills.length; index += 1) {
+          const fill = fills[index];
+          if (!fill.visible || fill.opacity <= 0) continue;
+          ctx.beginPath();
+          if (!traceVectorNetworkFace(ctx, node, face, x, y)) continue;
           ctx.save();
-          ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
-          if (node.imageFill && fillImage) { ctx.clip(); drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit); }
-          else { ctx.fillStyle = gradient || rgba(faceFill || fill || '#000000', 1); ctx.fill(); }
+          ctx.globalAlpha *= fill.opacity * (face.fillOpacity ?? 1);
+          if (face.fill != null && index === 0 && fill.type === 'solid') {
+            ctx.fillStyle = rgba(face.fill, 1); ctx.fill();
+          } else if (fill.type === 'solid') {
+            const color = fillLayerColor(document, node, fill, index);
+            if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); ctx.fill(); }
+          } else if (fill.type === 'linear' || fill.type === 'radial') {
+            const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
+            if (paint) { ctx.fillStyle = paint; ctx.fill(); }
+          } else if (fill.type === 'image') {
+            const image = imageForNode(node, assets, state, fill.imageFill.assetId, imagePreviewKey(node.id, fill.id));
+            if (image) { ctx.clip(); drawFittedImage(ctx, image, x, y, width, height, fill.imageFill.fit); }
+          }
           ctx.restore();
         }
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else {
-      const fill = getNodeColor(document, node, 'fill');
-      if ((fill && fill !== 'transparent' || node.fillGradient || node.imageFill) && node.type !== 'line' && (node.type !== 'path' || node.closed)) {
-        const fillImage = node.imageFill ? imageForNode(node, assets, this.getState(), node.imageFill.assetId) : null;
-        const gradient = node.imageFill ? null : createGradientPaint(ctx, node.fillGradient, x, y, width, height);
-        if (node.imageFill && fillImage) {
-          ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.clip();
-          drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit);
-          ctx.restore();
-        } else if (gradient) {
-          ctx.save(); ctx.globalAlpha *= node.fillOpacity ?? 1; ctx.fillStyle = gradient; ctx.fill(); ctx.restore();
-        } else { ctx.fillStyle = rgba(fill, node.fillOpacity ?? 1); ctx.fill(); }
-      }
+      if (node.type !== 'line' && (node.type !== 'path' || node.closed)) drawFillStack(ctx, node, assets, state, x, y, width, height);
       if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     }
 
@@ -726,7 +780,7 @@ export class SceneRenderer {
     const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
     const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
     ctx.save();
-    ctx.globalAlpha *= node.fillOpacity ?? 1;
+    if (!Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
     ctx.drawImage(surface, x, y, node.width, node.height);
     ctx.restore();
   }
@@ -740,7 +794,15 @@ export class SceneRenderer {
     const scale = Math.min(deviceScale, Math.sqrt(pixelBudget / Math.max(1, node.width * node.height)));
     const width = Math.max(1, Math.ceil(node.width * scale));
     const height = Math.max(1, Math.ceil(node.height * scale));
-    const key = `${JSON.stringify(node)}|${fill}|${state.previewVersions?.get(node.id) || 0}|${width}x${height}`;
+    const fillPreviewVersions = (node.fills || []).filter(fillLayer => fillLayer.type === 'image').map(fillLayer => {
+      const previewKey = imagePreviewKey(node.id, fillLayer.id);
+      return [previewKey, state.previewVersions?.get(previewKey) || 0, state.previewAssetIds?.get(previewKey) || null];
+    });
+    const legacyPreviewKey = !Array.isArray(node.fills) && node.imageFill ? imagePreviewKey(node.id) : null;
+    const imagePreviewVersion = legacyPreviewKey
+      ? [legacyPreviewKey, state.previewVersions?.get(legacyPreviewKey) || 0, state.previewAssetIds?.get(legacyPreviewKey) || null]
+      : null;
+    const key = `${JSON.stringify(node)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
     let entry = this.booleanCache.get(key);
     if (entry) {
       this.booleanCache.delete(key);
@@ -767,15 +829,55 @@ export class SceneRenderer {
           break;
         }
       }
-      mask.save();
-      mask.globalCompositeOperation = 'source-in';
-      const fillImage = !maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
-      if (fillImage) drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
-      else {
-        mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
-        mask.fillRect(0, 0, node.width, node.height);
+      if (!maskMode && Array.isArray(node.fills)) {
+        const createSurface = () => typeof OffscreenCanvas === 'function'
+          ? new OffscreenCanvas(width, height)
+          : Object.assign(document.createElement('canvas'), { width, height });
+        const alphaSurface = createSurface();
+        alphaSurface.getContext('2d').drawImage(surface, 0, 0);
+        const paintSurface = createSurface();
+        const paintContext = paintSurface.getContext('2d');
+        paintContext.setTransform(width / Math.max(1, node.width), 0, 0, height / Math.max(1, node.height), 0, 0);
+        mask.clearRect(0, 0, node.width, node.height);
+        mask.globalCompositeOperation = 'source-over';
+        for (let fillIndex = 0; fillIndex < node.fills.length; fillIndex += 1) {
+          const fillLayer = node.fills[fillIndex];
+          if (!fillLayer.visible || fillLayer.opacity <= 0) continue;
+          paintContext.clearRect(0, 0, node.width, node.height);
+          paintContext.globalCompositeOperation = 'source-over';
+          paintContext.globalAlpha = fillLayer.opacity;
+          if (fillLayer.type === 'solid') {
+            const color = fillLayerColor(state.document, node, fillLayer, fillIndex);
+            if (!color || color === 'transparent') continue;
+            paintContext.fillStyle = color; paintContext.fillRect(0, 0, node.width, node.height);
+          } else if (fillLayer.type === 'linear' || fillLayer.type === 'radial') {
+            const paint = createGradientPaint(paintContext, fillLayer.gradient, 0, 0, node.width, node.height);
+            if (!paint) continue;
+            paintContext.fillStyle = paint; paintContext.fillRect(0, 0, node.width, node.height);
+          } else if (fillLayer.type === 'image') {
+            const imageFill = fillLayer.imageFill;
+            const image = imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fillLayer.id));
+            if (!image) continue;
+            drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+          }
+          paintContext.globalAlpha = 1;
+          paintContext.globalCompositeOperation = 'destination-in';
+          paintContext.drawImage(alphaSurface, 0, 0, node.width, node.height);
+          mask.globalAlpha = 1;
+          mask.globalCompositeOperation = 'source-over';
+          mask.drawImage(paintSurface, 0, 0, node.width, node.height);
+        }
+      } else {
+        mask.save();
+        mask.globalCompositeOperation = 'source-in';
+        const fillImage = !maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
+        if (fillImage) drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
+        else {
+          mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
+          mask.fillRect(0, 0, node.width, node.height);
+        }
+        mask.restore();
       }
-      mask.restore();
       entry = { surface, pixels: width * height };
       this.booleanCache.set(key, entry);
       this.booleanCachePixels += entry.pixels;

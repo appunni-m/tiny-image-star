@@ -1,5 +1,7 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
+import * as pillow from '../wasm/pillow_rs_js.js';
+import { decodeOriginal, renderImage } from '../src/image-processing.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -49,8 +51,26 @@ function updateSetting(app, settingId, field, value) {
   input.value = String(value);
   input.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
 }
+function embeddedImageBytes(svg, nodeId) {
+  const escapedId = nodeId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const group = svg.match(new RegExp(`<g[^>]*data-tiny-image-star-node-id="${escapedId}"[^>]*>([\\s\\S]*?)</g>`));
+  assert(group, `SVG should contain the exported layer ${nodeId}.`);
+  const href = group[1].match(/href="data:image\/png;base64,([^"]+)"/)?.[1];
+  assert(href, `SVG should embed a processed PNG for layer ${nodeId}.`);
+  const binary = atob(href);
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+function expectedPillowPreview(sourceBytes, adjustments, transforms) {
+  const source = decodeOriginal(pillow, sourceBytes);
+  try { return renderImage(source, adjustments, transforms).bytes; }
+  finally { source.free(); }
+}
+function assertSameBytes(actual, expected, message) {
+  assert(actual.length === expected.length && actual.every((value, index) => value === expected[index]), message);
+}
 
 try {
+  await pillow.default();
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
   const app = frame.contentDocument;
   assert(app.title === 'Tiny Image Star', 'the public product name should remain Tiny Image Star');
@@ -109,8 +129,8 @@ try {
   const downloads = [];
   const objectUrls = new Map();
   const view = app.defaultView;
-  let urlIndex = 0;
-  view.URL.createObjectURL = blob => { const url = `blob:tiny-image-star-export-${++urlIndex}`; objectUrls.set(url, blob); return url; };
+  const createObjectURL = view.URL.createObjectURL.bind(view.URL);
+  view.URL.createObjectURL = blob => { const url = createObjectURL(blob); objectUrls.set(url, blob); return url; };
   const originalAnchorClick = view.HTMLAnchorElement.prototype.click;
   view.HTMLAnchorElement.prototype.click = function () {
     if (this.hasAttribute('download')) { downloads.push({ filename: this.download, blob: objectUrls.get(this.href) }); return; }
@@ -183,9 +203,37 @@ try {
   assert(localImageSvg.includes('href="data:image/png;base64,') && !localImageSvg.includes('blob:') && !localImageSvg.includes('href="http'),
     'Selected local image SVG should embed the source bytes and contain no temporary or network URL.');
 
+  // Edited SVGs must bake the current preview. This image shares its source
+  // asset with an independently edited image fill later in this test.
+  click(app.querySelector(`[data-layer-id="${localImage.id}"]`));
+  const localBrightness = app.querySelector('[data-prop="adjustments.brightness"]');
+  assert(localBrightness, 'The selected local image should expose brightness adjustment.');
+  localBrightness.value = '35';
+  localBrightness.dispatchEvent(new view.Event('input', { bubbles: true }));
+  localBrightness.dispatchEvent(new view.Event('change', { bubbles: true }));
+  const localCrop = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="layer"]');
+  assert(localCrop, 'The selected local image should expose crop adjustment.');
+  localCrop.value = '25';
+  localCrop.dispatchEvent(new view.Event('input', { bubbles: true }));
+  localCrop.dispatchEvent(new view.Event('change', { bubbles: true }));
+  click(app.querySelector('[data-action="rotate-image"][data-transform-target="layer"][data-direction="right"]'));
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'adjusted local image preview');
+  click(app.querySelector('[data-action="export-svg"]'));
+  await waitFor(() => downloads.length === 8, 'edited image SVG download');
+  const editedImageSvg = await downloads[7].blob.text();
+  const editedImageBytes = embeddedImageBytes(editedImageSvg, localImage.id);
+  const localAdjustments = { brightness: 35, contrast: 0, saturation: 0, sharpness: 0, blur: 0 };
+  const localTransforms = { crop: { left: 0.25, top: 0, right: 1, bottom: 1 }, rotation: 90 };
+  const expectedLocalPreview = expectedPillowPreview(imageBytes, localAdjustments, localTransforms);
+  assertSameBytes(editedImageBytes, expectedLocalPreview, 'Selected-layer SVG should embed the exact Pillow-RS crop/rotation/adjustment preview.');
+  const liveAssetImage = app.querySelector(`#assets-list .asset-card[data-layer-id="${localImage.id}"] img`);
+  assert(liveAssetImage?.src.startsWith('blob:'), 'The local asset card should display the current live preview blob.');
+  const livePreviewBytes = new Uint8Array(await (await view.fetch(liveAssetImage.src)).arrayBuffer());
+  assertSameBytes(editedImageBytes, livePreviewBytes, 'The selected-layer SVG raster should byte-match the live image preview.');
+
   click(app.querySelector(`[data-layer-id="${imageFilled.id}"]`));
   await waitFor(() => app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]'), 'image-fill crop control for export race');
-  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'initial image-fill preview for export race');
+  await waitFor(() => app.querySelector('[data-image-fill-status]')?.textContent.includes('Updated · Pillow-RS WASM'), 'initial image-fill preview for export race');
   const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
   const pendingPreviewTimers = new Set();
   const nativeSetTimeout = view.setTimeout.bind(view);
@@ -209,9 +257,9 @@ try {
     view.setTimeout = nativeSetTimeout;
     assert([...pendingPreviewTimers].some(timer => !timer.cancelled), 'the crop edit should have a queued debounced image-fill render before export.');
     click(app.querySelector('#export-selection'));
-    await waitFor(() => downloads.length === 8, 'immediate image-fill PNG download');
+    await waitFor(() => downloads.length === 9, 'immediate image-fill PNG download');
     assert([...pendingPreviewTimers].every(timer => timer.cancelled), 'export should drain the pending image-fill preview before drawing.');
-    const bitmap = await view.createImageBitmap(downloads[7].blob);
+    const bitmap = await view.createImageBitmap(downloads[8].blob);
     assert(bitmap.width === 40 && bitmap.height === 40, 'the image-filled shape export should retain its layer dimensions.');
     const previewCanvas = view.document.createElement('canvas'); previewCanvas.width = bitmap.width; previewCanvas.height = bitmap.height;
     const previewContext = previewCanvas.getContext('2d', { willReadFrequently: true });
@@ -222,7 +270,38 @@ try {
     view.setTimeout = nativeSetTimeout;
     view.clearTimeout = nativeClearTimeout;
   }
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, imageFillImmediateExport: true, rasterExportUnaffectedByOutlineView: true })}`;
+
+  const fillBrightness = app.querySelector('[data-image-fill-field="adjustments.brightness"]');
+  assert(fillBrightness, 'The image fill should expose its own brightness adjustment.');
+  fillBrightness.value = '-40';
+  fillBrightness.dispatchEvent(new view.Event('input', { bubbles: true }));
+  fillBrightness.dispatchEvent(new view.Event('change', { bubbles: true }));
+  const fillCrop = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
+  fillCrop.value = '25';
+  fillCrop.dispatchEvent(new view.Event('input', { bubbles: true }));
+  fillCrop.dispatchEvent(new view.Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'image-fill crop');
+  click(app.querySelector('[data-action="rotate-image"][data-transform-target="fill"][data-direction="right"]'));
+  await waitFor(() => app.querySelector('[data-image-fill-status]')?.textContent.includes('Updated · Pillow-RS WASM'), 'edited image-fill preview');
+  await waitForSaveCycle(app, 'image-fill rotation');
+  const editedFillDocument = await readDocument(design.id);
+  const editedImageFill = editedFillDocument?.pages[0]?.children.find(node => node.id === imageFilled.id)?.fills?.[0]?.imageFill;
+  assert(editedImageFill?.transforms?.crop?.left === 0.25 && editedImageFill?.transforms?.rotation === 90,
+    'Image-fill crop and rotation should update the ordered fill and its persisted compatibility mirror.');
+  click(app.querySelector('#file-menu-button'));
+  const editedPageExportButton = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('Export current page as SVG'));
+  assert(editedPageExportButton, 'The file menu should offer current-page SVG export.');
+  click(editedPageExportButton);
+  await waitFor(() => downloads.length === 10, 'page SVG with edited image and fill');
+  const editedPageSvg = await downloads[9].blob.text();
+  assertSameBytes(embeddedImageBytes(editedPageSvg, localImage.id), expectedLocalPreview,
+    'Page SVG should keep the image layer’s unique edited preview when its source is also used by a fill.');
+  const fillAdjustments = { brightness: -40, contrast: 0, saturation: 0, sharpness: 0, blur: 0 };
+  const fillTransforms = { crop: { left: 0.25, top: 0, right: 1, bottom: 1 }, rotation: 90 };
+  const expectedFillPreview = expectedPillowPreview(imageBytes, fillAdjustments, fillTransforms);
+  assertSameBytes(embeddedImageBytes(editedPageSvg, imageFilled.id), expectedFillPreview,
+    'Page SVG should embed the image fill’s distinct Pillow-RS crop/rotation/adjustment preview.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

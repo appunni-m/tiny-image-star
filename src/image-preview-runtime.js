@@ -1,9 +1,20 @@
+export function imagePreviewKey(nodeId, fillId = null) {
+  // A materialized legacy fill keeps the exact preview slot older documents
+  // used, so changing only fit/opacity cannot flash back to the source bitmap.
+  if (fillId === `legacy-fill:${nodeId}`) return nodeId;
+  return fillId ? `image-fill:${JSON.stringify([nodeId, fillId])}` : nodeId;
+}
+
 export function collectLiveImagePreviewNodeIds(document) {
   const liveNodeIds = new Set();
   for (const page of document?.pages || []) {
     const visit = nodes => {
       for (const node of nodes || []) {
-        if ((node.type === 'image' && node.assetId) || node.imageFill?.assetId) liveNodeIds.add(node.id);
+        if (node.type === 'image' && node.assetId) liveNodeIds.add(imagePreviewKey(node.id));
+        if (node.imageFill?.assetId && !Array.isArray(node.fills)) liveNodeIds.add(imagePreviewKey(node.id));
+        for (const fill of node.fills || []) {
+          if (fill.type === 'image' && fill.id && fill.imageFill?.assetId) liveNodeIds.add(imagePreviewKey(node.id, fill.id));
+        }
         visit(node.children);
       }
     };

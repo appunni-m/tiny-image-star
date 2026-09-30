@@ -1,6 +1,6 @@
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
-const BATCH_SIZE = 48;
+const BATCH_SIZE = 128;
 
 function assert(value, message) { if (!value) throw new Error(message); }
 function waitFor(test, label, timeout = 30000) {
@@ -23,6 +23,40 @@ function contextMenu(app, element) {
   element.dispatchEvent(new app.defaultView.MouseEvent('contextmenu', {
     bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160
   }));
+}
+function watchBulkUiRebuilds(app) {
+  const targets = ['#layers-list', '#assets-list', '#components-list', '#component-library-list',
+    '#variable-collections-list', '#color-styles-list', '#text-styles-list'];
+  const watched = targets.map(selector => {
+    const element = app.querySelector(selector);
+    const original = Object.getOwnPropertyDescriptor(element, 'replaceChildren');
+    const replaceChildren = element.replaceChildren;
+    let rebuilds = 0;
+    Object.defineProperty(element, 'replaceChildren', {
+      configurable: true,
+      value(...children) {
+        rebuilds += 1;
+        return replaceChildren.apply(this, children);
+      }
+    });
+    return { selector, element, original, get rebuilds() { return rebuilds; } };
+  });
+  return {
+    rows: new Map([...app.querySelectorAll('#layers-list .layer-row[data-layer-id]')].map(row => [row.dataset.layerId, row])),
+    assetCards: new Map([...app.querySelectorAll('#assets-list .asset-card[data-layer-id]')].map(card => [card.dataset.layerId, card])),
+    thumbnails: new Map([...app.querySelectorAll('#assets-list .asset-card[data-layer-id]')]
+      .map(card => [card.dataset.layerId, card.querySelector('img')])),
+    thumbnailSources: new Map([...app.querySelectorAll('#assets-list .asset-card[data-layer-id]')]
+      .map(card => [card.dataset.layerId, card.querySelector('img')?.getAttribute('src')])),
+    rebuildsFor(selector) { return watched.find(item => item.selector === selector)?.rebuilds || 0; },
+    get allRebuilds() { return watched.reduce((total, item) => total + item.rebuilds, 0); },
+    restore() {
+      for (const item of watched) {
+        if (item.original) Object.defineProperty(item.element, 'replaceChildren', item.original);
+        else delete item.element.replaceChildren;
+      }
+    }
+  };
 }
 function setInput(app, input, value) {
   assert(input, 'Expected an image adjustment field.');
@@ -170,6 +204,7 @@ async function saveRecipeFromSelected(app, recipeName, brightness, blur = null) 
 }
 
 let workerGateForCleanup = null;
+let layerTreeProbeForCleanup = null;
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
   const app = frame.contentDocument;
@@ -213,6 +248,8 @@ try {
   await saveRecipeFromSelected(app, 'Scale recipe', -55, 24);
 
   const selectedRows = selectAllImages(app);
+  const layerTreeProbe = watchBulkUiRebuilds(app);
+  layerTreeProbeForCleanup = layerTreeProbe;
   const initialWorkerBudget = Number(app.querySelector('#bulk-speed').max);
   assert(Number.isSafeInteger(initialWorkerBudget) && initialWorkerBudget > 0, 'The worker slider reported an invalid CPU budget.');
   // Keep the live scale-up bounded to three workers in browser CI: the suite
@@ -369,6 +406,19 @@ try {
     'A rendered result did not match the unique worker request submitted for its source image.');
   assert(app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === BATCH_SIZE,
     'Recipe processing replaced or dropped original image layers.');
+  assert(layerTreeProbe.allRebuilds === 0,
+    `Bulk completion rebuilt layer or asset panels ${layerTreeProbe.allRebuilds} times for ${BATCH_SIZE} images (layers: ${layerTreeProbe.rebuildsFor('#layers-list')}, asset/library sections: ${layerTreeProbe.rebuildsFor('#assets-list') + layerTreeProbe.rebuildsFor('#components-list') + layerTreeProbe.rebuildsFor('#component-library-list') + layerTreeProbe.rebuildsFor('#variable-collections-list') + layerTreeProbe.rebuildsFor('#color-styles-list') + layerTreeProbe.rebuildsFor('#text-styles-list')}).`);
+  assert(selectedRows.every(row => row.isConnected && row.classList.contains('is-selected')
+    && layerTreeProbe.rows.get(row.dataset.layerId) === row),
+  'Bulk completion replaced layer rows or lost the existing multi-image selection.');
+  assert(selectedRows.every(row => {
+    const id = row.dataset.layerId;
+    const image = layerTreeProbe.thumbnails.get(id);
+    return layerTreeProbe.assetCards.get(id)?.isConnected
+      && layerTreeProbe.assetCards.get(id) === app.querySelector(`#assets-list .asset-card[data-layer-id="${id}"]`)
+      && image?.isConnected && image === layerTreeProbe.assetCards.get(id)?.querySelector('img')
+      && image.getAttribute('src') && image.getAttribute('src') !== layerTreeProbe.thumbnailSources.get(id);
+  }), 'Bulk recipe previews should update each existing asset thumbnail in place without replacing the asset cards.');
   await waitFor(async () => {
     const nodes = imageNodes(await latestDocument(app));
     return nodes.length === BATCH_SIZE && nodes.every(node => originalLayerIds.has(node.id)
@@ -428,6 +478,10 @@ try {
 
   result.textContent = `PASS\n${JSON.stringify({
     images: BATCH_SIZE,
+    fullPanelRebuildsDuringBatch: layerTreeProbe.allRebuilds,
+    layerTreeRebuildsDuringBatch: layerTreeProbe.rebuildsFor('#layers-list'),
+    assetLibraryRebuildsDuringBatch: layerTreeProbe.allRebuilds - layerTreeProbe.rebuildsFor('#layers-list'),
+    selectedRowsPreservedDuringBatch: true,
     recipeContextMenuTargets: BATCH_SIZE,
     uniqueSubmittedAndRenderedResults: true,
     cpuWorkerBudget: initialWorkerBudget,
@@ -444,6 +498,7 @@ try {
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {
+  if (layerTreeProbeForCleanup) layerTreeProbeForCleanup.restore();
   if (workerGateForCleanup) {
     workerGateForCleanup.hold = false;
     releaseResults(workerGateForCleanup);

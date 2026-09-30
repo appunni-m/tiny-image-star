@@ -622,6 +622,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layer-effect-card { gap: 10px; padding: 10px; }
   .layer-effect-heading { font-size: 12px; }
   .layer-effect-heading label, .effect-color-row label { font-size: 11px; }
+  .fill-stack-card .layer-effect-heading { min-width: 0; gap: 4px; }
+  .fill-stack-card .layer-effect-heading > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fill-stack-card .layer-effect-heading > label { flex: 0 0 auto; white-space: nowrap; }
+  .fill-stack-card .layer-effect-heading > .tiny-icon-button { flex: 0 0 40px; }
   .effect-color-row input[type=color] { width: 36px; height: 34px; }
   .effect-opacity output { min-width: 36px; }
   .prototype-controls #prototype-delay { min-height: 44px; margin-top: 0; }

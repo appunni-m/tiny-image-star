@@ -1,6 +1,6 @@
 import { isValidLayerEffects } from './layer-effects.js';
-import { isValidGradientFill } from './fills.js';
-import { isImageFillSupported, isValidImageFill } from './image-fills.js';
+import { isValidFillStack, isValidGradientFill } from './fills.js';
+import { createImageFill, isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
@@ -227,7 +227,7 @@ const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
+  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
@@ -258,6 +258,7 @@ export function createNode(type, overrides = {}) {
     ...overrides,
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
     children: overrides.children ? clone(overrides.children) : [],
+    ...(Array.isArray(overrides.fills) ? { fills: clone(overrides.fills) } : {}),
     ...(type === 'image' ? { transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {}) } : {})
   };
 }
@@ -291,6 +292,19 @@ export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
       { id: createId('stop'), color: '#ffffff', position: 1 }
     ]
   };
+}
+
+export function createFillLayer(type = 'solid', overrides = {}) {
+  if (!['solid', 'linear', 'radial', 'image'].includes(type)) throw new TypeError(`Unsupported fill type: ${type}`);
+  const base = { id: createId('fill'), type, visible: true, opacity: 1 };
+  if (type === 'solid') return { ...base, color: '#d9d9d9', ...overrides };
+  if (type === 'linear' || type === 'radial') return { ...base, gradient: createGradientFill(type), ...overrides };
+  if (typeof overrides.assetId !== 'string' && typeof overrides.imageFill?.assetId !== 'string') {
+    throw new TypeError('Choose an image already placed in this design.');
+  }
+  const imageFill = overrides.imageFill || createImageFill(overrides.assetId, overrides.imageOptions || {});
+  const { assetId, imageOptions, ...rest } = overrides;
+  return { ...base, imageFill, ...rest };
 }
 
 function normalizeCommentText(text) {
@@ -2169,6 +2183,7 @@ export function validateDocument(document) {
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isImageFillSupported(node)) throw new TypeError(`Image fill is not supported on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isValidImageFill(node.imageFill)) throw new TypeError(`Invalid image fill on layer ${node.name || node.id}.`);
+      if (Object.hasOwn(node, 'fills') && !isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid fill stack on layer ${node.name || node.id}.`);
       if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
       if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
         || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))
@@ -2294,6 +2309,7 @@ export function validateDocument(document) {
           }
           if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
+          if (overrides.fills != null && !isValidFillStack(overrides.fills, sourceNode || node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid component fill stack override on ${node.name || node.id}.`);
           if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
           if (overrides.fontFamily != null && (node.type !== 'text' || typeof overrides.fontFamily !== 'string' || !overrides.fontFamily.trim() || overrides.fontFamily.length > 160 || /[\x00-\x1f]/.test(overrides.fontFamily))) throw new TypeError(`Invalid component font family override on ${node.name || node.id}.`);
           if (overrides.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(overrides.fontWeight))) throw new TypeError(`Invalid component font weight override on ${node.name || node.id}.`);

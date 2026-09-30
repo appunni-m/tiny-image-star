@@ -22,6 +22,22 @@ function waitFor(test, label, timeout = 20000) {
     poll();
   });
 }
+async function runWorkflowModule(modulePath, label) {
+  result.textContent = `RUNNING: ${label}`;
+  await import(modulePath);
+  const report = result.textContent;
+  assert(report.startsWith('PASS\n'), `${label} failed:\n${report}`);
+  return JSON.parse(report.slice(report.indexOf('\n') + 1));
+}
+async function reloadEditorAtViewport(width, height, label) {
+  const previousDocument = frame.contentDocument;
+  frame.style.width = `${width}px`;
+  frame.style.height = `${height}px`;
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  previousDocument.defaultView.location.reload();
+  await waitFor(() => frame.contentDocument && frame.contentDocument !== previousDocument
+    && frame.contentDocument.documentElement.dataset.appReady === 'true', label, 30000);
+}
 async function waitForSaveCycle(app, label) {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
   await waitFor(() => {
@@ -208,6 +224,7 @@ try {
   imageInput(app, files);
   await waitFor(() => app.querySelectorAll('.layer-row').length === 3, 'three image layers');
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'WASM image preview');
+  assert(!app.querySelector('.fill-stack'), 'direct image layers should keep their dedicated image and recipe controls instead of exposing unsupported shape fills');
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const before = pixelInLeftHalf(app);
   const brightness = app.querySelector('[data-prop="adjustments.brightness"]');
@@ -379,12 +396,12 @@ try {
   blendModeControl.value = 'multiply';
   blendModeControl.dispatchEvent(new Event('input', { bubbles: true }));
   blendModeControl.dispatchEvent(new Event('change', { bubbles: true }));
-  const fillType = app.querySelector('[data-prop="fillType"]');
+  const fillType = app.querySelector('[data-fill-field="type"]');
   assert(fillType?.querySelector('option[value="image"]'), 'shape appearance did not offer image fills');
   fillType.value = 'image';
   fillType.dispatchEvent(new Event('input', { bubbles: true }));
   fillType.dispatchEvent(new Event('change', { bubbles: true }));
-  await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'image-fill source controls');
+  await waitFor(() => app.querySelector('[data-image-fill-field="assetId"][data-fill-id]'), 'image-fill source controls');
   const fillBrightness = app.querySelector('[data-image-fill-field="adjustments.brightness"]');
   assert(fillBrightness, 'image fills did not expose local WASM adjustments');
   const fillSharpness = app.querySelector('[data-image-fill-field="adjustments.sharpness"]');
@@ -404,7 +421,7 @@ try {
   fillSharpness.value = '35';
   fillSharpness.dispatchEvent(new Event('input', { bubbles: true }));
   fillSharpness.dispatchEvent(new Event('change', { bubbles: true }));
-  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill WASM preview');
+  await waitForSaveCycle(app, 'image-fill WASM preview');
   const fillCropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
   assert(fillCropLeft, 'image fills did not expose local crop controls');
   fillCropLeft.value = '20';
@@ -413,7 +430,6 @@ try {
   const fillRotateRight = app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="fill"]');
   assert(fillRotateRight, 'image fills did not expose quarter-turn controls');
   dispatchClick(fillRotateRight);
-  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill crop and rotation preview');
   await waitForSaveCycle(app, 'image-fill save');
 
   const documentRecords = await readStore('documents'); documentRecords.sort((a, b) => b.savedAt - a.savedAt);
@@ -440,7 +456,37 @@ try {
   assert(app.querySelector('[data-prop="blendMode"]')?.value === 'multiply', 'the portable design did not restore the selected blend mode');
   await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'reopened image-fill controls');
   assert(app.querySelector('[data-image-fill-field="adjustments.sharpness"]')?.value === '35', 'the portable design did not restore image-fill sharpness');
-  await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'reopened image-fill preview');
+  const fillCards = () => [...app.querySelectorAll('.fill-stack-card[data-fill-row]')];
+  assert(fillCards().length === 1, 'reopened shape did not show its one image fill');
+  const addSolidFill = app.querySelector('[data-action="add-fill-layer"][data-fill-type="solid"]');
+  assert(addSolidFill, 'the Inspector did not expose add-fill controls');
+  dispatchClick(addSolidFill);
+  await waitFor(() => fillCards().length === 2, 'second fill row');
+  const localOverlayRow = fillCards()[1];
+  const localOverlayId = localOverlayRow.dataset.fillRow;
+  const fillOpacity = localOverlayRow.querySelector('[data-fill-field="opacity"]');
+  assert(fillOpacity, 'the second fill did not expose independent opacity');
+  fillOpacity.value = '42';
+  fillOpacity.dispatchEvent(new Event('input', { bubbles: true }));
+  fillOpacity.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'multi-fill opacity edit');
+  const moveFillEarlier = app.querySelector(`.fill-stack-card[data-fill-row="${localOverlayId}"] [data-action="move-fill-layer"][data-direction="up"]`);
+  assert(moveFillEarlier, 'the second fill did not expose reorder controls');
+  dispatchClick(moveFillEarlier);
+  await waitForSaveCycle(app, 'multi-fill reorder earlier');
+  let layeredRecords = await readStore('documents'); layeredRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let layeredShape = flattenNodes(layeredRecords[0]?.document?.pages?.flatMap(page => page.children) || []).find(node => node.id === imageFillNode.id);
+  assert(layeredShape?.fills?.[0]?.id === localOverlayId && layeredShape.fills[0].opacity === 0.42,
+    'Inspector reorder/opacity edits did not persist in the fill stack');
+  const moveFillLater = app.querySelector(`.fill-stack-card[data-fill-row="${localOverlayId}"] [data-action="move-fill-layer"][data-direction="down"]`);
+  assert(moveFillLater, 'the primary fill did not expose the reverse reorder control');
+  dispatchClick(moveFillLater);
+  await waitForSaveCycle(app, 'multi-fill reorder restore');
+  const removeOverlay = app.querySelector(`.fill-stack-card[data-fill-row="${localOverlayId}"] [data-action="remove-fill-layer"]`);
+  assert(removeOverlay, 'the fill row could not be removed');
+  dispatchClick(removeOverlay);
+  await waitFor(() => fillCards().length === 1, 'multi-fill test cleanup');
+  await waitForSaveCycle(app, 'multi-fill cleanup');
   dispatchContextMenu(app.querySelector(`[data-layer-id="${imageFillNode.id}"]`));
   const deleteFillItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.trim().startsWith('Delete'));
   assert(deleteFillItem, 'the restored image-fill layer could not be selected for cleanup');
@@ -1899,6 +1945,90 @@ try {
   const containBar = effectContext.getImageData(24, 6, 1, 1).data[3];
   const containImage = effectContext.getImageData(24, 24, 1, 1).data[3];
   assert(containBar === 0 && containImage > 0, `contain mode did not preserve transparent letterbox space (${containBar} / ${containImage})`);
+
+  const stackCanvas = document.createElement('canvas'); stackCanvas.width = 64; stackCanvas.height = 48;
+  const stackContext = stackCanvas.getContext('2d');
+  const stackDocument = createDocument();
+  const stackAssets = new Map();
+  const stackRenderer = Object.create(SceneRenderer.prototype);
+  stackRenderer.getState = () => ({ document: stackDocument, assets: stackAssets, previews: new Map(), previewAssetIds: new Map(), zoom: 1, outlineMode: false, presenting: false });
+  const stackPixel = node => {
+    stackDocument.pages[0].children = [node];
+    stackContext.clearRect(0, 0, stackCanvas.width, stackCanvas.height);
+    stackRenderer.drawNode(stackContext, node, 0, 0, stackAssets);
+    return [...stackContext.getImageData(32, 24, 1, 1).data];
+  };
+  const twoSolidFills = createNode('rectangle', {
+    x: 4, y: 4, width: 56, height: 40,
+    fills: [
+      { id: 'two-fill-blue-base', type: 'solid', color: '#0000ff', visible: true, opacity: 1 },
+      { id: 'two-fill-red-overlay', type: 'solid', color: '#ff0000', visible: true, opacity: 0.5 }
+    ]
+  });
+  const halfOverlayPixel = stackPixel(twoSolidFills);
+  assert(halfOverlayPixel[0] >= 126 && halfOverlayPixel[0] <= 129 && halfOverlayPixel[2] >= 126 && halfOverlayPixel[2] <= 129,
+    `a 50% solid overlay did not blend with its blue base (${halfOverlayPixel.join(',')})`);
+  twoSolidFills.fills[1].visible = false;
+  const hiddenSolidPixel = stackPixel(twoSolidFills);
+  assert(hiddenSolidPixel[0] < 5 && hiddenSolidPixel[1] < 5 && hiddenSolidPixel[2] > 250,
+    `hiding the second solid fill did not reveal its base (${hiddenSolidPixel.join(',')})`);
+
+  const spectrum = createGradientFill('linear', '#ff0000');
+  spectrum.stops[1].color = '#00ff00';
+  const solidGradientStack = createNode('rectangle', {
+    x: 4, y: 4, width: 56, height: 40,
+    fills: [
+      { id: 'stack-blue-base', type: 'solid', color: '#0000ff', visible: true, opacity: 1 },
+      { id: 'stack-spectrum', type: 'linear', gradient: spectrum, visible: true, opacity: 0.5 }
+    ]
+  });
+  stackDocument.pages[0].children = [solidGradientStack];
+  stackContext.clearRect(0, 0, stackCanvas.width, stackCanvas.height);
+  stackRenderer.drawNode(stackContext, solidGradientStack, 0, 0, stackAssets);
+  const stackedGradientLeft = [...stackContext.getImageData(7, 24, 1, 1).data];
+  const stackedGradientRight = [...stackContext.getImageData(57, 24, 1, 1).data];
+  assert(stackedGradientLeft[0] > 70 && stackedGradientLeft[2] > 90 && stackedGradientRight[1] > 70 && stackedGradientRight[2] > 90,
+    `solid base and translucent gradient did not compose as ordered live fills (${stackedGradientLeft.join(',')} / ${stackedGradientRight.join(',')})`);
+
+  const solidLayers = createNode('rectangle', {
+    x: 4, y: 4, width: 56, height: 40,
+    fills: [
+      { id: 'order-blue', type: 'solid', color: '#0000ff', visible: true, opacity: 1 },
+      { id: 'order-red', type: 'solid', color: '#ff0000', visible: true, opacity: 0.5 },
+      { id: 'order-green', type: 'solid', color: '#00ff00', visible: true, opacity: 0.5 }
+    ]
+  });
+  const greenTop = stackPixel(solidLayers);
+  [solidLayers.fills[1], solidLayers.fills[2]] = [solidLayers.fills[2], solidLayers.fills[1]];
+  const redTop = stackPixel(solidLayers);
+  assert(greenTop[1] > greenTop[0] + 35 && redTop[0] > redTop[1] + 35,
+    `fill ordering did not change the resulting canvas pixels (${greenTop.join(',')} / ${redTop.join(',')})`);
+  solidLayers.fills[2].visible = false;
+  const hiddenOverlay = stackPixel(solidLayers);
+  assert(hiddenOverlay[0] < 5 && hiddenOverlay[1] > 115 && hiddenOverlay[2] > 115,
+    `hidden fill still affected canvas pixels (${hiddenOverlay.join(',')})`);
+  solidLayers.fills[2].visible = true;
+  solidLayers.fills[2].opacity = 0.25;
+  const adjustedOpacity = stackPixel(solidLayers);
+  assert(adjustedOpacity[0] > hiddenOverlay[0] + 35 && adjustedOpacity[0] < redTop[0],
+    `per-fill opacity did not update composited canvas pixels (${adjustedOpacity.join(',')})`);
+
+  const imageStack = createNode('rectangle', {
+    x: 4, y: 4, width: 56, height: 40,
+    fills: [
+      { id: 'image-stack-base', type: 'solid', color: '#ff0000', visible: true, opacity: 1 },
+      { id: 'image-stack-overlay', type: 'image', imageFill: createImageFill(fillAssetId), visible: true, opacity: 0.5 }
+    ]
+  });
+  stackAssets.set(fillAssetId, { bitmap: fillBitmap });
+  const imageStackPixel = stackPixel(imageStack);
+  const imageOnly = createNode('rectangle', {
+    x: 4, y: 4, width: 56, height: 40,
+    fills: [{ id: 'image-stack-only', type: 'image', imageFill: createImageFill(fillAssetId), visible: true, opacity: 0.5 }]
+  });
+  const imageOnlyPixel = stackPixel(imageOnly);
+  assert(imageStackPixel[0] > imageOnlyPixel[0] + 30 && imageStackPixel[2] < imageOnlyPixel[2] - 30 && imageStackPixel[3] === 255,
+    `image paint did not composite over its solid stack base (${imageStackPixel.join(',')} vs image-only ${imageOnlyPixel.join(',')})`);
   fillBitmap.close?.();
 
   const blendDocument = createDocument();
@@ -1925,7 +2055,14 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, scrollablePrototypeFrames: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  // Run the focused phone and desktop context-menu workflows against this
+  // same isolated editor after the broad integration work is complete.
+  await reloadEditorAtViewport(390, 844, 'fresh phone editor boot');
+  const mobileRecipeWorkflow = await runWorkflowModule('./mobile-recipe-smoke.mjs', 'phone recipe workflow');
+  await reloadEditorAtViewport(1280, 720, 'fresh desktop editor boot');
+  const contextRecipeWorkflow = await runWorkflowModule('./bulk-recipe-context-smoke.mjs', 'desktop context-menu recipe workflow');
+
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, multiFillSolidOverlay: true, multiFillGradientComposite: true, multiFillImageComposite: true, multiFillVisibilityOpacityOrder: true, inspectorFillAddReorderOpacity: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, phoneRecipeWorkflow: { recipeSaved: mobileRecipeWorkflow.recipeSaved, inPlaceLayers: mobileRecipeWorkflow.inPlaceLayers, fingerSizedControls: mobileRecipeWorkflow.fingerSizedControls }, contextMenuRecipeWorkflow: { savedRecipe: contextRecipeWorkflow.savedRecipe, canvasMenuKeptMultiSelection: contextRecipeWorkflow.canvasMenuKeptMultiSelection, progressBar: contextRecipeWorkflow.progressBar, updatedInPlace: contextRecipeWorkflow.updatedInPlace }, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, scrollablePrototypeFrames: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

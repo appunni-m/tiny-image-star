@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, createDocument, createFillLayer, createGradientFill, createNode, createVariable, createVariableCollection, setVariableValue } from '../src/model.js';
+import { createImageFill } from '../src/image-fills.js';
+import { moveFillLayer } from '../src/fills.js';
+import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
 
 test('exports editable nested geometry, text styling, rotation, opacity, and clipping deterministically', () => {
@@ -286,6 +289,196 @@ test('embeds local raster layers and image fills as data URIs with fit, clipping
   assert.throws(() => exportNodeToSvg({ ...fill, fillOpacity: -0.1 }, { assets }), /requires valid fill opacity/);
 });
 
+test('embeds edited previews by layer identity while preserving untouched shared-source bytes', () => {
+  const assets = new Map([['shared-photo', {
+    id: 'shared-photo', type: 'image/jpeg', width: 400, height: 200,
+    sourceBytes: new Uint8Array([1, 2, 3])
+  }]]);
+  const adjusted = createNode('image', {
+    id: 'photo-adjusted', assetId: 'shared-photo',
+    adjustments: { brightness: 25, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }
+  });
+  const croppedAndRotated = createNode('image', {
+    id: 'photo-cropped', assetId: 'shared-photo',
+    transforms: { crop: { left: 0.25, top: 0, right: 1, bottom: 1 }, rotation: 90 }
+  });
+  const filled = createNode('rectangle', {
+    id: 'photo-fill',
+    imageFill: {
+      assetId: 'shared-photo', fit: 'contain',
+      adjustments: { brightness: 0, contrast: 18, saturation: 0, sharpness: 0, blur: 0 },
+      transforms: { crop: { left: 0, top: 0, right: 0.75, bottom: 1 }, rotation: 0 }
+    }
+  });
+  const untouched = createNode('image', { id: 'photo-untouched', assetId: 'shared-photo' });
+  const imagePreviews = new Map([
+    [adjusted.id, { type: 'image/png', sourceBytes: new Uint8Array([10, 11]), width: 400, height: 200 }],
+    [croppedAndRotated.id, { type: 'image/png', sourceBytes: new Uint8Array([20, 21]), width: 200, height: 300 }],
+    [filled.id, { type: 'image/png', sourceBytes: new Uint8Array([30, 31]), width: 300, height: 200 }],
+  ]);
+
+  const svg = exportPageToSvg({ children: [adjusted, croppedAndRotated, filled, untouched] }, { assets, imagePreviews });
+  const hrefFor = nodeId => {
+    const escapedId = nodeId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = svg.match(new RegExp(`<g[^>]*data-tiny-image-star-node-id="${escapedId}"[^>]*>([\\s\\S]*?)</g>`));
+    assert.ok(match, `expected SVG group for ${nodeId}`);
+    return match[1].match(/href="([^"]+)"/)?.[1];
+  };
+
+  assert.equal(hrefFor(adjusted.id), 'data:image/png;base64,Cgs=');
+  assert.equal(hrefFor(croppedAndRotated.id), 'data:image/png;base64,FBU=');
+  assert.equal(hrefFor(filled.id), 'data:image/png;base64,Hh8=');
+  assert.equal(hrefFor(untouched.id), 'data:image/jpeg;base64,AQID');
+});
+
+test('serializes visible explicit fill stacks in paint order with per-fill opacity', () => {
+  const assets = new Map([['shared-pattern', {
+    id: 'shared-pattern', type: 'image/png', width: 4, height: 3,
+    sourceBytes: new Uint8Array([1, 2, 3, 4])
+  }]]);
+  const gradient = createGradientFill('linear', '#112233');
+  gradient.stops[1].color = '#aabbcc';
+  const node = createNode('rectangle', {
+    id: 'explicit-fill-stack', width: 90, height: 60, fill: '#d9d9d9',
+    fills: [
+      createFillLayer('solid', { id: 'stack-solid', color: '#13579b', opacity: 0.8 }),
+      createFillLayer('solid', { id: 'stack-hidden', color: '#deadbe', visible: false, opacity: 0.95 }),
+      createFillLayer('linear', { id: 'stack-gradient', gradient, opacity: 0.35 }),
+      createFillLayer('image', {
+        id: 'stack-image',
+        imageFill: createImageFill('shared-pattern', { fit: 'contain' }),
+        opacity: 0.6
+      })
+    ]
+  });
+
+  const svg = exportNodeToSvg(node, { assets });
+  const solidPaint = svg.indexOf('fill="#13579b"');
+  const gradientPaint = svg.indexOf('fill="url(#tis-gradient-');
+  const imagePaint = svg.indexOf('href="data:image/png;base64,AQIDBA=="');
+  assert.ok(solidPaint >= 0, 'SVG should contain the explicit solid fill');
+  assert.ok(gradientPaint > solidPaint, 'gradient should paint after the base solid');
+  assert.ok(imagePaint > gradientPaint, 'image fill should paint after the gradient');
+  assert.match(svg, /fill="#13579b" fill-opacity="0\.8"/);
+  assert.match(svg, /fill="url\(#tis-gradient-[^)]+\)" fill-opacity="0\.35"/);
+  assert.match(svg, /href="data:image\/png;base64,AQIDBA=="[^>]*opacity="0\.6"/);
+  assert.doesNotMatch(svg, /#deadbe/, 'hidden explicit fills should not be emitted');
+});
+
+test('serializes vector network fill stacks per face and emits network edges once', () => {
+  const gradient = createGradientFill('radial', '#0033ff');
+  const network = createNode('network', {
+    id: 'stacked-network', width: 80, height: 60, stroke: '#123456', strokeWidth: 2,
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: .5, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'triangle', vertexIds: ['a', 'b', 'c'], fill: '#00ff00', fillOpacity: .5 }],
+    fills: [
+      createFillLayer('solid', { id: 'base-solid', color: '#ff0000', opacity: .4 }),
+      createFillLayer('radial', { id: 'gradient-overlay', gradient, opacity: .2 }),
+      createFillLayer('image', { id: 'image-overlay', assetId: 'network-photo', opacity: .3 }),
+    ]
+  });
+  const assets = new Map([['network-photo', {
+    id: 'network-photo', type: 'image/png', width: 2, height: 1,
+    sourceBytes: new Uint8Array([0, 1])
+  }]]);
+  const svg = exportNodeToSvg(network, { assets });
+
+  assert.match(svg, /data-tiny-image-star-face-id="triangle"[^>]*fill="#00ff00" fill-opacity="0\.2" data-tiny-image-star-fill-id="base-solid"/);
+  assert.match(svg, /fill="url\(#tis-gradient-0-fill-1\)" fill-opacity="0\.1" data-tiny-image-star-fill-id="gradient-overlay"/);
+  assert.match(svg, /href="data:image\/png;base64,AAE=" opacity="0\.15"[^>]*data-tiny-image-star-face-id="triangle" data-tiny-image-star-fill-id="image-overlay"/);
+  assert.equal((svg.match(/data-tiny-image-star-edge-id=/g) || []).length, 3, 'network edges should be serialized once after all face fills');
+});
+
+test('explicit image fills sharing a source keep per-layer previews isolated and untouched bytes intact', () => {
+  const assets = new Map([['same-source', {
+    id: 'same-source', type: 'image/jpeg', width: 20, height: 10,
+    sourceBytes: new Uint8Array([9, 8, 7])
+  }]]);
+  const edited = createNode('rectangle', {
+    id: 'shared-fill-edited', width: 80, height: 50,
+    fills: [createFillLayer('image', {
+      id: 'edited-image-fill', imageFill: createImageFill('same-source'), opacity: 0.7
+    })]
+  });
+  const untouched = createNode('rectangle', {
+    id: 'shared-fill-untouched', x: 100, width: 80, height: 50,
+    fills: [createFillLayer('image', {
+      id: 'untouched-image-fill', imageFill: createImageFill('same-source'), opacity: 0.45
+    })]
+  });
+  const svg = exportPageToSvg({ children: [edited, untouched] }, {
+    assets,
+    imagePreviews: new Map([[imagePreviewKey(edited.id, edited.fills[0].id), {
+      type: 'image/png', sourceBytes: new Uint8Array([31, 32, 33]), width: 20, height: 10
+    }]])
+  });
+  const bodyFor = nodeId => {
+    const escapedId = nodeId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = svg.match(new RegExp(`<g[^>]*data-tiny-image-star-node-id="${escapedId}"[^>]*>([\\s\\S]*?)<\\/g>`));
+    assert.ok(match, `expected SVG group for ${nodeId}`);
+    return match[1];
+  };
+
+  assert.match(bodyFor(edited.id), /href="data:image\/png;base64,HyAh"[^>]*opacity="0\.7"/);
+  assert.match(bodyFor(untouched.id), /href="data:image\/jpeg;base64,CQgH"[^>]*opacity="0\.45"/);
+});
+
+test('SVG uses a fill-id preview for an edited image fill after it is reordered below another fill', () => {
+  const sourceAssetId = 'edited-shared-source';
+  const editedFill = createFillLayer('image', {
+    id: 'edited-fill-secondary',
+    imageFill: createImageFill(sourceAssetId, {
+      fit: 'contain',
+      adjustments: { brightness: 24, contrast: -12, saturation: 5, sharpness: 8, blur: 0 },
+      transforms: { crop: { left: 0.2, top: 0.1, right: 0.9, bottom: 0.95 }, rotation: 90 }
+    }),
+    opacity: 0.65
+  });
+  const node = createNode('rectangle', {
+    id: 'edited-fill-stack', width: 120, height: 80,
+    fills: [
+      editedFill,
+      createFillLayer('solid', { id: 'solid-primary', color: '#13579b', opacity: 0.8 })
+    ]
+  });
+  assert.equal(moveFillLayer(node, editedFill.id, 'down'), true);
+  assert.deepEqual(node.fills.map(fill => fill.id), ['solid-primary', editedFill.id]);
+
+  const svg = exportNodeToSvg(node, {
+    assets: new Map([[sourceAssetId, {
+      id: sourceAssetId, type: 'image/jpeg', width: 40, height: 30,
+      sourceBytes: new Uint8Array([1, 2, 3])
+    }]]),
+    // Explicit image-fill previews are keyed by fill identity so multiple
+    // independently edited fills can share one source asset.
+    imagePreviews: new Map([[imagePreviewKey(node.id, editedFill.id), {
+      type: 'image/png', sourceBytes: new Uint8Array([0xaa, 0xbb, 0xcc]), width: 18, height: 28
+    }]])
+  });
+
+  assert.match(svg, /href="data:image\/png;base64,qrvM"[^>]*opacity="0\.65"[^>]*data-tiny-image-star-fill-id="edited-fill-secondary"/);
+  assert.doesNotMatch(svg, /data:image\/jpeg;base64,AQID/, 'the edited fill should not silently fall back to shared source bytes');
+});
+
+test('SVG export ignores hidden invalid image fills when another fill remains visible', () => {
+  const node = createNode('rectangle', {
+    id: 'hidden-missing-image-fill', width: 100, height: 60,
+    fills: [
+      createFillLayer('image', {
+        id: 'hidden-missing-fill',
+        imageFill: createImageFill('missing-local-source'),
+        visible: false
+      }),
+      createFillLayer('solid', { id: 'visible-solid-fill', color: '#2468ac', opacity: 0.75 })
+    ]
+  });
+
+  const svg = exportNodeToSvg(node, { assets: new Map() });
+  assert.match(svg, /fill="#2468ac" fill-opacity="0\.75"/);
+  assert.doesNotMatch(svg, /hidden-missing-fill|image fills|<image\b/);
+});
+
 test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () => {
   const missing = createNode('image', { assetId: 'not-local' });
   assert.throws(() => exportNodeToSvg(missing, { assets: new Map() }), error => error instanceof SvgExportError && error.feature === 'image layers');
@@ -300,11 +493,19 @@ test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () =>
   });
   const assets = new Map([['local', { type: 'image/png', sourceBytes: new Uint8Array([1]), width: 1, height: 1 }]]);
   assert.throws(() => exportNodeToSvg(adjusted, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image adjustments');
+  assert.match(exportNodeToSvg(adjusted, {
+    assets,
+    imagePreviews: new Map([[adjusted.id, { type: 'image/png', sourceBytes: new Uint8Array([2]), width: 1, height: 1 }]])
+  }), /href="data:image\/png;base64,Ag=="/);
 
   const cropped = createNode('image', { assetId: 'local', transforms: { crop: { left: 0.1, top: 0, right: 0.9, bottom: 1 }, rotation: 0 } });
   assert.throws(() => exportNodeToSvg(cropped, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
   const rotated = createNode('rectangle', { imageFill: { assetId: 'local', fit: 'cover', transforms: { crop: null, rotation: 90 }, adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 } } });
   assert.throws(() => exportNodeToSvg(rotated, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
+  assert.match(exportNodeToSvg(rotated, {
+    assets,
+    imagePreviews: new Map([[rotated.id, { type: 'image/png', sourceBytes: new Uint8Array([3]), width: 1, height: 1 }]])
+  }), /href="data:image\/png;base64,Aw=="/);
 });
 
 test('does not reject hidden unsupported layers because they are absent from the rendered page', () => {

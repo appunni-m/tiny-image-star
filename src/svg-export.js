@@ -1,12 +1,13 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutPlainText, layoutTextRuns, transformTextCase } from './text-layout.js';
-import { isValidGradientFill } from './fills.js';
+import { fillStackForNode, isValidFillStack, isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from './vector-path.js';
+import { imagePreviewKey } from './image-preview-runtime.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -25,7 +26,21 @@ const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
 const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 
-function resolveLocalImage(node, assets, assetId) {
+function resolveLocalImage(node, assets, assetId, imagePreviews = null, previewKey = node.id) {
+  const preview = imagePreviews?.get?.(previewKey) ?? imagePreviews?.[previewKey] ?? null;
+  if (preview) {
+    const type = String(preview.type || preview.mimeType || 'image/png').toLowerCase().split(';')[0].trim();
+    const bytes = preview.sourceBytes ?? preview.bytes;
+    if (!safeRasterTypes.has(type) || (!(bytes instanceof ArrayBuffer) && !ArrayBuffer.isView(bytes))) {
+      return { error: node.type === 'image' ? 'image layers' : 'image fills' };
+    }
+    const view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (!view.length) return { error: node.type === 'image' ? 'image layers' : 'image fills' };
+    let binary = '';
+    for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
+    const encoded = typeof btoa === 'function' ? btoa(binary) : Buffer.from(view).toString('base64');
+    return { href: `data:${type};base64,${encoded}`, width: Number(preview.width), height: Number(preview.height), isPreview: true };
+  }
   const asset = assets?.get?.(assetId) ?? assets?.[assetId];
   const type = String(asset?.type || asset?.mimeType || '').toLowerCase().split(';')[0].trim();
   if (!asset || !safeRasterTypes.has(type)) return { error: node.type === 'image' ? 'image layers' : 'image fills' };
@@ -41,6 +56,20 @@ function resolveLocalImage(node, assets, assetId) {
 
 function imageFit(node) {
   return node.type === 'image' ? (node.fit ?? 'cover') : node.imageFill.fit;
+}
+
+function unsupportedImageFill(node, fill, assets, imagePreviews, previewKey = node.id) {
+  if (!isImageFillSupported(node) || !isValidImageFill(fill)) return 'image fills';
+  const image = resolveLocalImage(node, assets, fill.assetId, imagePreviews, previewKey);
+  if (image.error) return 'image fills';
+  if (!image.isPreview && Object.values(fill.adjustments || {}).some(value => Number(value) !== 0)) return 'raster image adjustments';
+  if (fill.transforms != null && !isValidImageTransforms(fill.transforms)) {
+    throw new TypeError(`SVG export requires valid image transforms on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  if (!image.isPreview && (fill.transforms?.crop || Number(fill.transforms?.rotation || 0) % 360 !== 0)) return 'raster image crop or rotation';
+  if (!['cover', 'contain'].includes(fill.fit)) return 'image fill fit mode';
+  if (!(image.width > 0) || !(image.height > 0)) return 'image fills';
+  return null;
 }
 
 function escapeXml(value) {
@@ -109,11 +138,9 @@ function color(document, node, kind) {
   return value;
 }
 
-function gradientDefinition(node, index) {
-  const gradient = node.fillGradient;
+function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis-gradient-${index}`) {
   if (!gradient) return null;
   if (!isValidGradientFill(gradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
-  const id = `tis-gradient-${index}`;
   const { width, height } = dimensions(node);
   const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"/>`).join('');
   if (gradient.type === 'linear') {
@@ -127,10 +154,10 @@ function gradientDefinition(node, index) {
   return { id, markup: `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${number(width / 2)}" cy="${number(height / 2)}" r="${number(radialRadius)}">${stops}</radialGradient>` };
 }
 
-function fillAttributes(document, node, { text = false, gradientId = null } = {}) {
-  const value = text ? color(document, node, 'text') : color(document, node, 'fill');
+function fillAttributes(document, node, { text = false, gradientId = null, fillValue = undefined, fillOpacity: opacityOverride = undefined } = {}) {
+  const value = fillValue === undefined ? (text ? color(document, node, 'text') : color(document, node, 'fill')) : fillValue;
   const fill = gradientId ? `url(#${gradientId})` : value === 'transparent' ? 'none' : value;
-  const fillOpacity = node.fillOpacity ?? 1;
+  const fillOpacity = opacityOverride ?? node.fillOpacity ?? 1;
   if (!Number.isFinite(Number(fillOpacity)) || fillOpacity < 0 || fillOpacity > 1) {
     throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
   }
@@ -159,17 +186,28 @@ function radius(document, node) {
   return Math.min(value, Number(node.width) / 2, Number(node.height) / 2);
 }
 
-function unsupportedFeature(node, assets) {
+function unsupportedFeature(node, assets, imagePreviews = null) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
-  if (node.type === 'image' || node.imageFill) {
+  if (Array.isArray(node.fills)) {
+    if (!isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) {
+      throw new TypeError(`SVG export requires a valid fill stack on layer ${node.name || node.id || '(unnamed)'}.`);
+    }
+    for (let index = 0; index < node.fills.length; index += 1) {
+      const fill = node.fills[index];
+      if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0) continue;
+      const problem = unsupportedImageFill(node, fill.imageFill, assets, imagePreviews, imagePreviewKey(node.id, fill.id));
+      if (problem) return problem;
+    }
+  }
+  if (node.type === 'image' || (!Array.isArray(node.fills) && node.imageFill)) {
     if (node.imageFill && (!isImageFillSupported(node) || !isValidImageFill(node.imageFill))) return 'image fills';
-    const image = resolveLocalImage(node, assets, node.type === 'image' ? node.assetId : node.imageFill?.assetId);
+    const image = resolveLocalImage(node, assets, node.type === 'image' ? node.assetId : node.imageFill?.assetId, imagePreviews);
     if (image.error) return image.error;
     const adjustments = node.type === 'image' ? node.adjustments : node.imageFill.adjustments;
-    if (adjustments && Object.values(adjustments).some(value => Number(value) !== 0)) return 'raster image adjustments';
+    if (!image.isPreview && adjustments && Object.values(adjustments).some(value => Number(value) !== 0)) return 'raster image adjustments';
     const transforms = node.type === 'image' ? node.transforms : node.imageFill.transforms;
     if (transforms != null && !isValidImageTransforms(transforms)) throw new TypeError(`SVG export requires valid image transforms on layer ${node.name || node.id || '(unnamed)'}.`);
-    if (transforms?.crop || Number(transforms?.rotation || 0) % 360 !== 0) return 'raster image crop or rotation';
+    if (!image.isPreview && (transforms?.crop || Number(transforms?.rotation || 0) % 360 !== 0)) return 'raster image crop or rotation';
     const fit = imageFit(node);
     if (!['cover', 'contain'].includes(fit)) return node.type === 'image' ? 'image layer fit mode' : 'image fill fit mode';
     if (!(image.width > 0) || !(image.height > 0)) return node.type === 'image' ? 'image layers' : 'image fills';
@@ -177,12 +215,12 @@ function unsupportedFeature(node, assets) {
       throw new TypeError(`SVG export requires valid fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     }
   }
-  if (node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon', 'network'].includes(node.type)
+  if (!Array.isArray(node.fills) && node.fillGradient && !['frame', 'section', 'group', 'rectangle', 'ellipse', 'star', 'polygon', 'network'].includes(node.type)
     && !(node.type === 'path' && node.closed)) return 'gradient fills';
-  if (node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
+  if (!Array.isArray(node.fills) && node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`SVG export requires a supported blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
-  if (node.fillGradient && !isValidGradientFill(node.fillGradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (!Array.isArray(node.fills) && node.fillGradient && !isValidGradientFill(node.fillGradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.type === 'group' && node.maskSourceId && !node.mask) return 'mask groups';
   return null;
 }
@@ -217,24 +255,24 @@ function validateMaskGroup(node, document) {
   return source;
 }
 
-function validateTree(nodes, document, assets, ignoredNodeIds = new Set()) {
+function validateTree(nodes, document, assets, imagePreviews = null, ignoredNodeIds = new Set()) {
   for (const node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
     if (ignoredNodeIds.has(node.id)) continue;
     if (!isNodeVisible(document, node)) continue;
     const maskSource = node.mask ? validateMaskGroup(node, document) : null;
-    const unsupported = unsupportedFeature(node, assets);
+    const unsupported = unsupportedFeature(node, assets, imagePreviews);
     if (unsupported) throw new SvgExportError(unsupported, node);
     dimensions({ ...node, ...getNodeGeometry(document, node) });
     if (!Array.isArray(node.children || [])) throw new TypeError(`SVG export requires a child layer list on ${node.name || node.id || '(unnamed)'}.`);
     const ignoredChildren = maskSource ? new Set([...ignoredNodeIds, maskSource.id]) : ignoredNodeIds;
-    validateTree(node.children || [], document, assets, ignoredChildren);
+    validateTree(node.children || [], document, assets, imagePreviews, ignoredChildren);
   }
 }
 
-function shapeMarkup(node, document, measureText, gradientId = null) {
-  const fill = fillAttributes(document, node, { text: node.type === 'text', gradientId });
-  const stroke = strokeAttributes(document, node);
+function shapeMarkup(node, document, measureText, gradientId = null, { fillValue, fillOpacity, includeStroke = true } = {}) {
+  const fill = fillAttributes(document, node, { text: node.type === 'text', gradientId, fillValue, fillOpacity });
+  const stroke = includeStroke ? strokeAttributes(document, node) : '';
   switch (node.type) {
     case 'frame':
     case 'section':
@@ -362,6 +400,112 @@ function networkMarkup(node, document, gradientId = null, { includeFills = true 
     markup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}" d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
   }
   return markup;
+}
+
+function stackSolidValue(document, node, fill, index) {
+  const linkedPrimary = index === 0 && (node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
+  const value = linkedPrimary ? color(document, node, 'fill') : fill.color;
+  if (value === 'transparent') return value;
+  if (typeof value !== 'string' || !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) {
+    throw new TypeError(`SVG export supports solid hexadecimal colors only on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  return value;
+}
+
+function markFillMarkup(markup, fill) {
+  if (!markup) return '';
+  const metadata = ` data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"`;
+  return markup.replace(/\/>$/, `${metadata}/>`);
+}
+
+function renderShapeFillStack(node, document, context, index, measureText) {
+  const fills = node.fills;
+  let markup = '';
+  let hasImage = false;
+  const clipId = `tis-fill-clip-${index}`;
+  for (let fillIndex = 0; fillIndex < fills.length; fillIndex += 1) {
+    const fill = fills[fillIndex];
+    if (!fill.visible || fill.opacity <= 0) continue;
+    if (fill.type === 'image') {
+      hasImage = true;
+      const image = resolveLocalImage(node, context.assets, fill.imageFill.assetId, context.imagePreviews, imagePreviewKey(node.id, fill.id));
+      const fit = fill.imageFill.fit;
+      markup += markFillMarkup(`<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}" href="${image.href}" opacity="${number(fill.opacity)}" clip-path="url(#${clipId})"/>`, fill);
+      continue;
+    }
+    let gradientId = null;
+    let value;
+    if (fill.type === 'solid') value = stackSolidValue(document, node, fill, fillIndex);
+    else {
+      const gradient = gradientDefinition(node, index, fill.gradient, `tis-gradient-${index}-fill-${fillIndex}`);
+      if (gradient) {
+        gradientId = gradient.id;
+        context.defs.push(gradient.markup);
+      }
+    }
+    const painted = shapeMarkup(node, document, measureText, gradientId, {
+      fillValue: value,
+      fillOpacity: fill.opacity,
+      includeStroke: false
+    });
+    markup += markFillMarkup(painted, fill);
+  }
+  if (hasImage) {
+    const clipNode = {
+      ...node, fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null,
+      fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0, variableBindings: {}
+    };
+    context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${shapeMarkup(clipNode, emptyDocument, measureText, null, { fillValue: '#ffffff', fillOpacity: 1, includeStroke: false })}</clipPath>`);
+  }
+  // Strokes belong to the shape, not to individual paints, so export them once
+  // above the complete stack just as the canvas renderer does.
+  markup += shapeMarkup(node, document, measureText, null, { fillValue: 'transparent', fillOpacity: 0 });
+  return markup;
+}
+
+function renderNetworkFillStack(node, document, context, index) {
+  const fills = node.fills;
+  const edgesByPair = networkEdgesByPair(node);
+  let markup = '';
+  for (let fillIndex = 0; fillIndex < fills.length; fillIndex += 1) {
+    const fill = fills[fillIndex];
+    if (!fill.visible || fill.opacity <= 0) continue;
+    let gradientId = null;
+    let image = null;
+    if (fill.type === 'linear' || fill.type === 'radial') {
+      const gradient = gradientDefinition(node, index, fill.gradient, `tis-gradient-${index}-fill-${fillIndex}`);
+      if (gradient) {
+        gradientId = gradient.id;
+        context.defs.push(gradient.markup);
+      }
+    } else if (fill.type === 'image') {
+      image = resolveLocalImage(node, context.assets, fill.imageFill.assetId, context.imagePreviews, imagePreviewKey(node.id, fill.id));
+    }
+    (node.faces || []).forEach((face, faceIndex) => {
+      const faceOpacity = Number(face.fillOpacity ?? 1);
+      if (!Number.isFinite(faceOpacity) || faceOpacity < 0 || faceOpacity > 1) {
+        throw new TypeError(`SVG export requires valid face fill opacity on layer ${node.name || node.id || '(unnamed)'}.`);
+      }
+      const path = networkFacePath(node, face, edgesByPair);
+      const faceId = escapeXml(face.id || faceIndex);
+      if (fill.type === 'image') {
+        const faceClipId = `tis-fill-clip-${index}-${fillIndex}-${faceIndex}`;
+        context.defs.push(`<clipPath id="${faceClipId}" clipPathUnits="userSpaceOnUse"><path d="${path}"/></clipPath>`);
+        markup += markFillMarkup(`<image x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" preserveAspectRatio="xMidYMid ${fill.imageFill.fit === 'cover' ? 'slice' : 'meet'}" href="${image.href}" opacity="${number(fill.opacity * faceOpacity)}" clip-path="url(#${faceClipId})" data-tiny-image-star-face-id="${faceId}"/>`, fill);
+      } else {
+        let paint;
+        if (fill.type === 'solid') {
+          paint = fillIndex === 0 && face.fill != null
+            ? color(document, { ...node, fill: face.fill, fillVariableId: null, fillStyleId: null, variableBindings: {} }, 'fill')
+            : stackSolidValue(document, node, fill, fillIndex);
+          paint = paint === 'transparent' ? 'none' : paint;
+        } else paint = `url(#${gradientId})`;
+        markup += `<path data-tiny-image-star-face-id="${faceId}" d="${path}" fill="${escapeXml(paint)}" fill-opacity="${number(fill.opacity * faceOpacity)}" data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"/>`;
+      }
+    });
+  }
+  // Emit network edges once, after all face paints.
+  return markup + networkMarkup(node, document, null, { includeFills: false });
 }
 
 function textLines(node, document, measureText) {
@@ -587,17 +731,22 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
     const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}`;
-    const gradient = node.mask ? null : gradientDefinition(node, index);
+    const hasFillStack = Array.isArray(node.fills);
+    const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);
-    let ownShape = node.mask ? '' : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null) : shapeMarkup(node, document, measureText, gradient?.id || null);
+    let ownShape = node.mask ? ''
+      : hasFillStack && node.type === 'network' ? renderNetworkFillStack(node, document, context, index)
+        : hasFillStack ? renderShapeFillStack(node, document, context, index, measureText)
+          : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null)
+            : shapeMarkup(node, document, measureText, gradient?.id || null);
     const maskSource = node.mask ? node.children.find(child => child?.id === node.maskSourceId) : null;
     const alphaMask = maskSource && isNodeVisible(document, maskSource)
       ? maskDefinition(node, maskSource, index, document, measureText)
       : null;
     if (alphaMask) context.defs.push(alphaMask.markup);
-    if (node.type === 'image' || node.imageFill) {
+    if (node.type === 'image' || (node.imageFill && !hasFillStack)) {
       const isLayer = node.type === 'image';
-      const asset = resolveLocalImage(node, context.assets, isLayer ? node.assetId : node.imageFill.assetId);
+      const asset = resolveLocalImage(node, context.assets, isLayer ? node.assetId : node.imageFill.assetId, context.imagePreviews);
       const fit = imageFit(node);
       const clipId = `tis-image-clip-${index}`;
       if (!isLayer && node.type === 'network') {
@@ -762,12 +911,12 @@ function svgDocument(markup, defs, bounds, { width, height } = {}) {
  * Export one editor layer as a self-contained, editable SVG, with its origin at the layer's bounds.
  * Text layers require a canvas-based `measureText` callback so SVG line breaks match the editor.
  */
-export function exportNodeToSvg(node, { document = null, assets = null, width, height, measureText } = {}) {
+export function exportNodeToSvg(node, { document = null, assets = null, imagePreviews = null, width, height, measureText } = {}) {
   if (!node || typeof node !== 'object') throw new TypeError('SVG export requires a layer.');
   document ||= emptyDocument;
-  validateTree([node], document, assets);
+  validateTree([node], document, assets, imagePreviews);
   const bounds = getBounds([node], { document, includePosition: false, measureText });
-  const context = { defs: [], nextIndex: 0, assets };
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews };
   const markup = renderTree([node], document, context, false, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }
@@ -776,12 +925,12 @@ export function exportNodeToSvg(node, { document = null, assets = null, width, h
  * Export a page's layers as a self-contained, editable SVG, fitting the viewBox to visible content.
  * Pages with text layers require a canvas-based `measureText` callback.
  */
-export function exportPageToSvg(page, { document = null, assets = null, width, height, measureText } = {}) {
+export function exportPageToSvg(page, { document = null, assets = null, imagePreviews = null, width, height, measureText } = {}) {
   if (!page || !Array.isArray(page.children)) throw new TypeError('SVG export requires a page with child layers.');
   document ||= emptyDocument;
-  validateTree(page.children, document, assets);
+  validateTree(page.children, document, assets, imagePreviews);
   const bounds = getBounds(page.children, { document, measureText });
-  const context = { defs: [], nextIndex: 0, assets };
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews };
   const markup = renderTree(page.children, document, context, true, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }
