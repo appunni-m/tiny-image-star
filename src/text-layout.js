@@ -47,6 +47,60 @@ export function wrapTextWithMeasure(text, maxWidth, measure) {
   return lines;
 }
 
+function nonNegativeTextMetric(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(10_000, number)) : 0;
+}
+
+function indentWithinWidth(indent, width) {
+  return Number.isFinite(width) ? Math.min(indent, Math.max(0, width - 1)) : indent;
+}
+
+/** Lay out unstyled text while treating explicit newlines as paragraph breaks. */
+export function layoutPlainText(text, maxWidth, measure, {
+  lineHeight = 0,
+  paragraphSpacing = 0,
+  firstLineIndent = 0
+} = {}) {
+  if (typeof measure !== 'function') throw new TypeError('Text layout requires a measurement function.');
+  const limit = Number(maxWidth);
+  if (!(limit > 0) && limit !== Infinity) throw new TypeError('Text layout requires a positive maximum width.');
+  const spacing = nonNegativeTextMetric(paragraphSpacing);
+  const requestedIndent = nonNegativeTextMetric(firstLineIndent);
+  const lineHeightPx = Math.max(0, Number(lineHeight) || 0);
+  const lines = [];
+  let y = 0;
+  let width = 0;
+  const paragraphs = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+
+  for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+    if (paragraphIndex > 0) y += spacing;
+    const indent = paragraph ? indentWithinWidth(requestedIndent, limit) : 0;
+    const availableWidth = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
+    const wrapped = wrapTextWithMeasure(paragraph, availableWidth, measure);
+    for (const [paragraphLineIndex, displayText] of wrapped.entries()) {
+      const naturalWidth = Number(measure(displayText));
+      const lineIndent = paragraphLineIndex === 0 ? indent : 0;
+      const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - lineIndent) : Infinity;
+      const visibleWidth = Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
+      lines.push({
+        displayText,
+        index: lines.length,
+        paragraphIndex,
+        firstLine: paragraphLineIndex === 0,
+        indent: lineIndent,
+        naturalWidth,
+        width: visibleWidth,
+        y,
+        lineHeight: lineHeightPx
+      });
+      width = Math.max(width, lineIndent + naturalWidth);
+      y += lineHeightPx;
+    }
+  }
+  return { lines, width, height: y };
+}
+
 const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
 
 function richTextStyle(base, run) {
@@ -139,27 +193,36 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
   for (const paragraph of paragraphs) finishWord(paragraph);
 
   const rawLines = [];
-  for (const paragraph of paragraphs) {
+  const paragraphSpacing = nonNegativeTextMetric(baseStyle.paragraphSpacing);
+  const requestedIndent = nonNegativeTextMetric(baseStyle.firstLineIndent);
+  for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     let line = [];
+    let firstLine = true;
     for (const word of paragraph.words) {
       const candidate = line.length
         ? [...line, { text: ' ', style: word.spaceStyle || line.at(-1).style }, ...word.parts]
         : word.parts;
       const mergedCandidate = [];
       for (const part of candidate) appendRichPart(mergedCandidate, part.text, part.style);
-      if (line.length && measuredPartsWidth(mergedCandidate, measure) > limit) {
-        rawLines.push(line);
+      const indent = firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
+      const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
+      if (line.length && measuredPartsWidth(mergedCandidate, measure) > lineLimit) {
+        rawLines.push({ parts: line, paragraphIndex, firstLine });
         line = word.parts;
+        firstLine = false;
       } else line = mergedCandidate;
     }
-    rawLines.push(line);
+    rawLines.push({ parts: line, paragraphIndex, firstLine });
   }
 
   const fallback = richTextStyle(baseStyle, {});
   let y = 0;
-  const lines = rawLines.map((parts, index) => {
+  const lines = rawLines.map(({ parts, paragraphIndex, firstLine }, index) => {
+    if (firstLine && paragraphIndex > 0) y += paragraphSpacing;
+    const indent = parts.length && firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
+    const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
     const naturalWidth = measuredPartsWidth(parts, measure);
-    const lineWidth = Math.min(limit, naturalWidth);
+    const lineWidth = Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
     const lineHeight = parts.length
       ? Math.max(...parts.map(part => part.style.fontSize * part.style.lineHeight))
       : fallback.fontSize * fallback.lineHeight;
@@ -171,14 +234,21 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
       offsetX += width;
       return positioned;
     });
-    const current = { index, y, parts: positionedParts, naturalWidth, width: lineWidth, lineHeight: resolvedHeight, displayText: positionedParts.map(part => part.text).join('') };
+    const current = { index, paragraphIndex, firstLine, indent, y, parts: positionedParts, naturalWidth, width: lineWidth, lineHeight: resolvedHeight, displayText: positionedParts.map(part => part.text).join('') };
     y += resolvedHeight;
     return current;
   });
-  return { lines, width: Math.max(0, ...lines.map(line => line.naturalWidth)), height: y };
+  return { lines, width: Math.max(0, ...lines.map(line => line.indent + line.naturalWidth)), height: y };
 }
 
-export function calculateTextBox(ctx, node, { fontSize = node.fontSize, lineHeight = node.lineHeight, letterSpacing = node.letterSpacing, text = node.text } = {}) {
+export function calculateTextBox(ctx, node, {
+  fontSize = node.fontSize,
+  lineHeight = node.lineHeight,
+  letterSpacing = node.letterSpacing,
+  paragraphSpacing = node.paragraphSpacing,
+  firstLineIndent = node.firstLineIndent,
+  text = node.text
+} = {}) {
   const width = Math.max(0, Number(node.width) || 0);
   const height = Math.max(0, Number(node.height) || 0);
   const mode = node.textFit || 'auto-height';
@@ -196,6 +266,8 @@ export function calculateTextBox(ctx, node, { fontSize = node.fontSize, lineHeig
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size,
       fontWeight: Number(node.fontWeight) || 400, fontStyle: node.fontStyle || 'normal',
       lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
+      paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
+      firstLineIndent: nonNegativeTextMetric(firstLineIndent),
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
       textCase: node.textCase || 'none'
     };
@@ -218,16 +290,19 @@ export function calculateTextBox(ctx, node, { fontSize = node.fontSize, lineHeig
   }
 
   if (mode === 'auto-width') {
-    const paragraphs = textValue.split('\n');
-    const measured = Math.max(1, ...paragraphs.map(line => measureTrackedText(ctx, line, spacing)));
+    const layout = layoutPlainText(textValue, Infinity,
+      line => measureTrackedText(ctx, line, spacing),
+      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent });
     return {
-      width: Math.max(1, Math.min(100_000, Math.ceil(measured + 2))),
-      height: Math.max(36, Math.ceil(paragraphs.length * lineHeightPx + 4))
+      width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
+      height: Math.max(36, Math.ceil(layout.height + 4))
     };
   }
 
-  const lines = wrapText(ctx, textValue, Math.max(1, width), spacing);
-  return { width, height: Math.max(36, Math.ceil(lines.length * lineHeightPx + 4)) };
+  const layout = layoutPlainText(textValue, Math.max(1, width),
+    line => measureTrackedText(ctx, line, spacing),
+    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent });
+  return { width, height: Math.max(36, Math.ceil(layout.height + 4)) };
 }
 
 /** Keep an auto-width text layer's aligned top anchor fixed as its measured box changes. */

@@ -109,6 +109,7 @@ function cssForEntry(document, entry) {
     'box-sizing: border-box;',
     `opacity: ${number(getNodePropertyValue(document, node, 'opacity') ?? 1)};`
   ];
+  const additionalRules = [];
   for (const [property, cssProperty] of [['minWidth', 'min-width'], ['maxWidth', 'max-width'], ['minHeight', 'min-height'], ['maxHeight', 'max-height']]) {
     if (Number.isFinite(node[property])) declarations.push(`${cssProperty}: ${number(node[property])}px;`);
   }
@@ -130,6 +131,13 @@ function cssForEntry(document, entry) {
   if (node.type === 'text') {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize')) || 24;
     const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight')) || 1.25;
+    const paragraphSpacing = Math.max(0, Number(node.paragraphSpacing) || 0);
+    // Match canvas and SVG text layout: leave at least one pixel for text in
+    // narrow boxes so a large indent cannot push the first line outside.
+    const firstLineIndent = Math.min(
+      Math.max(0, Number(node.firstLineIndent) || 0),
+      Math.max(0, Number(geometry.width) - 1)
+    );
     const color = cssColor(getNodeColor(document, node, 'text'));
     if (color) declarations.push(`color: ${color};`);
     declarations.push(
@@ -139,6 +147,7 @@ function cssForEntry(document, entry) {
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
       `line-height: ${number(fontSize * lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
+      'display: block;',
       `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`,
       ...(['middle', 'bottom'].includes(node.verticalAlign) ? [
         'display: flex;',
@@ -147,6 +156,11 @@ function cssForEntry(document, entry) {
       ] : []),
       `text-transform: ${['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none'};`,
       `text-decoration: ${['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none'};`
+    );
+    const paragraphClass = `${cssClass(node)}__paragraph`;
+    additionalRules.push(
+      `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(fontSize * lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
+      `.${cssClass(node)} > .${paragraphClass} + .${paragraphClass} {\n  margin-block-start: ${number(paragraphSpacing)}px;\n}`
     );
   } else if (node.type === 'image') {
     declarations.push(`object-fit: ${node.fit === 'contain' ? 'contain' : 'cover'};`);
@@ -180,7 +194,7 @@ function cssForEntry(document, entry) {
   if (getNodePropertyValue(document, node, 'visible') === false) declarations.push('display: none;');
   declarations.push(...autoLayoutDeclarations(node.autoLayout));
   if (node.type === 'path' || node.type === 'network' || node.type === 'boolean' || node.mask) declarations.push('/* Vector, Boolean, and mask geometry is retained in layer JSON. */');
-  return `${selector} {\n${declarations.map(declaration => `  ${declaration}`).join('\n')}\n}`;
+  return `${selector} {\n${declarations.map(declaration => `  ${declaration}`).join('\n')}\n}${additionalRules.length ? `\n${additionalRules.join('\n')}` : ''}`;
 }
 
 function markupForNode(document, node) {
@@ -188,7 +202,9 @@ function markupForNode(document, node) {
   const type = escapeMarkup(node.type || 'layer');
   if (node.type === 'text') {
     const value = getNodePropertyValue(document, node, 'text') ?? '';
-    return `<span class="${className}" data-layer-type="text">${escapeMarkup(value)}</span>`;
+    const paragraphs = String(value).replace(/\r\n?/g, '\n').split('\n')
+      .map(paragraph => `<span class="${className}__paragraph">${escapeMarkup(paragraph)}</span>`).join('');
+    return `<span class="${className}" data-layer-type="text">${paragraphs}</span>`;
   }
   if (node.type === 'image') {
     const label = escapeMarkup(node.fileName || node.name || 'Local image');
@@ -208,8 +224,9 @@ function jsxForNode(document, node, depth = 0) {
   const className = jsxString(cssClass(node));
   const type = jsxString(node.type || 'layer');
   if (node.type === 'text') {
-    const value = jsxString(getNodePropertyValue(document, node, 'text') ?? '');
-    return `${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>{${value}}</span>`;
+    const paragraphs = String(getNodePropertyValue(document, node, 'text') ?? '').replace(/\r\n?/g, '\n').split('\n')
+      .map(paragraph => `${indent}  <span className={${jsxString(`${cssClass(node)}__paragraph`)}}>{${jsxString(paragraph)}}</span>`).join('\n');
+    return `${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>\n${paragraphs}\n${indent}</span>`;
   }
   if (node.type === 'image') {
     const label = jsxString(node.fileName || node.name || 'Local image');
@@ -271,6 +288,8 @@ function summaryForEntry(document, entry) {
       fontStyle: node.fontStyle || 'normal',
       lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
+      paragraphSpacing: Number(node.paragraphSpacing) || 0,
+      firstLineIndent: Number(node.firstLineIndent) || 0,
       align: node.align,
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',

@@ -228,6 +228,35 @@ test('plain and rich text align their complete line stacks within fixed-height b
   }
 });
 
+test('paragraph spacing and first-line indentation affect rich and plain canvas layout', () => {
+  const rich = richContext();
+  const result = drawTextRuns(rich, [{ text: 'one two\n\nnext' }], 3, 4, 50, {
+    ...defaultRunStyle, paragraphSpacing: 7, firstLineIndent: 20
+  });
+  const richLines = rich.calls.filter(call => call.transform === 'translate');
+  assert.deepEqual(richLines.map(({ x, y }) => [x, y]), [[23, 4], [3, 16.5], [3, 36], [23, 55.5]]);
+  assert.deepEqual(result.lines.map(line => line.map(part => part.text).join('')), ['one', 'two', '', 'next']);
+  assert.equal(result.height, 64, 'paragraph gaps contribute to rich text height');
+
+  const document = createDocument();
+  const draws = [];
+  const context = {
+    font: '', fillStyle: '', textAlign: 'left', textBaseline: 'top', globalAlpha: 1,
+    save() {}, restore() {}, beginPath() {}, rect() {},
+    measureText(value) { return { width: [...String(value)].length * 5 }; },
+    fillText(text, x, y) { draws.push({ text, x, y }); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, createNode('text', {
+    x: 4, y: 10, width: 50, height: 90, text: 'one two\n\nnext', textFit: 'fixed',
+    fontSize: 10, lineHeight: 1.25, paragraphSpacing: 7, firstLineIndent: 20
+  }), 0, 0, new Map());
+  assert.deepEqual(draws.map(({ text, x, y }) => [text, x, y]), [
+    ['one', 24, 10], ['two', 4, 22.5], ['', 4, 42], ['next', 24, 61.5]
+  ]);
+});
+
 test('rich text case changes preserve run boundaries even when Unicode casing expands', () => {
   const context = richContext();
   const result = drawTextRuns(context, [

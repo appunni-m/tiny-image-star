@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, layoutPlainText, layoutTextRuns, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
@@ -45,12 +45,74 @@ test('auto-width fits the widest explicit line and keeps newline height', () => 
   assert.deepEqual(calculateTextBox(context(), node), { width: 103, height: 54 });
 });
 
+test('auto-width includes first-line indentation in width and paragraph gaps in height', () => {
+  const node = createNode('text', {
+    text: 'ab\nc', fontSize: 20, lineHeight: 1, paragraphSpacing: 7,
+    firstLineIndent: 12, textFit: 'auto-width'
+  });
+  assert.deepEqual(calculateTextBox(context(), node), { width: 34, height: 51 });
+
+  node.firstLineIndent = 0;
+  node.paragraphSpacing = 0;
+  assert.deepEqual(calculateTextBox(context(), node), { width: 22, height: 44 });
+});
+
 test('auto-height wraps to the fixed width while fixed text keeps its explicit box', () => {
   const ctx = context();
   const node = createNode('text', { text: 'one two three', width: 50, height: 22, fontSize: 10, lineHeight: 1.2, textFit: 'auto-height' });
   assert.deepEqual(calculateTextBox(ctx, node), { width: 50, height: 40 });
   node.textFit = 'fixed';
   assert.deepEqual(calculateTextBox(ctx, node), { width: 50, height: 22 });
+});
+
+test('plain and rich paragraph layout apply spacing and first-line indentation', () => {
+  const measured = value => [...String(value)].reduce((width, character) => width + (character === ' ' ? 5 : 10), 0);
+  const plain = layoutPlainText('one two\nthree\nfour five', 80, measured, {
+    lineHeight: 10, paragraphSpacing: 6, firstLineIndent: 12
+  });
+  assert.deepEqual(plain.lines.map(({ displayText, paragraphIndex, firstLine, indent, y }) => ({
+    displayText, paragraphIndex, firstLine, indent, y
+  })), [
+    { displayText: 'one two', paragraphIndex: 0, firstLine: true, indent: 12, y: 0 },
+    { displayText: 'three', paragraphIndex: 1, firstLine: true, indent: 12, y: 16 },
+    { displayText: 'four', paragraphIndex: 2, firstLine: true, indent: 12, y: 32 },
+    { displayText: 'five', paragraphIndex: 2, firstLine: false, indent: 0, y: 42 }
+  ]);
+  assert.equal(plain.height, 52);
+  assert.equal(plain.width, 77);
+
+  const rich = layoutTextRuns([{ text: 'one two\nthree' }], 60, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, paragraphSpacing: 7, firstLineIndent: 10
+  }, value => [...String(value)].length * 5);
+  assert.deepEqual(rich.lines.map(({ displayText, indent, y, paragraphIndex }) => ({ displayText, indent, y, paragraphIndex })), [
+    { displayText: 'one two', indent: 10, y: 0, paragraphIndex: 0 },
+    { displayText: 'three', indent: 10, y: 17, paragraphIndex: 1 }
+  ]);
+  assert.equal(rich.height, 27);
+
+  const crlf = layoutPlainText('first\r\nsecond', Infinity, value => [...String(value)].length * 10, {
+    lineHeight: 10, paragraphSpacing: 4, firstLineIndent: 8
+  });
+  assert.deepEqual(crlf.lines.map(({ displayText, y, indent }) => ({ displayText, y, indent })), [
+    { displayText: 'first', y: 0, indent: 8 },
+    { displayText: 'second', y: 14, indent: 8 }
+  ]);
+});
+
+test('paragraph spacing contributes to auto height and indentation reduces first-line wrap width', () => {
+  const node = createNode('text', {
+    text: 'aa bb\ncc dd\nee ff', width: 50, height: 20,
+    fontSize: 10, lineHeight: 1.2, paragraphSpacing: 8, firstLineIndent: 10,
+    textFit: 'auto-height'
+  });
+  const layout = layoutPlainText(node.text, node.width, value => [...String(value)].length * 10 + Math.max(0, [...String(value)].length - 1) * 5, {
+    lineHeight: 12, paragraphSpacing: node.paragraphSpacing, firstLineIndent: node.firstLineIndent
+  });
+  assert.deepEqual(layout.lines.map(line => [line.displayText, line.indent, line.y]), [
+    ['aa', 10, 0], ['bb', 0, 12], ['cc', 10, 32], ['dd', 0, 44], ['ee', 10, 64], ['ff', 0, 76]
+  ]);
+  assert.equal(calculateTextBox(context(), node).height, 92, 'auto height includes both paragraph gaps and wrapped lines');
 });
 
 test('rich text auto-sizing uses each run font, wrapping, and maximum line metrics', () => {
@@ -68,6 +130,20 @@ test('rich text auto-sizing uses each run font, wrapping, and maximum line metri
 
   node.textFit = 'auto-width';
   assert.deepEqual(calculateTextBox(fontAwareContext(), node), { width: 87, height: 49 });
+});
+
+test('rich auto-sizing includes paragraph spacing and indented mixed-run line metrics', () => {
+  const node = createNode('text', {
+    text: 'ab\nc', width: 50, height: 20, fontSize: 10, lineHeight: 1,
+    paragraphSpacing: 7, firstLineIndent: 12, textFit: 'auto-width',
+    textRuns: [{ text: 'ab', fontSize: 20 }, { text: '\nc', fontSize: 30 }]
+  });
+  const ctx = fontAwareContext();
+  assert.deepEqual(calculateTextBox(ctx, node), { width: 34, height: 61 });
+
+  node.textFit = 'auto-height';
+  node.width = 40;
+  assert.deepEqual(calculateTextBox(ctx, node), { width: 40, height: 61 });
 });
 
 test('rich text sizing falls back to the legacy uniform path when runs do not match text', () => {

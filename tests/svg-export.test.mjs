@@ -417,6 +417,58 @@ test('exports mixed text runs with matching font metrics, wrapping, colors, and 
   assert.match(svg, /viewBox="0 -1\.5 35 46\.5"/);
 });
 
+test('paragraph spacing and first-line indentation match plain and rich SVG text geometry', () => {
+  const wrappedPlain = createNode('text', {
+    width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'one two',
+    textFit: 'fixed', firstLineIndent: 20
+  });
+  const wrappedPlainSvg = exportNodeToSvg(wrappedPlain, { measureText: value => value.length * 5 });
+  assert.match(wrappedPlainSvg, /<tspan x="20" y="0" textLength="15" lengthAdjust="spacingAndGlyphs">one<\/tspan>/);
+  assert.match(wrappedPlainSvg, /<tspan x="0" y="10" textLength="15" lengthAdjust="spacingAndGlyphs">two<\/tspan>/);
+
+  const plain = createNode('text', {
+    width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'a\n\nb',
+    textFit: 'fixed', paragraphSpacing: 15, firstLineIndent: 10, textDecoration: 'underline'
+  });
+  const plainSvg = exportNodeToSvg(plain, { measureText: value => value.length * 5 });
+  assert.match(plainSvg, /<tspan x="10" y="0" textLength="5" lengthAdjust="spacingAndGlyphs">a<\/tspan>/);
+  assert.match(plainSvg, /<tspan x="0" y="25"><\/tspan>/, 'the empty paragraph keeps its vertical position without inheriting indentation');
+  assert.match(plainSvg, /<tspan x="10" y="50" textLength="5" lengthAdjust="spacingAndGlyphs">b<\/tspan>/);
+  assert.match(plainSvg, /<path d="M 10 10\.3 L 15 10\.3"/);
+  assert.match(plainSvg, /<path d="M 10 60\.3 L 15 60\.3"/);
+  assert.doesNotMatch(plainSvg, /<path d="M 0 35\.3 L 0 35\.3"/, 'an empty paragraph has no underline');
+  assert.match(plainSvg, /viewBox="0 -1\.5 50 64"/, 'bounds include the final paragraph glyphs outside the text box');
+
+  const rich = createNode('text', {
+    width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'a\n\nb',
+    textFit: 'fixed', paragraphSpacing: 15, firstLineIndent: 10,
+    textRuns: [{ text: 'a\n\nb', textDecoration: 'underline' }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText: (value, node) => value.length * Number(node.fontSize) * .5 });
+  assert.match(richSvg, /<tspan x="10" y="0" textLength="5" lengthAdjust="spacingAndGlyphs"><tspan/);
+  assert.match(richSvg, /<tspan x="0" y="25"><\/tspan>/);
+  assert.match(richSvg, /<tspan x="10" y="50" textLength="5" lengthAdjust="spacingAndGlyphs"><tspan/);
+  assert.match(richSvg, /<path d="M 10 10\.3 L 15 10\.3"/);
+  assert.match(richSvg, /<path d="M 10 60\.3 L 15 60\.3"/);
+  assert.match(richSvg, /viewBox="0 -1\.5 50 64"/);
+
+  const wrappedRich = createNode('text', {
+    width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'one two',
+    textFit: 'fixed', firstLineIndent: 20, textRuns: [{ text: 'one two' }]
+  });
+  const wrappedRichSvg = exportNodeToSvg(wrappedRich, { measureText: (value, node) => value.length * Number(node.fontSize) * .5 });
+  assert.match(wrappedRichSvg, /<tspan x="20" y="0" textLength="15" lengthAdjust="spacingAndGlyphs"><tspan/);
+  assert.match(wrappedRichSvg, /<tspan x="0" y="10" textLength="15" lengthAdjust="spacingAndGlyphs"><tspan/);
+
+  const trailingEmptyParagraphs = createNode('text', {
+    width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'a\n\n',
+    textFit: 'fixed', paragraphSpacing: 15, textDecoration: 'underline'
+  });
+  const trailingSvg = exportNodeToSvg(trailingEmptyParagraphs, { measureText: value => value.length * 5 });
+  assert.match(trailingSvg, /<tspan x="0" y="50"><\/tspan>/);
+  assert.match(trailingSvg, /viewBox="0 -1\.5 50 21\.5"/, 'empty trailing paragraphs advance layout but add no painted bounds');
+});
+
 test('polygon and star point generation matches the editor for fractional counts', () => {
   const polygon = exportNodeToSvg(createNode('polygon', { points: 5.5 }));
   const polygonPoints = polygon.match(/<polygon points="([^"]+)"/)[1].split(' ');

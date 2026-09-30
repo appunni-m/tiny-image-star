@@ -74,7 +74,7 @@ test('Inspect output generates a deterministic React component with the selected
   assert.match(output.jsx, /<style>\{styles\}<\/style>/);
   assert.match(output.jsx, /\.card-[a-z0-9_-]+ \{/);
   assert.match(output.jsx, /className=\{"card-[a-z0-9_-]+"\} data-layer-type=\{"frame"\}/);
-  assert.match(output.jsx, /className=\{"title-[a-z0-9_-]+"\} data-layer-type=\{"text"\}>\{"Save <changes> & keep"\}/);
+  assert.match(output.jsx, /className=\{"title-[a-z0-9_-]+"\} data-layer-type=\{"text"\}>\n\s+<span className=\{"title-[a-z0-9_-]+__paragraph"\}>\{"Save <changes> & keep"\}<\/span>/);
   assert.match(output.jsx, /className=\{"badge-[a-z0-9_-]+"\} data-layer-type=\{"ellipse"\}/);
   assert.equal((output.jsx.match(/data-layer-type=\{"text"\}/g) || []).length, 1, 'selected descendant layers should not be emitted twice');
   assert.match(output.jsx, /<>[\s\S]*<div className=\{"card-[^\n]+[\s\S]*<\/div>[\s\S]*<\/>/);
@@ -93,6 +93,40 @@ test('Inspect React JSX safely serializes hostile text, image labels, and JavaSc
   assert.ok(jsx.includes(`aria-label={${JSON.stringify('local " image.png')}}`), 'image labels are serialized as string expressions');
   assert.doesNotMatch(jsx, /aria-label="local " image\.png"/);
   assert.match(jsx, /const styles = "[\s\S]*";/, 'CSS is embedded as a quoted JavaScript string');
+});
+
+test('Inspect HTML, JSX, CSS, and typography data preserve paragraph spacing and indentation', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    name: 'Paragraph sample', text: 'First paragraph\nSecond paragraph\n\nLast paragraph',
+    paragraphSpacing: 8, firstLineIndent: 12, fontSize: 20, lineHeight: 1.4
+  });
+  addNode(document, text);
+  const output = buildInspectOutput(document, [findNode(document, text.id)]);
+
+  assert.match(output.html, /<span class="paragraph-sample-[a-z0-9_-]+" data-layer-type="text"><span class="paragraph-sample-[a-z0-9_-]+__paragraph">First paragraph<\/span><span class="paragraph-sample-[a-z0-9_-]+__paragraph">Second paragraph<\/span><span class="paragraph-sample-[a-z0-9_-]+__paragraph"><\/span><span class="paragraph-sample-[a-z0-9_-]+__paragraph">Last paragraph<\/span><\/span>/);
+  assert.match(output.jsx, /<span className=\{"paragraph-sample-[a-z0-9_-]+__paragraph"\}>\{"First paragraph"\}<\/span>[\s\S]*<span className=\{"paragraph-sample-[a-z0-9_-]+__paragraph"\}>\{"Second paragraph"\}<\/span>[\s\S]*<span className=\{"paragraph-sample-[a-z0-9_-]+__paragraph"\}>\{\""\}<\/span>[\s\S]*<span className=\{"paragraph-sample-[a-z0-9_-]+__paragraph"\}>\{"Last paragraph"\}<\/span>/);
+  assert.match(output.css, /\.paragraph-sample-[a-z0-9_-]+__paragraph \{[\s\S]*margin: 0;[\s\S]*min-height: 28px;[\s\S]*text-indent: 12px;[\s\S]*white-space: pre-wrap;/);
+  assert.match(output.css, /\.paragraph-sample-[a-z0-9_-]+ > \.paragraph-sample-[a-z0-9_-]+__paragraph \+ \.paragraph-sample-[a-z0-9_-]+__paragraph \{\n  margin-block-start: 8px;/);
+  assert.equal(output.layers[0].typography.paragraphSpacing, 8);
+  assert.equal(output.layers[0].typography.firstLineIndent, 12);
+});
+
+test('Inspect handoff clamps first-line indentation to leave room in narrow text boxes', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    name: 'Narrow paragraph', text: 'A short line', width: 8, height: 30,
+    firstLineIndent: 12
+  });
+  addNode(document, text);
+
+  const output = buildInspectOutput(document, [findNode(document, text.id)]);
+
+  assert.match(output.css, /text-indent: 7px;/);
+  assert.doesNotMatch(output.css, /text-indent: 12px;/);
+  assert.match(output.html, /<span class="narrow-paragraph-[a-z0-9_-]+__paragraph">A short line<\/span>/);
+  assert.match(output.jsx, /text-indent: 7px;/);
+  assert.equal(output.layers[0].typography.firstLineIndent, 12, 'layer data retains the authored indent');
 });
 
 test('Inspect output describes responsive grid layout and multiple selected layers', () => {
@@ -202,7 +236,7 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
   });
 });
 

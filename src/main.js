@@ -658,6 +658,8 @@ function textSection(node) {
   const fontSize = getNodePropertyValue(state.document, node, 'fontSize');
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
+  const paragraphSpacing = node.paragraphSpacing || 0;
+  const firstLineIndent = node.firstLineIndent || 0;
   const textFit = node.textFit || 'auto-height';
   const fontFamilies = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Georgia, serif', 'monospace', 'system-ui, sans-serif', 'Verdana, sans-serif', 'Trebuchet MS, sans-serif', 'Times New Roman, serif', 'Courier New, monospace'];
   const familyOptions = fontFamilies.map(family => `<option value="${escapeHtml(family)}"></option>`).join('');
@@ -665,7 +667,7 @@ function textSection(node) {
     .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
     .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -1917,6 +1919,8 @@ function resizeTextNode(node) {
     fontSize: getNodePropertyValue(state.document, node, 'fontSize'),
     lineHeight: getNodePropertyValue(state.document, node, 'lineHeight'),
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
+    paragraphSpacing: node.paragraphSpacing,
+    firstLineIndent: node.firstLineIndent,
     text: getNodePropertyValue(state.document, node, 'text')
   });
   if (!node.variableBindings?.width) node.width = size.width;
@@ -2169,10 +2173,10 @@ function updateTextFormatToolbar() {
   bold.disabled = !selected; italic.disabled = !selected;
   bold.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontWeight', node, value => Number(value) >= 600)));
   italic.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontStyle', node, value => value === 'italic')));
-  const size = $('#text-format-size'); const color = $('#text-format-color');
+  const size = $('#text-format-size'); const lineHeight = $('#text-format-line-height'); const color = $('#text-format-color');
   const family = $('#text-format-family'); const weight = $('#text-format-weight');
   const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration');
-  for (const control of [size, color, family, weight, spacing, decoration]) control.disabled = !selected;
+  for (const control of [size, lineHeight, color, family, weight, spacing, decoration]) control.disabled = !selected;
   let firstRun = {};
   if (selected) {
     let cursor = 0;
@@ -2186,6 +2190,7 @@ function updateTextFormatToolbar() {
   family.value = String(effectiveTextRunValue(firstRun, 'fontFamily', node) || base.fontFamily);
   weight.value = String(effectiveTextRunValue(firstRun, 'fontWeight', node) || base.fontWeight);
   size.value = String(Math.max(1, Math.min(512, Math.round(effectiveTextRunValue(firstRun, 'fontSize', node) || base.fontSize))));
+  lineHeight.value = String(effectiveTextRunValue(firstRun, 'lineHeight', node) || base.lineHeight);
   spacing.value = String(effectiveTextRunValue(firstRun, 'letterSpacing', node) ?? base.letterSpacing);
   decoration.value = effectiveTextRunValue(firstRun, 'textDecoration', node) || base.textDecoration;
   color.value = parseTextRunColor(effectiveTextRunValue(firstRun, 'color', node)) || '#1e1e1e';
@@ -2371,6 +2376,10 @@ function initRichTextEditorEvents() {
       const value = Number(event.target.value);
       if (Number.isFinite(value) && value > 0 && value <= 512) applyTextFormat('fontSize', value);
       else updateTextFormatToolbar();
+    } else if (event.target.id === 'text-format-line-height') {
+      const value = Number(event.target.value);
+      if (Number.isFinite(value) && value > 0 && value <= 100) applyTextFormat('lineHeight', value);
+      else updateTextFormatToolbar();
     } else if (event.target.id === 'text-format-color') {
       const value = parseTextRunColor(event.target.value);
       if (value) applyTextFormat('color', value);
@@ -2534,6 +2543,7 @@ function updateInspectorInput(event) {
   const propertyValue = prop === 'opacity' ? value / 100
     : prop === 'points' ? Math.max(3, Math.min(32, Math.round(Number.isFinite(value) ? value : 3)))
     : prop === 'innerRadius' ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : .48))
+      : ['paragraphSpacing', 'firstLineIndent'].includes(prop) ? Math.max(0, Math.min(10_000, Number.isFinite(value) ? value : 0))
         : value;
   if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
@@ -2607,10 +2617,10 @@ function updateInspectorInput(event) {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
-    else if (prop === 'points' || prop === 'innerRadius') node[prop] = propertyValue;
+    else if (prop === 'points' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
-    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
+    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
@@ -2980,7 +2990,7 @@ function applyTypographyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => node.type === 'text');
   if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
   const layoutParents = new Set();
   for (const node of compatible) {
     applyTypographyStyle(state.document, node.id, style.id);

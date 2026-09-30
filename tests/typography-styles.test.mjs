@@ -15,6 +15,8 @@ const styleValues = style => ({
   fontStyle: style.fontStyle,
   lineHeight: style.lineHeight,
   letterSpacing: style.letterSpacing,
+  paragraphSpacing: style.paragraphSpacing,
+  firstLineIndent: style.firstLineIndent,
   align: style.align,
   color: style.color,
   textCase: style.textCase,
@@ -37,7 +39,7 @@ function makeTypographyFixture() {
   const frame = createNode('frame', { variableModes: { [collection.id]: dark.id } });
   const source = createNode('text', {
     name: 'Hero heading', text: 'Source copy', x: 16, y: 24, width: 320, height: 72,
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 650,
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 650, paragraphSpacing: 9, firstLineIndent: 18,
     fontStyle: 'italic', align: 'center', textCase: 'capitalize', textDecoration: 'underline'
   });
   addNode(document, frame);
@@ -57,7 +59,8 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(source.textStyleId, undefined);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
+    align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   const id = style.id;
@@ -69,7 +72,8 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(getNodePropertyValue(document, source, 'fontSize'), 42);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
+    align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   }, 'existing style values do not follow later variable edits');
 
   assert.equal(updateTypographyStyle(document, style.id, source.id), true);
@@ -77,14 +81,16 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.equal(style.name, 'Display heading');
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
+    align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   setColorVariableValue(document, ink.id, '#1e824c', dark.id);
   setVariableValue(document, size.id, 28, dark.id);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
-    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
+    align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   }, 'updated values remain a snapshot');
 });
 
@@ -99,7 +105,7 @@ test('applying a typography style preserves text and geometry and clears conflic
   const target = createNode('text', {
     name: 'Keep this layer', text: 'Keep this exact copy', x: 41, y: 58, width: 287, height: 63,
     rotation: 7, fontFamily: 'Arial, sans-serif', fontSize: 12, fontWeight: 300,
-    fontStyle: 'normal', lineHeight: 1, letterSpacing: -0.25, align: 'right', color: '#aabbcc',
+    fontStyle: 'normal', lineHeight: 1, letterSpacing: -0.25, paragraphSpacing: 2, firstLineIndent: 3, align: 'right', color: '#aabbcc',
     textVariableId: oldInk.id, textStyleId: 'old-text-style', textCase: 'lowercase', textDecoration: 'line-through'
   });
   addNode(document, target, { parentId: frame.id });
@@ -112,6 +118,8 @@ test('applying a typography style preserves text and geometry and clears conflic
   };
 
   assert.equal(applyTypographyStyle(document, target.id, style.id), true);
+  assert.equal(target.paragraphSpacing, 9);
+  assert.equal(target.firstLineIndent, 18);
   assert.deepEqual(styleValues(target), styleValues(style));
   assert.equal(target.text, original.text);
   assert.deepEqual(
@@ -152,6 +160,8 @@ test('legacy typography styles without case or decoration remain valid and apply
   const style = createTypographyStyle(document, source.id, 'Legacy style');
   delete style.textCase;
   delete style.textDecoration;
+  delete style.paragraphSpacing;
+  delete style.firstLineIndent;
   const target = createNode('text', { textCase: 'uppercase', textDecoration: 'line-through' });
   addNode(document, target);
 
@@ -159,6 +169,8 @@ test('legacy typography styles without case or decoration remain valid and apply
   assert.equal(applyTypographyStyle(document, target.id, style.id), true);
   assert.equal(target.textCase, 'none');
   assert.equal(target.textDecoration, 'none');
+  assert.equal(target.paragraphSpacing, 0);
+  assert.equal(target.firstLineIndent, 0);
 });
 
 test('document validation and serialization reject malformed and duplicate typography styles', () => {
@@ -172,6 +184,8 @@ test('document validation and serialization reject malformed and duplicate typog
     ['unsupported font style', value => { value.fontStyle = 'oblique'; }],
     ['non-positive line height', value => { value.lineHeight = 0; }],
     ['non-finite tracking', value => { value.letterSpacing = Infinity; }],
+    ['negative paragraph spacing', value => { value.paragraphSpacing = -1; }],
+    ['oversized first-line indent', value => { value.firstLineIndent = 10_001; }],
     ['unsupported alignment', value => { value.align = 'justify'; }],
     ['unsupported text case', value => { value.textCase = 'title-case'; }],
     ['unsupported text decoration', value => { value.textDecoration = 'overline'; }],

@@ -11,6 +11,29 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(validateDocument(document), true);
 });
 
+test('paragraph spacing and first-line indentation validate and survive local serialization', () => {
+  const document = createDocument();
+  const text = createNode('text', { text: 'First\nSecond', paragraphSpacing: 8, firstLineIndent: 14 });
+  addNode(document, text);
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children[0].paragraphSpacing, 8);
+  assert.equal(restored.pages[0].children[0].firstLineIndent, 14);
+  assert.equal(validateDocument(restored), true);
+
+  for (const property of ['paragraphSpacing', 'firstLineIndent']) {
+    for (const invalid of [-1, 10_001, Infinity]) {
+      const candidate = structuredClone(restored);
+      candidate.pages[0].children[0][property] = invalid;
+      assert.throws(() => validateDocument(candidate), /Invalid paragraph typography/);
+    }
+  }
+
+  const wrongLayer = createNode('rectangle', { paragraphSpacing: 1 });
+  addNode(document, wrongLayer);
+  assert.throws(() => validateDocument(document), /Invalid paragraph typography/);
+});
+
 test('editable polygon and star geometry persists and rejects invalid shape values', () => {
   const document = createDocument();
   const polygon = createNode('polygon', { points: 9 });
@@ -236,7 +259,7 @@ test('rich text runs are optional, validated, and preserved in local design seri
     text: 'Hello bold world',
     textRuns: [
       { text: 'Hello ' },
-      { text: 'bold', fontWeight: 700, color: '#ff2200', textDecoration: 'underline' },
+      { text: 'bold', fontWeight: 700, lineHeight: 1.6, color: '#ff2200', textDecoration: 'underline' },
       { text: ' world', fontStyle: 'italic', fontSize: 18 }
     ]
   });
@@ -254,6 +277,7 @@ test('rich text runs are optional, validated, and preserved in local design seri
   const invalidCases = [
     ['text mismatch', runs => { runs.pages[0].children[0].text = 'Different'; }],
     ['unsupported style', runs => { runs.pages[0].children[0].textRuns[1].fontStyle = 'oblique'; }],
+    ['invalid line height', runs => { runs.pages[0].children[0].textRuns[1].lineHeight = 0; }],
     ['invalid color', runs => { runs.pages[0].children[0].textRuns[1].color = 'red'; }],
     ['unknown field', runs => { runs.pages[0].children[0].textRuns[1].opacity = .5; }],
     ['empty run', runs => { runs.pages[0].children[0].textRuns[1].text = ''; }]

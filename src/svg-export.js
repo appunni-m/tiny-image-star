@@ -1,5 +1,5 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
-import { layoutTextRuns, transformTextCase, wrapTextWithMeasure } from './text-layout.js';
+import { layoutPlainText, layoutTextRuns, transformTextCase } from './text-layout.js';
 import { isValidGradientFill } from './fills.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { isValidImageTransforms } from './image-transforms.js';
@@ -367,7 +367,11 @@ function networkMarkup(node, document, gradientId = null, { includeFills = true 
 function textLines(node, document, measureText) {
   const sourceText = String(getNodePropertyValue(document, node, 'text') ?? '');
   const text = transformTextCase(sourceText, node.textCase || 'none');
-  if (!text) return [{ displayText: '', index: 0, naturalWidth: 0, width: 0 }];
+  if (!text) {
+    const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
+    const lineHeight = fontSize * Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25);
+    return [{ displayText: '', index: 0, paragraphIndex: 0, firstLine: true, indent: 0, naturalWidth: 0, width: 0, y: 0, lineHeight }];
+  }
   if (Number(node.width) <= 0) throw new TypeError(`SVG export cannot faithfully render text in a zero-width box on layer ${node.name || node.id || '(unnamed)'}.`);
   if (typeof measureText !== 'function') throw new TypeError(`SVG export requires canvas text measurement to match editor wrapping on layer ${node.name || node.id || '(unnamed)'}.`);
 
@@ -380,6 +384,8 @@ function textLines(node, document, measureText) {
       fontStyle: node.fontStyle || 'normal',
       lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+      paragraphSpacing: node.paragraphSpacing || 0,
+      firstLineIndent: node.firstLineIndent || 0,
       color: color(document, node, 'text'),
       textDecoration: node.textDecoration || 'none',
       textCase: node.textCase || 'none'
@@ -398,23 +404,45 @@ function textLines(node, document, measureText) {
     return layout.lines;
   }
 
+  const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
+  const lineHeight = fontSize * Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25);
   const measure = line => Number(measureText(line, node));
-  const displayLines = wrapTextWithMeasure(text, Math.max(1, Number(node.width)), measure);
-  return displayLines.map((displayText, index) => {
+  const layout = layoutPlainText(text, Math.max(1, Number(node.width)), measure, {
+    lineHeight,
+    paragraphSpacing: node.paragraphSpacing,
+    firstLineIndent: node.firstLineIndent
+  });
+  return layout.lines.map(line => {
+    const { displayText, index, indent } = line;
     const naturalWidth = measure(displayText);
     if (!Number.isFinite(naturalWidth) || naturalWidth < 0) throw new TypeError(`SVG export requires a finite text measurement on layer ${node.name || node.id || '(unnamed)'}.`);
-    return { displayText, index, naturalWidth, width: Math.min(Number(node.width), naturalWidth) };
+    return { ...line, naturalWidth, width: Math.min(Number(node.width) - indent, naturalWidth) };
   });
 }
 
 function textVerticalOffset(node, lines, lineHeight) {
-  const contentHeight = lines.some(line => Array.isArray(line.parts))
-    ? lines.reduce((height, line) => Math.max(height, Number(line.y) + Number(line.lineHeight || 0)), 0)
-    : lines.length * lineHeight;
+  const contentHeight = lines.reduce((height, line) => Math.max(height, Number(line.y || 0) + Number(line.lineHeight || lineHeight)), 0);
   const freeSpace = Math.max(0, Number(node.height) - contentHeight);
   if (node.verticalAlign === 'middle') return freeSpace / 2;
   if (node.verticalAlign === 'bottom') return freeSpace;
   return 0;
+}
+
+function textLineStartX(node, line) {
+  const width = Math.max(0, Number(node.width));
+  const indent = Math.max(0, Number(line.indent) || 0);
+  const availableWidth = Math.max(1, width - indent);
+  const lineWidth = Math.max(0, Number(line.width) || 0);
+  if (node.align === 'center') return indent + (availableWidth - lineWidth) / 2;
+  if (node.align === 'right') return indent + availableWidth - lineWidth;
+  return indent;
+}
+
+function textLineAnchorX(node, line) {
+  const start = textLineStartX(node, line);
+  if (node.align === 'center') return start + (Number(line.width) || 0) / 2;
+  if (node.align === 'right') return start + (Number(line.width) || 0);
+  return start;
 }
 
 function textMarkup(node, document, measureText) {
@@ -437,6 +465,7 @@ function textMarkup(node, document, measureText) {
     const decorations = [];
     const richTspans = lines.map(line => {
       const textLength = line.width > 0 ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
+      const lineAnchorX = textLineAnchorX(node, line);
       const parts = line.parts.map(part => {
         const style = part.style;
         const partColor = style.color === 'transparent' ? 'none' : style.color;
@@ -446,7 +475,7 @@ function textMarkup(node, document, measureText) {
         const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}" fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
         if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
-        const lineStartX = node.align === 'center' ? (Number(node.width) - line.width) / 2 : node.align === 'right' ? Number(node.width) - line.width : 0;
+        const lineStartX = textLineStartX(node, line);
         const x = lineStartX + part.offsetX * scaleX;
         const decorationWidth = Math.max(1, style.fontSize / 16);
         const y = line.y + verticalOffset + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
@@ -454,7 +483,7 @@ function textMarkup(node, document, measureText) {
         decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + part.width * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
         return partMarkup;
       }).join('');
-      return `<tspan x="${number(anchorX)}" y="${number(line.y + verticalOffset)}"${textLength}>${parts}</tspan>`;
+      return `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${textLength}>${parts}</tspan>`;
     }).join('');
     const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
     const border = node.stroke && Number(node.strokeWidth) > 0
@@ -462,10 +491,12 @@ function textMarkup(node, document, measureText) {
       : '';
     return element + border + decorations.join('');
   }
-  const tspans = lines.map(({ displayText, index, width, naturalWidth }) => {
+  const tspans = lines.map(line => {
+    const { displayText, width, naturalWidth } = line;
+    const lineAnchorX = textLineAnchorX(node, line);
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
-    return `<tspan x="${number(anchorX)}" y="${number(index * lineHeight + verticalOffset)}"${textLength}>${escapeXml(displayText)}</tspan>`;
+    return `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${textLength}>${escapeXml(displayText)}</tspan>`;
   }).join('');
   const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
   const border = node.stroke && Number(node.strokeWidth) > 0
@@ -475,10 +506,10 @@ function textMarkup(node, document, measureText) {
   const textColor = color(document, node, 'text');
   const textOpacity = node.fillOpacity ?? 1;
   const decorationWidth = Math.max(1, fontSize / 16);
-  const decorations = decoration ? lines.map(({ index, width }) => {
-    const x = node.align === 'center' ? (Number(node.width) - width) / 2 : node.align === 'right' ? Number(node.width) - width : 0;
-    const y = index * lineHeight + verticalOffset + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
-    return `<path d="M ${number(x)} ${number(y)} L ${number(x + width)} ${number(y)}" fill="none" stroke="${escapeXml(textColor === 'transparent' ? 'none' : textColor)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`;
+  const decorations = decoration ? lines.filter(line => line.width > 0).map(line => {
+    const x = textLineStartX(node, line);
+    const y = line.y + verticalOffset + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
+    return `<path d="M ${number(x)} ${number(y)} L ${number(x + line.width)} ${number(y)}" fill="none" stroke="${escapeXml(textColor === 'transparent' ? 'none' : textColor)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`;
   }).join('') : '';
   return element + border + decorations;
 }
@@ -667,7 +698,8 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
         const verticalOffset = textVerticalOffset(node, lines, lineHeight);
         for (const line of lines) {
           const lineWidth = line.width;
-          const startX = node.align === 'center' ? (width - lineWidth) / 2 : node.align === 'right' ? width - lineWidth : 0;
+          if (lineWidth <= 0) continue;
+          const startX = textLineStartX(node, line);
           if (Array.isArray(line.parts)) {
             const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
             const parts = line.parts.length ? line.parts : [{ offsetX: 0, width: line.width, style: { fontSize, textDecoration: node.textDecoration } }];
@@ -682,7 +714,7 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
               for (const [x, y] of [[x1, top], [x2, top], [x1, bottom], [x2, bottom]]) include(transformPoint(matrix, x, y), bounds);
             }
           } else {
-            const lineTop = line.index * lineHeight + verticalOffset;
+            const lineTop = line.y + verticalOffset;
             const top = lineTop - fontSize * .15;
             const bottom = Math.max(lineTop + fontSize * 1.25, lineTop + fontSize * (node.textDecoration === 'underline' ? 1.03 : .55));
             for (const [x, y] of [[startX, top], [startX + lineWidth, top], [startX, bottom], [startX + lineWidth, bottom]]) include(transformPoint(matrix, x, y), bounds);

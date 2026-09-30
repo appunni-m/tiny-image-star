@@ -153,7 +153,7 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }, transforms: { crop: null, rotation: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
@@ -227,7 +227,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -1270,7 +1270,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration'];
 
 function typographyStyleValues(document, node) {
   return {
@@ -1280,6 +1280,8 @@ function typographyStyleValues(document, node) {
     fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
+    paragraphSpacing: Number(node.paragraphSpacing) || 0,
+    firstLineIndent: Number(node.firstLineIndent) || 0,
     align: node.align || 'left',
     verticalAlign: textVerticalAlignments.has(node.verticalAlign) ? node.verticalAlign : 'top',
     color: getNodeColor(document, node, 'text'),
@@ -1303,7 +1305,10 @@ export function applyTypographyStyle(document, nodeId, styleId, pageId = documen
   const node = findNode(document, nodeId, pageId)?.node;
   const style = document.typographyStyles?.find(item => item.id === styleId);
   if (!node || node.type !== 'text' || !style) return false;
-  for (const property of typographyStyleProperties) node[property] = style[property];
+  for (const property of typographyStyleProperties) {
+    if (property === 'paragraphSpacing' || property === 'firstLineIndent') node[property] = Number(style[property]) || 0;
+    else node[property] = style[property];
+  }
   node.textVariableId = null;
   node.textStyleId = null;
   node.variableBindings ||= {};
@@ -2139,6 +2144,10 @@ export function validateDocument(document) {
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
       if (node.verticalAlign != null && (node.type !== 'text' || !textVerticalAlignments.has(node.verticalAlign))) throw new TypeError(`Invalid text vertical alignment on layer ${node.name || node.id}.`);
+      if (['paragraphSpacing', 'firstLineIndent'].some(property => node[property] != null
+        && (node.type !== 'text' || !Number.isFinite(node[property]) || node[property] < 0 || node[property] > 10_000))) {
+        throw new TypeError(`Invalid paragraph typography on layer ${node.name || node.id}.`);
+      }
       if (node.textRuns != null && (node.type !== 'text' || !isValidTextRuns(node.textRuns, node.text))) throw new TypeError(`Invalid rich text runs on layer ${node.name || node.id}.`);
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
       if (node.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(node.fontWeight))) throw new TypeError(`Invalid font weight on layer ${node.name || node.id}.`);
@@ -2286,6 +2295,10 @@ export function validateDocument(document) {
           if (overrides.textDecoration != null && (node.type !== 'text' || !textDecorations.has(overrides.textDecoration))) throw new TypeError(`Invalid component text decoration override on ${node.name || node.id}.`);
           if (overrides.verticalAlign != null) {
             if (sourceNode?.type !== 'text' || !textVerticalAlignments.has(overrides.verticalAlign)) throw new TypeError(`Invalid component text vertical alignment override on ${node.name || node.id}.`);
+          }
+          if (['paragraphSpacing', 'firstLineIndent'].some(property => overrides[property] != null
+            && (sourceNode?.type !== 'text' || !Number.isFinite(overrides[property]) || overrides[property] < 0 || overrides[property] > 10_000))) {
+            throw new TypeError(`Invalid component paragraph typography override on ${node.name || node.id}.`);
           }
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
         }
@@ -2514,6 +2527,8 @@ export function validateDocument(document) {
         || !['normal', 'italic'].includes(style.fontStyle)
         || !Number.isFinite(style.lineHeight) || style.lineHeight <= 0
         || !Number.isFinite(style.letterSpacing)
+        || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))
+        || (style.firstLineIndent != null && (!Number.isFinite(style.firstLineIndent) || style.firstLineIndent < 0 || style.firstLineIndent > 10_000))
         || !['left', 'center', 'right'].includes(style.align)
         || (style.verticalAlign != null && !textVerticalAlignments.has(style.verticalAlign))
         || (style.textCase != null && !textCases.has(style.textCase))

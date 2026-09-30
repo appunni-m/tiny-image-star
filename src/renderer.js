@@ -1,7 +1,7 @@
 import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
-import { measureTrackedText, textGraphemes, transformTextCase, wrapText } from './text-layout.js';
+import { layoutPlainText, layoutTextRuns, measureTrackedText, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
@@ -12,7 +12,6 @@ import { drawAlignmentGuides } from './smart-guides.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
-const richWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
 
 /** Return the selection outline and all transform handles in page coordinates. */
 export function selectionOverlayGeometry(node, ancestors = [], { zoom = 1, rotateOffset = 24 } = {}) {
@@ -234,159 +233,44 @@ export function textVerticalOffset(boxHeight, contentHeight, alignment = 'top') 
   return 0;
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
-
-function richStyle(baseStyle, run) {
-  const style = {};
-  for (const key of richTextStyleKeys) style[key] = run[key] ?? baseStyle[key];
-  style.fontFamily ||= 'Arial, sans-serif';
-  style.fontSize = Math.max(1, Number(style.fontSize) || 24);
-  style.fontWeight = Number(style.fontWeight) || 400;
-  style.fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal';
-  style.lineHeight = Math.max(.1, Number(style.lineHeight) || 1.25);
-  style.letterSpacing = Number(style.letterSpacing) || 0;
-  style.color ||= '#1e1e1e';
-  style.textDecoration ||= 'none';
-  return style;
-}
-
 function richFont(style) {
   return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
 }
 
-function sameRichStyle(a, b) {
-  return richTextStyleKeys.every(key => a[key] === b[key]);
-}
-
-function appendRichPart(parts, text, style) {
-  if (!text) return;
-  const previous = parts.at(-1);
-  if (previous && sameRichStyle(previous.style, style)) previous.text += text;
-  else parts.push({ text, style });
-}
-
-function transformRichCharacters(runs, baseStyle) {
-  const characters = [];
-  let offset = 0;
-  for (const run of runs) {
-    const style = richStyle(baseStyle, run);
-    for (const text of textGraphemes(run.text)) {
-      characters.push({ text, style, start: offset, end: offset + text.length });
-      offset += text.length;
-    }
-  }
-  const mode = baseStyle.textCase || 'none';
-  if (mode === 'uppercase') for (const item of characters) item.text = item.text.toUpperCase();
-  else if (mode === 'lowercase') for (const item of characters) item.text = item.text.toLowerCase();
-  else if (mode === 'capitalize') {
-    const source = characters.map(item => item.text).join('');
-    if (richWordSegmenter) {
-      let characterIndex = 0;
-      for (const segment of richWordSegmenter.segment(source)) {
-        if (!segment.isWordLike) continue;
-        while (characterIndex < characters.length && characters[characterIndex].start < segment.index) characterIndex += 1;
-        if (characters[characterIndex]?.start === segment.index) characters[characterIndex].text = characters[characterIndex].text.toUpperCase();
-      }
-    } else {
-      let inWord = false;
-      for (const item of characters) {
-        if (/^[\p{L}\p{N}]/u.test(item.text)) {
-          if (!inWord) item.text = item.text.toUpperCase();
-          inWord = true;
-        } else if (!/^['’]$/u.test(item.text)) inWord = false;
-      }
-    }
-  }
-  return characters;
-}
-
-function measureRichParts(ctx, parts) {
-  const previousFont = ctx.font;
-  let width = 0;
-  for (const part of parts) {
-    ctx.font = richFont(part.style);
-    width += measureTrackedText(ctx, part.text, part.style.letterSpacing);
-  }
-  ctx.font = previousFont;
-  return width;
-}
-
-function richParagraphs(ctx, runs, width, baseStyle) {
-  const paragraphs = [{ words: [], current: [], pendingSpaceStyle: null }];
-  const finishWord = paragraph => {
-    if (!paragraph.current.length) return;
-    paragraph.words.push({ parts: paragraph.current, spaceStyle: paragraph.words.length ? paragraph.pendingSpaceStyle : null });
-    paragraph.current = [];
-    paragraph.pendingSpaceStyle = null;
-  };
-  for (const character of transformRichCharacters(runs, baseStyle)) {
-    const paragraph = paragraphs.at(-1);
-    if (character.text === '\n' || character.text === '\r\n') {
-      finishWord(paragraph);
-      paragraphs.push({ words: [], current: [], pendingSpaceStyle: null });
-    } else if (/^\s+$/u.test(character.text)) {
-      finishWord(paragraph);
-      if (paragraph.words.length && !paragraph.pendingSpaceStyle) paragraph.pendingSpaceStyle = character.style;
-    } else appendRichPart(paragraph.current, character.text, character.style);
-  }
-  for (const paragraph of paragraphs) finishWord(paragraph);
-
-  const lines = [];
-  for (const paragraph of paragraphs) {
-    let line = [];
-    for (const word of paragraph.words) {
-      const candidate = line.length
-        ? [...line, { text: ' ', style: word.spaceStyle || line.at(-1).style }, ...word.parts]
-        : word.parts;
-      const mergedCandidate = [];
-      for (const part of candidate) appendRichPart(mergedCandidate, part.text, part.style);
-      if (line.length && measureRichParts(ctx, mergedCandidate) > width) {
-        lines.push(line);
-        line = word.parts;
-      } else line = mergedCandidate;
-    }
-    lines.push(line);
-  }
-  return lines;
-}
-
 /** Draws styled text runs using node-wide values as fallbacks for each run. */
 export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
-  const lines = richParagraphs(ctx, runs, Math.max(1, width), baseStyle);
-  const fallbackStyle = richStyle(baseStyle, {});
-  const lineHeights = lines.map(line => {
-    let lineHeight = line.length
-      ? line.reduce((maximum, part) => Math.max(maximum, part.style.fontSize * part.style.lineHeight), 0)
-      : fallbackStyle.fontSize * fallbackStyle.lineHeight;
-    if (!Number.isFinite(lineHeight) || lineHeight <= 0) lineHeight = fallbackStyle.fontSize * fallbackStyle.lineHeight;
-    return lineHeight;
-  });
-  const contentHeight = lineHeights.reduce((total, lineHeight) => total + lineHeight, 0);
+  const previousFont = ctx.font;
+  let layout;
+  try {
+    layout = layoutTextRuns(runs, Math.max(1, width), baseStyle, (text, style) => {
+      ctx.font = richFont(style);
+      return measureTrackedText(ctx, text, style.letterSpacing);
+    });
+  } finally {
+    ctx.font = previousFont;
+  }
+  const { lines } = layout;
+  const contentHeight = layout.height;
   let top = y + textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign);
-  for (const [lineIndex, line] of lines.entries()) {
-    const naturalWidth = measureRichParts(ctx, line);
-    const visibleWidth = Math.min(Math.max(1, width), naturalWidth);
-    const offsetX = baseStyle.align === 'center' ? (width - visibleWidth) / 2 : baseStyle.align === 'right' ? width - visibleWidth : 0;
-    const scaleX = naturalWidth > width && naturalWidth > 0 ? width / naturalWidth : 1;
+  for (const line of lines) {
+    const availableWidth = Math.max(1, width - line.indent);
+    const offsetX = line.indent + (baseStyle.align === 'center' ? (availableWidth - line.width) / 2 : baseStyle.align === 'right' ? availableWidth - line.width : 0);
+    const scaleX = line.naturalWidth > availableWidth && line.naturalWidth > 0 ? availableWidth / line.naturalWidth : 1;
 
     ctx.save();
-    ctx.translate(x + offsetX, top);
+    ctx.translate(x + offsetX, top + line.y);
     ctx.scale(scaleX, 1);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    let cursor = 0;
-    for (const part of line) {
-      const partWidth = measureRichParts(ctx, [part]);
+    for (const part of line.parts) {
       ctx.font = richFont(part.style);
       ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-      drawTrackedText(ctx, part.text, cursor, 0, part.style.letterSpacing);
-      drawTextDecoration(ctx, cursor, 0, partWidth, part.style.fontSize, part.style.textDecoration);
-      cursor += partWidth;
+      drawTrackedText(ctx, part.text, part.offsetX, 0, part.style.letterSpacing);
+      drawTextDecoration(ctx, part.offsetX, 0, part.width, part.style.fontSize, part.style.textDecoration);
     }
     ctx.restore();
-    top += lineHeights[lineIndex];
   }
-  return { lines, height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign) };
+  return { lines: lines.map(line => line.parts), height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign) };
 }
 
 export class SceneRenderer {
@@ -578,6 +462,8 @@ export class SceneRenderer {
           color: getNodeColor(document, node, 'text'),
           textCase: node.textCase || 'none',
           textDecoration: node.textDecoration || 'none',
+          paragraphSpacing: node.paragraphSpacing || 0,
+          firstLineIndent: node.firstLineIndent || 0,
           align: node.align || 'left',
           verticalAlign: node.verticalAlign || 'top',
           height,
@@ -591,14 +477,16 @@ export class SceneRenderer {
         const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
         ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
         ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-        const lines = wrapText(ctx, text, Math.max(1, width), letterSpacing);
         const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
-        const textY = y + textVerticalOffset(height, lines.length * lineHeight, node.verticalAlign || 'top');
-        lines.forEach((line, index) => {
-          const measuredWidth = Math.min(width, measureTrackedText(ctx, line, letterSpacing));
-          const offsetX = node.align === 'center' ? (width - measuredWidth) / 2 : node.align === 'right' ? width - measuredWidth : 0;
-          drawTrackedText(ctx, line, x + offsetX, textY + index * lineHeight, letterSpacing, width);
-          drawTextDecoration(ctx, x + offsetX, textY + index * lineHeight, measuredWidth, fontSize || 24, node.textDecoration || 'none');
+        const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
+          lineHeight, paragraphSpacing: node.paragraphSpacing, firstLineIndent: node.firstLineIndent
+        });
+        const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
+        layout.lines.forEach(line => {
+          const availableWidth = Math.max(1, width - line.indent);
+          const offsetX = line.indent + (node.align === 'center' ? (availableWidth - line.width) / 2 : node.align === 'right' ? availableWidth - line.width : 0);
+          drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
+          drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
         });
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
