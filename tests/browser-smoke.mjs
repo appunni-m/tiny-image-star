@@ -78,9 +78,9 @@ function dispatchImageCanvasContextMenu(app, xOffset = 32, yOffset = 24) {
 function dispatchShortcut(doc, key, { shift = false } = {}) {
   doc.body.dispatchEvent(new doc.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key, ctrlKey: true, shiftKey: shift }));
 }
-function dispatchCanvasPointer(app, canvas, type, clientX, clientY, pointerId = 71) {
+function dispatchCanvasPointer(app, canvas, type, clientX, clientY, pointerId = 71, pointerType = 'mouse', button = 0) {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
-  canvas.dispatchEvent(new app.defaultView.PointerEvent(type, { bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', button: 0, clientX, clientY }));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent(type, { bubbles: true, cancelable: true, pointerId, pointerType, button, clientX, clientY }));
 }
 function readStore(storeName) {
   return new Promise((resolve, reject) => {
@@ -93,11 +93,12 @@ function readStore(storeName) {
     };
   });
 }
-async function waitForStoredInteraction(nodeId, predicate, label, expectedDestinationId = null, timeout = 8000) {
+async function waitForStoredInteraction(nodeId, predicate, label, expectedDestinationId = null, timeout = 8000, expectedDocumentId = null) {
   const started = performance.now();
   let diagnostics = [];
   while (performance.now() - started < timeout) {
-    const records = await readStore('documents');
+    const allRecords = await readStore('documents');
+    const records = expectedDocumentId ? allRecords.filter(record => record.id === expectedDocumentId) : allRecords;
     const nodes = records.flatMap(record => record.document?.pages?.flatMap(page => flattenNodes(page.children)) || []);
     const source = nodes.find(node => node.id === nodeId);
     if (source?.interactions?.some(predicate)) return source;
@@ -107,7 +108,7 @@ async function waitForStoredInteraction(nodeId, predicate, label, expectedDestin
         documentId: record.id || record.document?.id || null,
         savedAt: record.savedAt ?? null,
         sourceFound: Boolean(sourceNode),
-        interactions: sourceNode?.interactions?.map(item => ({ trigger: item.trigger, action: item.action, delay: item.delay, destinationId: item.destinationId })) || []
+        interactions: sourceNode?.interactions?.map(item => ({ trigger: item.trigger, action: item.action, delay: item.delay, destinationId: item.destinationId, targetVariantId: item.targetVariantId })) || []
       };
     });
     await new Promise(resolve => setTimeout(resolve, 80));
@@ -513,6 +514,75 @@ try {
   await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('example.com/help?from=smoke')), 'safe Open Link interaction');
   await waitForSaveCycle(app, 'prototype action persistence');
 
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  let gestureAction = app.querySelector('#prototype-action');
+  gestureAction.value = 'navigate'; gestureAction.dispatchEvent(new Event('change', { bubbles: true }));
+  let gestureTrigger = app.querySelector('#prototype-trigger');
+  assert([...gestureTrigger.options].some(option => option.value === 'on-press'), 'prototype inspector did not offer On press');
+  assert([...gestureTrigger.options].some(option => option.value === 'on-drag'), 'prototype inspector did not offer On drag');
+  gestureTrigger.value = 'on-drag'; gestureTrigger.dispatchEvent(new Event('change', { bubbles: true }));
+  const gestureTransition = app.querySelector('#prototype-transition');
+  gestureTransition.value = 'instant'; gestureTransition.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 111);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 111);
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('On drag') && row.textContent.includes(overlayFrame.name)), 'On drag prototype connection');
+  await waitForStoredInteraction(sourceFrame.id,
+    item => item.trigger === 'on-drag' && item.destinationId === overlayFrame.id,
+    'On drag route', overlayFrame.id);
+
+  dispatchClick(app.querySelector('#present-button'));
+  await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id, 'On drag tap-only presentation');
+  const gestureCanvas = app.querySelector('#present-canvas');
+  const gestureRect = gestureCanvas.getBoundingClientRect();
+  const gestureX = gestureRect.left + gestureCanvas.clientWidth / 2;
+  const gestureY = gestureRect.top + gestureCanvas.clientHeight / 2;
+  dispatchCanvasPointer(app, gestureCanvas, 'pointerdown', gestureX, gestureY, 112);
+  dispatchCanvasPointer(app, gestureCanvas, 'pointerup', gestureX, gestureY, 112);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'tap remains an On click interaction');
+  assert(app.querySelector('#present-dialog').dataset.frameId !== overlayFrame.id, 'On drag fired without pointer movement');
+  await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'tap-only gesture presentation close');
+
+  dispatchClick(app.querySelector('#present-button'));
+  await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id, 'On drag movement presentation');
+  const dragRect = gestureCanvas.getBoundingClientRect();
+  const dragX = dragRect.left + gestureCanvas.clientWidth / 2;
+  const dragY = dragRect.top + gestureCanvas.clientHeight / 2;
+  dispatchCanvasPointer(app, gestureCanvas, 'pointerdown', dragX, dragY, 113);
+  dispatchCanvasPointer(app, gestureCanvas, 'pointermove', dragX + 24, dragY, 113);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === overlayFrame.id, 'actual pointer movement fires On drag');
+  dispatchCanvasPointer(app, gestureCanvas, 'pointerup', dragX + 24, dragY, 113);
+  assert(app.querySelector('#present-dialog').dataset.frameId === overlayFrame.id, 'a completed drag also fired the source On click route');
+  await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'drag presentation close');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  gestureAction = app.querySelector('#prototype-action');
+  gestureAction.value = 'navigate'; gestureAction.dispatchEvent(new Event('change', { bubbles: true }));
+  gestureTrigger = app.querySelector('#prototype-trigger');
+  gestureTrigger.value = 'on-press'; gestureTrigger.dispatchEvent(new Event('change', { bubbles: true }));
+  app.querySelector('#prototype-transition').value = 'instant'; app.querySelector('#prototype-transition').dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', targetX, targetY, 114);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', targetX, targetY, 114);
+  await waitFor(() => [...app.querySelectorAll('.prototype-interaction-row')].some(row => row.textContent.includes('On press / touch down') && row.textContent.includes(destinationFrame.name)), 'On press prototype connection');
+  await waitForStoredInteraction(sourceFrame.id,
+    item => item.trigger === 'on-press' && item.destinationId === destinationFrame.id,
+    'On press route', destinationFrame.id);
+  dispatchClick(app.querySelector('#present-button'));
+  await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id, 'On press touch presentation');
+  const pressCanvas = app.querySelector('#present-canvas');
+  const pressRect = pressCanvas.getBoundingClientRect();
+  const pressX = pressRect.left + pressCanvas.clientWidth / 2;
+  const pressY = pressRect.top + pressCanvas.clientHeight / 2;
+  dispatchCanvasPointer(app, pressCanvas, 'pointerdown', pressX, pressY, 115, 'touch', -1);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'touch down fires On press immediately');
+  dispatchCanvasPointer(app, pressCanvas, 'pointerup', pressX, pressY, 115, 'touch', -1);
+  assert(app.querySelector('#present-dialog').dataset.overlayDepth === '0', 'touch release fired a second On click action after On press');
+  dispatchClick(app.querySelector('#present-back'));
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id && app.querySelector('#present-back').disabled,
+    'a press and its release created more than one presentation navigation');
+  await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'press presentation close');
+
   app.defaultView.prompt = () => 'Smoke white';
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
   dispatchClick(app.querySelector('[data-action="create-color-style"]'));
@@ -669,6 +739,7 @@ try {
   await new Promise(resolve => setTimeout(resolve, 600));
   componentRecords = await readStore('documents'); componentRecords.sort((a, b) => b.savedAt - a.savedAt);
   componentDocument = componentRecords[0]?.document;
+  const variantTestDocumentId = componentDocument?.id;
   componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
   assert(componentNodes.find(node => node.id === instanceId)?.width === 240, 'the local instance size override was not saved');
 
@@ -720,6 +791,68 @@ try {
   componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
   assert(componentDocument?.componentSets?.some(set => set.componentIds.includes(hoverComponentId)), 'variant set metadata was not stored');
   assert(componentNodes.find(node => node.id === variantInstanceId)?.componentId === hoverComponentId, 'changing the instance variant did not switch its main component');
+
+  dispatchClick(app.querySelector('[data-inspector-tab="prototype"]'));
+  await waitFor(() => app.querySelector('#prototype-action'), 'instance prototype controls');
+  const prototypeAction = app.querySelector('#prototype-action');
+  prototypeAction.value = 'change-variant'; prototypeAction.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#prototype-variant-target'), 'prototype variant target control');
+  const savedDefaultVariant = componentDocument?.components?.find(component => component.componentSetId
+    && component.variantProperties?.State === 'Default');
+  assert(savedDefaultVariant, 'the default variant component was not available as a prototype target');
+  const prototypeVariantTarget = app.querySelector('#prototype-variant-target');
+  prototypeVariantTarget.value = savedDefaultVariant.id;
+  prototypeVariantTarget.dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitForSaveCycle(app, 'prototype variant interaction');
+  await waitForStoredInteraction(variantInstanceId,
+    item => item.action === 'change-variant' && item.targetVariantId === savedDefaultVariant.id,
+    'prototype change-variant action', null, 8000, variantTestDocumentId);
+  componentRecords = await readStore('documents');
+  componentDocument = componentRecords.find(record => record.id === variantTestDocumentId)?.document;
+  componentNodes = flattenNodes(componentDocument?.pages.flatMap(page => page.children));
+  const variantInteraction = componentNodes.find(node => node.id === variantInstanceId)?.interactions?.find(item => item.action === 'change-variant');
+  assert(variantInteraction?.targetVariantId === savedDefaultVariant.id, 'the prototype inspector did not save a target variant action on the instance');
+
+  const savedHoverVariant = componentDocument?.components?.find(component => component.id === hoverComponentId);
+  assert(savedHoverVariant, 'the hover component variant was unavailable for presentation coverage');
+  dispatchClick(app.querySelector(`[data-layer-id="${variantInstanceId}"]`));
+  const hoverPrototypeTab = app.querySelector('[data-inspector-tab="prototype"]');
+  if (!hoverPrototypeTab.classList.contains('is-active')) dispatchClick(hoverPrototypeTab);
+  const hoverAction = app.querySelector('#prototype-action');
+  hoverAction.value = 'change-variant'; hoverAction.dispatchEvent(new Event('change', { bubbles: true }));
+  const hoverTrigger = app.querySelector('#prototype-trigger');
+  hoverTrigger.value = 'while-hovering'; hoverTrigger.dispatchEvent(new Event('change', { bubbles: true }));
+  app.querySelector('#prototype-variant-target').value = savedDefaultVariant.id;
+  app.querySelector('#prototype-variant-target').dispatchEvent(new Event('change', { bubbles: true }));
+  dispatchClick(app.querySelector('[data-action="prototype-connect"]'));
+  await waitForSaveCycle(app, 'hover variant interaction');
+  await waitForStoredInteraction(variantInstanceId,
+    item => item.action === 'change-variant' && item.trigger === 'while-hovering' && item.targetVariantId === savedDefaultVariant.id,
+    'hover variant action', null, 8000, variantTestDocumentId);
+  const variantStartingPoint = app.querySelector('[data-action="prototype-start"]');
+  dispatchClick(variantStartingPoint);
+  await waitForSaveCycle(app, 'variant presentation start point');
+  dispatchClick(app.querySelector('#present-button'));
+  await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-dialog')?.dataset.frameId === variantInstanceId,
+    'variant-instance prototype start');
+  const variantPresentCanvas = app.querySelector('#present-canvas');
+  const variantPresentRect = variantPresentCanvas.getBoundingClientRect();
+  const variantCenterX = variantPresentRect.left + variantPresentCanvas.clientWidth / 2;
+  const variantCenterY = variantPresentRect.top + variantPresentCanvas.clientHeight / 2;
+  await waitFor(() => app.querySelector('#present-title')?.textContent.includes(savedHoverVariant.name), 'hover variant initial presentation name');
+  dispatchCanvasPointer(app, variantPresentCanvas, 'pointermove', variantCenterX, variantCenterY, 116);
+  await waitFor(() => app.querySelector('#present-title')?.textContent.includes(savedDefaultVariant.name), 'while-hovering changes the presentation variant');
+  assert(app.querySelector('#present-dialog').dataset.navigationDepth === '0', 'change-variant hover should not add a navigation history entry');
+  dispatchCanvasPointer(app, variantPresentCanvas, 'pointermove', variantPresentRect.left + 2, variantCenterY, 116);
+  await waitFor(() => app.querySelector('#present-title')?.textContent.includes(savedHoverVariant.name), 'leaving the variant hotspot restores the original presentation variant');
+  await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'hover variant presentation close');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const sourcePrototypeTab = app.querySelector('[data-inspector-tab="prototype"]');
+  if (!sourcePrototypeTab.classList.contains('is-active')) dispatchClick(sourcePrototypeTab);
+  dispatchClick(app.querySelector('[data-action="prototype-start"]'));
+  await waitForSaveCycle(app, 'restore original prototype start point');
 
   dispatchClick(app.querySelector('#present-button'));
   await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'local prototype presentation');
@@ -982,6 +1115,87 @@ try {
   Object.defineProperty(variablesInput, 'files', { configurable: true, value: variablesTransfer.files });
   variablesInput.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'variable collection fixture import');
+  await waitForSaveCycle(app, 'initial variable fixture autosave');
+  const tokenInput = app.querySelector('#design-token-file-input');
+  assert(tokenInput, 'the DTCG token file input was missing');
+  const readActiveVariableDocument = async () => {
+    const records = await readStore('documents');
+    return records.find(record => record.document?.id === variablesDocument.id || record.id === variablesDocument.id)?.document || null;
+  };
+  const originalTokenDocument = await readActiveVariableDocument();
+  assert(originalTokenDocument, 'the active variable fixture was not available for token import');
+  const originalCollectionsForTokenImport = structuredClone(originalTokenDocument.variableCollections || []);
+  const originalVariablesForTokenImport = structuredClone(originalTokenDocument.variables || []);
+  const setTokenInputFile = (name, contents) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([contents], name, { type: 'application/json' }));
+    Object.defineProperty(tokenInput, 'files', { configurable: true, value: transfer.files });
+    tokenInput.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const standardDtcgFixture = JSON.stringify({
+    color: {
+      $type: 'color',
+      accent: { $value: { colorSpace: 'srgb', components: [0, 0.4, 0.8], hex: '#0066cc' } }
+    },
+    layout: { gap: { $type: 'number', $value: 14 } }
+  });
+  setTokenInputFile('interop-smoke.tokens.json', standardDtcgFixture);
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('2 design tokens imported locally')), 'DTCG token import');
+  await waitForSaveCycle(app, 'DTCG token import autosave');
+  let documentAfterTokenImport = await readActiveVariableDocument();
+  assert(documentAfterTokenImport, 'DTCG import replaced the active design instead of merging it');
+  assert(documentAfterTokenImport.variableCollections.length === originalCollectionsForTokenImport.length + 1,
+    'DTCG import did not add a collection to the active design');
+  assert(originalCollectionsForTokenImport.every(original => documentAfterTokenImport.variableCollections.some(current => current.id === original.id && current.name === original.name)),
+    'DTCG import replaced an existing variable collection');
+  assert(originalVariablesForTokenImport.every(original => documentAfterTokenImport.variables.some(current => current.id === original.id && JSON.stringify(current) === JSON.stringify(original))),
+    'DTCG import changed or removed existing variables');
+  assert(documentAfterTokenImport.variables.some(variable => variable.name === 'color.accent' && variable.type === 'color'
+    && Object.values(variable.valuesByMode).includes('#0066cc'))
+    && documentAfterTokenImport.variables.some(variable => variable.name === 'layout.gap' && variable.type === 'number'
+      && Object.values(variable.valuesByMode).includes(14)), 'DTCG tokens were not merged into the active design');
+
+  const importedVariableCollectionsSnapshot = structuredClone(documentAfterTokenImport.variableCollections);
+  const importedVariablesSnapshot = structuredClone(documentAfterTokenImport.variables);
+  setTokenInputFile('invalid-smoke.tokens.json', '{ this is not valid JSON');
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Invalid design-token JSON')), 'invalid DTCG token error');
+  documentAfterTokenImport = await readActiveVariableDocument();
+  assert(JSON.stringify(documentAfterTokenImport.variableCollections) === JSON.stringify(importedVariableCollectionsSnapshot)
+    && JSON.stringify(documentAfterTokenImport.variables) === JSON.stringify(importedVariablesSnapshot),
+  'invalid DTCG JSON mutated the active design or its saved variables');
+
+  const tokenDownloads = [];
+  const tokenObjectUrls = new Map();
+  const tokenView = app.defaultView;
+  let tokenUrlIndex = 0;
+  const originalCreateTokenObjectUrl = tokenView.URL.createObjectURL;
+  const originalTokenAnchorClick = tokenView.HTMLAnchorElement.prototype.click;
+  tokenView.URL.createObjectURL = blob => {
+    const url = `blob:tiny-image-star-token-${++tokenUrlIndex}`;
+    tokenObjectUrls.set(url, blob);
+    return url;
+  };
+  tokenView.HTMLAnchorElement.prototype.click = function () {
+    if (this.hasAttribute('download')) { tokenDownloads.push({ filename: this.download, blob: tokenObjectUrls.get(this.href) }); return; }
+    originalTokenAnchorClick.call(this);
+  };
+  try {
+    dispatchClick(app.querySelector('#export-design-tokens'));
+    await waitFor(() => tokenDownloads.length === 1, 'DTCG token download');
+    assert(tokenDownloads[0].filename.endsWith('.tokens.json') && tokenDownloads[0].blob?.type.startsWith('application/json'),
+      'DTCG export did not download JSON with the expected file extension and MIME type');
+    const downloadedTokens = JSON.parse(await tokenDownloads[0].blob.text());
+    assert(downloadedTokens.$extensions?.['tiny-image-star']?.format === 'tiny-image-star-variable-interop',
+      'DTCG export did not include the local collection and mode interoperability metadata');
+    assert(downloadedTokens['interop-smoke']?.color?.accent?.$value?.hex === '#0066cc'
+      && downloadedTokens['interop-smoke']?.layout?.gap?.$value === 14,
+    'downloaded DTCG JSON did not contain the imported color and number tokens');
+    assert([...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Design tokens downloaded as DTCG JSON')),
+      'DTCG export did not report successful download');
+  } finally {
+    tokenView.URL.createObjectURL = originalCreateTokenObjectUrl;
+    tokenView.HTMLAnchorElement.prototype.click = originalTokenAnchorClick;
+  }
   dispatchClick(app.querySelector(`[data-layer-id="${themeModeTrigger.id}"]`));
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="prototype"]'));
   const themeAction = app.querySelector('#prototype-action');

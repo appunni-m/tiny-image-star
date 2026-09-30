@@ -1,7 +1,81 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from '../src/prototype.js';
+import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, switchComponentInstanceVariant, validateDocument } from '../src/model.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from '../src/prototype.js';
+
+test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Variant demo' });
+  addNode(document, home);
+  const defaultMaster = createNode('rectangle', { name: 'Button/State=Default', fill: '#2255cc' });
+  const hoverMaster = createNode('rectangle', { name: 'Button/State=Hover', fill: '#1144aa' });
+  addNode(document, defaultMaster); addNode(document, hoverMaster);
+  const defaultComponent = createComponent(document, defaultMaster.id);
+  const hoverComponent = createComponent(document, hoverMaster.id);
+  createComponentSet(document, [defaultComponent.id, hoverComponent.id]);
+  const instance = createComponentInstance(document, defaultComponent.id, { parentId: home.id, x: 20, y: 24 });
+  addPrototypeInteraction(document, instance.id, null, {
+    action: 'change-variant', targetVariantId: hoverComponent.id
+  });
+
+  const savedBeforePresentation = structuredClone(document);
+  const persisted = parseDocument(serializeDocument(document));
+  assert.equal(findNode(persisted, instance.id).node.interactions[0].targetVariantId, hoverComponent.id);
+  const runtime = structuredClone(persisted);
+  const session = createPrototypeSession({ page: runtime.pages[0], frame: findNode(runtime, home.id).node });
+
+  assert.equal(applyPrototypeInteraction(runtime, session, runtime.pages[0].children[0].children[0].interactions[0]), 'variant-changed');
+  assert.equal(findNode(runtime, instance.id).node.componentId, hoverComponent.id, 'presentation should replace the instance subtree with the target variant');
+  assert.equal(findNode(runtime, instance.id).node.fill, '#1144aa', 'the rendered instance should use the target variant appearance');
+  assert.equal(session.variantSelections[instance.id], hoverComponent.id, 'presentation state should record the active variant');
+  assert.equal(findNode(document, instance.id).node.componentId, defaultComponent.id, 'the authored document must keep its chosen variant');
+  assert.equal(findNode(document, instance.id).node.fill, '#2255cc', 'presentation changes must not replace the saved variant appearance');
+  assert.equal(findNode(savedBeforePresentation, instance.id).node.componentId, defaultComponent.id, 'the saved snapshot must remain unchanged');
+  assert.equal(applyPrototypeInteraction(runtime, session, findNode(runtime, instance.id).node.interactions[0]), 'variant-changed', 'reapplying the active variant should be harmless');
+  validateDocument(savedBeforePresentation);
+
+  const invalidTarget = structuredClone(document);
+  findNode(invalidTarget, instance.id).node.interactions[0].targetVariantId = 'missing-component';
+  assert.throws(() => validateDocument(invalidTarget), /Invalid component variant target/);
+  const sameVariantTarget = structuredClone(document);
+  findNode(sameVariantTarget, instance.id).node.interactions[0].targetVariantId = defaultComponent.id;
+  assert.throws(() => validateDocument(sameVariantTarget), /Invalid component variant target/);
+  const authoredVariantSwitch = structuredClone(document);
+  switchComponentInstanceVariant(authoredVariantSwitch, instance.id, hoverComponent.id);
+  assert.equal(findNode(authoredVariantSwitch, instance.id).node.interactions, undefined,
+    'an authored selection change must remove a variant action that now targets the active variant');
+  validateDocument(authoredVariantSwitch);
+  assert.throws(() => addPrototypeInteraction(document, home.id, null, {
+    action: 'change-variant', targetVariantId: hoverComponent.id
+  }), /different variant from this component instance/);
+});
+
+test('while-hovering variant changes return to the original component when the hotspot is left', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Hover variant demo' });
+  addNode(document, home);
+  const defaultMaster = createNode('rectangle', { name: 'Button/State=Default', fill: '#2255cc' });
+  const hoverMaster = createNode('rectangle', { name: 'Button/State=Hover', fill: '#1144aa' });
+  addNode(document, defaultMaster); addNode(document, hoverMaster);
+  const defaultComponent = createComponent(document, defaultMaster.id);
+  const hoverComponent = createComponent(document, hoverMaster.id);
+  createComponentSet(document, [defaultComponent.id, hoverComponent.id]);
+  const instance = createComponentInstance(document, defaultComponent.id, { parentId: home.id, x: 20, y: 24 });
+  addPrototypeInteraction(document, instance.id, null, {
+    action: 'change-variant', trigger: 'while-hovering', targetVariantId: hoverComponent.id
+  });
+
+  const runtime = structuredClone(document);
+  const runtimeInstance = findNode(runtime, instance.id).node;
+  const session = createPrototypeSession({ page: runtime.pages[0], frame: findNode(runtime, home.id).node });
+  assert.equal(applyPrototypeInteraction(runtime, session, runtimeInstance.interactions[0]), 'variant-changed');
+  assert.equal(findNode(runtime, instance.id).node.componentId, hoverComponent.id);
+  assert.equal(clearPrototypeHoverInteraction(runtime, session), true, 'leaving the active hover route should restore its original component');
+  assert.equal(findNode(runtime, instance.id).node.componentId, defaultComponent.id);
+  assert.equal(session.variantSelections[instance.id], defaultComponent.id);
+  assert.equal(session.lastHoverInteractionId, null);
+  assert.equal(findNode(document, instance.id).node.componentId, defaultComponent.id, 'hover presentation must not alter the authored document');
+});
 
 test('prototype links persist as local navigation to a destination frame', () => {
   const document = createDocument();
@@ -22,6 +96,30 @@ test('prototype links persist as local navigation to a destination frame', () =>
   assert.equal(findNode(reloaded, source.id).node.interactions[0].transition, 'dissolve');
   assert.equal(removePrototypeInteraction(reloaded, source.id, interaction.id), true);
   assert.equal(findNode(reloaded, source.id).node.interactions.length, 0);
+});
+
+test('press and drag prototype triggers are validated and resolve independently from click', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Gesture hotspot', x: 20, y: 30 });
+  const home = createNode('frame', { name: 'Home' });
+  const clickTarget = createNode('frame', { name: 'Click destination', x: 500 });
+  const pressTarget = createNode('frame', { name: 'Press destination', x: 1000 });
+  const dragTarget = createNode('frame', { name: 'Drag destination', x: 1500 });
+  home.children.push(source);
+  addNode(document, home); addNode(document, clickTarget); addNode(document, pressTarget); addNode(document, dragTarget);
+
+  const click = addPrototypeInteraction(document, source.id, clickTarget.id, { trigger: 'on-click' });
+  const press = addPrototypeInteraction(document, source.id, pressTarget.id, { trigger: 'on-press' });
+  const drag = addPrototypeInteraction(document, source.id, dragTarget.id, { trigger: 'on-drag' });
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click').interaction.id, click.id);
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-press').interaction.id, press.id);
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-drag').interaction.id, drag.id);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true, 'gesture triggers should round-trip through local document storage');
+
+  const invalid = structuredClone(document);
+  findNode(invalid, source.id).node.interactions.find(item => item.id === drag.id).trigger = 'on-release';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+  assert.throws(() => addPrototypeInteraction(document, source.id, dragTarget.id, { trigger: 'on-release' }), /Unsupported prototype trigger/);
 });
 
 test('smart animate is stored for frame navigation and rejected for overlays', () => {

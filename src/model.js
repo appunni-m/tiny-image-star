@@ -157,8 +157,8 @@ const defaults = {
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
-const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
-const prototypeTriggers = new Set(['on-click', 'while-hovering', 'after-delay']);
+const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant']);
+const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
 const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
@@ -169,6 +169,49 @@ function isSafePrototypeLinkUrl(value) {
     return (['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname))
       || (url.protocol === 'mailto:' && !url.host && !url.username && !url.password && Boolean(url.pathname.trim()));
   } catch { return false; }
+}
+function hasInvalidPrototypeInteractions(interactions, document) {
+  return !Array.isArray(interactions) || interactions.some(item => {
+    if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
+    if (item.condition != null) {
+      const condition = item.condition;
+      const conditionFields = ['variableId', 'type', 'operator', 'value'];
+      const variable = condition && typeof condition === 'object' && !Array.isArray(condition)
+        ? document.variables?.find(candidate => candidate.id === condition.variableId)
+        : null;
+      if (!condition || typeof condition !== 'object' || Array.isArray(condition)
+        || Object.keys(condition).some(key => !conditionFields.includes(key))
+        || typeof condition.variableId !== 'string' || !condition.variableId
+        || !['equals', 'not-equals'].includes(condition.operator)
+        || !variable || condition.type !== variable.type || !isVariableValue(condition.type, condition.value)) return true;
+    }
+    const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(item.action);
+    if (needsDestination ? typeof item.destinationId !== 'string' : item.destinationId != null) return true;
+    if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;
+    if (item.action === 'set-variable-mode'
+      ? (typeof item.collectionId !== 'string' || !item.collectionId || (item.modeId != null && (typeof item.modeId !== 'string' || !item.modeId)))
+      : (Object.hasOwn(item, 'collectionId') || Object.hasOwn(item, 'modeId'))) return true;
+    if (item.action === 'change-variant'
+      ? (typeof item.instanceId !== 'string' || !item.instanceId || typeof item.targetVariantId !== 'string' || !item.targetVariantId)
+      : (Object.hasOwn(item, 'instanceId') || Object.hasOwn(item, 'targetVariantId'))) return true;
+    if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
+    if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
+    if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
+    if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
+    if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
+    if (item.trigger === 'after-delay'
+      ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
+        || !Number.isInteger(item.delay) || item.delay < 100 || item.delay > 10_000)
+      : Object.hasOwn(item, 'delay')) return true;
+    if (item.action === 'open-overlay') {
+      if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;
+      if (item.overlayOutsideClick != null && typeof item.overlayOutsideClick !== 'boolean') return true;
+      if (item.overlayBackground != null && typeof item.overlayBackground !== 'boolean') return true;
+      if (item.overlayBackgroundColor != null && !/^#[0-9a-f]{6}$/i.test(item.overlayBackgroundColor)) return true;
+      if (item.overlayBackgroundOpacity != null && (!Number.isFinite(Number(item.overlayBackgroundOpacity)) || Number(item.overlayBackgroundOpacity) < 0 || Number(item.overlayBackgroundOpacity) > 1)) return true;
+    }
+    return false;
+  });
 }
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
@@ -190,7 +233,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', '__childOrder'
+  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', 'interactions', '__childOrder'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -1750,7 +1793,7 @@ export function setComponentVariantProperty(document, componentId, propertyName,
   return component.variantProperties;
 }
 
-export function switchComponentInstanceVariant(document, instanceId, targetComponentId, pageId = document.activePageId) {
+export function switchComponentInstanceVariant(document, instanceId, targetComponentId, pageId = document.activePageId, { preservePrototypeInteractions = false } = {}) {
   const instance = findNode(document, instanceId, pageId)?.node;
   const currentComponent = instance?.isInstance && document.components?.find(item => item.id === instance.componentId);
   const targetComponent = document.components?.find(item => item.id === targetComponentId);
@@ -1804,6 +1847,15 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
   if (instance.componentNameIsInherited !== false) instance.name = `${targetComponent.name} instance`;
   syncInstanceNode(instance, targetMaster, targetComponent.id, nextOverrides, true, slotContentsByInstanceAndSourceId);
   applyComponentPropertyValues(document, instance);
+  if (!preservePrototypeInteractions && Array.isArray(instance.interactions)) {
+    instance.interactions = instance.interactions.filter(interaction =>
+      interaction.action !== 'change-variant' || interaction.targetVariantId !== targetComponent.id);
+    if (!instance.interactions.length) delete instance.interactions;
+    const targetInteractionsOverride = instance.componentOverrides?.[targetMaster.id];
+    if (targetInteractionsOverride && Object.hasOwn(targetInteractionsOverride, 'interactions')) {
+      targetInteractionsOverride.interactions = clone(instance.interactions || []);
+    }
+  }
   return true;
 }
 
@@ -2151,44 +2203,7 @@ export function validateDocument(document) {
         || (node.gridCell.alignX != null && !['start', 'center', 'end'].includes(node.gridCell.alignX))
         || (node.gridCell.alignY != null && !['start', 'center', 'end'].includes(node.gridCell.alignY)))) throw new TypeError(`Invalid grid cell on layer ${node.name || node.id}.`);
       if ((node.layoutSizingX != null && !['fixed', 'fill'].includes(node.layoutSizingX)) || (node.layoutSizingY != null && !['fixed', 'fill'].includes(node.layoutSizingY))) throw new TypeError(`Invalid grid sizing on layer ${node.name || node.id}.`);
-      if (node.interactions != null && (!Array.isArray(node.interactions) || node.interactions.some(item => {
-        if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
-        if (item.condition != null) {
-          const condition = item.condition;
-          const conditionFields = ['variableId', 'type', 'operator', 'value'];
-          const variable = condition && typeof condition === 'object' && !Array.isArray(condition)
-            ? document.variables?.find(candidate => candidate.id === condition.variableId)
-            : null;
-          if (!condition || typeof condition !== 'object' || Array.isArray(condition)
-            || Object.keys(condition).some(key => !conditionFields.includes(key))
-            || typeof condition.variableId !== 'string' || !condition.variableId
-            || !['equals', 'not-equals'].includes(condition.operator)
-            || !variable || condition.type !== variable.type || !isVariableValue(condition.type, condition.value)) return true;
-        }
-        const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(item.action);
-        if (needsDestination ? typeof item.destinationId !== 'string' : item.destinationId != null) return true;
-        if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;
-        if (item.action === 'set-variable-mode'
-          ? (typeof item.collectionId !== 'string' || !item.collectionId || (item.modeId != null && (typeof item.modeId !== 'string' || !item.modeId)))
-          : (Object.hasOwn(item, 'collectionId') || Object.hasOwn(item, 'modeId'))) return true;
-        if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
-        if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
-        if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
-        if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
-        if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
-        if (item.trigger === 'after-delay'
-          ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
-            || !Number.isInteger(item.delay) || item.delay < 100 || item.delay > 10_000)
-          : Object.hasOwn(item, 'delay')) return true;
-        if (item.action === 'open-overlay') {
-          if (item.overlayPosition != null && !prototypeOverlayPositions.has(item.overlayPosition)) return true;
-          if (item.overlayOutsideClick != null && typeof item.overlayOutsideClick !== 'boolean') return true;
-          if (item.overlayBackground != null && typeof item.overlayBackground !== 'boolean') return true;
-          if (item.overlayBackgroundColor != null && !/^#[0-9a-f]{6}$/i.test(item.overlayBackgroundColor)) return true;
-          if (item.overlayBackgroundOpacity != null && (!Number.isFinite(Number(item.overlayBackgroundOpacity)) || Number(item.overlayBackgroundOpacity) < 0 || Number(item.overlayBackgroundOpacity) > 1)) return true;
-        }
-        return false;
-      }))) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
+      if (node.interactions != null && hasInvalidPrototypeInteractions(node.interactions, document)) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
       if (node.componentSourceId != null && typeof node.componentSourceId !== 'string') throw new TypeError(`Invalid component source layer on ${node.name || node.id}.`);
       if (node.componentSourceKey != null && typeof node.componentSourceKey !== 'string') throw new TypeError(`Invalid component source key on ${node.name || node.id}.`);
@@ -2198,6 +2213,27 @@ export function validateDocument(document) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          if (overrides.interactions != null) {
+            if (hasInvalidPrototypeInteractions(overrides.interactions, document)) throw new TypeError(`Invalid component interactions override on ${node.name || node.id}.`);
+            const matchingInstanceNodes = [];
+            walkNodes([node], ({ node: candidate }) => {
+              if (candidate.componentSourceId === sourceId) matchingInstanceNodes.push(candidate);
+            });
+            if (matchingInstanceNodes.length !== 1
+              || JSON.stringify(matchingInstanceNodes[0].interactions || []) !== JSON.stringify(overrides.interactions)) {
+              throw new TypeError(`Component interactions override does not match its instance layer on ${node.name || node.id}.`);
+            }
+            for (const interaction of overrides.interactions) {
+              if (interaction.action !== 'change-variant') continue;
+              const instanceNode = matchingInstanceNodes[0];
+              const component = instanceNode.isInstance ? document.components?.find(item => item.id === instanceNode.componentId) : null;
+              const target = document.components?.find(item => item.id === interaction.targetVariantId);
+              if (interaction.instanceId !== instanceNode.id || !component?.componentSetId
+                || target?.componentSetId !== component.componentSetId || target.id === component.id) {
+                throw new TypeError(`Invalid component variant target on prototype interaction ${interaction.id}.`);
+              }
+            }
+          }
           if (overrides.textRuns != null) {
             const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
             const sourceText = overrides.text ?? sourceNode?.text;
@@ -2319,6 +2355,18 @@ export function validateDocument(document) {
       if (!component.componentSetId && component.variantProperties != null) throw new TypeError('Variant properties require a component set.');
     }
   }
+  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+    for (const interaction of node.interactions || []) {
+      if (interaction.action !== 'change-variant') continue;
+      const component = node.isInstance && node.id === interaction.instanceId
+        ? (document.components || []).find(item => item.id === node.componentId)
+        : null;
+      const target = (document.components || []).find(item => item.id === interaction.targetVariantId);
+      if (!component?.componentSetId || target?.componentSetId !== component.componentSetId || target.id === component.id) {
+        throw new TypeError(`Invalid component variant target on prototype interaction ${interaction.id}.`);
+      }
+    }
+  });
   const variableCollections = document.variableCollections ?? [];
   if (!Array.isArray(variableCollections)) throw new TypeError('Variable collections must be a list.');
   const collectionIds = new Set();

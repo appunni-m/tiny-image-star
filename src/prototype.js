@@ -1,8 +1,8 @@
-import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, walkNodes } from './model.js';
+import { findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, switchComponentInstanceVariant, walkNodes } from './model.js';
 
-const triggers = new Set(['on-click', 'while-hovering', 'after-delay']);
+const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
-const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode']);
+const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant']);
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
 const maxPrototypeDelay = 10_000;
@@ -133,6 +133,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   url,
   collectionId,
   modeId,
+  targetVariantId,
   condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
@@ -153,6 +154,12 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   const collection = action === 'set-variable-mode'
     ? document.variableCollections?.find(item => item.id === collectionId)
     : null;
+  const sourceComponent = action === 'change-variant' && source?.node.isInstance
+    ? document.components?.find(item => item.id === source.node.componentId)
+    : null;
+  const targetVariant = action === 'change-variant'
+    ? document.components?.find(item => item.id === targetVariantId)
+    : null;
   if (!source) throw new Error('The interaction source layer no longer exists.');
   if (needsDestination && (!destination || destination.node.type !== 'frame')) throw new Error('Prototype navigation and overlay actions must end at a frame.');
   if (!needsDestination && destinationId != null) throw new TypeError('Back, close overlay, and open link actions cannot have a frame destination.');
@@ -160,12 +167,16 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (action === 'set-variable-mode' && (!collection || (modeId != null && !collection.modes.some(mode => mode.id === modeId)))) {
     throw new TypeError('Choose a variable collection and one of its modes.');
   }
+  if (action === 'change-variant' && (!sourceComponent?.componentSetId || targetVariant?.componentSetId !== sourceComponent.componentSetId || targetVariant.id === sourceComponent.id)) {
+    throw new TypeError('Choose a different variant from this component instance’s set.');
+  }
   if (action === 'open-overlay' && !overlayPositions.has(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
   const interactions = source.node.interactions ||= [];
   const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null)
     && conditionIdentity(item.condition) === conditionIdentity(normalizedCondition)
     && (action !== 'open-link' || normalizePrototypeLinkUrl(item.url) === linkUrl)
-    && (action !== 'set-variable-mode' || item.collectionId === collectionId));
+    && (action !== 'set-variable-mode' || item.collectionId === collectionId)
+    && (action !== 'change-variant' || item.targetVariantId === targetVariantId));
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
@@ -178,6 +189,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
       existing.overlayBackgroundOpacity = Math.max(0, Math.min(1, Number(overlayBackgroundOpacity) || 0));
     }
     if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
+    if (action === 'change-variant') existing.targetVariantId = targetVariantId;
     if (normalizedCondition) existing.condition = normalizedCondition;
     else delete existing.condition;
     if (trigger === 'after-delay') existing.delay = delay;
@@ -196,6 +208,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   };
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
+  if (action === 'change-variant') Object.assign(interaction, { instanceId: source.node.id, targetVariantId });
   if (normalizedCondition) interaction.condition = normalizedCondition;
   if (trigger === 'after-delay') interaction.delay = delay;
   if (action === 'open-overlay') Object.assign(interaction, {
@@ -211,7 +224,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
 
 export function createPrototypeSession(start) {
   if (!start?.page?.id || start.frame?.type !== 'frame') throw new TypeError('Choose a frame to start this prototype.');
-  return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, lastHoverInteractionId: null };
+  return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, variantSelections: {}, lastHoverInteractionId: null };
 }
 
 export function findPrototypeDelayInteraction(document, pageId, frameId, session = null) {
@@ -249,6 +262,32 @@ export function schedulePrototypeDelay(interaction, callback, timers = globalThi
   };
 }
 
+export function clearPrototypeHoverInteraction(document, session) {
+  if (!session) return false;
+  const original = session.hoverVariantOriginal;
+  let restoredVariant = false;
+  if (original && original.interactionId === session.lastHoverInteractionId) {
+    const source = findNodeAcrossPages(document, original.instanceId);
+    const component = document.components?.find(item => item.id === original.componentId);
+    if (source?.node.isInstance && component) {
+      try {
+        switchComponentInstanceVariant(document, source.node.id, component.id, source.page.id, { preservePrototypeInteractions: true });
+        session.variantSelections ||= {};
+        session.variantSelections[source.node.id] = component.id;
+        restoredVariant = true;
+      } catch { /* A stale hover target should not interrupt the active prototype. */ }
+    }
+  }
+  session.hoverVariantOriginal = null;
+  session.lastHoverInteractionId = null;
+  return restoredVariant;
+}
+
+function rememberPrototypeHoverInteraction(session, interaction) {
+  session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+  if (interaction.trigger !== 'while-hovering') session.hoverVariantOriginal = null;
+}
+
 export function applyPrototypeInteraction(document, session, interaction) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
   if (interaction.action === 'back') return backPrototypeSession(session);
@@ -258,13 +297,40 @@ export function applyPrototypeInteraction(document, session, interaction) {
     if (!collection || (interaction.modeId != null && !collection.modes.some(mode => mode.id === interaction.modeId))) return false;
     session.variableModes ||= {};
     session.variableModes[collection.id] = interaction.modeId ?? collection.defaultModeId;
-    session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+    rememberPrototypeHoverInteraction(session, interaction);
     return 'variables-updated';
+  }
+  if (interaction.action === 'change-variant') {
+    const source = findNodeAcrossPages(document, interaction.instanceId);
+    const component = source?.node.isInstance && document.components?.find(item => item.id === source.node.componentId);
+    const target = document.components?.find(item => item.id === interaction.targetVariantId);
+    if (!component?.componentSetId || target?.componentSetId !== component.componentSetId) return false;
+    if (target.id === component.id) {
+      if (interaction.trigger === 'while-hovering') {
+        session.hoverVariantOriginal = { interactionId: interaction.id, instanceId: source.node.id, pageId: source.page.id, componentId: component.id };
+      } else session.hoverVariantOriginal = null;
+      session.variantSelections ||= {};
+      session.variantSelections[source.node.id] = target.id;
+      rememberPrototypeHoverInteraction(session, interaction);
+      return 'variant-changed';
+    }
+    // The presentation caller supplies its private runtime document. The authored
+    // design remains untouched while the instance subtree is replaced in-place.
+    if (interaction.trigger === 'while-hovering') {
+      session.hoverVariantOriginal = { interactionId: interaction.id, instanceId: source.node.id, pageId: source.page.id, componentId: component.id };
+    } else session.hoverVariantOriginal = null;
+    try {
+      switchComponentInstanceVariant(document, source.node.id, target.id, source.page.id, { preservePrototypeInteractions: true });
+    } catch { return false; }
+    session.variantSelections ||= {};
+    session.variantSelections[source.node.id] = target.id;
+    rememberPrototypeHoverInteraction(session, interaction);
+    return 'variant-changed';
   }
   if (interaction.action === 'close-overlay') {
     if (!session.overlays.length) return false;
     session.overlays.pop();
-    session.lastHoverInteractionId = null;
+    rememberPrototypeHoverInteraction(session, interaction);
     return 'overlay-closed';
   }
 
@@ -276,13 +342,13 @@ export function applyPrototypeInteraction(document, session, interaction) {
     if (session.overlays.length) {
       const current = session.overlays[session.overlays.length - 1];
       session.overlays[session.overlays.length - 1] = { ...current, pageId: destination.page.id, frameId: destination.node.id };
-      session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+      rememberPrototypeHoverInteraction(session, interaction);
       return 'overlay-swapped';
     }
     session.stack.push({ pageId: session.pageId, frameId: session.frameId, overlays: structuredClone(session.overlays) });
     session.pageId = destination.page.id;
     session.frameId = destination.node.id;
-    session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+    rememberPrototypeHoverInteraction(session, interaction);
     return 'navigated';
   }
 
@@ -297,7 +363,7 @@ export function applyPrototypeInteraction(document, session, interaction) {
       backgroundColor: /^#[0-9a-f]{6}$/i.test(interaction.overlayBackgroundColor || '') ? interaction.overlayBackgroundColor : '#000000',
       backgroundOpacity: Math.max(0, Math.min(1, Number(interaction.overlayBackgroundOpacity ?? 0.32)))
     });
-    session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+    rememberPrototypeHoverInteraction(session, interaction);
     return 'overlay-opened';
   }
 
@@ -305,7 +371,7 @@ export function applyPrototypeInteraction(document, session, interaction) {
   session.pageId = destination.page.id;
   session.frameId = destination.node.id;
   session.overlays = [];
-  session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
+  rememberPrototypeHoverInteraction(session, interaction);
   return 'navigated';
 }
 

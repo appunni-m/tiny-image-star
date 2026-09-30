@@ -18,6 +18,12 @@ Canvas comments support anchored review threads, replies, resolution, and deleti
 
 This is an active rebuild, not production certification or complete parity with mature collaborative design tools. Boolean previews use a bounded-resolution local canvas composite while keeping their source vectors editable. Linked component instances retain local property, geometry, and child-order overrides while main component structure and styling synchronize. Component sets support named variant properties, per-instance variant switching, and override migration across structurally matching layers. Main components support reusable Boolean visibility, text, and nested instance-swap properties; linked instances expose those values in the Inspector. Component slots expose nested frames, groups, and sections as replaceable instance content. Further work remains on advanced vector operations, richer text and layout controls, wider Smart Animate parity, cross-device comment sync and multiplayer, framework-specific developer handoff, and proprietary design-file import. SVG exports network faces and edges as ordinary paths, so graph editing semantics do not survive. SVG alpha masks support rectangle, ellipse, star, and polygon sources, closed paths, and networks with closed regions. Mask sources that are text, open paths or networks, Boolean layers, or blended layers remain unsupported; Boolean layers and adjusted or transformed raster images are also unsupported in SVG exports. Tiny Image Star does not claim compatibility with third-party project files or cloud services.
 
+## Design tokens and prototype gestures
+
+The Variables panel imports and exports DTCG token JSON on this device. Standard DTCG input supports color, number, and string tokens with aliases. Tiny Image Star exports those values as regular DTCG tokens and includes a local extension to round-trip every collection and mode; other DTCG tools see each collection's default mode. Boolean variables export as strings because DTCG has no boolean token type. Unsupported types, alpha colors, and color precision the editor cannot retain are rejected rather than silently changed.
+
+Prototype links also support on-press and on-drag triggers, plus component-instance variant changes such as hover states. Press fires on pointer-down; drag requires movement. Variant changes affect only the local presentation session and leave the saved design unchanged.
+
 ## Run locally
 
 ```sh

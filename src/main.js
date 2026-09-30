@@ -20,7 +20,8 @@ import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { importSvgToLayers } from './svg-import.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from './prototype.js';
+import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint } from './prototype.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
@@ -49,6 +50,7 @@ const state = {
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null,
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
+  prototypeVariantTargetId: null,
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   componentSlotDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
@@ -69,6 +71,9 @@ const previewTimers = new Map();
 let nextImageRenderVersion = 0;
 let presentRenderer = null;
 let presentRenderState = null;
+let presentRuntimeDocument = null;
+let presentationPointerGesture = null;
+const presentationDragThreshold = 7;
 let textMeasureContext = null;
 
 function activePage() { return getActivePage(state.document); }
@@ -674,6 +679,10 @@ function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const entry = node ? findNode(state.document, node.id) : null;
   const frame = node?.type === 'frame' ? node : [...(entry?.parents || [])].reverse().find(parent => parent.type === 'frame');
+  const variantSourceComponent = node?.isInstance ? state.document.components?.find(item => item.id === node.componentId) : null;
+  const variantSourceSet = variantSourceComponent?.componentSetId && state.document.componentSets?.find(item => item.id === variantSourceComponent.componentSetId);
+  const variantTargets = (variantSourceSet?.componentIds || []).map(id => state.document.components?.find(item => item.id === id)).filter(item => item && item.id !== variantSourceComponent?.id);
+  const selectedVariantTarget = variantTargets.find(item => item.id === state.prototypeVariantTargetId) || variantTargets[0] || null;
   const start = getPrototypeStartFrame(state.document, node?.id);
   const startBody = frame
     ? `<div class="prototype-current-frame"><span>${escapeHtml(frame.name)}</span><button class="secondary-button" data-action="prototype-start">${state.document.prototypeStartPoint?.nodeId === frame.id ? 'Starting point' : 'Set as starting point'}</button></div>`
@@ -683,9 +692,10 @@ function prototypeInspector() {
     const targetPage = interaction.destinationPageId ? state.document.pages.find(page => page.id === interaction.destinationPageId) : null;
     const variableCollection = state.document.variableCollections?.find(collection => collection.id === interaction.collectionId);
     const variableMode = variableCollection?.modes.find(mode => mode.id === interaction.modeId);
-    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : 'Navigate to';
-    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : 'On click / tap';
-    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
+    const targetVariant = interaction.action === 'change-variant' ? state.document.components?.find(item => item.id === interaction.targetVariantId) : null;
+    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : interaction.action === 'change-variant' ? 'Change variant' : 'Navigate to';
+    const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : interaction.trigger === 'on-press' ? 'On press / touch down' : interaction.trigger === 'on-drag' ? 'On drag' : 'On click / tap';
+    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'change-variant' ? `${targetVariant?.name || 'Missing variant'} · ${variantSourceSet?.name || 'Component set'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
     const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
     const conditionLabel = conditionVariable ? ` · If ${conditionVariable.name} ${interaction.condition.operator === 'equals' ? 'is' : 'is not'} ${String(interaction.condition.value)}` : '';
     return `<div class="prototype-interaction-row"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
@@ -700,7 +710,7 @@ function prototypeInspector() {
   const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
   const variableCollections = state.document.variableCollections || [];
   const canUseDelayTrigger = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
-  const triggerOptions = `<option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option>${canUseDelayTrigger ? `<option value="after-delay"${state.prototypeTrigger === 'after-delay' ? ' selected' : ''}>After delay</option>` : ''}`;
+  const triggerOptions = `<option value="on-click"${state.prototypeTrigger === 'on-click' ? ' selected' : ''}>On click / tap</option><option value="on-press"${state.prototypeTrigger === 'on-press' ? ' selected' : ''}>On press / touch down</option><option value="on-drag"${state.prototypeTrigger === 'on-drag' ? ' selected' : ''}>On drag</option><option value="while-hovering"${state.prototypeTrigger === 'while-hovering' ? ' selected' : ''}>While hovering</option>${canUseDelayTrigger ? `<option value="after-delay"${state.prototypeTrigger === 'after-delay' ? ' selected' : ''}>After delay</option>` : ''}`;
   const conditionVariables = state.document.variables || [];
   const conditionVariable = conditionVariables.find(variable => variable.id === state.prototypeConditionVariableId) || null;
   const rawConditionValue = conditionVariable
@@ -724,9 +734,15 @@ function prototypeInspector() {
       ? `<label>Collection<select id="prototype-variable-collection" class="select-field">${variableCollections.map(collection => `<option value="${escapeHtml(collection.id)}"${collection.id === prototypeCollection.id ? ' selected' : ''}>${escapeHtml(collection.name)}</option>`).join('')}</select></label><label>Mode<select id="prototype-variable-mode" class="select-field">${prototypeModes.map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === selectedPrototypeMode?.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('')}</select></label>`
       : '<p class="prototype-hint">Create a variable collection and modes before adding this action.</p>'
     : '';
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option></select></label>${conditionControls}${variableModeControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${state.prototypeAction === 'set-variable-mode' && !prototypeCollection ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const variantControls = state.prototypeAction === 'change-variant'
+    ? variantTargets.length
+      ? `<label>Change this instance to<select id="prototype-variant-target" class="select-field" aria-label="Target component variant">${variantTargets.map(item => `<option value="${escapeHtml(item.id)}"${item.id === selectedVariantTarget?.id ? ' selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(Object.entries(item.variantProperties || {}).map(([name, value]) => `${name}=${value}`).join(', '))}</option>`).join('')}</select></label>`
+      : '<p class="prototype-hint">Select a linked component instance in a variant set to add this action.</p>'
+    : '';
+  const needsVariantTarget = state.prototypeAction === 'change-variant' && !selectedVariantTarget;
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${conditionControls}${variableModeControls}${variantControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${needsDestination ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || needsVariantTarget ? ' disabled' : ''}>＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}</button>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
-  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect a selected layer to a frame, then use Present to try the flow. Variable mode actions update the active flow without changing the saved frame settings.</span></section></div>`;
+  return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Flow starting point</div>${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
 
 function pageComments(pageId = activePage()?.id) {
@@ -911,6 +927,8 @@ function renderAssetsTab() {
   const components = $('#components-list'); components.replaceChildren();
   const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
   const collections = state.document.variableCollections || [];
+  const exportTokens = $('#export-design-tokens');
+  if (exportTokens) exportTokens.disabled = !(state.document.variables || []).length;
   if (!collections.length) {
     const empty = document.createElement('div'); empty.className = 'variables-empty'; empty.textContent = 'Create typed variables, aliases, and theme modes for this design.'; variableCollections.append(empty);
   }
@@ -1393,6 +1411,8 @@ function onCanvasPointerDown(event) {
         overlayBackgroundColor: state.prototypeOverlayBackgroundColor,
         overlayBackgroundOpacity: state.prototypeOverlayBackgroundOpacity
       });
+      const interactionSource = findNode(state.document, state.prototypeSourceId)?.node;
+      if (interactionSource) recordNodeComponentOverrides(interactionSource, ['interactions']);
       state.prototypeSourceId = null;
       renderInspector(); queueSave(); renderer.invalidate();
       showToast(state.prototypeAction === 'open-overlay' ? `Overlay “${target.name}” added.` : `Connected to “${target.name}”.`);
@@ -3457,7 +3477,8 @@ function isNodeInSubtree(root, nodeId) {
 
 function renderPresentationFrame(interaction = null, previousFrame = null, progress = null) {
   if (!state.presenting || !presentRenderState) return;
-  const target = findNodeAcrossPages(state.document, state.presenting.frameId);
+  const runtimeDocument = presentRuntimeDocument || state.document;
+  const target = findNodeAcrossPages(runtimeDocument, state.presenting.frameId);
   if (!target || target.node.type !== 'frame') { showToast('This prototype destination no longer exists.'); $('#present-dialog').close(); return; }
   const applySessionVariableModes = frame => {
     const modes = state.presenting.variableModes || {};
@@ -3471,7 +3492,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
   for (const [index, overlayState] of state.presenting.overlays.entries()) {
-    const overlayTarget = findNode(state.document, overlayState.frameId, overlayState.pageId) || findNodeAcrossPages(state.document, overlayState.frameId);
+    const overlayTarget = findNode(runtimeDocument, overlayState.frameId, overlayState.pageId) || findNodeAcrossPages(runtimeDocument, overlayState.frameId);
     if (!overlayTarget || overlayTarget.node.type !== 'frame') continue;
     if (overlayState.background) sceneChildren.push({
       id: `presentation-overlay-backdrop-${index}`, type: 'rectangle', name: 'Overlay background',
@@ -3485,7 +3506,8 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   }
   presentRenderState.document = {
     activePageId: target.page.id, pages: [{ id: target.page.id, name: target.page.name, children: sceneChildren }],
-    colorStyles: state.document.colorStyles || [], variableCollections: state.document.variableCollections || [], variables: state.document.variables || []
+    components: runtimeDocument.components || [], componentSets: runtimeDocument.componentSets || [],
+    colorStyles: runtimeDocument.colorStyles || [], variableCollections: runtimeDocument.variableCollections || [], variables: runtimeDocument.variables || []
   };
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
@@ -3548,7 +3570,7 @@ function schedulePresentationDelay() {
   const topOverlay = session.overlays.at(-1);
   const pageId = topOverlay?.pageId || session.pageId;
   const frameId = topOverlay?.frameId || session.frameId;
-  const found = findPrototypeDelayInteraction(state.document, pageId, frameId, session);
+  const found = findPrototypeDelayInteraction(presentRuntimeDocument || state.document, pageId, frameId, session);
   if (!found) return;
   presentationDelayCancel = schedulePrototypeDelay(found.interaction, () => {
     presentationDelayCancel = null;
@@ -3586,7 +3608,10 @@ function startPresentation(selectedId = null) {
   cancelPresentationAnimation();
   const dialog = $('#present-dialog');
   state.presenting = createPrototypeSession(start);
+  presentationPointerGesture = null;
+  presentRuntimeDocument = cloneDocument(state.document);
   presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
+  $('#present-canvas').style.touchAction = 'none';
   dialog.showModal();
   requestAnimationFrame(() => {
     if (!presentRenderer) presentRenderer = new SceneRenderer($('#present-canvas'), () => presentRenderState);
@@ -3598,13 +3623,14 @@ function startPresentation(selectedId = null) {
 function navigatePresentation(interaction) {
   if (!state.presenting) return;
   const linkUrl = interaction.action === 'open-link' ? normalizePrototypeLinkUrl(interaction.url) : null;
+  const runtimeDocument = presentRuntimeDocument || state.document;
   const source = interaction.action === 'navigate' && interaction.transition === 'smart-animate'
-    ? findNode(state.document, state.presenting.frameId, state.presenting.pageId)?.node
+    ? findNode(runtimeDocument, state.presenting.frameId, state.presenting.pageId)?.node
     : null;
   const previousFrame = source ? structuredClone(source) : null;
   clearPresentationDelay();
   cancelPresentationAnimation();
-  const result = applyPrototypeInteraction(state.document, state.presenting, interaction);
+  const result = applyPrototypeInteraction(runtimeDocument, state.presenting, interaction);
   if (!result) { showToast(interaction.action === 'close-overlay' ? 'There is no open overlay to close.' : 'This prototype destination no longer exists.'); return; }
   if (result === 'link-opened' && linkUrl) {
     window.open(linkUrl, '_blank', 'noopener,noreferrer');
@@ -3615,14 +3641,22 @@ function navigatePresentation(interaction) {
   else { renderPresentationFrame(interaction); schedulePresentationDelay(); }
 }
 
-function handlePresentationPointer(event, trigger) {
+function presentationHitAtPointer(event) {
+  if (!presentRenderState?.document) return null;
+  const page = presentRenderState.document.pages[0];
+  return hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document);
+}
+
+function handlePresentationPointer(event, trigger, hitIdOverride = null) {
   if (!state.presenting || !presentRenderState?.document) return;
   if ($('#present-dialog').dataset.smartAnimating === 'true') return;
-  const page = presentRenderState.document.pages[0];
-  const hit = hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document);
+  const runtimeDocument = presentRuntimeDocument || state.document;
+  let hit = hitIdOverride
+    ? findNode(runtimeDocument, hitIdOverride, state.presenting.pageId) || findNodeAcrossPages(runtimeDocument, hitIdOverride)
+    : presentationHitAtPointer(event);
   const topOverlayState = state.presenting.overlays.at(-1);
   if (trigger === 'on-click' && topOverlayState) {
-    const overlayTarget = findNode(state.document, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(state.document, topOverlayState.frameId);
+    const overlayTarget = findNode(runtimeDocument, topOverlayState.frameId, topOverlayState.pageId) || findNodeAcrossPages(runtimeDocument, topOverlayState.frameId);
     const insideOverlay = hit && overlayTarget && isNodeInSubtree(overlayTarget.node, hit.id);
     if (!insideOverlay && topOverlayState.outsideClick) {
       state.presenting.overlays.pop();
@@ -3633,11 +3667,96 @@ function handlePresentationPointer(event, trigger) {
       return;
     }
   }
-  if (!hit) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
-  const found = findClickableInteraction(state.document, state.presenting.pageId, hit.id, trigger, state.presenting);
-  if (!found) { if (trigger === 'while-hovering') state.presenting.lastHoverInteractionId = null; return; }
+  if (!hit) {
+    if (trigger === 'while-hovering' && clearPrototypeHoverInteraction(runtimeDocument, state.presenting)) renderPresentationFrame();
+    return;
+  }
+  let found = findClickableInteraction(runtimeDocument, state.presenting.pageId, hit.id, trigger, state.presenting);
+  if (!found) {
+    if (trigger === 'while-hovering' && clearPrototypeHoverInteraction(runtimeDocument, state.presenting)) renderPresentationFrame();
+    return;
+  }
   if (trigger === 'while-hovering' && state.presenting.lastHoverInteractionId === found.interaction.id) return;
+  if (trigger === 'while-hovering' && state.presenting.lastHoverInteractionId) {
+    const restoredVariant = clearPrototypeHoverInteraction(runtimeDocument, state.presenting);
+    if (restoredVariant) {
+      renderPresentationFrame();
+      hit = presentationHitAtPointer(event);
+      if (!hit) return;
+      found = findClickableInteraction(runtimeDocument, state.presenting.pageId, hit.id, trigger, state.presenting);
+      if (!found) return;
+    }
+  }
   navigatePresentation(found.interaction);
+}
+
+function triggerPresentationDrag(event, gesture) {
+  if (!gesture || gesture.pointerId !== event.pointerId || gesture.dragTriggered) return false;
+  const dx = Number(event.clientX) - gesture.startX;
+  const dy = Number(event.clientY) - gesture.startY;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+  if (dx * dx + dy * dy < presentationDragThreshold * presentationDragThreshold) return false;
+  gesture.moved = true;
+  if (!gesture.hitId || !state.presenting) return false;
+  const runtimeDocument = presentRuntimeDocument || state.document;
+  const found = findClickableInteraction(runtimeDocument, state.presenting.pageId, gesture.hitId, 'on-drag', state.presenting);
+  if (!found) return false;
+  gesture.dragTriggered = true;
+  event.preventDefault?.();
+  // The route has already been resolved against the original pointer-down hit.
+  // Dispatch that exact interaction: resolving the pointer again after a move
+  // can target a different layer (or no layer at all) when capture keeps the
+  // pointer outside the source bounds.
+  navigatePresentation(found.interaction);
+  return true;
+}
+
+function handlePresentationPointerDown(event) {
+  if (!state.presenting || !presentRenderState?.document || $('#present-dialog').dataset.smartAnimating === 'true'
+    // Touch contact has no mouse button; engines may report -1 for it.
+    || (event.pointerType !== 'touch' && event.button != null && event.button !== 0)
+    || (presentationPointerGesture && presentationPointerGesture.pointerId !== event.pointerId)) return;
+  const hit = presentationHitAtPointer(event);
+  const gesture = {
+    pointerId: event.pointerId,
+    startX: Number(event.clientX) || 0,
+    startY: Number(event.clientY) || 0,
+    hitId: hit?.id || null,
+    moved: false,
+    pressTriggered: false,
+    dragTriggered: false
+  };
+  presentationPointerGesture = gesture;
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Some synthetic and embedded pointers cannot be captured. */ }
+  if (!gesture.hitId) return;
+  const found = findClickableInteraction(presentRuntimeDocument || state.document, state.presenting.pageId, gesture.hitId, 'on-press', state.presenting);
+  if (!found) return;
+  gesture.pressTriggered = true;
+  event.preventDefault?.();
+  navigatePresentation(found.interaction);
+}
+
+function handlePresentationPointerMove(event) {
+  const gesture = presentationPointerGesture;
+  if (gesture?.pointerId === event.pointerId && triggerPresentationDrag(event, gesture)) return;
+  if (gesture?.pointerId === event.pointerId && (gesture.pressTriggered || gesture.dragTriggered)) return;
+  if (event.pointerType !== 'touch') handlePresentationPointer(event, 'while-hovering');
+}
+
+function handlePresentationPointerUp(event) {
+  const gesture = presentationPointerGesture;
+  if (!gesture) {
+    handlePresentationPointer(event, 'on-click');
+    return;
+  }
+  if (gesture.pointerId !== event.pointerId) return;
+  presentationPointerGesture = null;
+  if (triggerPresentationDrag(event, gesture) || gesture.moved || gesture.pressTriggered || gesture.dragTriggered) return;
+  handlePresentationPointer(event, 'on-click');
+}
+
+function handlePresentationPointerCancel(event) {
+  if (presentationPointerGesture?.pointerId === event.pointerId) presentationPointerGesture = null;
 }
 
 function backPresentation() {
@@ -3659,6 +3778,60 @@ async function exportDesign() {
     await downloadLocalPackage(JSON.parse(serializeDocument(state.document)), assets);
     showToast('Local design copy downloaded.');
   } catch (error) { showToast(error.message || 'Could not export this local design.'); }
+}
+function tokenCollectionNameFromFile(fileName) {
+  const stem = String(fileName || '').replace(/\.tokens\.json$/i, '').replace(/\.json$/i, '');
+  const base = stem.replace(/[{}.$\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 72) || 'Imported tokens';
+  const existing = new Set((state.document.variableCollections || []).map(collection => collection.name.toLocaleLowerCase()));
+  let name = base;
+  let suffix = 2;
+  while (existing.has(name.toLocaleLowerCase())) {
+    const ending = ` ${suffix++}`;
+    name = `${base.slice(0, 72 - ending.length)}${ending}`;
+  }
+  return name;
+}
+function importDesignTokens(file) {
+  if (!file) return;
+  const generation = state.documentGeneration;
+  try {
+    if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before importing tokens.');
+    if (file.size > 5 * 1024 * 1024) throw new Error('Token files must be 5 MB or smaller.');
+    void file.text().then(text => {
+      if (generation !== state.documentGeneration || state.documentTransitioning) throw new Error('The active design changed before token import finished. Choose the token file again.');
+      const imported = importDtcgTokens(text, { collectionName: tokenCollectionNameFromFile(file.name) });
+      const merged = mergeDtcgTokens(state.document, imported);
+      checkpoint(`Import tokens from ${file.name}`);
+      state.document = merged.document;
+      state.controlEdit = false;
+      renderUI(); queueSave(); renderer?.invalidate();
+      const variableCount = imported.variables.length;
+      const warning = merged.warnings[0];
+      const detail = warning ? ` ${warning}` : '';
+      showToast(`${variableCount} design token${variableCount === 1 ? '' : 's'} imported locally.${detail}`, warning ? 5000 : 3000);
+    }).catch(error => showToast(error.message || 'Could not import these design tokens.'));
+  } catch (error) {
+    showToast(error.message || 'Could not import these design tokens.');
+  }
+}
+function exportDesignTokens() {
+  try {
+    if (!(state.document.variables || []).length) throw new Error('Add a variable before exporting design tokens.');
+    const json = stringifyDtcgTokens(state.document);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${safeExportName(state.document.name || 'Untitled').slice(0, 80)}.tokens.json`;
+    anchor.hidden = true;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    showToast('Design tokens downloaded as DTCG JSON.');
+  } catch (error) {
+    showToast(error.message || 'Could not export these design tokens.');
+  }
 }
 async function persistCurrentDocumentNow() {
   if (!state.ready) return true;
@@ -4201,7 +4374,7 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); showToast(`“${frame.name}” is now the prototype starting point.`);
   } else if (action === 'prototype-connect') {
     if (!node) { showToast('Select a layer to add an interaction.'); return; }
-    if (['close-overlay', 'back', 'open-link', 'set-variable-mode'].includes(state.prototypeAction)) {
+    if (['close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant'].includes(state.prototypeAction)) {
       try {
         const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
         const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
@@ -4213,9 +4386,11 @@ function applyInspectorAction(action, details = {}) {
           condition,
           url: state.prototypeUrl,
           collectionId: selectedCollection?.id,
-          modeId: selectedMode?.id
+          modeId: selectedMode?.id,
+          targetVariantId: $('#prototype-variant-target')?.value || state.prototypeVariantTargetId
         });
-        const label = state.prototypeAction === 'open-link' ? 'Open link' : state.prototypeAction === 'back' ? 'Back' : state.prototypeAction === 'set-variable-mode' ? 'Set variable mode' : 'Close overlay';
+        recordNodeComponentOverrides(node, ['interactions']);
+        const label = state.prototypeAction === 'open-link' ? 'Open link' : state.prototypeAction === 'back' ? 'Back' : state.prototypeAction === 'set-variable-mode' ? 'Set variable mode' : state.prototypeAction === 'change-variant' ? 'Change to variant' : 'Close overlay';
         renderInspector(); queueSave(); renderer.invalidate(); showToast(`${label} interaction added.`);
       } catch (error) { showToast(error.message); }
       return;
@@ -4229,6 +4404,7 @@ function applyInspectorAction(action, details = {}) {
     if (!node || !interactionId) return;
     checkpoint('Remove prototype interaction');
     removePrototypeInteraction(state.document, node.id, interactionId);
+    recordNodeComponentOverrides(node, ['interactions']);
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
@@ -4549,6 +4725,7 @@ function initEvents() {
       renderInspector();
     }
     if (event.target.id === 'prototype-variable-mode') state.prototypeVariableModeId = event.target.value;
+    if (event.target.id === 'prototype-variant-target') state.prototypeVariantTargetId = event.target.value;
     if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
@@ -4591,6 +4768,16 @@ function initEvents() {
     showMenu(items, event.clientX, event.clientY);
   });
   $('#place-image-assets').addEventListener('click', chooseImageFiles);
+  $('#import-design-tokens').addEventListener('click', () => {
+    if (state.documentTransitioning) { showToast('Wait for the current design switch to finish before importing tokens.'); return; }
+    $('#design-token-file-input').click();
+  });
+  $('#design-token-file-input').addEventListener('change', event => {
+    const input = event.currentTarget;
+    importDesignTokens(input.files?.[0]);
+    input.value = '';
+  });
+  $('#export-design-tokens').addEventListener('click', exportDesignTokens);
   $('#add-variable-collection').addEventListener('click', () => handleVariableAssetsAction('add-variable-collection'));
   $('#variable-collections-list').addEventListener('click', event => {
     const apply = event.target.closest('[data-variable-apply]');
@@ -4670,11 +4857,16 @@ function initEvents() {
   $('#present-dialog').addEventListener('close', () => {
     clearPresentationDelay();
     cancelPresentationAnimation();
-    presentRenderer?.destroy(); presentRenderer = null; presentRenderState = null; state.presenting = null;
+    presentationPointerGesture = null;
+    presentRenderer?.destroy(); presentRenderer = null; presentRenderState = null; presentRuntimeDocument = null; state.presenting = null;
+    $('#present-canvas').style.removeProperty('touch-action');
     $('#present-canvas').style.opacity = '1'; $('#present-canvas').style.transform = 'translateX(0)';
   });
-  $('#present-canvas').addEventListener('pointerup', event => handlePresentationPointer(event, 'on-click'));
-  $('#present-canvas').addEventListener('pointermove', event => { if (event.pointerType !== 'touch') handlePresentationPointer(event, 'while-hovering'); });
+  $('#present-canvas').addEventListener('pointerdown', handlePresentationPointerDown);
+  $('#present-canvas').addEventListener('pointerup', handlePresentationPointerUp);
+  $('#present-canvas').addEventListener('pointercancel', handlePresentationPointerCancel);
+  $('#present-canvas').addEventListener('lostpointercapture', handlePresentationPointerCancel);
+  $('#present-canvas').addEventListener('pointermove', handlePresentationPointerMove);
   window.addEventListener('resize', () => { if (state.presenting) renderPresentationFrame(); });
   $$('.sidebar-tab').forEach(tab => tab.addEventListener('click', () => { state.sidebarTab = tab.dataset.sidebarTab; $$('.sidebar-tab').forEach(item => { item.classList.toggle('is-active', item === tab); item.setAttribute('aria-selected', String(item === tab)); }); $('#layers-section').hidden = state.sidebarTab !== 'layers'; $('#assets-section').hidden = state.sidebarTab !== 'assets'; }));
   $('#export-selection').addEventListener('click', exportSelectionPng);

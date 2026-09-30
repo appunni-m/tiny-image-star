@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {
   addNode, canCreateMaskGroup, canGroupLayers, canUngroupLayers, combineBoolean, createComponent, createComponentInstance, createComponentSet, createDocument, createMaskGroup, createNode, detachComponentInstance,
   canSwapComponentTo, createComponentProperty, duplicateNode, findNode, moveNode, removeNode, reorderNode, releaseMaskGroup, separateBoolean, serializeDocument, parseDocument, setComponentPropertyValue, setComponentVariantProperty, switchComponentInstanceVariant, ungroupLayers, groupLayers, updateNode,
-  resetComponentSlotContent, setComponentSlotContent, syncComponentInstances, validateDocument
+  resetComponentSlotContent, setComponentSlotContent, syncAllComponentInstances, syncComponentInstances, validateDocument
 } from '../src/model.js';
+import { addPrototypeInteraction } from '../src/prototype.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
   const document = createDocument();
@@ -86,6 +87,41 @@ test('main component edits synchronize while preserving instance placement and s
   assert.equal(syncedAdded.fill, '#00aa88');
   assert.notEqual(syncedAdded.id, added.id);
   assert.equal(validateDocument(document), true);
+});
+
+test('prototype interactions authored on an instance survive component sync and local reload', () => {
+  const document = createDocument();
+  const defaultMaster = createNode('rectangle', { name: 'Button/State=Default' });
+  const hoverMaster = createNode('rectangle', { name: 'Button/State=Hover' });
+  addNode(document, defaultMaster); addNode(document, hoverMaster);
+  const defaultComponent = createComponent(document, defaultMaster.id);
+  const hoverComponent = createComponent(document, hoverMaster.id);
+  createComponentSet(document, [defaultComponent.id, hoverComponent.id]);
+  const destinations = ['First', 'Second', 'Third'].map(name => createNode('frame', { name }));
+  for (const destination of destinations) {
+    addNode(document, destination);
+    addPrototypeInteraction(document, defaultMaster.id, destination.id);
+  }
+  const instance = createComponentInstance(document, defaultComponent.id);
+  assert.equal(instance.interactions.length, 3, 'the instance starts with the three interactions inherited from its master');
+
+  addPrototypeInteraction(document, instance.id, null, {
+    action: 'change-variant', trigger: 'on-press', targetVariantId: hoverComponent.id
+  });
+  instance.componentOverrides[defaultMaster.id] ||= {};
+  instance.componentOverrides[defaultMaster.id].interactions = structuredClone(instance.interactions);
+
+  assert.equal(syncAllComponentInstances(document), 1);
+  assert.equal(findNode(document, instance.id).node.interactions.length, 4,
+    'sync must reapply the instance interaction override after copying the master');
+  assert.equal(findNode(document, instance.id).node.interactions.at(-1).targetVariantId, hoverComponent.id);
+
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(syncAllComponentInstances(reloaded), 1);
+  const restored = findNode(reloaded, instance.id).node;
+  assert.equal(restored.interactions.length, 4, 'the variant interaction must survive serialization and a subsequent sync');
+  assert.equal(restored.componentOverrides[defaultMaster.id].interactions.length, 4);
+  assert.equal(validateDocument(reloaded), true);
 });
 
 test('local instance overrides survive main edits and synchronization', () => {
