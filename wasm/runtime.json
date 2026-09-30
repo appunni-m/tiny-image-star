@@ -1,11 +1,12 @@
 {
   "package": "pillow-rs",
-  "version": "12.2.0-alpha.1",
-  "integrity": "sha512-dPPpkm5JBKlsBce+C9cHLxVXfeJvW3HR9psDXhvxjD8PaloJgbR/PnXt5BqO5ftvQX+LdBG1LzhP01m2uvEJgw==",
-  "sourceCommit": "310788f9fcadc85b02263b383c5a6ea094b000c6",
+  "version": "12.2.0-alpha.2",
+  "integrity": "sha512-QB0HiRIvzUnIse2e/KJwlHZmJJRLU7mD0NacshCgHW/OUa6/yaTsQmpAxkhG41WtGPVrxNTn/X6lJeKk0ev+mw==",
+  "sourceCommit": "533de8607e2d246e1d166f029abd08b7c73191f3",
   "files": {
-    "pillow_rs_js.js": "3d4251ad14e3731e680286d3ea9d8f25af932448596eaa2af09474ebcfd1b5ed",
-    "pillow_rs_js_bg.wasm": "08dfff0b10424b6ece937574aefd4c07d1d4f8ac95643e7c4d5138ab720d5a96",
+    "pillow_rs_js.js": "6dc45dd7d0a543ca56c7fad5619a6182b2ac45e71a1868dd7429bc3e5ac73297",
+    "pillow_rs_js_bg.wasm": "df1b87083878ee2d35575b919525288ddeba16118acdc88fed411d5633143910",
     "PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405"
-  }
+  },
+  "artifactSource": "Locally built from upstream source; alpha.2 is prepared on main but not yet published."
 }

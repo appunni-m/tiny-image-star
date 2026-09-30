@@ -194,11 +194,41 @@ export class Image {
         return v3;
     }
     /**
+     * Builds Color's constructor-time degenerate image.
+     *
+     * # Errors
+     *
+     * Returns mode conversion or materialization errors from the core.
+     * @returns {Image}
+     */
+    colorDegenerate() {
+        const ret = wasm.image_colorDegenerate(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
+    /**
      * @returns {any}
      */
     compatibilityInfo() {
         const ret = wasm.image_compatibilityInfo(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Builds Contrast's constructor-time mean image.
+     *
+     * # Errors
+     *
+     * Returns mode conversion or materialization errors from the core.
+     * @returns {Image}
+     */
+    contrastDegenerate() {
+        const ret = wasm.image_contrastDegenerate(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
     }
     /**
      * @param {string} m
@@ -1317,10 +1347,11 @@ export class Image {
      * @param {any} size
      * @param {any} resample
      * @param {any} box_coords
+     * @param {any} reducing_gap
      * @returns {Image}
      */
-    resizeWithInput(size, resample, box_coords) {
-        const ret = wasm.image_resizeWithInput(this.__wbg_ptr, size, resample, box_coords);
+    resizeWithInput(size, resample, box_coords, reducing_gap) {
+        const ret = wasm.image_resizeWithInput(this.__wbg_ptr, size, resample, box_coords, reducing_gap);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -3331,6 +3362,27 @@ export class ImageOps {
         }
         return Image.__wrap(ret[0]);
     }
+    /**
+     * Applies the exact host-computed `sample < threshold` solarize table.
+     *
+     * # Errors
+     *
+     * Returns an error when the table does not contain 256 entries or the
+     * image mode is unsupported by Pillow's `ImageOps.solarize`.
+     * @param {Image} img
+     * @param {Uint8Array} below
+     * @returns {Image}
+     */
+    static solarizeWithComparisons(img, below) {
+        _assertClass(img, Image);
+        const ptr0 = passArray8ToWasm0(below, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.imageops_solarizeWithComparisons(img.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Image.__wrap(ret[0]);
+    }
 }
 if (Symbol.dispose) ImageOps.prototype[Symbol.dispose] = ImageOps.prototype.free;
 
@@ -4853,6 +4905,10 @@ function __wbg_get_imports() {
             const ret = arg0[arg1 >>> 0];
             return ret;
         },
+        __wbg_get_78f252d074a84d0b: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_get_unchecked_6e0ad6d2a41b06f6: function(arg0, arg1) {
             const ret = arg0[arg1 >>> 0];
             return ret;
@@ -4909,6 +4965,10 @@ function __wbg_get_imports() {
         },
         __wbg_new_from_slice_77cdfb7977362f3c: function(arg0, arg1) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
+            return ret;
+        },
+        __wbg_now_86c0d4ba3fa605b8: function() {
+            const ret = Date.now();
             return ret;
         },
         __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
