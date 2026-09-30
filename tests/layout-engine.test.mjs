@@ -113,6 +113,31 @@ test('wrapped horizontal stacks use distinct row and column gaps', () => {
   assert.deepEqual([first.x, first.y, second.x, second.y, third.x, third.y], [10, 10, 60, 10, 10, 45]);
 });
 
+test('wrapped stretch alignment sizes items to their own row without overlap', () => {
+  const frame = createNode('frame', {
+    width: 130, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, align: 'stretch', columnGap: 10, rowGap: 10, padding: 10 })
+  });
+  const first = createNode('rectangle', { width: 50, height: 10 });
+  const second = createNode('rectangle', { width: 50, height: 20 });
+  const third = createNode('rectangle', { width: 50, height: 10 });
+  frame.children.push(first, second, third);
+  applyAutoLayout(frame);
+  assert.deepEqual([first.y, first.height, second.height, third.y, third.height], [10, 40, 40, 60, 30]);
+  assert.ok(first.y + first.height <= third.y, 'items in the second row should not overlap the first row');
+});
+
+test('stretch alignment does not inflate a hug-sized cross axis from the old frame size', () => {
+  const frame = createNode('frame', {
+    width: 220, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', align: 'stretch', crossSizing: 'hug', padding: 10 })
+  });
+  const child = createNode('rectangle', { width: 40, height: 20, layoutSizingCross: 'fill' });
+  frame.children.push(child);
+  applyAutoLayout(frame);
+  assert.deepEqual([frame.height, child.height], [40, 20]);
+});
+
 test('wrapped stacks measure children using their constrained dimensions', () => {
   const frame = createNode('frame', { width: 120, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, columnGap: 0, rowGap: 12, padding: 10 }) });
   const first = createNode('rectangle', { width: 40, height: 15 });
@@ -121,6 +146,25 @@ test('wrapped stacks measure children using their constrained dimensions', () =>
   frame.children.push(first, wider, third);
   applyAutoLayout(frame);
   assert.deepEqual([first.x, first.y, wider.x, wider.y, wider.width, third.x, third.y], [10, 10, 50, 10, 60, 10, 37]);
+});
+
+test('absolute auto layout children keep explicit coordinates and do not affect flow sizing', () => {
+  const frame = createNode('frame', {
+    width: 220, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', mainSizing: 'hug', crossSizing: 'hug', gap: 8, padding: 10 })
+  });
+  const first = createNode('rectangle', { width: 40, height: 20 });
+  const floating = createNode('rectangle', { x: 500, y: -35, width: 80, height: 70, layoutPositioning: 'absolute' });
+  const last = createNode('rectangle', { width: 20, height: 20 });
+  frame.children.push(first, floating, last);
+
+  applyAutoLayout(frame);
+  assert.deepEqual([first.x, last.x, frame.width, frame.height], [10, 58, 88, 40]);
+  assert.deepEqual([floating.x, floating.y, floating.width, floating.height], [500, -35, 80, 70]);
+
+  delete floating.layoutPositioning;
+  applyAutoLayout(frame);
+  assert.deepEqual([first.x, floating.x, last.x, frame.width], [10, 58, 146, 176]);
 });
 
 test('grid auto layout and cell placement validate and survive document reload', () => {

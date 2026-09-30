@@ -24,6 +24,70 @@ export function collectLiveImagePreviewNodeIds(document) {
 }
 
 /**
+ * Collect source assets reachable from document snapshots and clipboard
+ * trees. Callers should include the open document and every undo/redo snapshot
+ * so assets remain available until history and pending paste references end.
+ */
+export function collectLiveImageAssetIds(documents, extraNodes = []) {
+  const liveAssetIds = new Set();
+  const snapshots = Array.isArray(documents) ? documents : [documents];
+  const visit = nodes => {
+    for (const node of nodes || []) {
+      if (node.type === 'image' && node.assetId) liveAssetIds.add(node.assetId);
+      if (!Array.isArray(node.fills) && node.imageFill?.assetId) liveAssetIds.add(node.imageFill.assetId);
+      for (const fill of node.fills || []) {
+        if (fill.type === 'image' && fill.imageFill?.assetId) liveAssetIds.add(fill.imageFill.assetId);
+      }
+      visit(node.children);
+    }
+  };
+  for (const document of snapshots) {
+    for (const page of document?.pages || []) visit(page.children);
+  }
+  visit(extraNodes);
+  return liveAssetIds;
+}
+
+/** Release source bytes, fallback bitmaps, object URLs, and budget entries for orphan assets. */
+export function pruneImageAssetRuntime({
+  liveAssetIds,
+  assets,
+  disposeSource = () => {},
+  releaseMemory = () => {},
+  revokeUrl = url => URL.revokeObjectURL(url),
+}) {
+  const live = liveAssetIds instanceof Set ? liveAssetIds : new Set(liveAssetIds);
+  let releasedAssets = 0;
+  let closedBitmaps = 0;
+  let revokedUrls = 0;
+  for (const [assetId, asset] of [...assets]) {
+    if (live.has(assetId)) continue;
+    try { disposeSource(assetId); } catch {}
+    if (asset.bitmap) {
+      try { asset.bitmap.close?.(); closedBitmaps += 1; } catch {}
+    }
+    if (asset.bitmapUrl) {
+      try { revokeUrl(asset.bitmapUrl); revokedUrls += 1; } catch {}
+    }
+    try { asset.sourceBytes = null; } catch {}
+    assets.delete(assetId);
+    try { releaseMemory(assetId); } catch {}
+    releasedAssets += 1;
+  }
+  return { releasedAssets, closedBitmaps, revokedUrls };
+}
+
+export function imagePreviewFailureStatus(error) {
+  return error?.previewFallbackShown ? 'Preview unavailable · showing original' : 'Preview failed';
+}
+
+export function setImagePreviewFailureStatus(imageStatus, previewKey, error) {
+  const status = imagePreviewFailureStatus(error);
+  imageStatus.set(previewKey, status);
+  return status;
+}
+
+/**
  * Release preview-only resources for nodes that no longer belong to the open
  * document. Asset sources and worker caches are deliberately left alone:
  * another live node or page may still reference the same asset.
@@ -58,22 +122,20 @@ export function pruneImagePreviewRuntime({
     if (live.has(nodeId)) continue;
 
     if (timers.has(nodeId)) {
-      clearTimer(timers.get(nodeId));
+      try { clearTimer(timers.get(nodeId)); } catch {}
       timers.delete(nodeId);
       cancelledTimers += 1;
     }
 
     const preview = previews.get(nodeId);
     if (preview) {
-      preview.close?.();
-      releasedPreviews += 1;
+      try { preview.close?.(); releasedPreviews += 1; } catch {}
     }
     previews.delete(nodeId);
 
     const url = previewUrls.get(nodeId);
     if (url) {
-      revokeUrl(url);
-      revokedUrls += 1;
+      try { revokeUrl(url); revokedUrls += 1; } catch {}
     }
     previewUrls.delete(nodeId);
 

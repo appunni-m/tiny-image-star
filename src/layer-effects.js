@@ -1,4 +1,4 @@
-export const layerEffectTypes = new Set(['drop-shadow', 'layer-blur']);
+export const layerEffectTypes = new Set(['drop-shadow', 'inner-shadow', 'layer-blur']);
 
 export function isValidLayerEffects(effects) {
   if (!Array.isArray(effects) || effects.length > 8) return false;
@@ -32,6 +32,12 @@ export function buildLayerEffectFilter(effects, scale = 1) {
     }
     return '';
   }).filter(Boolean).join(' ') || 'none';
+}
+
+export function buildLayerEffectBoxShadow(effects) {
+  return (effects || []).filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false).map(effect =>
+    `inset ${effect.offsetX}px ${effect.offsetY}px ${Math.max(0, effect.blur)}px ${cssColorWithOpacity(effect.color, effect.opacity)}`
+  ).join(', ') || 'none';
 }
 
 export function layerEffectPadding(effects) {

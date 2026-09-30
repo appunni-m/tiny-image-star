@@ -232,6 +232,33 @@ test('typed variable bindings reject incompatible properties and values that vio
   assert.equal(validateDocument(document), true);
 });
 
+test('frame mode changes roll back when a cross-collection alias would invalidate a bound property', () => {
+  const document = createDocument();
+  const bindingCollection = createVariableCollection(document, 'Semantic opacity');
+  const bindingDefault = bindingCollection.defaultModeId;
+  const bindingAlternate = addVariableMode(document, bindingCollection.id, 'Alternate').id;
+  const targetCollection = createVariableCollection(document, 'Palette');
+  const targetInvalid = addVariableMode(document, targetCollection.id, 'Invalid opacity');
+  const target = createVariable(document, targetCollection.id, 'Opacity target', 'number', 0.5);
+  assert.equal(setVariableValue(document, target.id, 1.5, targetInvalid.id), true);
+  const semantic = createVariable(document, bindingCollection.id, 'Card opacity', 'number', 0.7);
+  assert.equal(setVariableAlias(document, semantic.id, target.id, bindingDefault), true);
+  assert.equal(setVariableValue(document, semantic.id, 0.8, bindingAlternate), true);
+
+  const frame = createNode('frame');
+  const shape = createNode('rectangle', { opacity: 0.25 });
+  addNode(document, frame);
+  addNode(document, shape, { parentId: frame.id });
+  assert.equal(bindVariable(document, shape.id, semantic.id, 'opacity'), true);
+  assert.equal(getNodePropertyValue(document, shape, 'opacity'), 0.5);
+  assert.equal(validateDocument(document), true);
+
+  assert.equal(setFrameVariableMode(document, frame.id, targetCollection.id, targetInvalid.id), false);
+  assert.equal(frame.variableModes, undefined, 'a rejected frame mode change leaves the prior override untouched');
+  assert.equal(getNodePropertyValue(document, shape, 'opacity'), 0.5);
+  assert.equal(validateDocument(document), true);
+});
+
 test('typed variable property overrides survive component synchronization and deletion cleanup', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Copy');

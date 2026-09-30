@@ -295,7 +295,7 @@ try {
   const paragraphNode = textNode(paragraphDocument, paragraphText);
   assert(paragraphNode?.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic'),
     `the formatted later-paragraph run did not persist: ${JSON.stringify((paragraphDocument?.pages || []).flatMap(page => page.children || []).map(node => ({ text: node.text, runs: node.textRuns })))}`);
-  tap(app, app.querySelector('#inspector-toggle'));
+  if (!app.querySelector('#right-panel').classList.contains('is-open')) tap(app, app.querySelector('#inspector-toggle'));
   await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'paragraph Inspector panel');
   const paragraphSpacing = app.querySelector('[data-prop="paragraphSpacing"]');
   paragraphSpacing.value = '11'; paragraphSpacing.dispatchEvent(new app.defaultView.Event('input', { bubbles: true })); paragraphSpacing.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
@@ -359,11 +359,67 @@ try {
     && reloadedParagraph.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic'),
   'reload should preserve paragraph metrics and formatted runs together after an in-session Enter.');
 
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitFor(() => app.querySelector('#left-panel').classList.contains('is-open'), 'list editor Layers panel');
+  tap(app, app.querySelector(`[data-layer-id="${reloadedParagraph.id}"]`));
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'list editor Inspector panel');
+  tap(app, app.querySelector('[data-action="edit-text"]'));
+  await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'list formatting editor');
+  editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
+  const listButtons = [...toolbar.querySelectorAll('[data-paragraph-format]')];
+  assert(listButtons.length === 4, 'the mobile text toolbar must expose list, numbering, indent and outdent controls.');
+  for (const control of listButtons) assertTouchReachable(app, control, control.getAttribute('aria-label'));
+  selectRange(app, editor, 0, editedParagraphText.indexOf('\n\n'));
+  tap(app, toolbar.querySelector('[data-paragraph-format="bulleted"]'));
+  let editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[0].dataset.editorListStyle === 'bulleted' && editorParagraphs[1].dataset.editorListStyle === 'bulleted',
+    'selecting two paragraphs and applying bullets did not mark both list items.');
+  selectRange(app, editor, 0, 'Alpha line'.length);
+  tap(app, toolbar.querySelector('[data-text-format="bold"]'));
+  editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[0].dataset.editorListStyle === 'bulleted' && editorParagraphs[1].dataset.editorListStyle === 'bulleted'
+    && editorParagraphs[0].dataset.editorListMarker === '•' && editorParagraphs[0].querySelector('[data-run-font-weight="700"]')?.textContent === 'Alpha line',
+  'applying character formatting to a list item must preserve list metadata and markers.');
+  const betaStart = editedParagraphText.indexOf('Beta');
+  selectRange(app, editor, betaStart, betaStart + 'Beta line'.length);
+  tap(app, toolbar.querySelector('[data-paragraph-format="numbered"]'));
+  tap(app, toolbar.querySelector('[data-paragraph-format="indent"]'));
+  editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[1].dataset.editorListStyle === 'numbered' && editorParagraphs[1].dataset.editorListLevel === '1'
+    && editorParagraphs[1].dataset.editorListMarker === 'a.', 'numbered list formatting and nested list level did not update the selected paragraph.');
+  tap(app, toolbar.querySelector('[data-paragraph-format="outdent"]'));
+  editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[1].dataset.editorListLevel === '0', 'outdent did not return the list item to the top level.');
+  tap(app, toolbar.querySelector('[data-text-format-done]'));
+  await waitFor(() => editor.hidden, 'list format commit');
+  assert(app.activeElement?.matches('[data-action="edit-text"]'), 'Done should restore keyboard focus to the text edit action.');
+  const listGap = app.querySelector('[data-prop="listSpacing"]');
+  listGap.value = '9'; listGap.dispatchEvent(new app.defaultView.Event('input', { bubbles: true })); listGap.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  await waitFor(async () => {
+    saved = await documentById(app, smokeDocumentId);
+    const persisted = textNode(saved, editedParagraphText);
+    return persisted?.listSpacing === 9 && persisted.paragraphStyles?.[0]?.listStyle === 'bulleted'
+      && persisted.paragraphStyles?.[1]?.listStyle === 'numbered' && persisted.paragraphStyles?.[1]?.listLevel === 0;
+  }, 'paragraph list and spacing autosave');
+  const savedLists = textNode(saved, editedParagraphText);
+  assert(savedLists.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic'), 'applying list formatting removed existing rich text runs.');
+  tap(app, app.querySelector('[data-action="edit-text"]'));
+  await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'saved list editor reopen');
+  editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
+  editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[0].dataset.editorListMarker === '•' && editorParagraphs[1].dataset.editorListMarker === '1.'
+    && getComputedStyle(editor).getPropertyValue('--text-list-spacing') === '9px'
+    && getComputedStyle(editorParagraphs[0]).textIndent === '14px',
+  'reopening did not restore list markers, item spacing, and first-line indent.');
+  tap(app, toolbar.querySelector('[data-text-format-done]'));
+  await waitFor(() => editor.hidden, 'saved list editor close');
+
 result.textContent = `PASS\n${JSON.stringify({ mobileViewport: '390x844', boldRange: true, italicRange: true, selectedFontSize: 36, selectedWeight: 800, selectedDecoration: 'underline', selectedFamily: 'Georgia, serif', selectedLetterSpacing: 1.2,
     selectedLineHeight: 1.6, selectedColor: '#f0123c', savedRuns: true, reloadPreservesRuns: true, reopenedRunRendering: true,
     editAfterReloadPreservesRuns: true, appendedTextSurvivesReload: true, touchSizedControls: true, plainTextUnchanged: true,
     paragraphs: 4, blankParagraphSelectionRestored: true, savedParagraphSpacing: 11, savedFirstLineIndent: 14, paragraphRunsSurviveReload: true,
-    liveEnterUsesParagraphMetrics: true, enteredParagraphSaves: true })}`;
+    liveEnterUsesParagraphMetrics: true, enteredParagraphSaves: true, mobileParagraphLists: true, listIndenting: true, listStylesSurviveReload: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

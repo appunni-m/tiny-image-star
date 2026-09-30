@@ -1,12 +1,18 @@
 import { DEFAULT_DECODED_SOURCE_PIXEL_BUDGET } from './decoded-source-cache.js';
+import { ImageMemoryLimitError } from './image-memory-budget.js';
 
 const MIB_PIXELS = 1_000_000;
 const MIB_BYTES = 1024 * 1024;
 const MAX_RENDER_SOURCE_PIXELS = 80_000_000;
+// Let fitting jobs use otherwise idle workers, but stop bypassing any older
+// memory-blocked job after a small fixed number of admissions. That bounds
+// starvation when the queue contains a steady stream of small images.
+const MAX_MEMORY_BLOCKED_JOB_BYPASSES = 3;
 // Source + mutable Pillow copy + filter/encoder temporaries. This deliberately
 // overestimates the common 4-byte-per-pixel path so parallel jobs leave room
 // for WASM allocator and PNG output overhead.
 const ACTIVE_BYTES_PER_PIXEL = 32;
+const MAX_SINGLE_RENDER_WORKING_SET_BYTES = 512 * MIB_BYTES;
 const MAX_HEADER_SCAN_BYTES = 1024 * 1024;
 const JPEG_FRAME_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 
@@ -75,29 +81,33 @@ function jpegDimensions(view) {
 
 function webpDimensions(view) {
   if (view.byteLength < 20 || !hasAscii(view, 0, 'RIFF') || !hasAscii(view, 8, 'WEBP')) return null;
-  const end = Math.min(view.byteLength, view.getUint32(4, true) + 8, MAX_HEADER_SCAN_BYTES);
+  const riffEnd = view.getUint32(4, true) + 8;
+  const end = Math.min(view.byteLength, riffEnd, MAX_HEADER_SCAN_BYTES);
   let offset = 12;
   while (offset + 8 <= end) {
     const type = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3));
     const size = view.getUint32(offset + 4, true);
     const data = offset + 8;
-    if (size > end - data) return null;
-    if (type === 'VP8X' && size >= 10) {
+    const chunkEnd = data + size + (size & 1);
+    if (chunkEnd > riffEnd) return null;
+    if (type === 'VP8X' && size >= 10 && data + 10 <= end) {
       const width = 1 + view.getUint8(data + 4) + (view.getUint8(data + 5) << 8) + (view.getUint8(data + 6) << 16);
       const height = 1 + view.getUint8(data + 7) + (view.getUint8(data + 8) << 8) + (view.getUint8(data + 9) << 16);
       return imageDimensions(width, height);
     }
-    if (type === 'VP8 ' && size >= 10 && view.getUint8(data + 3) === 0x9d && view.getUint8(data + 4) === 0x01 && view.getUint8(data + 5) === 0x2a) {
+    if (type === 'VP8 ' && size >= 10 && data + 10 <= end
+      && view.getUint8(data + 3) === 0x9d && view.getUint8(data + 4) === 0x01 && view.getUint8(data + 5) === 0x2a) {
       return imageDimensions(view.getUint16(data + 6, true) & 0x3fff, view.getUint16(data + 8, true) & 0x3fff);
     }
-    if (type === 'VP8L' && size >= 5 && view.getUint8(data) === 0x2f) {
+    if (type === 'VP8L' && size >= 5 && data + 5 <= end && view.getUint8(data) === 0x2f) {
       const b1 = view.getUint8(data + 1); const b2 = view.getUint8(data + 2);
       const b3 = view.getUint8(data + 3); const b4 = view.getUint8(data + 4);
       const width = 1 + b1 + ((b2 & 0x3f) << 8);
       const height = 1 + (b2 >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10);
       return imageDimensions(width, height);
     }
-    offset = data + size + (size & 1);
+    if (chunkEnd > end) return null;
+    offset = chunkEnd;
   }
   return null;
 }
@@ -168,13 +178,27 @@ export function assertSafeRasterDimensions(sourceBytes) {
 
 /**
  * Estimate transient Pillow-RS memory from the source header. Unknown formats
- * receive the decoder's full pixel ceiling and therefore run alone; the
- * compressed byte length is intentionally not treated as a decoded-size proxy.
+ * receive the decoder's full pixel ceiling and therefore run alone; compressed
+ * source bytes are also counted for their transferable worker copy.
  */
 export function estimateImageWorkingSetBytes(sourceBytes) {
-  const dimensions = rasterDimensions(bytesView(sourceBytes));
+  const view = bytesView(sourceBytes);
+  const dimensions = rasterDimensions(view);
   const pixels = Math.min(dimensions?.pixels ?? MAX_RENDER_SOURCE_PIXELS, MAX_RENDER_SOURCE_PIXELS);
-  return pixels * ACTIVE_BYTES_PER_PIXEL;
+  // Keep room for both the decoded Pillow surfaces and the transferable
+  // compressed input copy. The latter is easy to miss for images with large
+  // metadata or unusually incompressible data, where pixel dimensions alone
+  // would understate the worker's peak memory.
+  return pixels * ACTIVE_BYTES_PER_PIXEL + (view?.byteLength || 0);
+}
+
+function transferableSourceBytes(sourceBytes) {
+  const view = bytesView(sourceBytes);
+  if (!view) throw new TypeError('Image source data must be an ArrayBuffer or an ArrayBuffer view.');
+  // Normalize DataView, typed-array slices, and SharedArrayBuffer-backed
+  // views to a fresh, exact-range transferable ArrayBuffer. Transferring the
+  // caller's buffer would detach the retained original used for later edits.
+  return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice();
 }
 
 /** A separate ceiling for live renders; retained decoded sources have their own cache budget. */
@@ -187,6 +211,16 @@ export function defaultActiveRenderMemoryBudget({ deviceMemory = globalThis.navi
     return 1024 * MIB_BYTES;
   }
   return 256 * MIB_BYTES;
+}
+
+/** A hard singleton ceiling; unlike the shared budget, this cannot be exceeded by running one job alone. */
+export function defaultSingleImageRenderMemoryBudget({ deviceMemory = globalThis.navigator?.deviceMemory } = {}) {
+  const memory = Number(deviceMemory);
+  if (Number.isFinite(memory) && memory > 0) {
+    if (memory <= 2) return 192 * MIB_BYTES;
+    if (memory <= 4) return 320 * MIB_BYTES;
+  }
+  return MAX_SINGLE_RENDER_WORKING_SET_BYTES;
 }
 
 /**
@@ -213,16 +247,20 @@ export function defaultImageCachePixelBudget({
 }
 
 export class LocalImageEngine {
-  constructor({ maxWorkers = Math.min(8, Math.max(1, globalThis.navigator?.hardwareConcurrency || 4)), maxCachedPixels = defaultImageCachePixelBudget(), maxActiveRenderBytes = defaultActiveRenderMemoryBudget(), onChange = () => {} } = {}) {
+  constructor({ maxWorkers = Math.min(8, Math.max(1, globalThis.navigator?.hardwareConcurrency || 4)), maxCachedPixels = defaultImageCachePixelBudget(), maxActiveRenderBytes = defaultActiveRenderMemoryBudget(), maxSingleRenderBytes = defaultSingleImageRenderMemoryBudget(), onChange = () => {} } = {}) {
     if (!Number.isSafeInteger(maxCachedPixels) || maxCachedPixels < 0) {
       throw new RangeError('The image cache pixel budget must be a nonnegative safe integer.');
     }
     if (!Number.isSafeInteger(maxActiveRenderBytes) || maxActiveRenderBytes < 1) {
       throw new RangeError('The active render memory budget must be a positive safe integer.');
     }
+    if (!Number.isSafeInteger(maxSingleRenderBytes) || maxSingleRenderBytes < 1) {
+      throw new RangeError('The maximum single-image render memory limit must be a positive safe integer.');
+    }
     this.maxWorkers = maxWorkers;
     this.maxCachedPixels = maxCachedPixels;
     this.maxActiveRenderBytes = maxActiveRenderBytes;
+    this.maxSingleRenderBytes = maxSingleRenderBytes;
     this.activeRenderBytes = 0;
     this.concurrency = Math.min(2, maxWorkers);
     this.workers = [];
@@ -329,7 +367,7 @@ export class LocalImageEngine {
     this.#notify();
   }
 
-  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey } = {}) {
+  render(assetId, sourceBytes, adjustments, transforms = {}, { replaceKey, format = 'png', quality = 90 } = {}) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (this.workers.length && !this.workers.some(slot => !slot.failed)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly.'));
@@ -337,16 +375,35 @@ export class LocalImageEngine {
     if (replaceKey !== undefined && (typeof replaceKey !== 'string' || !replaceKey)) {
       return Promise.reject(new TypeError('A queued render replacement key must be a nonempty string.'));
     }
+    if (!['png', 'jpeg', 'webp'].includes(format)) return Promise.reject(new TypeError('Image output format must be PNG, JPEG, or WebP.'));
+    if (!Number.isInteger(quality) || quality < 1 || quality > 100) return Promise.reject(new TypeError('Image output quality must be an integer from 1 to 100.'));
+    let activeRenderBytes;
+    try {
+      if (!bytesView(sourceBytes)) throw new TypeError('Image source data must be an ArrayBuffer or an ArrayBuffer view.');
+      activeRenderBytes = estimateImageWorkingSetBytes(sourceBytes);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (activeRenderBytes > this.maxSingleRenderBytes) {
+      const needed = Math.ceil(activeRenderBytes / MIB_BYTES);
+      const limit = Math.floor(this.maxSingleRenderBytes / MIB_BYTES);
+      return Promise.reject(new ImageMemoryLimitError(
+        `This image needs an estimated ${needed} MiB of temporary Pillow-RS memory, above the ${limit} MiB per-image processing limit. Resize the image before applying edits.`,
+        'wasm-working-set',
+      ));
+    }
     return new Promise((resolve, reject) => {
       const job = {
         assetId,
         sourceBytes,
-        activeRenderBytes: estimateImageWorkingSetBytes(sourceBytes),
+        activeRenderBytes,
         adjustments: { ...adjustments },
         transforms: {
           ...transforms,
           ...(transforms?.crop ? { crop: { ...transforms.crop } } : {}),
         },
+        format,
+        quality,
         resolve,
         reject,
         replaceKey,
@@ -386,23 +443,44 @@ export class LocalImageEngine {
     if (this.dead || this.paused || !this.poolConfigured) return;
     const active = this.workers.filter(slot => slot.busy).length;
     if (active >= this.concurrency) return;
-    if (!this.queue.length) return;
-    const job = this.queue[0];
-    // An over-budget job is allowed only when no render is active. This avoids
-    // deadlocking a single large image while preventing it from overlapping
-    // other large allocations; smaller FIFO jobs wait behind it as well.
-    if (this.activeRenderBytes > 0 && this.activeRenderBytes + job.activeRenderBytes > this.maxActiveRenderBytes) return;
     const idle = this.workers.filter(item => item.ready && !item.busy);
+    if (!idle.length) return;
+    if (!this.queue.length) return;
+    // A job may exceed the shared concurrency budget only when alone. Every
+    // job has already passed the non-overridable per-image hard ceiling. If
+    // the queue head cannot fit beside active work, let the first fitting job
+    // use an idle worker unless an older blocked job has reached its bounded
+    // bypass allowance. This prevents mixed-size queues from leaving capacity
+    // idle while preserving a finite wait for large images.
+    const fitsAvailableMemory = job => this.activeRenderBytes === 0
+      || this.activeRenderBytes + job.activeRenderBytes <= this.maxActiveRenderBytes;
+    let queueIndex = this.queue.findIndex(fitsAvailableMemory);
+    if (queueIndex < 0) return;
+    let blockedJobs = [];
+    if (queueIndex > 0) {
+      blockedJobs = this.queue.slice(0, queueIndex);
+      if (blockedJobs.some(job => (job.memoryBypasses || 0) >= MAX_MEMORY_BLOCKED_JOB_BYPASSES)) return;
+    }
+    const job = this.queue[queueIndex];
     // Keep jobs FIFO, but prefer the worker that already owns this decoded
     // source. An arbitrary free worker would request another byte copy and
     // decode the same original into a second worker-local cache.
     const slot = idle.find(item => item.loaded.has(job.assetId)) || idle[0];
     if (!slot) return;
-    this.queue.shift();
+    this.queue.splice(queueIndex, 1);
     if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
     const requestId = this.nextRequestId++;
     const firstLoad = !slot.loaded.has(job.assetId);
-    const bytes = firstLoad ? job.sourceBytes.slice() : null;
+    let bytes = null;
+    if (firstLoad) {
+      try {
+        bytes = transferableSourceBytes(job.sourceBytes);
+      } catch (error) {
+        job.reject(error);
+        this.#dispatch();
+        return;
+      }
+    }
     if (firstLoad) slot.loaded.add(job.assetId);
     slot.busy = true;
     this.activeRenderBytes += job.activeRenderBytes;
@@ -415,7 +493,10 @@ export class LocalImageEngine {
         sourceBytes: bytes?.buffer,
         adjustments: job.adjustments,
         transforms: job.transforms,
+        format: job.format,
+        quality: job.quality,
       }, bytes ? [bytes.buffer] : []);
+      for (const blockedJob of blockedJobs) blockedJob.memoryBypasses = (blockedJob.memoryBypasses || 0) + 1;
     } catch (error) {
       this.pending.delete(requestId);
       slot.busy = false;

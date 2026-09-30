@@ -53,6 +53,29 @@ test('oversized source renders successfully but is freed immediately after rende
   assert.equal(cache.pixels, 0);
 });
 
+test('a disposed asset cannot be repopulated after an in-flight first WASM load', async () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 10 });
+  const sourceLoadedAfterReady = source(4);
+  const render = { invalidated: false };
+  let finishWasmLoad;
+  const wasmReady = new Promise(resolve => { finishWasmLoad = resolve; });
+  const inFlight = (async () => {
+    await wasmReady;
+    return cache.withSource('deleted-asset', () => sourceLoadedAfterReady, decoded => decoded.width, { retain: !render.invalidated });
+  })();
+
+  // This models dispose arriving while the worker's render handler is waiting
+  // for its initial Pillow-RS WASM import to finish.
+  render.invalidated = true;
+  cache.delete('deleted-asset');
+  finishWasmLoad();
+  const result = await inFlight;
+
+  assert.deepEqual(result, { result: 4, retained: false, evictedAssetIds: [] });
+  assert.equal(cache.has('deleted-asset'), false, 'the stale render must not resurrect the disposed cache entry');
+  assert.equal(sourceLoadedAfterReady.freeCalls, 1, 'the ephemeral decoded source is still freed after rendering');
+});
+
 test('retained renders report exact cache evictions and reuse the same decoded object', () => {
   const cache = new DecodedSourceCache({ pixelBudget: 5 });
   const a = source(3), b = source(3);

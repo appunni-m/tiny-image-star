@@ -35,21 +35,27 @@ function constrainOppositeHandle(point, part, mode, width, height) {
   };
 }
 
-/** Convert absolute anchor/control coordinates into a scalable path layer. */
-export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
-  if (!Array.isArray(anchors) || anchors.length < 2) throw new TypeError('A vector path needs at least two points.');
-  if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out)))) {
-    throw new TypeError('Vector path points must contain finite coordinates.');
-  }
-  if (anchors.some(point => point.mode != null && !isVectorAnchorMode(point.mode))) {
-    throw new TypeError('Vector path anchor modes must be corner, smooth, or symmetric.');
-  }
-
+/** Normalize one or more editable contours to a shared scalable path box. */
+export function vectorGeometryFromContours(contours) {
+  if (!Array.isArray(contours) || !contours.length || contours.length > 10_000) throw new TypeError('A vector path needs between one and 10000 contours.');
+  let pointCount = 0;
   const extents = [];
-  for (const point of anchors) {
-    extents.push(point);
-    if (point.in) extents.push(point.in);
-    if (point.out) extents.push(point.out);
+  for (const contour of contours) {
+    const anchors = contour?.anchors;
+    if (!Array.isArray(anchors) || anchors.length < 2 || typeof contour.closed !== 'boolean') throw new TypeError('Every vector contour needs at least two points and a closed setting.');
+    pointCount += anchors.length;
+    if (pointCount > 20_000) throw new RangeError('A vector path can contain at most 20000 points.');
+    if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out)))) {
+      throw new TypeError('Vector path points must contain finite coordinates.');
+    }
+    if (anchors.some(point => point.mode != null && !isVectorAnchorMode(point.mode))) {
+      throw new TypeError('Vector path anchor modes must be corner, smooth, or symmetric.');
+    }
+    for (const point of anchors) {
+      extents.push(point);
+      if (point.in) extents.push(point.in);
+      if (point.out) extents.push(point.out);
+    }
   }
   const left = Math.min(...extents.map(point => Number(point.x)));
   const top = Math.min(...extents.map(point => Number(point.y)));
@@ -58,8 +64,8 @@ export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
   const width = Math.max(1, right - left);
   const height = Math.max(1, bottom - top);
 
-  return {
-    x: left, y: top, width, height, closed,
+  const normalized = contours.map(({ anchors, closed }) => ({
+    closed,
     points: anchors.map(point => {
       const anchorX = Number(point.x);
       const anchorY = Number(point.y);
@@ -75,12 +81,38 @@ export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
       if (point.mode != null) converted.mode = point.mode;
       return converted;
     })
+  }));
+  return {
+    x: left, y: top, width, height,
+    closed: normalized[0].closed,
+    points: normalized[0].points,
+    ...(normalized.length > 1 ? { subpaths: normalized.slice(1) } : {})
   };
 }
 
+/** Convert absolute anchor/control coordinates into a scalable path layer. */
+export function vectorGeometryFromAnchors(anchors, { closed = false } = {}) {
+  return vectorGeometryFromContours([{ anchors, closed }]);
+}
+
+/** Return a path's contour records with the primary legacy fields at index zero. */
+export function vectorPathContours(node) {
+  return [
+    { points: node?.points || [], closed: node?.closed ?? false },
+    ...(Array.isArray(node?.subpaths) ? node.subpaths : [])
+  ];
+}
+
+function contourAt(node, contourIndex = 0) {
+  if (!Number.isInteger(contourIndex) || contourIndex < 0) return null;
+  return contourIndex === 0
+    ? { points: node?.points, closed: node?.closed ?? false }
+    : node?.subpaths?.[contourIndex - 1] || null;
+}
+
 /** Return an anchor or its Bézier control point in document coordinates. */
-export function vectorNodePoint(node, index, part = 'anchor', origin = { x: node.x, y: node.y }) {
-  const point = node?.points?.[index];
+export function vectorNodePoint(node, index, part = 'anchor', origin = { x: node.x, y: node.y }, contourIndex = 0) {
+  const point = contourAt(node, contourIndex)?.points?.[index];
   if (!point) return null;
   const anchorX = origin.x + Number(point.x) * node.width;
   const anchorY = origin.y + Number(point.y) * node.height;
@@ -91,14 +123,14 @@ export function vectorNodePoint(node, index, part = 'anchor', origin = { x: node
 }
 
 /** Move an anchor/control point using document coordinates. */
-export function setVectorNodePoint(node, index, part, position, { origin = { x: node.x, y: node.y }, symmetric = false } = {}) {
-  const point = node?.points?.[index];
+export function setVectorNodePoint(node, index, part, position, { origin = { x: node.x, y: node.y }, symmetric = false, contourIndex = 0 } = {}) {
+  const point = contourAt(node, contourIndex)?.points?.[index];
   if (!point || !finitePoint(position) || !['anchor', 'in', 'out'].includes(part)) return false;
   const mode = point.mode == null ? (symmetric ? 'symmetric' : 'corner') : point.mode;
   if (!isVectorAnchorMode(mode)) return false;
   const width = Math.max(1, Number(node.width) || 1);
   const height = Math.max(1, Number(node.height) || 1);
-  const anchor = vectorNodePoint(node, index, 'anchor', origin);
+  const anchor = vectorNodePoint(node, index, 'anchor', origin, contourIndex);
   if (part === 'anchor') {
     point.x = (Number(position.x) - origin.x) / width;
     point.y = (Number(position.y) - origin.y) / height;
@@ -110,18 +142,65 @@ export function setVectorNodePoint(node, index, part, position, { origin = { x: 
   return true;
 }
 
+function autoSmoothVectorNodePoint(node, index, contourIndex = 0) {
+  const contour = contourAt(node, contourIndex);
+  const points = contour?.points || [];
+  const point = points[index];
+  if (!point || points.length < 2 || !finitePoint(point)) return false;
+  const width = Math.max(1, Number(node.width) || 1);
+  const height = Math.max(1, Number(node.height) || 1);
+  const anchor = vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }, contourIndex);
+  const previousIndex = index > 0 ? index - 1 : contour.closed ? points.length - 1 : -1;
+  const nextIndex = index + 1 < points.length ? index + 1 : contour.closed ? 0 : -1;
+  const previous = previousIndex < 0 ? null : vectorNodePoint(node, previousIndex, 'anchor', { x: 0, y: 0 }, contourIndex);
+  const next = nextIndex < 0 ? null : vectorNodePoint(node, nextIndex, 'anchor', { x: 0, y: 0 }, contourIndex);
+  if ((previous && !finitePoint(previous)) || (next && !finitePoint(next))) return false;
+
+  let tangent;
+  if (previous && next) {
+    tangent = { x: next.x - previous.x, y: next.y - previous.y };
+  } else if (next) {
+    tangent = { x: next.x - anchor.x, y: next.y - anchor.y };
+  } else if (previous) {
+    tangent = { x: anchor.x - previous.x, y: anchor.y - previous.y };
+  } else return false;
+
+  const tangentLength = Math.hypot(tangent.x, tangent.y);
+  if (!(tangentLength > 1e-9)) return false;
+  tangent.x /= tangentLength;
+  tangent.y /= tangentLength;
+
+  const previousLength = previous ? Math.hypot(anchor.x - previous.x, anchor.y - previous.y) / 3 : 0;
+  const nextLength = next ? Math.hypot(next.x - anchor.x, next.y - anchor.y) / 3 : 0;
+  const handle = (x, y) => ({ x: Object.is(x, -0) ? 0 : x, y: Object.is(y, -0) ? 0 : y });
+  point.in = previousLength > 0
+    ? handle(-tangent.x * previousLength / width, -tangent.y * previousLength / height)
+    : { x: 0, y: 0 };
+  point.out = nextLength > 0
+    ? handle(tangent.x * nextLength / width, tangent.y * nextLength / height)
+    : { x: 0, y: 0 };
+  return true;
+}
+
 /**
  * Set a persisted path anchor mode and reconcile its handles immediately.
  * Smooth mode keeps both handle lengths while making them collinear; symmetric
- * mode mirrors the preferred handle exactly. Corner mode preserves geometry.
+ * mode mirrors the preferred handle exactly. When a handle-less anchor becomes
+ * smooth, infer a tangent from its neighboring anchors so the mode has an
+ * immediate visible effect. Corner mode preserves geometry.
  */
-export function setVectorNodePointMode(node, index, mode, { preferredHandle = 'out' } = {}) {
-  const point = node?.points?.[index];
+export function setVectorNodePointMode(node, index, mode, { preferredHandle = 'out', contourIndex = 0 } = {}) {
+  const point = contourAt(node, contourIndex)?.points?.[index];
   if (!point || !isVectorAnchorMode(mode) || !['in', 'out'].includes(preferredHandle)
     || (point.mode != null && !isVectorAnchorMode(point.mode))) return false;
   if (!finitePoint(point) || (point.in != null && !finitePoint(point.in)) || (point.out != null && !finitePoint(point.out))) return false;
 
-  if (mode !== 'corner') {
+  const handleLength = handle => Math.hypot((Number(handle?.x) || 0) * Math.max(1, Number(node.width) || 1),
+    (Number(handle?.y) || 0) * Math.max(1, Number(node.height) || 1));
+  const hasHandles = handleLength(point.in) > 0 || handleLength(point.out) > 0;
+  if (mode === 'smooth' && !hasHandles) {
+    autoSmoothVectorNodePoint(node, index, contourIndex);
+  } else if (mode !== 'corner') {
     const width = Math.max(1, Number(node.width) || 1);
     const height = Math.max(1, Number(node.height) || 1);
     let primary = point[preferredHandle];
@@ -140,21 +219,22 @@ export function setVectorNodePointMode(node, index, mode, { preferredHandle = 'o
 }
 
 /** Return the cubic segment joining one path anchor to the next. */
-export function vectorSegmentPoints(node, index, origin = { x: node.x, y: node.y }) {
-  const points = node?.points || [];
+export function vectorSegmentPoints(node, index, origin = { x: node.x, y: node.y }, contourIndex = 0) {
+  const contour = contourAt(node, contourIndex);
+  const points = contour?.points || [];
   const nextIndex = (index + 1) % points.length;
-  if (points.length < 2 || !Number.isInteger(index) || index < 0 || index >= points.length || (!node?.closed && nextIndex === 0)) return null;
+  if (points.length < 2 || !Number.isInteger(index) || index < 0 || index >= points.length || (!contour.closed && nextIndex === 0)) return null;
   return [
-    vectorNodePoint(node, index, 'anchor', origin),
-    vectorNodePoint(node, index, 'out', origin),
-    vectorNodePoint(node, nextIndex, 'in', origin),
-    vectorNodePoint(node, nextIndex, 'anchor', origin)
+    vectorNodePoint(node, index, 'anchor', origin, contourIndex),
+    vectorNodePoint(node, index, 'out', origin, contourIndex),
+    vectorNodePoint(node, nextIndex, 'in', origin, contourIndex),
+    vectorNodePoint(node, nextIndex, 'anchor', origin, contourIndex)
   ];
 }
 
 /** Evaluate a path segment at t in the interval [0, 1]. */
-export function vectorSegmentPoint(node, index, t, origin = { x: node.x, y: node.y }) {
-  const segment = vectorSegmentPoints(node, index, origin);
+export function vectorSegmentPoint(node, index, t, origin = { x: node.x, y: node.y }, contourIndex = 0) {
+  const segment = vectorSegmentPoints(node, index, origin, contourIndex);
   if (!segment) return null;
   const amount = Math.max(0, Math.min(1, Number(t)));
   const inverse = 1 - amount;
@@ -167,20 +247,20 @@ export function vectorSegmentPoint(node, index, t, origin = { x: node.x, y: node
 
 /** Find the closest point on any open or closed path segment. */
 export function closestVectorSegment(node, position, origin = { x: node.x, y: node.y }) {
-  const points = node?.points || [];
-  const segmentCount = node?.closed ? points.length : points.length - 1;
   let closest = null;
-  const distanceAt = (index, t) => {
-    const point = vectorSegmentPoint(node, index, t, origin);
+  const distanceAt = (index, t, contourIndex) => {
+    const point = vectorSegmentPoint(node, index, t, origin, contourIndex);
     return { point, distance: Math.hypot(position.x - point.x, position.y - point.y) };
   };
-  for (let index = 0; index < segmentCount; index += 1) {
+  for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
+    const segmentCount = contour.closed ? contour.points.length : contour.points.length - 1;
+    for (let index = 0; index < segmentCount; index += 1) {
     const samples = 64;
     let bestT = 0;
-    let best = distanceAt(index, bestT);
+    let best = distanceAt(index, bestT, contourIndex);
     for (let sample = 1; sample <= samples; sample += 1) {
       const t = sample / samples;
-      const candidate = distanceAt(index, t);
+      const candidate = distanceAt(index, t, contourIndex);
       if (candidate.distance < best.distance) { bestT = t; best = candidate; }
     }
     let low = Math.max(0, bestT - 1 / samples);
@@ -188,20 +268,21 @@ export function closestVectorSegment(node, position, origin = { x: node.x, y: no
     for (let iteration = 0; iteration < 18; iteration += 1) {
       const left = low + (high - low) / 3;
       const right = high - (high - low) / 3;
-      if (distanceAt(index, left).distance <= distanceAt(index, right).distance) high = right;
+      if (distanceAt(index, left, contourIndex).distance <= distanceAt(index, right, contourIndex).distance) high = right;
       else low = left;
     }
     const t = (low + high) / 2;
-    const candidate = distanceAt(index, t);
-    if (!closest || candidate.distance < closest.distance) closest = { segmentIndex: index, t, ...candidate };
+    const candidate = distanceAt(index, t, contourIndex);
+    if (!closest || candidate.distance < closest.distance) closest = { segmentIndex: index, contourIndex, t, ...candidate };
+    }
   }
   return closest;
 }
 
 /** Subdivide a cubic segment in place without changing its curve. */
-export function insertVectorNodePoint(node, segmentIndex, t = .5, origin = { x: node.x, y: node.y }) {
-  const points = node?.points || [];
-  const segment = vectorSegmentPoints(node, segmentIndex, origin);
+export function insertVectorNodePoint(node, segmentIndex, t = .5, origin = { x: node.x, y: node.y }, contourIndex = 0) {
+  const points = contourAt(node, contourIndex)?.points || [];
+  const segment = vectorSegmentPoints(node, segmentIndex, origin, contourIndex);
   if (!segment || !Number.isFinite(Number(t))) return -1;
   const amount = Math.max(.000001, Math.min(.999999, Number(t)));
   const [p0, p1, p2, p3] = segment;
@@ -227,24 +308,27 @@ export function insertVectorNodePoint(node, segmentIndex, t = .5, origin = { x: 
 }
 
 /** Remove one path anchor while retaining the minimum two-point path. */
-export function removeVectorNodePoint(node, index) {
-  if (!Array.isArray(node?.points) || node.points.length <= 2 || !Number.isInteger(index) || index < 0 || index >= node.points.length) return null;
-  return node.points.splice(index, 1)[0];
+export function removeVectorNodePoint(node, index, contourIndex = 0) {
+  const points = contourAt(node, contourIndex)?.points;
+  if (!Array.isArray(points) || points.length <= 2 || !Number.isInteger(index) || index < 0 || index >= points.length) return null;
+  return points.splice(index, 1)[0];
 }
 
 /** Find the longest path segment for one-tap point insertion on touch devices. */
 export function longestVectorSegment(node, origin = { x: node.x, y: node.y }) {
-  const segmentCount = node?.closed ? node.points?.length || 0 : (node?.points?.length || 0) - 1;
   let longest = null;
-  for (let index = 0; index < segmentCount; index += 1) {
+  for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
+    const segmentCount = contour.closed ? contour.points.length : contour.points.length - 1;
+    for (let index = 0; index < segmentCount; index += 1) {
     let length = 0;
-    let previous = vectorSegmentPoint(node, index, 0, origin);
+    let previous = vectorSegmentPoint(node, index, 0, origin, contourIndex);
     for (let sample = 1; sample <= 24; sample += 1) {
-      const current = vectorSegmentPoint(node, index, sample / 24, origin);
+      const current = vectorSegmentPoint(node, index, sample / 24, origin, contourIndex);
       length += Math.hypot(current.x - previous.x, current.y - previous.y);
       previous = current;
     }
-    if (!longest || length > longest.length) longest = { segmentIndex: index, t: .5, length };
+    if (!longest || length > longest.length) longest = { segmentIndex: index, contourIndex, t: .5, length };
+    }
   }
   return longest;
 }
@@ -361,6 +445,156 @@ export function vectorNetworkGeometryFromAnchors(anchors, { closed = false } = {
   };
 }
 
+const FREEHAND_MAX_SAMPLES = 16384;
+const FREEHAND_MAX_ANCHORS = 1024;
+const FREEHAND_MAX_DISTANCE_CHECKS = 1_000_000;
+
+function distanceToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (!Number.isFinite(length)) throw new RangeError('Freehand samples exceed the supported coordinate range.');
+  if (length === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+  const along = ((point.x - start.x) * (dx / length) + (point.y - start.y) * (dy / length)) / length;
+  const amount = Math.max(0, Math.min(1, along));
+  return Math.hypot(point.x - (start.x + dx * amount), point.y - (start.y + dy * amount));
+}
+
+function simplifyFreehandSamples(points, tolerance) {
+  const kept = new Uint8Array(points.length);
+  kept[0] = 1;
+  kept[points.length - 1] = 1;
+  const pending = [[0, points.length - 1]];
+  let checks = 0;
+
+  while (pending.length) {
+    const [first, last] = pending.pop();
+    if (last - first < 2) continue;
+    let farthest = -1;
+    let farthestDistance = tolerance;
+    for (let index = first + 1; index < last; index += 1) {
+      checks += 1;
+      if (checks > FREEHAND_MAX_DISTANCE_CHECKS) {
+        throw new RangeError('Freehand samples are too complex to simplify within the processing budget.');
+      }
+      const distance = distanceToSegment(points[index], points[first], points[last]);
+      if (distance > farthestDistance) {
+        farthest = index;
+        farthestDistance = distance;
+      }
+    }
+    if (farthest >= 0) {
+      kept[farthest] = 1;
+      pending.push([first, farthest], [farthest, last]);
+    }
+  }
+
+  const simplified = [];
+  for (let index = 0; index < points.length; index += 1) if (kept[index]) simplified.push(points[index]);
+  return simplified;
+}
+
+function constrainedFreehandHandle(anchor, candidate, start, end, maximumDeviation) {
+  if (distanceToSegment(candidate, start, end) <= maximumDeviation) return candidate;
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < 28; iteration += 1) {
+    const amount = (low + high) / 2;
+    const point = {
+      x: anchor.x + (candidate.x - anchor.x) * amount,
+      y: anchor.y + (candidate.y - anchor.y) * amount
+    };
+    if (distanceToSegment(point, start, end) <= maximumDeviation) low = amount;
+    else high = amount;
+  }
+  return {
+    x: anchor.x + (candidate.x - anchor.x) * low,
+    y: anchor.y + (candidate.y - anchor.y) * low
+  };
+}
+
+/**
+ * Simplify sampled freehand input into a smooth, editable vector network.
+ * Tolerance is measured in page-space units, so the same samples produce the
+ * same geometry at every canvas zoom. Throws for invalid input or when hard
+ * work/anchor limits prevent preserving the requested tolerance; returns null
+ * when the input contains fewer than two distinct points.
+ */
+export function vectorNetworkGeometryFromFreehandSamples(samples, { tolerance = 1, maxAnchors = FREEHAND_MAX_ANCHORS } = {}) {
+  if (!Array.isArray(samples)) throw new TypeError('Freehand samples must be an array of finite points.');
+  if (!Number.isFinite(tolerance) || tolerance < 0) throw new TypeError('Freehand tolerance must be a finite, non-negative number.');
+  if (!Number.isInteger(maxAnchors) || maxAnchors < 2) throw new TypeError('The freehand anchor limit must be an integer of at least two.');
+  if (samples.length > FREEHAND_MAX_SAMPLES) throw new RangeError(`Freehand input is limited to ${FREEHAND_MAX_SAMPLES} samples.`);
+
+  const points = [];
+  for (const sample of samples) {
+    if (!sample || !Number.isFinite(sample.x) || !Number.isFinite(sample.y)) {
+      throw new TypeError('Freehand samples must contain finite numeric coordinates.');
+    }
+    if (!points.length || sample.x !== points.at(-1).x || sample.y !== points.at(-1).y) {
+      points.push({ x: sample.x, y: sample.y });
+    }
+  }
+  if (points.length < 2) return null;
+
+  const left = Math.min(...points.map(point => point.x));
+  const top = Math.min(...points.map(point => point.y));
+  const right = Math.max(...points.map(point => point.x));
+  const bottom = Math.max(...points.map(point => point.y));
+  const width = right - left;
+  const height = bottom - top;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(Math.hypot(width, height))) {
+    throw new RangeError('Freehand samples exceed the supported coordinate range.');
+  }
+
+  // Reserve half the error budget for simplifying the sampled polyline and
+  // half for keeping each fitted cubic inside a narrow corridor around its
+  // retained chord. Their sum bounds the rendered path's deviation.
+  const simplificationTolerance = tolerance / 2;
+  const curveTolerance = tolerance - simplificationTolerance;
+  const anchors = simplifyFreehandSamples(points, simplificationTolerance);
+  if (anchors.length > Math.min(maxAnchors, FREEHAND_MAX_ANCHORS)) {
+    throw new RangeError(`Freehand geometry exceeds the ${Math.min(maxAnchors, FREEHAND_MAX_ANCHORS)}-anchor limit at the requested tolerance.`);
+  }
+
+  const tangents = anchors.map((point, index) => {
+    const previous = anchors[Math.max(0, index - 1)];
+    const next = anchors[Math.min(anchors.length - 1, index + 1)];
+    let x = next.x - previous.x;
+    let y = next.y - previous.y;
+    let length = Math.hypot(x, y);
+    if (!(length > 0)) {
+      const neighbor = index + 1 < anchors.length ? anchors[index + 1] : anchors[index - 1];
+      x = neighbor.x - point.x;
+      y = neighbor.y - point.y;
+      length = Math.hypot(x, y);
+    }
+    return length > 0 ? { x: x / length, y: y / length } : { x: 0, y: 0 };
+  });
+
+  const smoothAnchors = anchors.map((point, index) => {
+    const previous = anchors[index - 1];
+    const next = anchors[index + 1];
+    const previousLength = previous ? Math.hypot(point.x - previous.x, point.y - previous.y) : 0;
+    const nextLength = next ? Math.hypot(next.x - point.x, next.y - point.y) : 0;
+    const incomingCandidate = previous ? {
+      x: point.x - tangents[index].x * previousLength / 3,
+      y: point.y - tangents[index].y * previousLength / 3
+    } : point;
+    const outgoingCandidate = next ? {
+      x: point.x + tangents[index].x * nextLength / 3,
+      y: point.y + tangents[index].y * nextLength / 3
+    } : point;
+    const incoming = previous && Number.isFinite(incomingCandidate.x) && Number.isFinite(incomingCandidate.y)
+      ? constrainedFreehandHandle(point, incomingCandidate, previous, point, curveTolerance) : { ...point };
+    const outgoing = next && Number.isFinite(outgoingCandidate.x) && Number.isFinite(outgoingCandidate.y)
+      ? constrainedFreehandHandle(point, outgoingCandidate, point, next, curveTolerance) : { ...point };
+    return { ...point, in: incoming, out: outgoing, mode: 'smooth' };
+  });
+
+  return vectorNetworkGeometryFromAnchors(smoothAnchors);
+}
+
 /** Resolve a network junction or edge handle in document coordinates. */
 export function vectorNetworkVertexPoint(node, vertexId, origin = { x: node.x, y: node.y }) {
   const vertex = networkVertexIndex(node?.vertices).get(vertexId);
@@ -474,6 +708,61 @@ function alignNetworkVertexHandles(node, vertexId, active, mode, origin, { adopt
   return true;
 }
 
+/** Infer tangent controls for a degree-two vertex whose incident edges are straight. */
+function inferNetworkVertexHandles(node, vertexId, handles, preferredEdgeId, mode, origin) {
+  const anchor = vectorNetworkVertexPoint(node, vertexId, origin);
+  if (!anchor || handles.length !== 2) return false;
+  const sides = handles.map(handle => {
+    const neighborId = handle.part === 'control1' ? handle.edge.to : handle.edge.from;
+    const neighbor = vectorNetworkVertexPoint(node, neighborId, origin);
+    if (!neighbor) return null;
+    const vector = { x: neighbor.x - anchor.x, y: neighbor.y - anchor.y };
+    const length = Math.hypot(vector.x, vector.y);
+    return length > 1e-9 ? { ...handle, neighbor, vector, length } : null;
+  });
+  if (sides.some(side => !side)) return false;
+
+  const incoming = sides.find(side => side.part === 'control2');
+  const outgoing = sides.find(side => side.part === 'control1');
+  let axis;
+  let directionFor;
+  if (incoming && outgoing) {
+    // Orient the tangent along the edge flow: an incoming control points
+    // against it, while an outgoing control points with it.
+    axis = { x: outgoing.neighbor.x - incoming.neighbor.x, y: outgoing.neighbor.y - incoming.neighbor.y };
+    const length = Math.hypot(axis.x, axis.y);
+    if (!(length > 1e-9)) return false;
+    axis.x /= length;
+    axis.y /= length;
+    directionFor = side => side.part === 'control1' ? 1 : -1;
+  } else {
+    // If both edges share an orientation, use the preferred edge (or first
+    // incident edge) to choose which side follows the inferred tangent.
+    axis = { x: sides[1].neighbor.x - sides[0].neighbor.x, y: sides[1].neighbor.y - sides[0].neighbor.y };
+    const length = Math.hypot(axis.x, axis.y);
+    if (!(length > 1e-9)) return false;
+    axis.x /= length;
+    axis.y /= length;
+    const active = sides.find(side => preferredEdgeId != null && side.edge.id === preferredEdgeId) || sides[0];
+    if (axis.x * active.vector.x + axis.y * active.vector.y < 0) {
+      axis.x = -axis.x;
+      axis.y = -axis.y;
+    }
+    directionFor = side => side === active ? 1 : -1;
+  }
+
+  const active = sides.find(side => preferredEdgeId != null && side.edge.id === preferredEdgeId) || sides[0];
+  for (const side of sides) {
+    const length = mode === 'symmetric' ? active.length / 3 : side.length / 3;
+    const direction = directionFor(side);
+    setNetworkHandle(node, side, {
+      x: anchor.x + axis.x * length * direction,
+      y: anchor.y + axis.y * length * direction
+    }, origin);
+  }
+  return true;
+}
+
 /**
  * Persist a Corner, Smooth, or Symmetric mode on one network vertex.
  * Switching to a constrained mode aligns the two handles when the vertex has
@@ -490,8 +779,17 @@ export function setVectorNetworkVertexMode(node, vertexId, mode, {
 
   if (mode !== 'corner' && handles.length === 2) {
     const candidates = preferredEdgeId == null ? handles : handles.filter(handle => handle.edge.id === preferredEdgeId);
+    const anchor = vectorNetworkVertexPoint(node, vertexId, origin);
+    const hasExistingHandle = handles.some(handle => {
+      const point = networkControlPoint(handle.edge, handle.part, node, origin) || anchor;
+      return Math.hypot(point.x - anchor.x, point.y - anchor.y) > 1e-9;
+    });
+    if (!hasExistingHandle) {
+      inferNetworkVertexHandles(node, vertexId, handles, preferredEdgeId, mode, origin);
+      vertex.mode = mode;
+      return true;
+    }
     const active = candidates.find(handle => {
-      const anchor = vectorNetworkVertexPoint(node, vertexId, origin);
       const point = networkControlPoint(handle.edge, handle.part, node, origin) || anchor;
       return Math.hypot(point.x - anchor.x, point.y - anchor.y) > 0;
     }) || candidates[0];

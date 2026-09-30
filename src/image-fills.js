@@ -1,4 +1,5 @@
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
+import { vectorPathContours } from './vector-path.js';
 
 export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
 export const imageFillAdjustmentRanges = Object.freeze({
@@ -6,12 +7,39 @@ export const imageFillAdjustmentRanges = Object.freeze({
   contrast: [-100, 100],
   saturation: [-100, 100],
   sharpness: [-100, 100],
-  blur: [0, 24]
+  blur: [0, 24],
+  posterizeBits: [0, 8],
+  solarizeThreshold: [0, 255]
 });
+export const defaultImageAdjustments = Object.freeze({
+  brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0,
+  autoContrast: false, posterizeBits: 0, solarize: false, solarizeThreshold: 0, invert: false
+});
+const booleanAdjustmentFields = new Set(['autoContrast', 'solarize', 'invert']);
+
+export function isValidImageAdjustments(adjustments) {
+  if (!adjustments || typeof adjustments !== 'object' || Array.isArray(adjustments)
+    || Object.keys(adjustments).some(key => !Object.hasOwn(defaultImageAdjustments, key))) return false;
+  for (const [field, value] of Object.entries(adjustments)) {
+    if (booleanAdjustmentFields.has(field)) {
+      if (typeof value !== 'boolean') return false;
+      continue;
+    }
+    const range = imageFillAdjustmentRanges[field];
+    if (!range || !Number.isFinite(value) || value < range[0] || value > range[1]) return false;
+    if (['posterizeBits', 'solarizeThreshold'].includes(field) && !Number.isInteger(value)) return false;
+  }
+  return true;
+}
+
+export function normalizeImageAdjustments(adjustments = {}) {
+  if (!isValidImageAdjustments(adjustments)) throw new TypeError('Image adjustments contain an unsupported or invalid setting.');
+  return { ...defaultImageAdjustments, ...adjustments };
+}
 
 export function isImageFillSupported(node) {
   return Boolean(node && imageFillNodeTypes.has(node.type)
-    && (node.type !== 'path' || node.closed)
+    && (node.type !== 'path' || vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2))
     && (node.type !== 'network' || node.faces?.length));
 }
 
@@ -21,13 +49,10 @@ export function createImageFill(assetId, overrides = {}) {
     assetId,
     fit: 'cover',
     transforms: createImageTransforms(),
-    adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 },
+    adjustments: { ...defaultImageAdjustments },
     ...overrides,
     transforms: createImageTransforms(overrides.transforms || {}),
-    adjustments: {
-      brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0,
-      ...(overrides.adjustments || {})
-    }
+    adjustments: normalizeImageAdjustments(overrides.adjustments || {})
   };
 }
 
@@ -36,12 +61,10 @@ export function isValidImageFill(fill) {
     || typeof fill.assetId !== 'string' || !fill.assetId.trim() || fill.assetId.length > 256
     || !['cover', 'contain'].includes(fill.fit)
     || (fill.transforms != null && !isValidImageTransforms(fill.transforms))
-    || !fill.adjustments || typeof fill.adjustments !== 'object' || Array.isArray(fill.adjustments)
-    || Object.keys(fill.adjustments).some(key => !Object.hasOwn(imageFillAdjustmentRanges, key))) return false;
+    || !isValidImageAdjustments(fill.adjustments)) return false;
   return Object.entries(imageFillAdjustmentRanges).every(([field, [minimum, maximum]]) => {
-    // Sharpness was added after image fills were already saved locally; an
-    // omitted value in older documents has the unchanged default of zero.
-    const value = field === 'sharpness' && fill.adjustments[field] === undefined ? 0 : fill.adjustments[field];
+    // Newly added settings may be absent from older local image fills.
+    const value = fill.adjustments[field] ?? defaultImageAdjustments[field];
     return Number.isFinite(value) && value >= minimum && value <= maximum;
   });
 }

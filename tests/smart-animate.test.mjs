@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLayerEffect, createNode } from '../src/model.js';
+import { addNode, bindVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, getNodePropertyValue } from '../src/model.js';
+import { createImageFill } from '../src/image-fills.js';
 import { interpolateSmartFrame } from '../src/smart-animate.js';
 
 test('smart animation interpolates supported size, position, rotation, opacity, and solid-fill changes', () => {
@@ -21,6 +22,116 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   );
   assert.equal(from.children[0].x, 10, 'the source frame remains unchanged');
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
+});
+
+test('smart animation interpolates independent corner radii continuously and preserves exact endpoints', () => {
+  const fromRadii = { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 };
+  const toRadii = { topLeft: 20, topRight: 40, bottomRight: 60, bottomLeft: 80 };
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', cornerRadii: fromRadii })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', cornerRadii: toRadii })] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+
+  assert.deepEqual(layerAt(0).cornerRadii, fromRadii, 'the source endpoint keeps its authored radii');
+  assert.deepEqual(layerAt(0.25).cornerRadii, { topLeft: 8, topRight: 16, bottomRight: 24, bottomLeft: 32 });
+  assert.deepEqual(layerAt(0.5).cornerRadii, { topLeft: 12, topRight: 24, bottomRight: 36, bottomLeft: 48 });
+  assert.deepEqual(layerAt(1).cornerRadii, toRadii, 'the destination endpoint keeps its authored radii');
+  assert.deepEqual(from, originalFrom, 'interpolation leaves the source radii unchanged');
+  assert.deepEqual(to, originalTo, 'interpolation leaves the destination radii unchanged');
+});
+
+test('smart animation transitions smoothly between linked and independent corner radii', () => {
+  const independent = { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 };
+  const independentStart = createNode('frame', { children: [createNode('rectangle', {
+    name: 'Card', radius: 2, cornerRadii: independent
+  })] });
+  const linkedEnd = createNode('frame', { children: [createNode('rectangle', { name: 'Card', radius: 20 })] });
+  const linkedToIndependentStart = createNode('frame', { children: [createNode('rectangle', { name: 'Card', radius: 30 })] });
+  const independentEnd = createNode('frame', { children: [createNode('rectangle', {
+    name: 'Card', radius: 3, cornerRadii: independent
+  })] });
+  const layerAt = (from, to, progress) => interpolateSmartFrame(from, to, progress).children[0];
+
+  assert.deepEqual(layerAt(independentStart, linkedEnd, 0).cornerRadii, independent,
+    'the source endpoint retains independent corner mode');
+  assert.deepEqual(layerAt(independentStart, linkedEnd, 0.25).cornerRadii,
+    { topLeft: 8, topRight: 11, bottomRight: 14, bottomLeft: 17 });
+  const linkedEndpoint = layerAt(independentStart, linkedEnd, 1);
+  assert.equal(Object.hasOwn(linkedEndpoint, 'cornerRadii'), false, 'the linked destination endpoint has no independent radii');
+  assert.equal(linkedEndpoint.radius, 20);
+
+  const linkedEndpointStart = layerAt(linkedToIndependentStart, independentEnd, 0);
+  assert.equal(Object.hasOwn(linkedEndpointStart, 'cornerRadii'), false, 'the linked source endpoint has no independent radii');
+  assert.equal(linkedEndpointStart.radius, 30);
+  assert.deepEqual(layerAt(linkedToIndependentStart, independentEnd, 0.25).cornerRadii,
+    { topLeft: 23.5, topRight: 24.5, bottomRight: 25.5, bottomLeft: 26.5 });
+  assert.deepEqual(layerAt(linkedToIndependentStart, independentEnd, 1).cornerRadii, independent,
+    'the independent destination endpoint retains its authored radii');
+});
+
+test('smart animation interpolates independent radii on the transition frames themselves', () => {
+  const independent = { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 };
+  const from = createNode('frame', { radius: 2, cornerRadii: independent });
+  const to = createNode('frame', { radius: 20 });
+
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).cornerRadii, independent);
+  assert.deepEqual(interpolateSmartFrame(from, to, 0.5).cornerRadii,
+    { topLeft: 12, topRight: 14, bottomRight: 16, bottomLeft: 18 });
+  const endpoint = interpolateSmartFrame(from, to, 1);
+  assert.equal(Object.hasOwn(endpoint, 'cornerRadii'), false);
+  assert.equal(endpoint.radius, 20);
+});
+
+test('smart animation uses the resolved variable radius when blending into independent corners', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Radius');
+  const radiusVariable = createVariable(document, collection.id, 'Card radius', 'number', 42);
+  const source = createNode('frame', { children: [createNode('rectangle', {
+    name: 'Card', cornerRadii: { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 }
+  })] });
+  const target = createNode('frame', { children: [createNode('rectangle', { name: 'Card', radius: 3 })] });
+  addNode(document, source);
+  addNode(document, target);
+  const targetCard = target.children[0];
+  assert.equal(bindVariable(document, targetCard.id, radiusVariable.id, 'radius'), true);
+  assert.equal(getNodePropertyValue(document, targetCard, 'radius'), 42);
+
+  const middle = interpolateSmartFrame(source, target, 0.5, {
+    resolveRadius: node => getNodePropertyValue(document, node, 'radius')
+  });
+  assert.deepEqual(middle.children[0].cornerRadii,
+    { topLeft: 23, topRight: 25, bottomRight: 27, bottomLeft: 29 },
+    'the mode-resolved uniform radius is expanded before interpolation instead of using its stale local fallback');
+});
+
+test('smart animation interpolates stroke miter limits and switches stroke presentation at the midpoint', () => {
+  const fromStroke = { strokeMiterLimit: 4, strokePattern: 'dashed', strokeCap: 'square', strokeJoin: 'bevel' };
+  const toStroke = { strokeMiterLimit: 10, strokePattern: 'dotted', strokeCap: 'round', strokeJoin: 'round' };
+  const from = createNode('frame', { children: [createNode('line', { name: 'Stroke', ...fromStroke })] });
+  const to = createNode('frame', { children: [createNode('line', { name: 'Stroke', ...toStroke })] });
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+  const styleOf = layer => ({
+    strokeMiterLimit: layer.strokeMiterLimit,
+    strokePattern: layer.strokePattern,
+    strokeCap: layer.strokeCap,
+    strokeJoin: layer.strokeJoin
+  });
+
+  assert.deepEqual(styleOf(layerAt(0)), fromStroke, 'the source endpoint preserves the exact authored stroke style');
+  assert.deepEqual(styleOf(layerAt(0.25)), {
+    ...fromStroke, strokeMiterLimit: 5.5
+  });
+  assert.deepEqual(styleOf(layerAt(0.499)), {
+    ...fromStroke, strokeMiterLimit: 6.994
+  }, 'categorical stroke settings remain on the source through the instant before halfway');
+  assert.deepEqual(styleOf(layerAt(0.5)), {
+    ...toStroke, strokeMiterLimit: 7
+  }, 'categorical stroke settings switch together at halfway while the miter limit continues numerically');
+  assert.deepEqual(styleOf(layerAt(0.75)), {
+    ...toStroke, strokeMiterLimit: 8.5
+  });
+  assert.deepEqual(styleOf(layerAt(1)), toStroke, 'the destination endpoint preserves the exact authored stroke style');
 });
 
 test('smart animation takes the shortest rotation arc and preserves exact frame and layer endpoints', () => {
@@ -138,6 +249,29 @@ test('smart animation interpolates node-level paragraph spacing and first-line i
   );
 });
 
+test('smart animation interpolates list spacing and switches paragraph list structure at the midpoint', () => {
+  const from = createNode('frame', { children: [createNode('text', {
+    name: 'List', text: 'First\nSecond', listSpacing: 4
+  })] });
+  const paragraphStyles = [
+    { listStyle: 'bulleted', listLevel: 0 },
+    { listStyle: 'numbered', listLevel: 1, listStart: 3 }
+  ];
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'List', text: 'First\nSecond', listSpacing: 18, paragraphStyles
+  })] });
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+
+  assert.equal(Object.hasOwn(layerAt(0), 'paragraphStyles'), false, 'the exact source endpoint preserves the legacy plain-text shape');
+  assert.deepEqual(layerAt(0.25).paragraphStyles, undefined, 'the source paragraph structure remains plain before halfway');
+  assert.deepEqual([layerAt(0.25).listSpacing, layerAt(0.49).listSpacing], [7.5, 10.86]);
+  assert.deepEqual(layerAt(0.5).paragraphStyles, paragraphStyles, 'list formatting switches at the midpoint');
+  assert.equal(layerAt(0.5).listSpacing, 11, 'list spacing continues to interpolate as its metadata switches');
+  assert.equal(layerAt(0.75).listSpacing, 14.5);
+  assert.deepEqual(layerAt(1).paragraphStyles, paragraphStyles, 'the destination endpoint preserves its list metadata');
+  assert.equal(layerAt(1).listSpacing, 18);
+});
+
 test('smart animation treats omitted legacy text metrics as zero between frames and preserves endpoint shape', () => {
   const legacyText = createNode('text', { name: 'Paragraph', text: 'A paragraph' });
   delete legacyText.paragraphSpacing;
@@ -233,6 +367,114 @@ test('smart animation interpolates compatible gradient angles, stop positions, a
   const wrappedFrom = createNode('frame', { fillGradient: { ...fromGradient, angle: 0 } });
   const wrappedTo = createNode('frame', { fillGradient: { ...toGradient, angle: 270 } });
   assert.equal(interpolateSmartFrame(wrappedFrom, wrappedTo, .5).fillGradient.angle, 315, 'wrapped angles stay normalized in the 0–360 range');
+});
+
+test('smart animation interpolates compatible modern fill stacks on frames and layers without mutating endpoint snapshots', () => {
+  const fromFills = [
+    { id: 'solid-before', type: 'solid', visible: true, opacity: .2, color: '#000000' },
+    { id: 'gradient-before', type: 'linear', visible: true, opacity: .4, gradient: {
+      type: 'linear', angle: 350,
+      stops: [
+        { id: 'before-start', position: 0, color: '#000000' },
+        { id: 'before-end', position: .5, color: '#ff0000' }
+      ]
+    } }
+  ];
+  const toFills = [
+    { id: 'solid-after', type: 'solid', visible: true, opacity: .8, color: '#ffffff' },
+    { id: 'gradient-after', type: 'linear', visible: true, opacity: .8, gradient: {
+      type: 'linear', angle: 10,
+      stops: [
+        { id: 'after-start', position: .5, color: '#ffffff' },
+        { id: 'after-end', position: 1, color: '#0000ff' }
+      ]
+    } }
+  ];
+  const from = createNode('frame', { fills: fromFills, children: [createNode('rectangle', { name: 'Card', fills: fromFills })] });
+  const to = createNode('frame', { fills: toFills, children: [createNode('rectangle', { name: 'Card', fills: toFills })] });
+  const originals = [structuredClone(from), structuredClone(to)];
+  const at = progress => interpolateSmartFrame(from, to, progress);
+  const quarter = at(.25);
+  const midpoint = at(.5);
+
+  for (const node of [quarter, quarter.children[0]]) {
+    assert.deepEqual(node.fills.map(fill => fill.id), ['solid-before', 'gradient-before']);
+    assert.ok(Math.abs(node.fills[0].opacity - .35) < Number.EPSILON * 2);
+    assert.equal(node.fills[1].opacity, .5);
+    assert.equal(node.fills[0].color, '#404040');
+    assert.deepEqual(node.fills[1].gradient, {
+      type: 'linear', angle: 355,
+      stops: [
+        { id: 'after-start', position: .125, color: '#404040' },
+        { id: 'after-end', position: .625, color: '#bf0040' }
+      ]
+    });
+  }
+  for (const node of [midpoint, midpoint.children[0]]) {
+    assert.deepEqual(node.fills.map(fill => fill.id), ['solid-after', 'gradient-after']);
+    assert.equal(node.fills[0].opacity, .5);
+    assert.ok(Math.abs(node.fills[1].opacity - .6) < Number.EPSILON * 2);
+    assert.equal(node.fills[0].color, '#808080');
+    assert.deepEqual(node.fills[1].gradient, {
+      type: 'linear', angle: 0,
+      stops: [
+        { id: 'after-start', position: .25, color: '#808080' },
+        { id: 'after-end', position: .75, color: '#800080' }
+      ]
+    });
+  }
+  assert.deepEqual(at(0).fills, fromFills, 'the starting fill stack is cloned exactly');
+  assert.deepEqual(at(1).fills, toFills, 'the destination fill stack is cloned exactly');
+  assert.deepEqual(at(0).children[0].fills, fromFills, 'the layer starting stack is cloned exactly');
+  assert.deepEqual(at(1).children[0].fills, toFills, 'the layer destination stack is cloned exactly');
+  assert.deepEqual(from, originals[0], 'interpolation leaves the source frame and its paints unchanged');
+  assert.deepEqual(to, originals[1], 'interpolation leaves the destination frame and its paints unchanged');
+});
+
+test('smart animation midpoint-snaps fill stacks with incompatible type, topology, visibility, or bindings', () => {
+  const solid = (id, changes = {}) => ({ id, type: 'solid', visible: true, opacity: .25, color: '#000000', ...changes });
+  const linear = (id, stops = 2) => ({
+    id, type: 'linear', visible: true, opacity: .5,
+    gradient: { type: 'linear', angle: 0, stops: Array.from({ length: stops }, (_, index) => ({
+      id: `${id}-stop-${index}`, position: index / (stops - 1), color: index ? '#ffffff' : '#000000'
+    })) }
+  });
+  const from = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Type', fills: [solid('type-before')] }),
+    createNode('rectangle', { name: 'Topology', fills: [linear('topology-before')] }),
+    createNode('rectangle', { name: 'Visibility', fills: [linear('visibility-before')] }),
+    createNode('rectangle', { name: 'Binding', fillVariableId: 'surface-light', fills: [solid('binding-before')] }),
+    createNode('rectangle', { name: 'Length', fills: [solid('length-before')] })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Type', fills: [linear('type-after')] }),
+    createNode('rectangle', { name: 'Topology', fills: [linear('topology-after', 3)] }),
+    createNode('rectangle', { name: 'Visibility', fills: [linear('visibility-after')] }),
+    createNode('rectangle', { name: 'Binding', fillVariableId: 'surface-dark', fills: [solid('binding-after', { color: '#ffffff' })] }),
+    createNode('rectangle', { name: 'Length', fills: [solid('length-after'), solid('length-extra')] })
+  ] });
+  to.children[2].fills[0].visible = false;
+  const before = interpolateSmartFrame(from, to, .499).children;
+  const atMidpoint = interpolateSmartFrame(from, to, .5).children;
+  for (let index = 0; index < from.children.length; index += 1) {
+    assert.deepEqual(before[index].fills, from.children[index].fills, `case ${from.children[index].name} stays on the source stack before halfway`);
+    assert.deepEqual(atMidpoint[index].fills, to.children[index].fills, `case ${from.children[index].name} takes the destination stack at halfway`);
+  }
+});
+
+test('smart animation switches image-fill references at halfway while interpolating fill opacity', () => {
+  const fromFill = { id: 'photo-before', type: 'image', visible: true, opacity: .2, imageFill: createImageFill('asset-before') };
+  const toFill = { id: 'photo-after', type: 'image', visible: true, opacity: .8, imageFill: createImageFill('asset-after') };
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Photo', fills: [fromFill] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Photo', fills: [toFill] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].fills[0];
+
+  const quarter = at(.25);
+  assert.deepEqual({ ...quarter, opacity: fromFill.opacity }, fromFill, 'image source stays fixed before halfway');
+  assert.ok(Math.abs(quarter.opacity - .35) < Number.EPSILON * 2, 'image opacity moves smoothly');
+  assert.deepEqual(at(.5), { ...toFill, opacity: .5 }, 'image reference switches at halfway and opacity remains continuous');
+  assert.deepEqual(at(0), fromFill, 'the source image fill snapshot stays exact');
+  assert.deepEqual(at(1), toFill, 'the destination image fill snapshot stays exact');
 });
 
 test('smart animation snaps incompatible and variable-bound gradients at the midpoint', () => {
@@ -359,6 +601,28 @@ test('smart animation morphs compatible vector anchors and Bézier handles with 
   assert.deepEqual(end.points, to.children[0].points, 'the target endpoint retains its exact handle representation');
   assert.deepEqual(from, originalFrom, 'interpolation does not mutate the source path');
   assert.deepEqual(to, originalTo, 'interpolation does not mutate the target path');
+});
+
+test('smart animation morphs compound contours only when every contour keeps its topology', () => {
+  const contour = offset => ({ closed: true, points: [
+    { x: offset, y: 0 }, { x: offset + .2, y: 0 }, { x: offset + .2, y: .2 }
+  ] });
+  const from = createNode('frame', { children: [createNode('path', {
+    name: 'Compound', fillRule: 'nonzero', points: contour(0).points, closed: true, subpaths: [contour(.3)]
+  })] });
+  const to = createNode('frame', { children: [createNode('path', {
+    name: 'Compound', fillRule: 'evenodd', points: contour(.2).points, closed: true, subpaths: [contour(.5)]
+  })] });
+  const middle = interpolateSmartFrame(from, to, .25).children[0];
+  assert.equal(middle.subpaths.length, 1);
+  assert.equal(middle.points[0].x, .05);
+  assert.equal(middle.subpaths[0].points[0].x, .35);
+  assert.equal(middle.fillRule, 'nonzero');
+  assert.equal(interpolateSmartFrame(from, to, .5).children[0].fillRule, 'evenodd');
+
+  to.children[0].subpaths.push(contour(.8));
+  const crossfade = interpolateSmartFrame(from, to, .5).children;
+  assert.equal(crossfade.length, 2, 'different contour counts crossfade instead of connecting unrelated outlines');
 });
 
 test('smart animation morphs a compatible vector network without crossfading its graph', () => {
@@ -581,7 +845,7 @@ test('smart animation interpolates compatible drop-shadow and layer-blur effects
   ];
   const toEffects = [
     createLayerEffect('drop-shadow', {
-      id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 10, offsetY: -4, blur: 10, visible: false
+      id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 10, offsetY: -4, blur: 10, visible: true
     }),
     createLayerEffect('layer-blur', { id: 'blur-after', radius: 10 })
   ];
@@ -598,7 +862,7 @@ test('smart animation interpolates compatible drop-shadow and layer-blur effects
   ]);
   assert.equal(quarter[0].color, '#404040');
   assert.deepEqual(threeQuarter.map(({ id, type, visible }) => [id, type, visible]), [
-    ['shadow-after', 'drop-shadow', false], ['blur-after', 'layer-blur', true]
+    ['shadow-after', 'drop-shadow', true], ['blur-after', 'layer-blur', true]
   ]);
   assert.equal(threeQuarter[0].color, '#bfbfbf');
   near(quarter[0].opacity, 0.35);
@@ -617,16 +881,79 @@ test('smart animation interpolates compatible drop-shadow and layer-blur effects
   assert.deepEqual(to, originalTo, 'interpolation does not mutate destination effect values');
 });
 
+test('smart animation interpolates compatible inner-shadow color and geometry without mutating or leaking non-serializable values', () => {
+  const fromEffect = createLayerEffect('inner-shadow', {
+    id: 'inner-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2
+  });
+  const toEffect = createLayerEffect('inner-shadow', {
+    id: 'inner-after', color: '#ffffff', opacity: 0.8, offsetX: 8, offsetY: -6, blur: 10
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { effects: [toEffect] })] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+  const quarterFrame = interpolateSmartFrame(from, to, 0.25);
+  const quarter = quarterFrame.children[0].effects[0];
+  assert.equal(quarter.type, 'inner-shadow');
+  assert.equal(quarter.id, 'inner-before');
+  assert.equal(quarter.color, '#404040');
+  assert.ok(Math.abs(quarter.opacity - 0.35) < 1e-12);
+  assert.equal(quarter.offsetX, 2);
+  assert.equal(quarter.offsetY, 0);
+  assert.equal(quarter.blur, 4);
+  const threeQuarter = interpolateSmartFrame(from, to, 0.75).children[0].effects[0];
+  assert.equal(threeQuarter.id, 'inner-after');
+  assert.equal(threeQuarter.color, '#bfbfbf');
+  assert.ok(Math.abs(threeQuarter.opacity - 0.65) < 1e-12);
+  assert.equal(threeQuarter.offsetX, 6);
+  assert.equal(threeQuarter.offsetY, -4);
+  assert.equal(threeQuarter.blur, 8);
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].effects, [fromEffect]);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].effects, [toEffect]);
+  assert.deepEqual(JSON.parse(JSON.stringify(quarterFrame)), quarterFrame, 'a rendered keyframe round-trips as ordinary JSON');
+  assert.deepEqual(from, originalFrom, 'interpolation does not mutate source effect values');
+  assert.deepEqual(to, originalTo, 'interpolation does not mutate destination effect values');
+});
+
+test('smart animation keeps inner-shadow stacks discrete when visibility compatibility changes', () => {
+  const fromEffect = createLayerEffect('inner-shadow', {
+    id: 'inner-before', visible: true, color: '#123456', opacity: 0.2, offsetX: -5, offsetY: 2, blur: 3
+  });
+  const toEffect = createLayerEffect('inner-shadow', {
+    id: 'inner-after', visible: false, color: '#abcdef', opacity: 0.8, offsetX: 9, offsetY: -6, blur: 12
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [toEffect] })] });
+
+  const beforeMidpoint = interpolateSmartFrame(from, to, 0.25);
+  const atMidpoint = interpolateSmartFrame(from, to, 0.5);
+  assert.equal(beforeMidpoint.children.length, 1, 'an effect visibility change does not turn the matched layer into a crossfade');
+  assert.deepEqual(beforeMidpoint.children[0].effects, [fromEffect], 'visibility mismatch preserves the complete source stack before halfway');
+  assert.equal(atMidpoint.children.length, 1);
+  assert.deepEqual(atMidpoint.children[0].effects, [toEffect], 'the full destination stack switches at the midpoint');
+});
+
 test('smart animation snaps effect stacks with incompatible count, order, or invalid values at the midpoint', () => {
   const shadow = createLayerEffect('drop-shadow', { id: 'shadow', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2 });
   const blur = createLayerEffect('layer-blur', { id: 'blur', radius: 2 });
   const changedCount = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' }), blur];
   const changedOrder = [createLayerEffect('layer-blur', { ...blur, id: 'blur-end', radius: 10 }), createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' })];
   const invalidValue = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: 'red' })];
+  const innerShadow = createLayerEffect('inner-shadow', {
+    id: 'inner-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2
+  });
+  const changedInnerShadowType = [createLayerEffect('drop-shadow', {
+    id: 'drop-after', color: '#ffffff', opacity: 0.8, offsetX: 4, offsetY: 6, blur: 10
+  })];
+  const invalidInnerShadowColor = [createLayerEffect('inner-shadow', {
+    id: 'inner-after', color: 'transparent', opacity: 0.8, offsetX: 4, offsetY: 6, blur: 10
+  })];
   const stacks = [
     { from: [shadow], to: changedCount },
     { from: [shadow, blur], to: changedOrder },
-    { from: [shadow], to: invalidValue }
+    { from: [shadow], to: invalidValue },
+    { from: [innerShadow], to: changedInnerShadowType },
+    { from: [innerShadow], to: invalidInnerShadowColor }
   ];
 
   for (const [index, stack] of stacks.entries()) {
@@ -642,6 +969,7 @@ test('smart animation snaps effect stacks with incompatible count, order, or inv
       stack.to,
       `incompatible effect topology ${index} should switch to the destination stack at halfway`
     );
+    assert.equal(interpolateSmartFrame(from, to, 0.25).children.length, 1, 'incompatible effects on an otherwise matched layer use midpoint fallback instead of crossfading the layer');
   }
 });
 

@@ -1,6 +1,6 @@
 import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
-import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint } from './vector-path.js';
+import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint, fillStackForNode } from './fills.js';
@@ -10,6 +10,7 @@ import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToN
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
+import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -89,6 +90,11 @@ function fillLayerColor(document, node, fill, index) {
     : fill.color;
 }
 
+function fillCurrentPath(ctx, node) {
+  if (node?.type === 'path') ctx.fill(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+  else ctx.fill();
+}
+
 function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null) {
   const fills = fillStackForNode(node);
   for (let index = 0; index < fills.length; index += 1) {
@@ -100,15 +106,17 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
       const color = colorOverride != null && index === 0
         ? colorOverride
         : fillLayerColor(state.document, node, fill, index);
-      if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); ctx.fill(); }
+      if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); fillCurrentPath(ctx, node); }
     } else if (fill.type === 'linear' || fill.type === 'radial') {
       const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
-      if (paint) { ctx.fillStyle = paint; ctx.fill(); }
+      if (paint) { ctx.fillStyle = paint; fillCurrentPath(ctx, node); }
     } else if (fill.type === 'image') {
       const imageFill = fill.imageFill;
       const image = imageFill && imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
       if (image) {
-        ctx.save(); ctx.clip();
+        ctx.save();
+        if (node.type === 'path') ctx.clip(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+        else ctx.clip();
         drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
         ctx.restore();
       }
@@ -118,20 +126,12 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
 }
 
 function roundedRect(ctx, x, y, width, height, radius) {
-  const r = Math.min(Math.max(0, radius), Math.abs(width) / 2, Math.abs(height) / 2);
-  if (!r) { ctx.rect(x, y, width, height); return; }
-  const signX = Math.sign(width) || 1;
-  const signY = Math.sign(height) || 1;
-  const w = Math.abs(width); const h = Math.abs(height);
-  ctx.moveTo(x + signX * r, y);
-  ctx.lineTo(x + width - signX * r, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + signY * r);
-  ctx.lineTo(x + width, y + height - signY * r);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - signX * r, y + height);
-  ctx.lineTo(x + signX * r, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - signY * r);
-  ctx.lineTo(x, y + signY * r);
-  ctx.quadraticCurveTo(x, y, x + signX * r, y);
+  const input = typeof radius === 'number'
+    ? Object.fromEntries(cornerRadiusKeys.map(key => [key, radius]))
+    : radius;
+  const radii = clampCornerRadii(width, height, input);
+  if (cornerRadiusKeys.every(key => radii[key] === 0)) { ctx.rect(x, y, width, height); return; }
+  traceRoundedRectPath(ctx, x, y, width, height, radii);
 }
 
 /** Return a sanitized presentation-only scroll offset for a frame. */
@@ -167,7 +167,7 @@ function clipsNodeContents(node) {
 }
 
 /** Clip children to their frame viewport when clipping or presentation scrolling is enabled. */
-export function clipNodeContents(ctx, node, x, y, radius = node?.radius ?? 0) {
+export function clipNodeContents(ctx, node, x, y, radius = node?.cornerRadii ?? node?.radius ?? 0) {
   if (!clipsNodeContents(node)) return false;
   ctx.beginPath();
   roundedRect(ctx, x, y, node.width, node.height, radius || 0);
@@ -204,30 +204,36 @@ function hasHandle(point, part) {
 }
 
 function traceVectorPath(ctx, node, x, y) {
-  const points = node.points || [];
-  if (!points.length) return;
-  const position = (point, part) => vectorNodePoint(node, points.indexOf(point), part, { x, y });
-  const first = position(points[0], 'anchor');
-  ctx.moveTo(first.x, first.y);
-  for (let index = 1; index < points.length; index += 1) {
-    const previous = points[index - 1];
-    const current = points[index];
-    const end = position(current, 'anchor');
-    if (hasHandle(previous, 'out') || hasHandle(current, 'in')) {
-      const control1 = position(previous, 'out');
-      const control2 = position(current, 'in');
-      ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
-    } else ctx.lineTo(end.x, end.y);
-  }
-  if (node.closed) {
-    const last = points.at(-1);
-    if (hasHandle(last, 'out') || hasHandle(points[0], 'in')) {
-      const control1 = position(last, 'out');
-      const control2 = position(points[0], 'in');
-      ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, first.x, first.y);
+  for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
+    const points = contour.points || [];
+    if (!points.length) continue;
+    const position = (index, part) => vectorNodePoint(node, index, part, { x, y }, contourIndex);
+    const first = position(0, 'anchor');
+    ctx.moveTo(first.x, first.y);
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const current = points[index];
+      const end = position(index, 'anchor');
+      if (hasHandle(previous, 'out') || hasHandle(current, 'in')) {
+        const control1 = position(index - 1, 'out');
+        const control2 = position(index, 'in');
+        ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, end.x, end.y);
+      } else ctx.lineTo(end.x, end.y);
     }
-    ctx.closePath();
+    if (contour.closed) {
+      const last = points.at(-1);
+      if (hasHandle(last, 'out') || hasHandle(points[0], 'in')) {
+        const control1 = position(points.length - 1, 'out');
+        const control2 = position(0, 'in');
+        ctx.bezierCurveTo(control1.x, control1.y, control2.x, control2.y, first.x, first.y);
+      }
+      ctx.closePath();
+    }
   }
+}
+
+function pathHasClosedContour(node) {
+  return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
 }
 
 function traceVectorNetworkEdges(ctx, node, x, y) {
@@ -290,6 +296,25 @@ export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = u
   }
 }
 
+function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace) {
+  const segments = String(text ?? '').match(/\s+|\S+/gu) || [];
+  let offset = 0;
+  let hasTextBefore = false;
+  for (const [index, segment] of segments.entries()) {
+    const whitespace = /^\s+$/u.test(segment);
+    drawTrackedText(ctx, segment, x + offset, y, letterSpacing);
+    offset += measureTrackedText(ctx, segment, letterSpacing);
+    // Drawing tokens separately removes the tracking between adjacent tokens.
+    // Keep that boundary advance so justified text matches measuring the full line.
+    if (index < segments.length - 1) offset += Number(letterSpacing) || 0;
+    if (whitespace) {
+      const nextText = segments.slice(index + 1).some(part => !/^\s+$/u.test(part));
+      if (hasTextBefore && nextText) offset += extraSpace * textGraphemes(segment).length;
+    } else hasTextBefore = true;
+  }
+  return offset;
+}
+
 export function drawTextDecoration(ctx, x, y, width, fontSize, decoration) {
   if (!width || !['underline', 'line-through'].includes(decoration)) return false;
   ctx.save();
@@ -315,6 +340,20 @@ function richFont(style) {
   return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
 }
 
+function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1) {
+  const style = marker.style || fallbackStyle;
+  ctx.save();
+  ctx.font = richFont(style);
+  ctx.fillStyle = rgba(style.color || fallbackStyle.color, fillOpacity);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  const markerWidth = measureTrackedText(ctx, marker.text, style.letterSpacing);
+  // Right-align within the marker column. Keeping this draw independent from
+  // the text-line transform preserves a stable gutter for center/right text.
+  drawTrackedText(ctx, marker.text, x + marker.anchorX - markerWidth, y, style.letterSpacing);
+  ctx.restore();
+}
+
 /** Draws styled text runs using node-wide values as fallbacks for each run. */
 export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   const previousFont = ctx.font;
@@ -331,6 +370,7 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   const contentHeight = layout.height;
   let top = y + textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign);
   for (const line of lines) {
+    if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle), baseStyle.fillOpacity ?? 1);
     const availableWidth = Math.max(1, width - line.indent);
     const offsetX = line.indent + (baseStyle.align === 'center' ? (availableWidth - line.width) / 2 : baseStyle.align === 'right' ? availableWidth - line.width : 0);
     const scaleX = line.naturalWidth > availableWidth && line.naturalWidth > 0 ? availableWidth / line.naturalWidth : 1;
@@ -340,6 +380,42 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     ctx.scale(scaleX, 1);
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
+    if (line.justify) {
+      const segments = [];
+      for (const part of line.parts) {
+        for (const text of part.text.match(/\s+|\S+/gu) || []) segments.push({ text, part });
+      }
+      let offset = 0;
+      const partBounds = new Map();
+      let hasTextBefore = false;
+      for (const [index, segment] of segments.entries()) {
+        const { part, text } = segment;
+        const style = part.style;
+        ctx.font = richFont(style);
+        ctx.fillStyle = rgba(style.color, baseStyle.fillOpacity ?? 1);
+        const start = offset;
+        drawTrackedText(ctx, text, start, 0, style.letterSpacing);
+        offset += measureTrackedText(ctx, text, style.letterSpacing);
+        if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
+        const bounds = partBounds.get(part) || { start, end: offset };
+        bounds.end = offset;
+        partBounds.set(part, bounds);
+        if (/^\s+$/u.test(text)) {
+          const nextText = segments.slice(index + 1).some(next => !/^\s+$/u.test(next.text));
+          if (hasTextBefore && nextText) offset += line.justificationExtraSpace * textGraphemes(text).length;
+          bounds.end = offset;
+        } else hasTextBefore = true;
+      }
+      for (const part of line.parts) {
+        const bounds = partBounds.get(part);
+        if (!bounds) continue;
+        ctx.font = richFont(part.style);
+        ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
+        drawTextDecoration(ctx, bounds.start, 0, bounds.end - bounds.start, part.style.fontSize, part.style.textDecoration);
+      }
+      ctx.restore();
+      continue;
+    }
     for (const part of line.parts) {
       ctx.font = richFont(part.style);
       ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
@@ -349,6 +425,17 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     ctx.restore();
   }
   return { lines: lines.map(line => line.parts), height: contentHeight, verticalOffset: textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign) };
+}
+
+function richTextStyleForMarker(baseStyle) {
+  return {
+    fontFamily: baseStyle.fontFamily || 'Arial, sans-serif',
+    fontSize: Number(baseStyle.fontSize) || 24,
+    fontWeight: baseStyle.fontWeight || 400,
+    fontStyle: baseStyle.fontStyle || 'normal',
+    letterSpacing: Number(baseStyle.letterSpacing) || 0,
+    color: baseStyle.color || '#000000'
+  };
 }
 
 export class SceneRenderer {
@@ -413,6 +500,7 @@ export class SceneRenderer {
       }
       this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom, transform);
     }
+    if (state.pencilDraft) this.drawPencilDraft(ctx, state.pencilDraft, state.zoom);
     if (state.marquee) {
       const x = Math.min(state.marquee.x1, state.marquee.x2);
       const y = Math.min(state.marquee.y1, state.marquee.y2);
@@ -439,7 +527,7 @@ export class SceneRenderer {
       return;
     }
     const opacity = getNodePropertyValue(document, node, 'opacity');
-    const radius = getNodePropertyValue(document, node, 'radius');
+    const radius = node.cornerRadii || getNodePropertyValue(document, node, 'radius');
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
@@ -508,7 +596,7 @@ export class SceneRenderer {
         ctx.restore();
         return;
       }
-      if (node.type !== 'line' && (node.type !== 'path' || node.closed)) ctx.fill();
+      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) fillCurrentPath(ctx, node);
       ctx.restore();
       return;
     }
@@ -541,6 +629,8 @@ export class SceneRenderer {
           textCase: node.textCase || 'none',
           textDecoration: node.textDecoration || 'none',
           paragraphSpacing: node.paragraphSpacing || 0,
+          listSpacing: node.listSpacing || 0,
+          paragraphStyles: node.paragraphStyles || [],
           firstLineIndent: node.firstLineIndent || 0,
           align: node.align || 'left',
           verticalAlign: node.verticalAlign || 'top',
@@ -548,7 +638,8 @@ export class SceneRenderer {
           fillOpacity: node.fillOpacity ?? 1
         });
       } else {
-        ctx.fillStyle = rgba(getNodeColor(document, node, 'text'), node.fillOpacity ?? 1);
+        const textColor = getNodeColor(document, node, 'text');
+        ctx.fillStyle = rgba(textColor, node.fillOpacity ?? 1);
         const text = transformTextCase(sourceText, node.textCase || 'none');
         const fontSize = getNodePropertyValue(document, node, 'fontSize');
         const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
@@ -557,13 +648,25 @@ export class SceneRenderer {
         ctx.textAlign = 'left'; ctx.textBaseline = 'top';
         const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
         const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
-          lineHeight, paragraphSpacing: node.paragraphSpacing, firstLineIndent: node.firstLineIndent
+          lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
+          paragraphStyles: node.paragraphStyles, markerStyle: {
+            fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
+            fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+            letterSpacing: letterSpacing || 0, color: textColor
+          },
+          firstLineIndent: node.firstLineIndent, align: node.align
         });
         const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
         layout.lines.forEach(line => {
+          if (line.marker) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
+            fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
+            fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+            letterSpacing: letterSpacing || 0, color: textColor
+          }, node.fillOpacity ?? 1);
           const availableWidth = Math.max(1, width - line.indent);
           const offsetX = line.indent + (node.align === 'center' ? (availableWidth - line.width) / 2 : node.align === 'right' ? availableWidth - line.width : 0);
-          drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
+          if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace);
+          else drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
           drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
         });
       }
@@ -615,7 +718,7 @@ export class SceneRenderer {
       }
       if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     } else {
-      if (node.type !== 'line' && (node.type !== 'path' || node.closed)) drawFillStack(ctx, node, assets, state, x, y, width, height);
+      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height);
       if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
     }
 
@@ -630,6 +733,42 @@ export class SceneRenderer {
     }
     if (node.type === 'frame' && !draft && !state.presenting && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
     ctx.restore();
+  }
+
+  applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight) {
+    const innerShadows = effects.filter(effect => effect?.type === 'inner-shadow' && effect.visible !== false && effect.opacity > 0);
+    if (!innerShadows.length) return;
+    const overlay = typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(pixelWidth, pixelHeight)
+      : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+    const overlayContext = overlay.getContext('2d');
+    const surfaceContext = surface.getContext('2d');
+    if (!overlayContext || !surfaceContext) return;
+    for (const effect of innerShadows) {
+      overlayContext.save();
+      overlayContext.setTransform(1, 0, 0, 1, 0, 0);
+      overlayContext.globalAlpha = 1;
+      overlayContext.globalCompositeOperation = 'source-over';
+      overlayContext.filter = 'none';
+      overlayContext.clearRect(0, 0, pixelWidth, pixelHeight);
+      overlayContext.fillStyle = effect.color;
+      overlayContext.fillRect(0, 0, pixelWidth, pixelHeight);
+      overlayContext.globalCompositeOperation = 'destination-out';
+      overlayContext.filter = `blur(${Math.max(0, effect.blur) * rasterScale}px)`;
+      overlayContext.drawImage(surface, effect.offsetX * rasterScale, effect.offsetY * rasterScale);
+      overlayContext.globalCompositeOperation = 'destination-in';
+      overlayContext.filter = 'none';
+      overlayContext.drawImage(surface, 0, 0);
+      overlayContext.restore();
+
+      surfaceContext.save();
+      surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+      surfaceContext.globalCompositeOperation = 'source-over';
+      surfaceContext.globalAlpha = Math.max(0, Math.min(1, effect.opacity));
+      surfaceContext.filter = 'none';
+      surfaceContext.drawImage(overlay, 0, 0);
+      surfaceContext.restore();
+    }
   }
 
   drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions = {}) {
@@ -659,12 +798,18 @@ export class SceneRenderer {
       return;
     }
     effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
-    const copy = { ...node, x: 0, y: 0, variableBindings: { ...(node.variableBindings || {}) } };
+    const copy = { ...node, x: 0, y: 0, opacity: 1, variableBindings: { ...(node.variableBindings || {}) } };
+    // SVG applies layer opacity to the filtered group result. Keep the Canvas
+    // effect surface at full layer opacity too, then apply the resolved value
+    // once when the completed surface is composited back to its parent.
+    delete copy.variableBindings.opacity;
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
     this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+    this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
+    ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
     ctx.filter = buildLayerEffectFilter(effects, displayScale);
     ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
     ctx.drawImage(surface, x - padX, y - padY, logicalWidth, logicalHeight);
@@ -675,7 +820,7 @@ export class SceneRenderer {
     const state = this.getState();
     const width = node.width; const height = node.height;
     const cx = x + width / 2; const cy = y + height / 2;
-    const radius = getNodePropertyValue(state.document, node, 'radius') || 0;
+    const radius = node.cornerRadii || getNodePropertyValue(state.document, node, 'radius') || 0;
     ctx.beginPath();
     if (node.type === 'boolean' || (node.type === 'group' && node.mask)) {
       ctx.rect(x, y, width, height);
@@ -940,6 +1085,31 @@ export class SceneRenderer {
     ctx.restore();
   }
 
+  drawPencilDraft(ctx, draft, zoom = 1) {
+    const points = draft?.points || [];
+    if (!points.length) return;
+    const scale = 1 / Math.max(.08, zoom || 1);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    if (points.length === 2) ctx.lineTo(points[1].x, points[1].y);
+    else {
+      for (let index = 1; index < points.length - 1; index += 1) {
+        const point = points[index];
+        const next = points[index + 1];
+        ctx.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+      }
+      const last = points.at(-1);
+      ctx.lineTo(last.x, last.y);
+    }
+    ctx.lineWidth = 2.25 * scale;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = BLUE;
+    ctx.stroke();
+    ctx.restore();
+  }
+
   drawSelection(ctx, nodes, selectedIds, parentX, parentY) {
     const selected = [];
     const collect = (list, ancestors = []) => {
@@ -996,18 +1166,22 @@ export class SceneRenderer {
       const nodeTransform = nodeLocalToPageTransform(node, ancestors);
       const pagePoint = point => transformPoint(nodeTransform, point);
       if (selected.length === 1 && node.type === 'path') {
-        const selectedPointIndex = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.index : -1;
-        for (const [index] of (node.points || []).entries()) {
-          const anchor = pagePoint(vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }));
-          for (const part of ['in', 'out']) {
-            const control = pagePoint(vectorNodePoint(node, index, part, { x: 0, y: 0 }));
-            if (Math.hypot(control.x - anchor.x, control.y - anchor.y) < size) continue;
-            ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
-            ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        const selection = this.getState().selectedVectorPoint;
+        const selectedPointIndex = selection?.nodeId === node.id ? selection.index : -1;
+        const selectedContourIndex = selection?.nodeId === node.id ? selection.contourIndex || 0 : -1;
+        for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
+          for (const [index] of contour.points.entries()) {
+            const anchor = pagePoint(vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }, contourIndex));
+            for (const part of ['in', 'out']) {
+              const control = pagePoint(vectorNodePoint(node, index, part, { x: 0, y: 0 }, contourIndex));
+              if (Math.hypot(control.x - anchor.x, control.y - anchor.y) < size) continue;
+              ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
+              ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+            }
+            ctx.fillStyle = selectedContourIndex === contourIndex && selectedPointIndex === index ? BLUE : '#ffffff';
+            ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
+            ctx.fillStyle = '#ffffff';
           }
-          ctx.fillStyle = selectedPointIndex === index ? BLUE : '#ffffff';
-          ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
-          ctx.fillStyle = '#ffffff';
         }
       } else if (selected.length === 1 && node.type === 'network') {
         const selectedVertexId = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.vertexId : null;
@@ -1153,12 +1327,11 @@ function containsPointInClip(node, point, ancestors, document) {
   const local = pageToNodeLocal(geometry, point, ancestors);
   const { width, height } = geometry;
   if (local.x < 0 || local.y < 0 || local.x > width || local.y > height) return false;
-  const rawRadius = document ? getNodePropertyValue(document, node, 'radius') : node.radius;
-  const radius = Math.min(Math.max(0, Number(rawRadius) || 0), width / 2, height / 2);
-  if (!radius || (local.x >= radius && local.x <= width - radius) || (local.y >= radius && local.y <= height - radius)) return true;
-  const centerX = local.x < radius ? radius : width - radius;
-  const centerY = local.y < radius ? radius : height - radius;
-  return (local.x - centerX) ** 2 + (local.y - centerY) ** 2 <= radius ** 2 + 1e-9;
+  const rawRadius = node.cornerRadii || (document ? getNodePropertyValue(document, node, 'radius') : node.radius) || 0;
+  const radii = typeof rawRadius === 'number'
+    ? Object.fromEntries(cornerRadiusKeys.map(key => [key, rawRadius]))
+    : rawRadius;
+  return containsPointInRoundedRect(local.x, local.y, width, height, radii);
 }
 
 function pointInsideAncestorClips(point, ancestors, document) {

@@ -89,7 +89,7 @@ try {
     </g>
     <rect id="Red box" x="55" y="12" width="25" height="18" fill="#cc3322"/>
     <rect id="Gradient box" x="85" y="12" width="25" height="18" fill="url(#sunset)"/>
-    <text id="Editable heading" x="60" y="48" style="fill:#1d4ed8;font-family:Inter, Arial, sans-serif;font-size:18px;font-weight:700;text-anchor:middle;dominant-baseline:text-before-edge">Mobile title</text>
+      <text id="Editable heading" x="60" y="48" style="fill:#1d4ed8;font-family:Inter, Arial, sans-serif;font-size:18px;font-weight:700;text-anchor:middle;dominant-baseline:text-before-edge">Mobile <tspan style="fill:#dc2626;font-size:14px;font-weight:500;text-decoration:underline">title</tspan></text>
   </svg>`;
   await importViaFileMenu(app, 'safe-artwork.svg', source);
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(toast => toast.textContent.includes('safe-artwork.svg imported as editable layers')), 'editable SVG import');
@@ -109,6 +109,9 @@ try {
   assert(importedText?.type === 'text' && importedText.text === 'Mobile title', 'Plain SVG text should import as an editable native text layer.');
   assert(importedText.color === '#1d4ed8' && importedText.fontFamily === 'Inter, Arial, sans-serif' && importedText.fontSize === 36
     && importedText.fontWeight === 700 && importedText.align === 'center', 'Inline SVG color, font, and text-anchor styles should be preserved.');
+  assert(importedText.textRuns?.[1]?.text === 'title' && importedText.textRuns[1].fontSize === 28
+    && importedText.textRuns[1].fontWeight === 500 && importedText.textRuns[1].color === '#dc2626'
+    && importedText.textRuns[1].textDecoration === 'underline', 'Styled SVG tspan runs should retain their editable typography and color.');
   assert(!firstNodes.some(node => node.type === 'image'), 'SVG text and shapes should remain editable layers without raster flattening.');
   const firstIds = firstNodes.map(node => node.id);
   assert(new Set(firstIds).size === firstIds.length, 'The imported vector tree should have unique layer IDs.');
@@ -144,7 +147,7 @@ try {
     assert(app.querySelector('#svg-input').value === '', `The SVG input should reset after rejecting ${unsafe.name}.`);
   }
 
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', mobileViewport: '390x844', fileMenuPicker: true, editableGroupsAndPaths: true, editableGradients: true, editableSvgText: true, textStylesPreserved: true, noRasterFlattening: true, inPlaceAppend: true, selectedLayerTree: true, repeatImportFreshIds: true, activeContentRejectedAtomically: true, externalReferenceRejectedAtomically: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', mobileViewport: '390x844', fileMenuPicker: true, editableGroupsAndPaths: true, editableGradients: true, editableSvgText: true, richTextTspans: true, textStylesPreserved: true, noRasterFlattening: true, inPlaceAppend: true, selectedLayerTree: true, repeatImportFreshIds: true, activeContentRejectedAtomically: true, externalReferenceRejectedAtomically: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -98,8 +98,8 @@ export class DecodedSourceCache {
    * are intentionally ephemeral, but still pass through the normal decoder's
    * independent 80M-pixel safety limit.
    */
-  withSource(assetId, createSource, render) {
-    const cached = this.get(assetId);
+  withSource(assetId, createSource, render, { retain = true } = {}) {
+    const cached = retain ? this.get(assetId) : undefined;
     if (cached) {
       const state = { retained: true, evictedAssetIds: [] };
       try {
@@ -109,6 +109,11 @@ export class DecodedSourceCache {
       }
     }
 
+    // A worker may finish loading WASM after the main thread has disposed an
+    // asset. Such a render can still complete for orderly promise settlement,
+    // but it must not repopulate the worker cache with an orphaned source.
+    if (!retain) this.delete(assetId);
+
     const source = createSource();
     let pixels;
     try {
@@ -117,7 +122,7 @@ export class DecodedSourceCache {
       source.free();
       throw error;
     }
-    const state = pixels <= this.pixelBudget
+    const state = retain && pixels <= this.pixelBudget
       ? this.set(assetId, source, pixels)
       : { retained: false, evictedAssetIds: [] };
     try {

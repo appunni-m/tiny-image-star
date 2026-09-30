@@ -284,8 +284,10 @@ export function clearPrototypeHoverInteraction(document, session) {
 }
 
 function rememberPrototypeHoverInteraction(session, interaction) {
-  session.lastHoverInteractionId = interaction.trigger === 'while-hovering' ? interaction.id : null;
-  if (interaction.trigger !== 'while-hovering') session.hoverVariantOriginal = null;
+  if (interaction.trigger === 'while-hovering') session.lastHoverInteractionId = interaction.id;
+  // Pointer actions such as click, navigation, and overlay dismissal can happen
+  // while the pointer is still over a hover hotspot. Keep its original variant
+  // until the presentation pointer handler observes that the hotspot was left.
 }
 
 export function applyPrototypeInteraction(document, session, interaction) {
@@ -307,7 +309,12 @@ export function applyPrototypeInteraction(document, session, interaction) {
     if (!component?.componentSetId || target?.componentSetId !== component.componentSetId) return false;
     if (target.id === component.id) {
       if (interaction.trigger === 'while-hovering') {
-        session.hoverVariantOriginal = { interactionId: interaction.id, instanceId: source.node.id, pageId: source.page.id, componentId: component.id };
+        const alreadyActive = session.lastHoverInteractionId === interaction.id
+          && session.hoverVariantOriginal?.interactionId === interaction.id
+          && session.hoverVariantOriginal?.instanceId === source.node.id;
+        if (!alreadyActive) {
+          session.hoverVariantOriginal = { interactionId: interaction.id, instanceId: source.node.id, pageId: source.page.id, componentId: component.id };
+        }
       } else session.hoverVariantOriginal = null;
       session.variantSelections ||= {};
       session.variantSelections[source.node.id] = target.id;
@@ -379,7 +386,6 @@ export function backPrototypeSession(session) {
   if (!session) return false;
   if (session.overlays.length) {
     session.overlays.pop();
-    session.lastHoverInteractionId = null;
     return 'overlay-closed';
   }
   if (!session.stack.length) return false;
@@ -387,7 +393,6 @@ export function backPrototypeSession(session) {
   session.pageId = previous.pageId;
   session.frameId = previous.frameId;
   session.overlays = structuredClone(previous.overlays || []);
-  session.lastHoverInteractionId = null;
   return 'navigated-back';
 }
 

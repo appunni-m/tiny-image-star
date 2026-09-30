@@ -1,4 +1,5 @@
-import { createDocument } from '../src/model.js';
+import { addNode, createDocument, createNode } from '../src/model.js';
+import { createAutoLayout } from '../src/layout-engine.js';
 import { exportPageToSvg } from '../src/svg-export.js';
 import { deleteStoredDocument } from '../src/storage.js';
 
@@ -22,10 +23,10 @@ function click(app, element) {
   assert(element, 'Expected a shape authoring control.');
   element.dispatchEvent(new app.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
 }
-function dispatchPointer(app, canvas, type, point, pointerId) {
+function dispatchPointer(app, canvas, type, point, pointerId, pointerType = 'mouse') {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
   canvas.dispatchEvent(new app.defaultView.PointerEvent(type, {
-    bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', button: 0,
+    bubbles: true, cancelable: true, pointerId, pointerType, button: 0,
     clientX: point.x, clientY: point.y
   }));
 }
@@ -68,6 +69,22 @@ function findNode(nodes, id) {
   }
   return null;
 }
+function countNodes(nodes) {
+  return (nodes || []).reduce((count, node) => count + 1 + countNodes(node.children), 0);
+}
+function hasBlueAtWorld(canvas, point) {
+  const rect = canvas.getBoundingClientRect();
+  const centerX = Math.round((rect.width / 2 + point.x) * canvas.width / rect.width);
+  const centerY = Math.round((rect.height / 2 + point.y) * canvas.height / rect.height);
+  const context = canvas.getContext('2d');
+  for (let y = Math.max(0, centerY - 2); y <= Math.min(canvas.height - 1, centerY + 2); y += 1) {
+    for (let x = Math.max(0, centerX - 2); x <= Math.min(canvas.width - 1, centerX + 2); x += 1) {
+      const pixel = context.getImageData(x, y, 1, 1).data;
+      if (pixel[3] > 180 && pixel[0] < 80 && pixel[1] > 100 && pixel[2] > 180) return true;
+    }
+  }
+  return false;
+}
 async function waitForSave(app, label) {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${label} save completion`);
@@ -76,6 +93,11 @@ function importEmptyDesign(app) {
   const design = createDocument();
   design.id = documentId;
   design.name = documentId;
+  const autoLayoutFrame = createNode('frame', {
+    name: 'Rotated Pencil layout frame', x: -225, y: 70, width: 200, height: 150, rotation: 9,
+    autoLayout: createAutoLayout({ axis: 'horizontal', gap: 8, padding: 12 })
+  });
+  addNode(design, autoLayoutFrame);
   const input = app.querySelector('#open-file-input');
   const payload = new TextEncoder().encode(JSON.stringify({ schema: design.schema, document: design, assets: [] }));
   const length = new Uint8Array(4);
@@ -151,7 +173,82 @@ try {
   assert(innerRadii.every(radius => Math.abs(radius - 8) < 1e-8), 'SVG export did not preserve the edited 0.25 inner-radius ratio.');
   assert((svg.match(/<polygon points="/g) || []).length === 2, 'SVG export should retain both editable regular shapes.');
 
-  result.textContent = `PASS\n${JSON.stringify({ starTool: true, starInspector: true, polygonInspector: true, liveCanvasRender: true, undoRedo: true, localPersistence: true, svgGeometry: true, starPoints: finalStar.points, starInnerRadius: finalStar.innerRadius, polygonSides: polygon.points })}`;
+  const pencilButton = app.querySelector('[data-tool="pencil"]');
+  assert(pencilButton?.getAttribute('aria-label') === 'Pencil · draw freehand', 'the canvas toolbar does not expose an accessible Pencil tool.');
+  click(app, pencilButton);
+  const pencilPath = [{ x: -150, y: 128 }, { x: -126, y: 108 }, { x: -102, y: 140 }, { x: -78, y: 106 }, { x: -54, y: 132 }];
+  for (const [index, point] of pencilPath.entries()) {
+    dispatchPointer(app, canvas, index === 0 ? 'pointerdown' : 'pointermove', worldScreenPoint(canvas, point.x, point.y), 212, 'touch');
+    if (index === 1) {
+      await waitFor(() => hasBlueAtWorld(canvas, { x: -138, y: 118 }), 'live Pencil canvas preview');
+    }
+  }
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, pencilPath.at(-1).x, pencilPath.at(-1).y), 212, 'touch');
+  const pencilId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;
+  assert(pencilId, 'a touch Pencil stroke did not create and select a vector layer.');
+  await waitForSave(app, 'Pencil path creation');
+
+  const beforeCancelledStroke = await readSavedDesign(app, documentId);
+  const pencil = findNode(beforeCancelledStroke.pages[0].children, pencilId);
+  assert(pencil?.type === 'network' && pencil.name === 'Pencil path', 'Pencil did not create an editable vector-network layer.');
+  assert(pencil.vertices?.length >= 2 && pencil.edges?.length >= 1, 'Pencil output did not retain editable vector anchors and edges.');
+  assert(pencil.edges.some(edge => edge.control1 && edge.control2), 'Pencil output did not fit editable Bézier controls.');
+  const pencilParent = beforeCancelledStroke.pages[0].children.find(node => node.name === 'Rotated Pencil layout frame');
+  assert(pencilParent?.children.some(node => node.id === pencilId) && pencilParent.autoLayout && pencil.layoutPositioning === 'absolute',
+    'Pencil drawing in a rotated auto-layout frame must remain an absolutely positioned child.');
+
+  await new Promise(resolve => setTimeout(resolve, 220));
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'z', ctrlKey: true }));
+  await waitFor(() => !app.querySelector(`[data-layer-id="${pencilId}"]`), 'undo removing the Pencil path');
+  await waitForSave(app, 'Pencil undo');
+  let historySnapshot = await readSavedDesign(app, documentId);
+  assert(!findNode(historySnapshot.pages[0].children, pencilId), 'undo left the Pencil vector network in the saved design.');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'y', ctrlKey: true }));
+  await waitFor(() => app.querySelector(`[data-layer-id="${pencilId}"]`), 'redo restoring the Pencil path');
+  await waitForSave(app, 'Pencil redo');
+  historySnapshot = await readSavedDesign(app, documentId);
+  const redonePencil = findNode(historySnapshot.pages[0].children, pencilId);
+  assert(JSON.stringify(redonePencil?.vertices) === JSON.stringify(pencil.vertices)
+    && JSON.stringify(redonePencil?.edges) === JSON.stringify(pencil.edges), 'redo did not restore the exact editable Pencil network.');
+
+  const countBeforeCancel = countNodes(beforeCancelledStroke.pages[0].children);
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 205, 130), 213, 'touch');
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 235, 155), 213, 'touch');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+  await new Promise(resolve => setTimeout(resolve, 220));
+  const afterCancelledStroke = await readSavedDesign(app, documentId);
+  assert(countNodes(afterCancelledStroke.pages[0].children) === countBeforeCancel, 'Escape committed a partial Pencil stroke.');
+
+  const secondPencilPath = [{ x: 190, y: 124 }, { x: 218, y: 139 }, { x: 246, y: 116 }];
+  for (const [index, point] of secondPencilPath.entries()) {
+    dispatchPointer(app, canvas, index === 0 ? 'pointerdown' : 'pointermove', worldScreenPoint(canvas, point.x, point.y), 214, 'touch');
+  }
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, secondPencilPath.at(-1).x, secondPencilPath.at(-1).y), 214, 'touch');
+  const secondPencilId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;
+  assert(secondPencilId && secondPencilId !== pencilId, 'Pencil did not accept the next touch stroke after Escape cancelled a draft.');
+  await waitForSave(app, 'Pencil path after cancellation');
+  const afterSecondStroke = await readSavedDesign(app, documentId);
+  const countBeforePointerCancel = countNodes(afterSecondStroke.pages[0].children);
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 265, 125), 215, 'touch');
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 295, 155), 215, 'touch');
+  dispatchPointer(app, canvas, 'pointercancel', worldScreenPoint(canvas, 295, 155), 215, 'touch');
+  await new Promise(resolve => setTimeout(resolve, 220));
+  const afterPointerCancel = await readSavedDesign(app, documentId);
+  assert(countNodes(afterPointerCancel.pages[0].children) === countBeforePointerCancel, 'pointercancel committed a partial Pencil stroke.');
+
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, -10, 215), 216, 'touch');
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 18, 236), 216, 'touch');
+  dispatchPointer(app, canvas, 'lostpointercapture', worldScreenPoint(canvas, 18, 236), 216, 'touch');
+  await new Promise(resolve => setTimeout(resolve, 220));
+  const afterLostCapture = await readSavedDesign(app, documentId);
+  assert(countNodes(afterLostCapture.pages[0].children) === countBeforePointerCancel, 'lost pointer capture committed a partial Pencil stroke.');
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 22, 220), 217, 'touch');
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 45, 241), 217, 'touch');
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 45, 241), 217, 'touch');
+  assert(app.querySelector('.layer-row.is-selected')?.dataset.layerId, 'Pencil did not accept the next stroke after lost pointer capture.');
+  await waitForSave(app, 'Pencil recovery after lost capture');
+
+result.textContent = `PASS\n${JSON.stringify({ starTool: true, starInspector: true, polygonInspector: true, pencilTouch: true, pencilEditableNetwork: true, pencilLivePreview: true, pencilAutoLayoutPlacement: true, pencilUndoRedo: true, pencilCancellation: true, pencilPointerCancel: true, pencilLostCapture: true, liveCanvasRender: true, undoRedo: true, localPersistence: true, svgGeometry: true, starPoints: finalStar.points, starInnerRadius: finalStar.innerRadius, polygonSides: polygon.points })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {

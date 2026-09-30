@@ -1,20 +1,49 @@
-import { cloneDocument, createId, findNode, findNodeAcrossPages, getNodeColor, getNodePropertyValue, validateDocument } from './model.js';
+import { addNode, cloneDocument, createId, findNode, findNodeAcrossPages, getNodeColor, getNodeGeometry, getNodePropertyValue, validateDocument } from './model.js';
+import { parentLocalToPageTransform, transformPoint } from './transform-geometry.js';
 
 export const layerClipboardSchema = 'tiny-image-star/layer-clipboard/1';
 const maxClipboardItems = 1000;
 const maxClipboardNodes = 20_000;
 const variablePropertyTypes = {
+  x: 'number', y: 'number', width: 'number', height: 'number', rotation: 'number',
   visible: 'boolean', opacity: 'number', radius: 'number', text: 'string',
-  fontSize: 'number', lineHeight: 'number', letterSpacing: 'number'
+  fontSize: 'number', lineHeight: 'number', letterSpacing: 'number',
+  'autoLayout.axis': 'string', 'autoLayout.align': 'string', 'autoLayout.justify': 'string',
+  'autoLayout.mainSizing': 'string', 'autoLayout.crossSizing': 'string',
+  'autoLayout.wrap': 'boolean', 'autoLayout.autoPositioning': 'boolean',
+  'autoLayout.columns': 'number', 'autoLayout.rows': 'number',
+  'autoLayout.rowGap': 'number', 'autoLayout.columnGap': 'number',
+  'autoLayout.padding.top': 'number', 'autoLayout.padding.right': 'number',
+  'autoLayout.padding.bottom': 'number', 'autoLayout.padding.left': 'number'
 };
 const variablePropertyTypesByNode = {
+  x: null, y: null, width: null, height: null, rotation: null,
   visible: null, opacity: null,
   radius: new Set(['rectangle', 'frame', 'section', 'image']),
-  text: new Set(['text']), fontSize: new Set(['text']), lineHeight: new Set(['text']), letterSpacing: new Set(['text'])
+  text: new Set(['text']), fontSize: new Set(['text']), lineHeight: new Set(['text']), letterSpacing: new Set(['text']),
+  'autoLayout.axis': new Set(['frame']), 'autoLayout.align': new Set(['frame']),
+  'autoLayout.justify': new Set(['frame']), 'autoLayout.mainSizing': new Set(['frame']),
+  'autoLayout.crossSizing': new Set(['frame']), 'autoLayout.wrap': new Set(['frame']),
+  'autoLayout.autoPositioning': new Set(['frame']), 'autoLayout.columns': new Set(['frame']),
+  'autoLayout.rows': new Set(['frame']), 'autoLayout.rowGap': new Set(['frame']),
+  'autoLayout.columnGap': new Set(['frame']), 'autoLayout.padding.top': new Set(['frame']),
+  'autoLayout.padding.right': new Set(['frame']), 'autoLayout.padding.bottom': new Set(['frame']),
+  'autoLayout.padding.left': new Set(['frame'])
 };
 
 function plainRecord(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function setNodePropertyValue(node, property, value) {
+  const segments = property.split('.');
+  const key = segments.pop();
+  let target = node;
+  for (const segment of segments) {
+    if (!plainRecord(target[segment])) target[segment] = {};
+    target = target[segment];
+  }
+  target[key] = value;
 }
 
 function resolvedSnapshot(document, node) {
@@ -26,6 +55,51 @@ function resolvedSnapshot(document, node) {
     if (node.variableBindings?.[property]) values[property] = getNodePropertyValue(document, node, property);
   }
   return values;
+}
+
+function findInstancePropertyTarget(instance, targetSourceId) {
+  let found = null;
+  const visit = (node, isRoot = false) => {
+    if (node.componentSourceId === targetSourceId) { found = node; return; }
+    if (!isRoot && node.isInstance) return;
+    for (const child of node.children || []) visit(child);
+  };
+  visit(instance, true);
+  return found;
+}
+
+function componentSlotMutationContext(document, entry) {
+  if (!entry?.node) return null;
+  const ancestry = [...(entry.parents || []), entry.node];
+  let best = null;
+  for (let instanceDepth = 0; instanceDepth < ancestry.length; instanceDepth += 1) {
+    const instance = ancestry[instanceDepth];
+    if (!instance.isInstance) continue;
+    const component = document.components?.find(item => item.id === instance.componentId);
+    if (!component) continue;
+    for (const property of component.componentProperties || []) {
+      if (property.type !== 'SLOT') continue;
+      const target = findInstancePropertyTarget(instance, property.targetSourceId);
+      const targetDepth = ancestry.indexOf(target);
+      if (!target || targetDepth < 0 || targetDepth > ancestry.length - 1) continue;
+      if (best && (instanceDepth < best.instanceDepth || (instanceDepth === best.instanceDepth && targetDepth <= best.targetDepth))) continue;
+      best = {
+        instance, component, property, target, instanceDepth, targetDepth,
+        overridden: Object.hasOwn(instance.componentPropertyValues || {}, property.id)
+      };
+    }
+  }
+  return best;
+}
+
+function detachCopiedInstanceSourceLinks(node, insideLinkedInstance = false) {
+  if (!insideLinkedInstance) {
+    delete node.componentSourceId;
+    delete node.componentSourceKey;
+    delete node.variantNodeKey;
+  }
+  const childrenBelongToLinkedInstance = insideLinkedInstance || node.isInstance === true;
+  for (const child of node.children || []) detachCopiedInstanceSourceLinks(child, childrenBelongToLinkedInstance);
 }
 
 /** Capture an immutable, same-document layer clipboard without copying local image bytes. */
@@ -56,12 +130,16 @@ export function createLayerClipboard(document, entries, { mode = 'copy', pageId 
     if (!entry?.node || typeof entry.node.id !== 'string' || !entry.node.id || !Number.isInteger(entry.index) || entry.index < 0) {
       throw new TypeError('The selected layers are no longer available.');
     }
+    const transformedParents = entry.parents.map(parent => ({ ...parent, ...getNodeGeometry(document, parent) }));
+    const nodeGeometry = getNodeGeometry(document, entry.node);
+    const pagePosition = transformPoint(parentLocalToPageTransform(transformedParents), { x: nodeGeometry.x, y: nodeGeometry.y });
     return {
       parentId: entry.parent?.id || null,
       sourceIndex: entry.index,
       sourcePageId: pageId,
-      pageX: entry.parents.reduce((sum, parent) => sum + parent.x, 0) + entry.node.x,
-      pageY: entry.parents.reduce((sum, parent) => sum + parent.y, 0) + entry.node.y,
+      sourceInsideInstance: entry.parents.some(parent => parent.isInstance),
+      pageX: pagePosition.x,
+      pageY: pagePosition.y,
       node: structuredClone(entry.node),
       resolved: Object.fromEntries((() => {
         const values = {};
@@ -101,6 +179,7 @@ function validateClipboardEnvelope(clipboard, document) {
   for (const item of clipboard.items) {
     if (!plainRecord(item) || (item.parentId != null && typeof item.parentId !== 'string') || !Number.isInteger(item.sourceIndex) || item.sourceIndex < 0
       || typeof item.sourcePageId !== 'string' || !Number.isFinite(item.pageX) || !Number.isFinite(item.pageY)
+      || (item.sourceInsideInstance != null && typeof item.sourceInsideInstance !== 'boolean')
       || !plainRecord(item.resolved)) throw new TypeError('The layer clipboard contains a malformed item. Copy the layers again and retry.');
     visit(item.node);
   }
@@ -139,7 +218,7 @@ function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, co
       const variable = variables.get(variableId);
       const compatibleNodeTypes = variablePropertyTypesByNode[property];
       if (!variable || variable.type !== variablePropertyTypes[property] || (compatibleNodeTypes && !compatibleNodeTypes.has(node.type))) {
-        if (fallbacks[property] !== undefined) node[property] = fallbacks[property];
+        if (fallbacks[property] !== undefined) setNodePropertyValue(node, property, fallbacks[property]);
         delete node.variableBindings[property];
       }
     }
@@ -158,7 +237,22 @@ function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, co
       const componentId = freshId('component', idMap.reserved);
       node.componentId = componentId;
       delete node.variantNodeKey;
-      componentRecords.push({ id: componentId, name: `${sourceComponent.name} copy`, pageId, rootNodeId: node.id });
+      const componentProperties = (sourceComponent.componentProperties || []).map(property => {
+        const targetSourceId = idMap.ids.get(property.targetSourceId);
+        if (!targetSourceId) return null;
+        return {
+          ...structuredClone(property),
+          id: freshId('component-property', idMap.reserved),
+          targetSourceId
+        };
+      }).filter(Boolean);
+      componentRecords.push({
+        id: componentId,
+        name: `${sourceComponent.name} copy`,
+        pageId,
+        rootNodeId: node.id,
+        ...(componentProperties.length ? { componentProperties } : {})
+      });
     }
   } else if (node.isInstance) {
     const component = (document.components || []).find(item => item.id === node.componentId);
@@ -166,10 +260,14 @@ function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, co
     if (!component || !findNodeAcrossPages(document, component.rootNodeId) || (node.componentSourceId && node.componentSourceId !== component.rootNodeId && sourceId)) detachBrokenComponentTree(node);
   } else if (node.componentId) delete node.componentId;
   if (node.componentOverrides) {
-    for (const overrides of Object.values(node.componentOverrides)) {
+    for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
       if (overrides?.variableBindings) {
         for (const [property, variableId] of Object.entries(overrides.variableBindings)) {
-          if (!variables.has(variableId) || !variablePropertyTypes[property]) delete overrides.variableBindings[property];
+          const variable = variables.get(variableId);
+          const compatibleNodeTypes = variablePropertyTypesByNode[property];
+          const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+          if (!variable || variable.type !== variablePropertyTypes[property]
+            || (compatibleNodeTypes && sourceNode && !compatibleNodeTypes.has(sourceNode.type))) delete overrides.variableBindings[property];
         }
         if (!Object.keys(overrides.variableBindings).length) delete overrides.variableBindings;
       }
@@ -234,6 +332,7 @@ export function pasteLayerClipboard(document, clipboard, { pageId = document?.ac
     };
     remapIds(node);
     if (clipboard.mode === 'copy') renameCopyTree(node);
+    if (item.sourceInsideInstance) detachCopiedInstanceSourceLinks(node);
     const sanitize = tree => {
       sanitizeExternalReferences(tree, itemFallbacksForNode(clipboard, idMap.originalForClone.get(tree.id)), candidate, pageId, idMap, componentRecords);
       for (const child of tree.children || []) sanitize(child);
@@ -246,11 +345,22 @@ export function pasteLayerClipboard(document, clipboard, { pageId = document?.ac
   const pasteOffset = clipboard.mode === 'copy' ? offset * copyPasteNumber : 0;
   const groups = new Map();
   for (const item of prepared) {
-    const parent = item.parentId && item.sourcePageId === pageId ? findNode(candidate, item.parentId, pageId)?.node : null;
-    const targetParentId = parent && ['frame', 'group', 'boolean'].includes(parent.type) ? parent.id : null;
+    const parentEntry = item.parentId && item.sourcePageId === pageId ? findNode(candidate, item.parentId, pageId) : null;
+    const parent = parentEntry?.node || null;
+    const targetParentId = parent && ['frame', 'section', 'group', 'boolean'].includes(parent.type) ? parent.id : null;
+    if (targetParentId && (parent.isInstance || parentEntry.parents.some(ancestor => ancestor.isInstance))) {
+      const context = componentSlotMutationContext(candidate, parentEntry);
+      if (!context?.overridden) {
+        throw new Error('Cannot paste into linked component layers. Paste into an overridden content slot or outside the component instance.');
+      }
+    }
     const key = targetParentId || '';
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push({ ...item, targetParentId });
+    groups.get(key).push({
+      ...item,
+      targetParentId,
+      restoreSourceParent: item.sourcePageId === pageId && (item.parentId || null) === targetParentId
+    });
   }
 
   const inserted = [];
@@ -258,11 +368,8 @@ export function pasteLayerClipboard(document, clipboard, { pageId = document?.ac
     items.sort((a, b) => a.sourceIndex - b.sourceIndex);
     const parentId = parentKey || null;
     const list = parentId ? findNode(candidate, parentId, pageId).node.children : candidatePage.children;
-    const selectedAt = items.map(item => item.sourceIndex).filter(index => index <= list.length);
-    const insertionIndex = clipboard.mode === 'cut' && clipboard.sourcePageId === pageId
-      ? Math.min(...selectedAt, list.length)
-      : list.length;
-    let index = insertionIndex;
+    const restoreCutPositions = clipboard.mode === 'cut' && clipboard.sourcePageId === pageId
+      && items.every(item => item.restoreSourceParent);
     for (const item of items) {
       if (!parentId && (item.parentId || item.sourcePageId !== pageId)) {
         item.node.x = item.pageX;
@@ -270,7 +377,8 @@ export function pasteLayerClipboard(document, clipboard, { pageId = document?.ac
       }
       item.node.x += pasteOffset;
       item.node.y += pasteOffset;
-      list.splice(index++, 0, item.node);
+      const index = restoreCutPositions ? Math.min(item.sourceIndex, list.length) : list.length;
+      addNode(candidate, item.node, { pageId, parentId, index });
       inserted.push(item.node);
     }
   }

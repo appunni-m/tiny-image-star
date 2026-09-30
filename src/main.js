@@ -1,22 +1,25 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
-import { createImageFill } from './image-fills.js';
+import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
-import { createFallbackImage } from './fallback-image-bitmap.js';
+import { createFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
-import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
-import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
-import { collectLiveImagePreviewNodeIds, imagePreviewKey, pruneImagePreviewRuntime } from './image-preview-runtime.js';
-import { deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadImageAsset, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveImageAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
+import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
+import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
+import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
+import { deleteFontAsset, deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
+import { cornerRadiusKeys } from './corner-radii.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
@@ -27,13 +30,16 @@ import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSessio
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
-import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect } from './transform-geometry.js';
+import { createStoredZip } from './store-zip.js';
+import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
+import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, isImageRecipeBatchActive, recordImageRecipeBatchTarget } from './bulk-recipe-state.js';
+import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect, shortestAngleDelta } from './transform-geometry.js';
 import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason } from './group-transform.js';
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
   getVectorNetworkVertexMode, setVectorNetworkEdgeControlPoint, setVectorNetworkVertexMode, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
-  vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint, vectorNodePoint
+  vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
@@ -45,12 +51,13 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, tool: 'select', zoom: 1, panX: 0, panY: 0,
-  assets: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
-  draftNode: null, penDraft: null, penHover: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
+  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
+  draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
+  imageExportAbortController: null,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
@@ -65,16 +72,19 @@ const state = {
   presenting: null
 };
 const history = new History(120);
+const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRetainedImageMemoryBudget() });
 const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
 let pendingRecipeNodeId = null;
 let latestPageLayerIds = [];
+let layerRowsById = new Map();
 let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
 let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const previewTimers = new Map();
+const previewsEvictedForCapacity = new Set();
 let nextImageRenderVersion = 0;
 let presentRenderer = null;
 let presentRenderState = null;
@@ -82,12 +92,173 @@ let presentRuntimeDocument = null;
 let presentationPointerGesture = null;
 const presentationDragThreshold = 7;
 let textMeasureContext = null;
+let pendingFontImport = null;
 
 function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
 function resolvedGeometry(node) { return getNodeGeometry(state.document, node); }
 function isLocalLinkedComponent(node) { return node?.linkedComponent?.schema === 'tiny-image-star/linked-component-instance/1'; }
+const systemFontFamilyPresets = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Georgia, serif', 'monospace', 'system-ui, sans-serif', 'Verdana, sans-serif', 'Trebuchet MS, sans-serif', 'Times New Roman, serif', 'Courier New, monospace'];
+
+function renderFontFamilyOptions() {
+  const datalist = $('#font-family-options');
+  if (!datalist) return;
+  datalist.replaceChildren();
+  const families = new Set([...systemFontFamilyPresets, ...[...state.fontAssets.values()].map(font => font.family)]);
+  for (const family of families) {
+    const option = document.createElement('option');
+    option.value = family;
+    datalist.append(option);
+  }
+}
+
+function renderLocalFontAssets() {
+  const list = $('#font-assets-list');
+  if (!list) return;
+  list.replaceChildren();
+  const fonts = [...state.fontAssets.values()];
+  if (!fonts.length) {
+    const empty = document.createElement('div'); empty.className = 'local-fonts-empty';
+    empty.textContent = 'Add a font file to use it in text layers and portable design files.';
+    list.append(empty);
+  }
+  for (const font of fonts) {
+    const row = document.createElement('div'); row.className = 'local-font-row'; row.dataset.fontAssetId = font.id;
+    const sample = document.createElement('span'); sample.className = 'local-font-sample'; sample.textContent = 'Aa';
+    sample.style.fontFamily = `"${font.family.replace(/["\\]/gu, '')}"`;
+    sample.style.fontWeight = String(font.weight); sample.style.fontStyle = font.style;
+    const copy = document.createElement('span'); copy.className = 'local-font-copy';
+    const family = document.createElement('strong'); family.className = 'local-font-family'; family.textContent = font.family;
+    const detail = document.createElement('small'); detail.textContent = `${font.weight} · ${font.style} · ${font.name}`;
+    copy.append(family, detail);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'tiny-icon-button local-font-remove';
+    remove.dataset.action = 'remove-local-font'; remove.dataset.fontId = font.id; remove.textContent = '×';
+    remove.title = `Remove ${font.family} ${font.weight} ${font.style}`;
+    remove.setAttribute('aria-label', `Remove local font ${font.family}, ${font.weight} ${font.style}`);
+    row.append(sample, copy, remove); list.append(row);
+  }
+  renderFontFamilyOptions();
+}
+
+async function refreshLocalFontAssets({ showFailureToast = false } = {}) {
+  const records = await listFontAssets();
+  for (const face of state.fontFaces.values()) unloadLocalFontFace(face);
+  state.fontFaces.clear();
+  state.fontAssets = new Map(records.map(font => [font.id, font]));
+  if (typeof FontFace === 'function' && document.fonts?.add) {
+    // Keep binary reads and browser font parsing bounded when a device has a large local font catalog.
+    const results = await mapLocalFontAssets(records, async font => {
+      const saved = await loadFontAsset(font.id);
+      if (!saved) return { id: font.id, error: true };
+      try { return { id: font.id, face: await loadLocalFontFace(saved) }; }
+      catch { return { id: font.id, error: true }; }
+    }, 2);
+    for (const result of results) if (result.face) state.fontFaces.set(result.id, result.face);
+    if (showFailureToast && results.some(result => result.error)) showToast('Some local fonts could not be loaded. Their text uses the browser fallback until you replace the font file.');
+  }
+  renderLocalFontAssets();
+}
+
+function familyStackUses(fontFamily, family) {
+  const tokens = [];
+  let token = '';
+  let quote = '';
+  let escaped = false;
+  for (const character of String(fontFamily || '')) {
+    if (quote) {
+      token += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      token += character;
+    } else if (character === ',') {
+      tokens.push(token); token = '';
+    } else token += character;
+  }
+  tokens.push(token);
+  const normalize = value => value.trim().replace(/^("|')(.*)\1$/u, '$2').replace(/\\(["'\\])/gu, '$1');
+  return tokens.some(value => normalize(value).toLocaleLowerCase() === family.toLocaleLowerCase());
+}
+
+function documentUsesFontFamily(design, family) {
+  const visited = new WeakSet();
+  const visit = value => {
+    if (!value || typeof value !== 'object' || visited.has(value)) return false;
+    visited.add(value);
+    if (Array.isArray(value)) return value.some(visit);
+    return Object.entries(value).some(([key, child]) => key === 'fontFamily'
+      ? familyStackUses(child, family)
+      : visit(child));
+  };
+  return visit(design);
+}
+
+async function openLocalFontImport(file) {
+  if (!file) return;
+  try {
+    if (file.size > MAX_LOCAL_FONT_BYTES) throw new TypeError(`Font files must be ${MAX_LOCAL_FONT_BYTES / 1024 / 1024} MB or smaller.`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const format = inspectLocalFontFormat(file.name, bytes);
+    pendingFontImport = { id: createId('font'), name: file.name, type: format.type, bytes };
+    $('#font-family-name').value = defaultLocalFontFamily(file.name);
+    $('#font-weight-value').value = '400';
+    $('#font-style-value').value = 'normal';
+    $('#font-import-file-name').textContent = `${file.name} · ${Math.ceil(bytes.byteLength / 1024)} KB`;
+    $('#font-import-dialog').showModal();
+    $('#font-family-name').focus({ preventScroll: true });
+  } catch (error) {
+    showToast(error.message || 'Could not read this font file.');
+    $('#font-input').value = '';
+  }
+}
+
+async function savePendingLocalFont() {
+  if (!pendingFontImport) return;
+  const family = $('#font-family-name').value.trim();
+  const weight = Number($('#font-weight-value').value);
+  const style = $('#font-style-value').value;
+  const candidate = validateLocalFontAsset({ ...pendingFontImport, family, weight, style });
+  const matching = [...state.fontAssets.values()].find(font => font.family.toLocaleLowerCase() === family.toLocaleLowerCase()
+    && font.weight === weight && font.style === style);
+  if (matching) {
+    const existing = await loadFontAsset(matching.id);
+    if (existing?.bytes.length === candidate.bytes.length && existing.bytes.every((byte, index) => byte === candidate.bytes[index])) {
+      $('#font-import-dialog').close('duplicate');
+      showToast(`${family} ${weight} ${style} is already installed.`);
+      return;
+    }
+    throw new TypeError(`A different ${weight} ${style} face for “${family}” is already installed. Choose another family name.`);
+  }
+  const face = await loadLocalFontFace(candidate, { register: false });
+  await saveFontAsset(candidate);
+  try { document.fonts.add(face); }
+  catch (error) { await deleteFontAsset(candidate.id); throw error; }
+  state.fontAssets.set(candidate.id, { id: candidate.id, name: candidate.name, type: candidate.type, family: candidate.family, weight: candidate.weight, style: candidate.style });
+  state.fontFaces.set(candidate.id, face);
+  renderLocalFontAssets();
+  renderInspector();
+  renderer.invalidate();
+  $('#font-import-dialog').close('imported');
+  showToast(`Local font “${family}” is ready to use.`);
+}
+
+async function removeLocalFont(id) {
+  const font = state.fontAssets.get(id);
+  if (!font) return;
+  const remove = globalThis.confirm?.(`Remove ${font.family} ${font.weight} ${font.style} from this browser? Designs using this face will use a fallback font. Local design packages already exported keep their copy.`);
+  if (remove === false) return;
+  await deleteFontAsset(id);
+  unloadLocalFontFace(state.fontFaces.get(id));
+  state.fontFaces.delete(id);
+  state.fontAssets.delete(id);
+  renderLocalFontAssets();
+  renderInspector();
+  renderer.invalidate();
+  showToast(`Local font “${font.family}” removed.`);
+}
 function hasValidLocalComponentSnapshot(node) {
   if (!isLocalLinkedComponent(node)) return false;
   try { return validateLinkedInstanceSnapshot(node.linkedComponent); }
@@ -175,6 +346,7 @@ function queueSave({ refreshLayerTree = true } = {}) {
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(async () => {
     try {
+      reconcileImageAssetRuntime();
       const snapshot = JSON.parse(serializeDocument(state.document));
       await enqueueDocumentSave(snapshot);
       setSaveState('saved', 'Saved locally');
@@ -185,12 +357,17 @@ function queueSave({ refreshLayerTree = true } = {}) {
   }, 260);
 }
 function checkpoint(label) { history.checkpoint(state.document, label); }
-function setSelection(ids, { keepInspector = false } = {}) {
+function setSelection(ids, { keepInspector = false, refreshLayers = true } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
+  const previousSelectedIds = state.selectedIds;
   state.selectedIds = [...new Set(valid)];
+  if (refreshLayers) renderLayers();
+  else {
+    syncRenderedLayerSelection(previousSelectedIds, state.selectedIds);
+    syncLayerSelectionModeControl();
+  }
   state.smartGuides = [];
   if (state.selectedVectorPoint && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.selectedVectorPoint.nodeId)) state.selectedVectorPoint = null;
-  renderLayers();
   if (!keepInspector) renderInspector();
   updateSelectionStatus();
   renderer?.invalidate();
@@ -211,6 +388,7 @@ function showToast(message, duration = 2500) {
 }
 function setTool(tool) {
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
+  if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
   state.tool = tool;
   $$('.tool-button').forEach(button => button.classList.toggle('is-selected', button.dataset.tool === tool));
@@ -232,13 +410,30 @@ function renderPageList() {
   $('#canvas-page-name').textContent = page?.name || 'Page';
 }
 
-function renderLayers() {
-  const list = $('#layers-list'); list.replaceChildren();
+function syncLayerSelectionModeControl() {
   const selectMode = $('#layer-select-mode');
+  if (!selectMode) return;
   selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select';
   selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting images' : 'Select images for recipes');
   selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
+}
+function syncRenderedLayerSelection(previousIds, nextIds) {
+  const previous = new Set(previousIds);
+  const next = new Set(nextIds);
+  const update = (id, selected) => {
+    const row = layerRowsById.get(id);
+    if (!row) return;
+    row.classList.toggle('is-selected', selected);
+    row.setAttribute('aria-selected', String(selected));
+  };
+  for (const id of previous) if (!next.has(id)) update(id, false);
+  for (const id of next) if (!previous.has(id)) update(id, true);
+}
+function renderLayers() {
+  const list = $('#layers-list'); list.replaceChildren();
+  layerRowsById = new Map();
+  syncLayerSelectionModeControl();
   list.setAttribute('aria-multiselectable', 'true');
   const page = activePage();
   latestPageLayerIds = [];
@@ -252,6 +447,7 @@ function renderLayers() {
       row.className = `layer-row${state.selectedIds.includes(node.id) ? ' is-selected' : ''}${getNodePropertyValue(state.document, node, 'visible') ? '' : ' layer-hidden'}${node.locked ? ' layer-locked' : ''}`;
       row.setAttribute('role', 'treeitem'); row.setAttribute('aria-selected', String(state.selectedIds.includes(node.id))); row.dataset.layerId = node.id; row.dataset.layerType = node.type; row.tabIndex = 0; row.draggable = true;
       row.style.paddingLeft = `${7 + depth * 13}px`;
+      row.style.setProperty('--layer-indent', `${7 + depth * 13}px`);
       const siblings = nodes;
       const lockedInChain = node.locked || lockedParent;
       const upNeighbor = siblings[index + 1]; const downNeighbor = siblings[index - 1];
@@ -259,8 +455,9 @@ function renderLayers() {
       const chevron = node.children?.length ? '⌄' : '';
       const componentMarker = node.isComponent ? '◆' : node.isInstance ? '◇' : node.mask ? '◩' : '';
       row.title = node.mask ? 'Mask group · use Layer options or Inspector to release' : '';
-      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button type="button" class="layer-order-control" data-action="layer-move-up" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button>`;
+      row.innerHTML = `<span class="layer-chevron">${chevron}</span><span class="layer-icon">${componentMarker || icon(iconName, 14)}</span><span class="layer-name">${escapeHtml(node.name)}</span><button type="button" class="layer-order-control" data-action="layer-move-up" aria-label="Move ${escapeHtml(node.name)} up" title="Move up"${state.layerSelectionMode || lockedInChain || !upNeighbor || upNeighbor.locked ? ' disabled' : ''}>↑</button><button type="button" class="layer-order-control" data-action="layer-move-down" aria-label="Move ${escapeHtml(node.name)} down" title="Move down"${state.layerSelectionMode || lockedInChain || !downNeighbor || downNeighbor.locked ? ' disabled' : ''}>↓</button><button type="button" class="layer-visibility" data-action="visibility" aria-label="Toggle visibility" title="Toggle visibility">${icon('eye', 13)}</button><button type="button" class="layer-actions-menu" data-action="layer-actions-menu" aria-label="More actions for ${escapeHtml(node.name)}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="More actions">⋯</button>`;
       list.append(row);
+      layerRowsById.set(node.id, row);
       if (node.children?.length) addRows(node.children, depth + 1, lockedInChain);
     }
   };
@@ -344,11 +541,31 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
   const sources = imageFillSources();
   const options = sources.map(source => `<option value="${escapeHtml(source.assetId)}"${imageFill.assetId === source.assetId ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('');
-  const adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...imageFill.adjustments };
+  const adjustments = { ...defaultImageAdjustments, ...imageFill.adjustments };
   const previewKey = imagePreviewKey(node.id, fillId || null);
   const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}"${fillData} aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
   const transforms = imageTransformControls(imageFill.transforms, 'fill', node.locked, fillId);
-  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM.</div></div>`;
+  const tone = imageToneControls(adjustments, { fillId, disabled: node.locked });
+  return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId"${fillData} aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit"${fillData} aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${tone}${transforms}<div class="image-engine-status" data-image-fill-status="${escapeHtml(previewKey)}">${escapeHtml(state.imageStatus.get(previewKey) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Image treatments run locally through Pillow-RS WASM.</div></div>`;
+}
+function imageToneControls(adjustments, { fillId = '', disabled = false } = {}) {
+  const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
+  const field = (key, label) => fillId
+    ? `data-image-fill-field="adjustments.${key}"${fillData}`
+    : `class="prop-input" data-prop="adjustments.${key}"`;
+  const checkbox = (key, label) => `<label class="image-fill-source"><span>${label}</span><input type="checkbox" ${field(key, label)} aria-label="${fillId ? 'Image fill ' : ''}${label}"${adjustments[key] ? ' checked' : ''}${disabled ? ' disabled' : ''}/></label>`;
+  const slider = (key, label, min, max, value, offText = '') => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${value}" ${field(key, label)} aria-label="${fillId ? 'Image fill ' : ''}${label.toLowerCase()}"${disabled || (key === 'solarizeThreshold' && !adjustments.solarize) ? ' disabled' : ''}/><output>${offText}</output></div>`;
+  const posterize = Number(adjustments.posterizeBits) || 0;
+  const threshold = Number.isInteger(adjustments.solarizeThreshold) ? adjustments.solarizeThreshold : 0;
+  return `<div class="image-tone-controls">${checkbox('autoContrast', 'Auto contrast')}${slider('posterizeBits', 'Posterize', 0, 8, posterize, posterize ? `${posterize} bit` : 'Off')}${checkbox('solarize', 'Solarize')}${slider('solarizeThreshold', 'Threshold', 0, 255, threshold, String(threshold))}${checkbox('invert', 'Invert')}</div>`;
+}
+function syncImageToneControls(input, adjustments, disabled = false) {
+  if (!input || (input.dataset.prop !== 'adjustments.solarize' && input.dataset.imageFillField !== 'adjustments.solarize')) return;
+  const threshold = input.closest('.image-tone-controls')?.querySelector('[data-prop="adjustments.solarizeThreshold"], [data-image-fill-field="adjustments.solarizeThreshold"]');
+  if (!threshold) return;
+  threshold.disabled = disabled || !adjustments.solarize;
+  threshold.value = String(adjustments.solarizeThreshold);
+  if (threshold.nextElementSibling) threshold.nextElementSibling.value = String(adjustments.solarizeThreshold);
 }
 function imageTransformControls(transforms, target, disabled = false, fillId = '') {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
@@ -376,6 +593,18 @@ function strokeStyleControls(node) {
   const select = (property, label, value, options) => `<select class="prop-input select-field stroke-style-select" data-prop="${property}" aria-label="${label}"${node.locked || (property === 'strokeCap' && pattern === 'dotted') ? ' disabled' : ''}>${options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('')}</select>`;
   return `<div class="property-grid stroke-style-grid">${numberField('W', 'strokeWidth', node.strokeWidth ?? 1, .5, 0, 100_000, node.locked, 'Stroke width')}${select('strokePattern', 'Stroke pattern', pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}${select('strokeCap', 'Stroke cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']])}${select('strokeJoin', 'Stroke join', join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}${numberField('Miter', 'strokeMiterLimit', miterLimit, .5, 1, 1000, node.locked, 'Stroke miter limit')}</div>`;
 }
+function cornerRadiusControls(node) {
+  if (!['rectangle', 'frame', 'section', 'image'].includes(node.type)) return '';
+  if (node.cornerRadii) {
+    const fields = [
+      ['topLeft', 'Top left'], ['topRight', 'Top right'],
+      ['bottomLeft', 'Bottom left'], ['bottomRight', 'Bottom right']
+    ].map(([side, label]) => numberField(label, `cornerRadii.${side}`, node.cornerRadii[side], 1, 0, 100_000, node.locked, `${label} corner radius`)).join('');
+    return `<div class="corner-radius-controls"><div class="property-heading">Independent corners</div><div class="property-grid">${fields}</div><div class="image-properties-note">Independent corners use local values and detach this layer from a shared radius variable.</div><button class="add-fill" type="button" data-action="link-corners"${node.locked ? ' disabled' : ''}>Link corners · use average</button></div>`;
+  }
+  const radiusValue = getNodePropertyValue(state.document, node, 'radius');
+  return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 1, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button></div>`;
+}
 function fillStackControls(node) {
   const fills = fillStackForNode(node);
   const sources = imageFillSources();
@@ -402,8 +631,7 @@ function appearanceSection(node) {
   const canBindPrimaryFill = hasFill && fillStackForNode(node)[0]?.type === 'solid';
   const fillBinding = canBindPrimaryFill ? variableBindingControl(node, 'fill') : '';
   const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}` : '';
-  const radiusValue = getNodePropertyValue(state.document, node, 'radius');
-  const radius = ['rectangle', 'frame', 'section', 'image'].includes(node.type) ? `<div class="property-grid" style="margin-top:8px">${numberField('◒', 'radius', radiusValue || 0)}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}` : '';
+  const radius = cornerRadiusControls(node);
   const fillStyleActions = canBindPrimaryFill
     ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
     : '';
@@ -418,10 +646,10 @@ function appearanceSection(node) {
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
-  const adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...node.adjustments };
+  const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
 function imageRecipeOptions(selectedId = '') {
@@ -450,15 +678,15 @@ function effectNumberField(label, effect, field, step = 1, min = 0, max = 100) {
 function layerEffectsSection(node) {
   const effects = node.effects || [];
   const rows = effects.map(effect => {
-    const name = effect.type === 'drop-shadow' ? 'Drop shadow' : 'Layer blur';
-    const fields = effect.type === 'drop-shadow'
-      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="Shadow color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="Shadow opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 1, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 1, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 1, 0, 100)}</div>`
+    const name = effect.type === 'drop-shadow' ? 'Drop shadow' : effect.type === 'inner-shadow' ? 'Inner shadow' : 'Layer blur';
+    const fields = ['drop-shadow', 'inner-shadow'].includes(effect.type)
+      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 1, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 1, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 1, 0, 100)}</div>`
       : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 1, 0, 100)}</div>`;
     return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button></div>${fields}</div>`;
   }).join('');
   const disabled = node.locked || effects.length >= 8;
   const note = effects.length >= 8 ? 'A layer can have up to 8 effects.' : effects.length ? '' : '<div class="image-properties-note">Add shadows or blur. Effects stay editable and are saved with this design.</div>';
-  const buttons = `<div class="style-actions"><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="drop-shadow"${disabled ? ' disabled' : ''}>＋ Drop shadow</button><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="layer-blur"${disabled ? ' disabled' : ''}>＋ Layer blur</button></div>`;
+  const buttons = `<div class="style-actions"><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="drop-shadow"${disabled ? ' disabled' : ''}>＋ Drop shadow</button><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="inner-shadow"${disabled ? ' disabled' : ''}>＋ Inner shadow</button><button class="add-fill" type="button" data-action="add-layer-effect" data-effect-type="layer-blur"${disabled ? ' disabled' : ''}>＋ Layer blur</button></div>`;
   return section('Effects', `${rows}${note}${buttons}`);
 }
 function exportSettingsSection(node) {
@@ -474,7 +702,7 @@ function exportSettingsSection(node) {
   }).join('');
   const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
   const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, and blend modes. Edited images are embedded as local PNG previews. Vector networks become ordinary SVG paths; their graph editing controls are not retained. Masks, Boolean groups, and unsupported gradient placements are not included.</div>';
+  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Crop and quarter-turn rotation stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${svgExport}`);
 }
 const autoLayoutBindingProperties = [
@@ -562,6 +790,10 @@ function gridPlacementSection(node, parent) {
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="gridCell.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const sizing = (property, value) => `<select class="prop-input select-field" data-prop="${property}" aria-label="${property}"><option value="fixed"${value !== 'fill' ? ' selected' : ''}>Fixed</option><option value="fill"${value === 'fill' ? ' selected' : ''}>Fill cell</option></select>`;
   return section('Grid placement', `<div class="property-grid">${numberField('Row', 'gridCell.row', cell.row, 1, 1, 64, automatic)}${numberField('Column', 'gridCell.column', cell.column, 1, 1, 64, automatic)}${numberField('Row span', 'gridCell.rowSpan', cell.rowSpan, 1, 1, 64)}${numberField('Column span', 'gridCell.columnSpan', cell.columnSpan, 1, 1, 64)}<span class="field-caption">Align X</span>${select('alignX', cell.alignX, [['start','Left'],['center','Center'],['end','Right']])}<span class="field-caption">Align Y</span>${select('alignY', cell.alignY, [['start','Top'],['center','Center'],['end','Bottom']])}<span class="field-caption">Width</span>${sizing('layoutSizingX', node.layoutSizingX)}<span class="field-caption">Height</span>${sizing('layoutSizingY', node.layoutSizingY)}</div>${automatic ? '<div class="image-properties-note">Turn off Auto position on the grid frame to edit row and column.</div>' : ''}`);
+}
+function autoLayoutChildPositioningSection(node) {
+  const absolute = node.layoutPositioning === 'absolute';
+  return section('Position in auto layout', `<label class="field-caption" for="auto-layout-positioning">Placement</label><select id="auto-layout-positioning" class="prop-input select-field" data-prop="layoutPositioning" aria-label="Position in auto layout"><option value="flow"${absolute ? '' : ' selected'}>Auto layout flow</option><option value="absolute"${absolute ? ' selected' : ''}>Absolute</option></select><div class="image-properties-note">Absolute layers stay at their X/Y position and do not affect the frame’s flow. Position and size them in the section above.</div>`);
 }
 function constraintsSection(node) {
   const constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}) };
@@ -687,15 +919,14 @@ function textSection(node) {
   const lineHeight = getNodePropertyValue(state.document, node, 'lineHeight');
   const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing');
   const paragraphSpacing = node.paragraphSpacing || 0;
+  const listSpacing = node.listSpacing || 0;
   const firstLineIndent = node.firstLineIndent || 0;
   const textFit = node.textFit || 'auto-height';
-  const fontFamilies = ['Inter, Arial, sans-serif', 'Arial, sans-serif', 'Georgia, serif', 'monospace', 'system-ui, sans-serif', 'Verdana, sans-serif', 'Trebuchet MS, sans-serif', 'Times New Roman, serif', 'Courier New, monospace'];
-  const familyOptions = fontFamilies.map(family => `<option value="${escapeHtml(family)}"></option>`).join('');
   const weightOptions = [[100, 'Thin'], [200, 'Extra light'], [300, 'Light'], [400, 'Regular'], [500, 'Medium'], [600, 'Semi bold'], [700, 'Bold'], [800, 'Extra bold'], [900, 'Black']]
     .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
     .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><datalist id="font-family-options">${familyOptions}</datalist><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option></select></div><div class="image-properties-note">Use a font installed on this device; type a family name or choose a preset. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 1, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -977,15 +1208,20 @@ function renderInspector() {
     body += section('Star', `<div class="property-grid">${numberField('Points', 'points', node.points ?? 5, 1, 3, 32, node.locked, 'Star point count')}${numberField('Inner radius', 'innerRadius', node.innerRadius ?? 0.48, .01, 0, 1, node.locked, 'Star inner radius ratio')}</div><div class="image-properties-note">Set 3–32 outer points and an inner radius ratio from 0 to 1.</div>`);
   }
   if (node.type === 'path') {
-    const pointCount = node.points?.length || 0;
+    const contours = vectorPathContours(node);
     const selectedPoint = state.selectedVectorPoint?.nodeId === node.id;
-    const selectedAnchorIndex = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.index : -1;
-    const selectedAnchor = Number.isInteger(selectedAnchorIndex) ? node.points?.[selectedAnchorIndex] : null;
+    const selectedContourIndex = selectedPoint ? state.selectedVectorPoint.contourIndex || 0 : 0;
+    const selectedContour = contours[selectedContourIndex] || contours[0];
+    const pointCount = contours.reduce((sum, contour) => sum + contour.points.length, 0);
+    const selectedAnchorIndex = selectedPoint ? state.selectedVectorPoint.index : -1;
+    const selectedAnchor = Number.isInteger(selectedAnchorIndex) ? selectedContour?.points[selectedAnchorIndex] : null;
+    const hasClosedContour = contours.some(contour => contour.closed && contour.points.length >= 2);
     const pathEntry = entries[0];
     const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
-    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${node.closed ? 'checked' : ''}/> Closed path</label><div class="image-properties-note">${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button></div>`);
-    if (node.closed) body += appearanceSection(node);
+    const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
+    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div>`);
+    if (hasClosedContour) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   } else if (node.type === 'network') {
     const selectedVertexId = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.vertexId : null;
@@ -1002,16 +1238,19 @@ function renderInspector() {
   if (node.type === 'frame') body += frameVariableModesSection(node) + frameOverflowSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
-    if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
-    else {
-      const sizing = node.layoutSizingMain || 'hug';
-      const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
-      const cross = node.layoutSizingCross || 'hug';
-      body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
+    body += autoLayoutChildPositioningSection(node);
+    if (node.layoutPositioning !== 'absolute') {
+      if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
+      else {
+        const sizing = node.layoutSizingMain || 'hug';
+        const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
+        const cross = node.layoutSizingCross || 'hug';
+        body += section('Layout sizing', `<div class="property-heading" style="font-weight:400;color:#777">${axis} in auto layout</div><select class="prop-input select-field" data-prop="layoutSizingMain" aria-label="Main axis sizing" style="width:100%"><option value="hug"${sizing === 'hug' ? ' selected' : ''}>Hug contents</option><option value="fill"${sizing === 'fill' ? ' selected' : ''}>Fill container</option></select><div class="property-heading" style="font-weight:400;color:#777;margin-top:8px">Cross axis sizing</div><select class="prop-input select-field" data-prop="layoutSizingCross" aria-label="Cross axis sizing" style="width:100%"><option value="hug"${cross === 'hug' ? ' selected' : ''}>Fixed size</option><option value="fill"${cross === 'fill' ? ' selected' : ''}>Fill container</option></select>`);
+      }
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   body += sizeLimitsSection(node, parent);
-  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button></div>`);
+  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><div class="image-properties-note">Recipes save these export settings with the image. PNG ignores quality; JPEG and WebP use it when you export.</div>`);
   body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
@@ -1167,7 +1406,7 @@ function renderAssetsTab() {
   for (const style of typographyStyles) {
     const row = document.createElement('div'); row.className = 'typography-style-row';
     const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'typography-style-apply'; apply.dataset.typographyStyleId = style.id; apply.title = `Apply ${style.name} to selected text`;
-    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color; mark.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(style.textCase) ? style.textCase : 'none'; mark.style.textDecoration = ['underline', 'line-through'].includes(style.textDecoration) ? style.textDecoration : 'none';
+    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color; mark.style.textAlign = style.align; mark.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(style.textCase) ? style.textCase : 'none'; mark.style.textDecoration = ['underline', 'line-through'].includes(style.textDecoration) ? style.textDecoration : 'none';
     const copy = document.createElement('span'); copy.className = 'typography-style-copy';
     const name = document.createElement('span'); name.className = 'typography-style-name'; name.textContent = style.name;
     const detail = document.createElement('small'); detail.textContent = `${style.fontFamily} · ${style.fontSize}px · ${style.fontWeight}`;
@@ -1177,6 +1416,7 @@ function renderAssetsTab() {
     const remove = document.createElement('button'); remove.type = 'button'; remove.dataset.textStyleAction = 'delete'; remove.dataset.textStyleId = style.id; remove.textContent = '×'; remove.title = `Delete ${style.name}`; remove.setAttribute('aria-label', `Delete ${style.name}`);
     actions.append(update, remove); row.append(apply, actions); textStyles.append(row);
   }
+  renderLocalFontAssets();
   for (const node of imageNodes()) {
     const asset = state.assets.get(node.assetId);
     const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
@@ -1353,11 +1593,108 @@ function cancelPenPath() {
   renderer.invalidate(); updateSelectionStatus();
 }
 
+const MAX_PENCIL_SAMPLES = 8192;
+function startPencilStroke(world, event) {
+  state.pencilDraft = { pointerId: event.pointerId, points: [{ x: world.x, y: world.y }] };
+  state.interaction = { kind: 'pencil-stroke', pointerId: event.pointerId };
+  $('#selection-status').textContent = 'Pencil · draw a freehand vector path';
+  renderer.invalidate();
+}
+
+function appendPencilSample(draft, point) {
+  if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+  const points = draft.points;
+  const minimumDistance = 1.25 / Math.max(.08, state.zoom);
+  if (points.length && checkPointDistance(points.at(-1), point) < minimumDistance) return;
+  if (points.length >= MAX_PENCIL_SAMPLES) {
+    // Keep the stroke bounded while retaining its first and latest samples.
+    draft.points = points.filter((_sample, index) => index % 2 === 0);
+    if (draft.points.at(-1) !== points.at(-1)) draft.points.push(points.at(-1));
+  }
+  draft.points.push({ x: point.x, y: point.y });
+}
+
+function appendPencilPointerEvent(event, draft) {
+  let coalesced = [];
+  try { coalesced = event.getCoalescedEvents?.() || []; } catch { /* Use the dispatched event when coalesced samples are unavailable. */ }
+  for (const sample of coalesced) appendPencilSample(draft, screenToWorld(sample, canvas, state));
+  appendPencilSample(draft, screenToWorld(event, canvas, state));
+}
+
+function cancelPencilStroke({ retainPointer = false } = {}) {
+  const pointerId = state.pencilDraft?.pointerId;
+  state.pencilDraft = null;
+  if (!retainPointer && pointerId != null) state.pointerMap.delete(pointerId);
+  if (state.interaction?.kind === 'pencil-stroke') state.interaction = null;
+  renderer.invalidate();
+  updateSelectionStatus();
+}
+
+function finishPencilStroke(event) {
+  const draft = state.pencilDraft;
+  if (!draft) return false;
+  state.pencilDraft = null;
+  state.interaction = null;
+  if (event.type === 'pointercancel') {
+    renderer.invalidate();
+    updateSelectionStatus();
+    return false;
+  }
+
+  appendPencilPointerEvent(event, draft);
+  renderer.invalidate();
+  if (draft.points.length < 2) {
+    updateSelectionStatus();
+    showToast('Draw a little longer to create a Pencil path.');
+    return false;
+  }
+
+  try {
+    const tolerance = 1.25 / Math.max(.08, state.zoom);
+    const pageGeometry = vectorNetworkGeometryFromFreehandSamples(draft.points, { tolerance, maxAnchors: 1024 });
+    if (!pageGeometry) {
+      updateSelectionStatus();
+      showToast('Draw a little longer to create a Pencil path.');
+      return false;
+    }
+    const center = { x: pageGeometry.x + pageGeometry.width / 2, y: pageGeometry.y + pageGeometry.height / 2 };
+    const parent = deepestContainerAtPagePoint(activePage()?.children || [], center, state.document);
+    const localSamples = parentLocalPenAnchors(draft.points, parent);
+    const geometry = vectorNetworkGeometryFromFreehandSamples(localSamples, { tolerance, maxAnchors: 1024 });
+    if (!geometry) {
+      updateSelectionStatus();
+      showToast('Draw a little longer to create a Pencil path.');
+      return false;
+    }
+    const node = createNode('network', geometry);
+    node.name = 'Pencil path';
+    if (parent?.node.autoLayout) node.layoutPositioning = 'absolute';
+    checkpoint('Draw freehand vector path');
+    addNode(state.document, node, { parentId: parent?.node.id ?? null });
+    if (parent?.node.autoLayout) applyAutoLayout(parent.node);
+    setSelection([node.id]);
+    queueSave();
+    renderer.invalidate();
+    showToast('Pencil path created · select a point to refine the curve.');
+    return true;
+  } catch (error) {
+    updateSelectionStatus();
+    showToast(error instanceof RangeError
+      ? 'This Pencil stroke is too detailed to preserve. Draw it more simply or at a lower zoom.'
+      : 'The Pencil stroke could not be converted to a vector path.');
+    return false;
+  }
+}
+
 function rotatePoint(point, center, degrees) {
   if (!degrees) return point;
   const angle = degrees * Math.PI / 180;
   const dx = point.x - center.x; const dy = point.y - center.y;
   return { x: center.x + dx * Math.cos(angle) - dy * Math.sin(angle), y: center.y + dx * Math.sin(angle) + dy * Math.cos(angle) };
+}
+
+function hasClosedPathContour(node) {
+  return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
 }
 
 function vectorPathControlAt(world, pointerType = 'mouse') {
@@ -1390,21 +1727,23 @@ function vectorPathControlAt(world, pointerType = 'mouse') {
     }
     return best;
   }
-  for (let index = 0; index < (node.points || []).length; index += 1) {
-    for (const part of ['in', 'out', 'anchor']) {
-      if (part !== 'anchor') {
-        const handle = node.points[index][part];
-        if (!handle || (Number(handle.x) === 0 && Number(handle.y) === 0)) continue;
+  for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
+    for (let index = 0; index < contour.points.length; index += 1) {
+      for (const part of ['in', 'out', 'anchor']) {
+        if (part !== 'anchor') {
+          const handle = contour.points[index][part];
+          if (!handle || (Number(handle.x) === 0 && Number(handle.y) === 0)) continue;
+        }
+        const point = toPage(vectorNodePoint(geometry, index, part, origin, contourIndex));
+        const distance = checkPointDistance(world, point);
+        if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, ancestors, contourIndex, index, part, distance };
       }
-      const point = toPage(vectorNodePoint(geometry, index, part, origin));
-      const distance = checkPointDistance(world, point);
-      if (distance <= tolerance && (!best || distance < best.distance)) best = { node, origin, ancestors, index, part, distance };
     }
   }
   return best;
 }
 
-function insertPathPoint(node, segmentIndex, t = .5, origin = nodeTransformContext(node)?.origin || { x: node.x, y: node.y }) {
+function insertPathPoint(node, segmentIndex, t = .5, origin = nodeTransformContext(node)?.origin || { x: node.x, y: node.y }, contourIndex = 0) {
   if (!node || !['path', 'network'].includes(node.type) || node.locked) return false;
   if (node.type === 'network') {
     const vertexId = insertVectorNetworkPoint(node, segmentIndex, t, origin);
@@ -1412,13 +1751,44 @@ function insertPathPoint(node, segmentIndex, t = .5, origin = nodeTransformConte
     state.selectedVectorPoint = { nodeId: node.id, vertexId };
     recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces']);
   } else {
-    const pointIndex = insertVectorNodePoint(node, segmentIndex, t, origin);
+    const pointIndex = insertVectorNodePoint(node, segmentIndex, t, origin, contourIndex);
     if (pointIndex < 0) return false;
-    state.selectedVectorPoint = { nodeId: node.id, index: pointIndex };
-    recordNodeComponentOverrides(node, ['points']);
+    state.selectedVectorPoint = { nodeId: node.id, contourIndex, index: pointIndex };
+    recordNodeComponentOverrides(node, contourIndex === 0 ? ['points'] : ['subpaths']);
   }
   renderInspector(); renderer.invalidate(); queueSave();
   showToast('Vector point inserted. The Bézier curve keeps its original shape.');
+  return true;
+}
+
+function addPathContour(nodeId = selectedNodes()[0]?.id) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : null;
+  if (node?.type !== 'path' || node.locked || vectorPathContours(node).length >= 10_000) return false;
+  checkpoint('Add vector contour');
+  node.subpaths ||= [];
+  node.subpaths.push({ closed: false, points: [
+    { x: .4, y: .5, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+    { x: .6, y: .5, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }
+  ] });
+  const contourIndex = node.subpaths.length;
+  state.selectedVectorPoint = { nodeId: node.id, contourIndex, index: 0 };
+  recordNodeComponentOverrides(node, ['subpaths']);
+  renderInspector(); renderer.invalidate(); queueSave();
+  showToast('Contour added. Drag its anchors and close it when ready.');
+  return true;
+}
+
+function removeSelectedPathContour(nodeId = selectedNodes()[0]?.id) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : null;
+  const selected = state.selectedVectorPoint;
+  const contourIndex = selected?.nodeId === node?.id ? selected.contourIndex || 0 : 0;
+  if (node?.type !== 'path' || node.locked || contourIndex < 1 || !Array.isArray(node.subpaths)) return false;
+  checkpoint('Remove vector contour');
+  node.subpaths.splice(contourIndex - 1, 1);
+  state.selectedVectorPoint = null;
+  recordNodeComponentOverrides(node, ['subpaths']);
+  renderInspector(); renderer.invalidate(); queueSave();
+  showToast('Contour removed.');
   return true;
 }
 
@@ -1430,7 +1800,7 @@ function insertPathPointOnLongestSegment(nodeId = selectedNodes()[0]?.id) {
   const segment = node.type === 'network' ? longestVectorNetworkEdge(node, context.origin) : longestVectorSegment(node, context.origin);
   if (!segment) { showToast('This vector shape has no segment to split.'); return; }
   checkpoint('Insert vector point');
-  insertPathPoint(node, node.type === 'network' ? segment.edgeId : segment.segmentIndex, segment.t, context.origin);
+  insertPathPoint(node, node.type === 'network' ? segment.edgeId : segment.segmentIndex, segment.t, context.origin, segment.contourIndex || 0);
 }
 
 function insertPathPointAtWorld(world) {
@@ -1451,14 +1821,16 @@ function insertPathPointAtWorld(world) {
     : closestVectorSegment(context.geometry, localWorld, context.origin);
   if (!closest || closest.distance > 12 / Math.max(.08, state.zoom)) return false;
   checkpoint('Insert vector point');
-  return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, context.origin);
+  return insertPathPoint(node, node.type === 'network' ? closest.edgeId : closest.segmentIndex, closest.t, context.origin, closest.contourIndex || 0);
 }
 
 function updateVectorAnchorMode(input) {
   const selected = state.selectedVectorPoint;
   const entry = selected?.nodeId ? findNode(state.document, selected.nodeId) : null;
   const node = entry?.node;
-  const pathPoint = node?.type === 'path' && Number.isInteger(selected.index) ? node.points?.[selected.index] : null;
+  const contourIndex = selected?.contourIndex || 0;
+  const pathContour = node?.type === 'path' ? vectorPathContours(node)[contourIndex] : null;
+  const pathPoint = pathContour && Number.isInteger(selected.index) ? pathContour.points?.[selected.index] : null;
   const networkVertex = node?.type === 'network' && selected.vertexId ? node.vertices?.find(vertex => vertex.id === selected.vertexId) : null;
   if (!pathPoint && !networkVertex) { renderInspector(); return false; }
   if (node.locked || entry.parents.some(parent => parent.locked)) {
@@ -1475,13 +1847,13 @@ function updateVectorAnchorMode(input) {
   checkpoint('Change vector anchor mode');
   const changed = node.type === 'network'
     ? setVectorNetworkVertexMode(node, selected.vertexId, input.value, { origin: nodeTransformContext(node)?.origin })
-    : setVectorNodePointMode(node, selected.index, input.value);
+    : setVectorNodePointMode(node, selected.index, input.value, { contourIndex });
   if (!changed) {
     renderInspector();
     showToast('That anchor mode could not be applied.');
     return false;
   }
-  recordNodeComponentOverrides(node, node.type === 'network' ? ['vertices', 'edges'] : ['points']);
+  recordNodeComponentOverrides(node, node.type === 'network' ? ['vertices', 'edges'] : contourIndex === 0 ? ['points'] : ['subpaths']);
   renderInspector(); queueSave(); renderer.invalidate();
   return true;
 }
@@ -1489,6 +1861,7 @@ function updateVectorAnchorMode(input) {
 function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   const index = state.selectedVectorPoint?.index;
+  const contourIndex = state.selectedVectorPoint?.contourIndex || 0;
   if (!node || state.selectedVectorPoint?.nodeId !== node.id) return false;
   checkpoint('Delete vector point');
   if (node.type === 'network') {
@@ -1496,10 +1869,11 @@ function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
     state.selectedVectorPoint = null;
     recordNodeComponentOverrides(node, ['vertices', 'edges', 'faces']);
   } else if (node.type === 'path' && Number.isInteger(index)) {
-    if (node.points.length <= 2) { showToast('A vector path must keep at least two points.'); return false; }
-    removeVectorNodePoint(node, index);
-    state.selectedVectorPoint.index = Math.min(index, node.points.length - 1);
-    recordNodeComponentOverrides(node, ['points']);
+    const contour = vectorPathContours(node)[contourIndex];
+    if (!contour || contour.points.length <= 2) { showToast('A vector contour must keep at least two points.'); return false; }
+    removeVectorNodePoint(node, index, contourIndex);
+    state.selectedVectorPoint.index = Math.min(index, contour.points.length - 1);
+    recordNodeComponentOverrides(node, contourIndex === 0 ? ['points'] : ['subpaths']);
   } else return false;
   renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
   showToast('Vector point deleted.');
@@ -1613,6 +1987,7 @@ function onCanvasPointerDown(event) {
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   canvas.setPointerCapture?.(event.pointerId);
   if (state.pointerMap.size === 2 && [...state.pointerMap.values()].every(point => point.pointerType !== 'mouse')) {
+    if (state.interaction?.kind === 'pencil-stroke') cancelPencilStroke({ retainPointer: true });
     const points = [...state.pointerMap.values()];
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
@@ -1655,6 +2030,7 @@ function onCanvasPointerDown(event) {
     event.preventDefault(); return;
   }
   if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
+  if (state.tool === 'pencil') { startPencilStroke(world, event); event.preventDefault(); return; }
   if (state.tool === 'select') {
     const vectorControl = vectorPathControlAt(world, event.pointerType);
     if (vectorControl) {
@@ -1663,7 +2039,7 @@ function onCanvasPointerDown(event) {
         checkpoint('Edit vector network');
         state.interaction = { kind: 'network-control', ...vectorControl };
       } else {
-        state.selectedVectorPoint = { nodeId: vectorControl.node.id, index: vectorControl.index };
+        state.selectedVectorPoint = { nodeId: vectorControl.node.id, contourIndex: vectorControl.contourIndex || 0, index: vectorControl.index };
         checkpoint('Edit vector path');
         state.interaction = { kind: 'vector-control', ...vectorControl };
       }
@@ -1678,7 +2054,7 @@ function onCanvasPointerDown(event) {
       } else if (handle.kind === 'group-rotate') {
         checkpoint('Rotate layers');
         const startAngle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
-        state.interaction = { ...handle, kind: 'group-rotate', startAngle, delta: 0 };
+        state.interaction = { ...handle, kind: 'group-rotate', lastAngle: startAngle, delta: 0 };
       } else if (handle.kind === 'group-resize') {
         checkpoint('Resize layers');
         const frameStates = new Map(handle.entries
@@ -1744,6 +2120,13 @@ function onCanvasPointerMove(event) {
     state.panY = interaction.panY + event.clientY - interaction.clientY;
     renderer.invalidate(); return;
   }
+  if (interaction.kind === 'pencil-stroke') {
+    if (interaction.pointerId === event.pointerId && state.pencilDraft?.pointerId === event.pointerId) {
+      appendPencilPointerEvent(event, state.pencilDraft);
+      renderer.invalidate();
+    }
+    return;
+  }
   const world = screenToWorld(event, canvas, state);
   if (interaction.kind === 'pen-anchor') {
     const point = state.penDraft?.anchors[interaction.pointIndex];
@@ -1758,7 +2141,8 @@ function onCanvasPointerMove(event) {
     const local = pageToNodeLocal(geometry, world, interaction.ancestors);
     setVectorNodePoint(interaction.node, interaction.index, interaction.part, local, {
       origin: interaction.origin,
-      symmetric: interaction.part !== 'anchor' && !event.altKey
+      symmetric: interaction.part !== 'anchor' && !event.altKey,
+      contourIndex: interaction.contourIndex || 0
     });
     renderer.invalidate(); return;
   }
@@ -1793,10 +2177,8 @@ function onCanvasPointerMove(event) {
   }
   if (interaction.kind === 'group-rotate') {
     const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
-    let delta = angle - interaction.startAngle;
-    if (delta > Math.PI) delta -= Math.PI * 2;
-    else if (delta < -Math.PI) delta += Math.PI * 2;
-    interaction.delta = delta * 180 / Math.PI;
+    interaction.delta += shortestAngleDelta(interaction.lastAngle, angle) * 180 / Math.PI;
+    interaction.lastAngle = angle;
     const rotationDelta = event.shiftKey ? Math.round(interaction.delta / 15) * 15 : interaction.delta;
     for (const patch of rotateSelection(interaction.entries, interaction.center, rotationDelta)) {
       const node = findNode(state.document, patch.id)?.node;
@@ -1827,9 +2209,7 @@ function onCanvasPointerMove(event) {
   }
   if (interaction.kind === 'rotate') {
     const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
-    let delta = angle - interaction.lastAngle;
-    if (delta > Math.PI) delta -= Math.PI * 2;
-    else if (delta < -Math.PI) delta += Math.PI * 2;
+    const delta = shortestAngleDelta(interaction.lastAngle, angle);
     interaction.rotationDelta += delta * 180 / Math.PI;
     interaction.lastAngle = angle;
     const nextRotation = interaction.rotation + interaction.rotationDelta;
@@ -1883,6 +2263,10 @@ function onCanvasPointerUp(event) {
   state.pointerMap.delete(event.pointerId);
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'pencil-stroke') {
+    if (interaction.pointerId === event.pointerId) finishPencilStroke(event);
+    return;
+  }
   if (interaction.kind === 'pinch' && state.pointerMap.size < 2) { state.interaction = null; return; }
   if (interaction.kind === 'pan') { canvas.classList.remove('is-panning'); state.interaction = null; return; }
   if (interaction.kind === 'pen-anchor') {
@@ -1891,7 +2275,7 @@ function onCanvasPointerUp(event) {
     state.interaction = null; renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-control') {
-    recordNodeComponentOverrides(interaction.node, ['points']);
+    recordNodeComponentOverrides(interaction.node, (interaction.contourIndex || 0) === 0 ? ['points'] : ['subpaths']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'network-control') {
@@ -1975,6 +2359,8 @@ function resizeTextNode(node) {
     letterSpacing: getNodePropertyValue(state.document, node, 'letterSpacing'),
     paragraphSpacing: node.paragraphSpacing,
     firstLineIndent: node.firstLineIndent,
+    listSpacing: node.listSpacing,
+    paragraphStyles: node.paragraphStyles,
     text: getNodePropertyValue(state.document, node, 'text')
   });
   if (!node.variableBindings?.width) node.width = size.width;
@@ -2083,6 +2469,7 @@ function textRunStyleForElement(element, inherited) {
 function readTextEditorContent(root) {
   const runs = [];
   let text = '';
+  const paragraphStyles = [];
   const append = (value, style) => {
     const next = String(value).replace(/\r\n?/g, '\n');
     if (!next) return;
@@ -2098,17 +2485,58 @@ function readTextEditorContent(root) {
     for (const child of node.childNodes) visit(child, style, false);
   };
   const children = [...root.childNodes];
-  if (children.length && children.every(child => child.nodeType === Node.ELEMENT_NODE && child.dataset.editorParagraph === 'true')) {
+  const paragraphBlocks = children.length && children.every(child => child.nodeType === Node.ELEMENT_NODE
+    && (child.dataset.editorParagraph === 'true' || textBlockTags.has(child.tagName)));
+  if (paragraphBlocks) {
     children.forEach((paragraph, index) => {
       for (const child of paragraph.childNodes) visit(child, {}, false);
+      const listStyle = ['bulleted', 'numbered'].includes(paragraph.dataset.editorListStyle) ? paragraph.dataset.editorListStyle : 'none';
+      const listLevel = Number(paragraph.dataset.editorListLevel);
+      const listStart = Number(paragraph.dataset.editorListStart);
+      paragraphStyles.push({
+        listStyle,
+        listLevel: listStyle !== 'none' && Number.isInteger(listLevel) ? listLevel : 0,
+        ...(listStyle === 'numbered' && Number.isInteger(listStart) ? { listStart } : {})
+      });
       if (index < children.length - 1) append('\n', {});
     });
   } else {
     for (const child of children) visit(child, {}, false);
+    paragraphStyles.push(...normalizeTextParagraphStyles(text));
   }
-  return { text, runs: normalizeTextRuns(runs) };
+  return { text, runs: normalizeTextRuns(runs), paragraphStyles: normalizeTextParagraphStyles(text, paragraphStyles) };
 }
-function renderTextEditorRuns(editor, runs) {
+function editorListMarkerLabels(paragraphStyles) {
+  const counters = new Map();
+  const activeStyles = new Map();
+  const alpha = value => {
+    let number = value; let label = '';
+    while (number > 0 && label.length < 12) { number -= 1; label = String.fromCharCode(97 + number % 26) + label; number = Math.floor(number / 26); }
+    return label || 'a';
+  };
+  const roman = value => {
+    if (value > 3999) return String(value);
+    let number = value; let label = '';
+    for (const [amount, symbol] of [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]) {
+      while (number >= amount) { label += symbol; number -= amount; }
+    }
+    return label;
+  };
+  return paragraphStyles.map(style => {
+    if (style.listStyle === 'none') { counters.clear(); activeStyles.clear(); return ''; }
+    const level = style.listLevel || 0;
+    for (const current of [...activeStyles.keys()]) if (current > level) activeStyles.delete(current);
+    for (const current of [...counters.keys()]) if (current > level) counters.delete(current);
+    if (activeStyles.get(level) !== style.listStyle) counters.delete(level);
+    activeStyles.set(level, style.listStyle);
+    if (style.listStyle === 'bulleted') return '•';
+    const count = style.listStart ?? (counters.get(level) || 0) + 1;
+    counters.set(level, count);
+    const format = level % 3;
+    return `${format === 1 ? alpha(count) : format === 2 ? roman(count) : count}.`;
+  });
+}
+function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
   editor.replaceChildren();
   const paragraphs = [[]];
   for (const run of runs) {
@@ -2118,11 +2546,22 @@ function renderTextEditorRuns(editor, runs) {
       if (index < pieces.length - 1) paragraphs.push([]);
     });
   }
+  const styles = normalizeTextParagraphStyles(paragraphs.map(items => items.map(run => run.text).join('')).join('\n'), paragraphStyles);
+  const markers = editorListMarkerLabels(styles);
   for (const [index, paragraphRuns] of paragraphs.entries()) {
     const paragraph = document.createElement('div');
     paragraph.dataset.editorParagraph = 'true';
     paragraph.className = 'text-editor-paragraph';
     if (index > 0) paragraph.classList.add('text-editor-paragraph-following');
+    const paragraphStyle = styles[index];
+    if (paragraphStyle.listStyle !== 'none') {
+      paragraph.dataset.editorListStyle = paragraphStyle.listStyle;
+      paragraph.dataset.editorListLevel = String(paragraphStyle.listLevel);
+      paragraph.dataset.editorListMarker = markers[index];
+      paragraph.style.paddingInlineStart = `${32 + paragraphStyle.listLevel * 24}px`;
+      paragraph.style.setProperty('--editor-list-marker-left', `${paragraphStyle.listLevel * 24}px`);
+      if (paragraphStyle.listStart != null) paragraph.dataset.editorListStart = String(paragraphStyle.listStart);
+    }
     for (const run of paragraphRuns) {
       const span = document.createElement('span');
       if (textRunStyleKeys.some(property => run[property] != null)) span.dataset.textRun = 'true';
@@ -2241,6 +2680,53 @@ function rangeUsesTextStyle(runs, start, end, property, node, predicate) {
   const values = selectedTextRunValues(runs, start, end, property, node);
   return values.length > 0 && values.every(predicate);
 }
+function textParagraphIndexesForRange(text, range) {
+  const value = String(text ?? '');
+  const starts = [0];
+  for (let index = 0; index < value.length; index += 1) if (value[index] === '\n') starts.push(index + 1);
+  const start = Math.max(0, Math.min(value.length, Number(range?.start) || 0));
+  const end = Math.max(start, Math.min(value.length, Number(range?.end) || 0));
+  if (start === end) {
+    let paragraph = 0;
+    while (paragraph + 1 < starts.length && starts[paragraph + 1] <= start) paragraph += 1;
+    return [paragraph];
+  }
+  const selected = [];
+  for (let index = 0; index < starts.length; index += 1) {
+    const paragraphEnd = index + 1 < starts.length ? starts[index + 1] - 1 : value.length;
+    if (start < paragraphEnd && end > starts[index]) selected.push(index);
+  }
+  if (selected.length) return selected;
+  let paragraph = 0;
+  while (paragraph + 1 < starts.length && starts[paragraph + 1] <= start) paragraph += 1;
+  return [paragraph];
+}
+function formatSelectedParagraphs(action) {
+  const editor = $('#text-editor-overlay');
+  const current = readTextEditorContent(editor);
+  const range = rememberTextSelection();
+  if (!range) return;
+  const styles = normalizeTextParagraphStyles(current.text, current.paragraphStyles);
+  const indexes = textParagraphIndexesForRange(current.text, range);
+  if (action === 'bulleted' || action === 'numbered') {
+    const alreadyApplied = indexes.every(index => styles[index]?.listStyle === action);
+    for (const index of indexes) styles[index] = alreadyApplied
+      ? { listStyle: 'none', listLevel: 0 }
+      : { listStyle: action, listLevel: styles[index]?.listLevel || 0 };
+  } else {
+    for (const index of indexes) {
+      const style = styles[index];
+      if (style.listStyle === 'none') continue;
+      const level = action === 'indent' ? Math.min(4, style.listLevel + 1) : Math.max(0, style.listLevel - 1);
+      styles[index] = { ...style, listLevel: level };
+    }
+  }
+  renderTextEditorRuns(editor, current.runs, styles);
+  state.textSelection = range;
+  setTextEditorSelection(editor, range.start, range.end);
+  editor.focus({ preventScroll: true });
+  updateTextFormatToolbar();
+}
 function positionTextFormatToolbar() {
   const editor = $('#text-editor-overlay'); const toolbar = $('#text-format-toolbar'); const canvasScroll = $('#canvas-scroll');
   if (!state.textNodeId || editor.hidden || toolbar.hidden) return;
@@ -2265,6 +2751,22 @@ function updateTextFormatToolbar() {
   bold.disabled = !selected; italic.disabled = !selected;
   bold.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontWeight', node, value => Number(value) >= 600)));
   italic.setAttribute('aria-pressed', String(selected && rangeUsesTextStyle(current.runs, range.start, range.end, 'fontStyle', node, value => value === 'italic')));
+  const paragraphIndexes = textParagraphIndexesForRange(current.text, range || { start: 0, end: 0 });
+  const paragraphStyles = normalizeTextParagraphStyles(current.text, current.paragraphStyles);
+  const listButtons = [...toolbar.querySelectorAll('[data-paragraph-format]')];
+  const canIndent = paragraphIndexes.some(index => paragraphStyles[index]?.listStyle !== 'none' && paragraphStyles[index].listLevel < 4);
+  const canOutdent = paragraphIndexes.some(index => paragraphStyles[index]?.listStyle !== 'none' && paragraphStyles[index].listLevel > 0);
+  for (const button of listButtons) {
+    const action = button.dataset.paragraphFormat;
+    if (action === 'bulleted' || action === 'numbered') {
+      button.setAttribute('aria-pressed', String(paragraphIndexes.every(index => paragraphStyles[index]?.listStyle === action)));
+    } else {
+      button.setAttribute('aria-pressed', 'false');
+      button.disabled = action === 'indent' ? !canIndent : !canOutdent;
+      continue;
+    }
+    button.disabled = false;
+  }
   const size = $('#text-format-size'); const lineHeight = $('#text-format-line-height'); const color = $('#text-format-color');
   const family = $('#text-format-family'); const weight = $('#text-format-weight');
   const spacing = $('#text-format-spacing'); const decoration = $('#text-format-decoration');
@@ -2316,7 +2818,7 @@ function applyTextFormat(property, value) {
   if (!node || !range || range.end <= range.start || range.end > current.text.length) return;
   const nextRuns = transformTextRunsInRange(current.runs, range.start, range.end, property, value);
   if (nextRuns.length > 10_000) { showToast('This text has reached the 10,000 style-run limit.'); return; }
-  renderTextEditorRuns(editor, nextRuns);
+  renderTextEditorRuns(editor, nextRuns, current.paragraphStyles);
   state.textSelection = range;
   setTextEditorSelection(editor, range.start, range.end);
   editor.focus({ preventScroll: true });
@@ -2360,6 +2862,7 @@ function editTextNode(nodeId) {
   editor.style.width = entry.node.textFit === 'auto-width' ? 'max-content' : `${Math.max(64, textGeometry.width * state.zoom)}px`;
   editor.style.minHeight = `${Math.max(28, textGeometry.height * state.zoom)}px`;
   editor.style.whiteSpace = entry.node.textFit === 'auto-width' ? 'pre' : 'pre-wrap';
+  editor.style.textAlign = ['left', 'center', 'right', 'justify'].includes(entry.node.align) ? entry.node.align : 'left';
   editor.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(entry.node.textCase) ? entry.node.textCase : 'none';
   editor.style.textDecoration = ['underline', 'line-through'].includes(entry.node.textDecoration) ? entry.node.textDecoration : 'none';
   editor.style.fontFamily = entry.node.fontFamily;
@@ -2369,11 +2872,12 @@ function editTextNode(nodeId) {
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
   editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(entry.node.firstLineIndent) || 0) * state.zoom}px`);
   editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(entry.node.paragraphSpacing) || 0) * state.zoom}px`);
+  editor.style.setProperty('--text-list-spacing', `${Math.max(0, Number(entry.node.listSpacing) || 0) * state.zoom}px`);
   editor.style.color = getNodeColor(state.document, entry.node, 'text');
   const text = getNodePropertyValue(state.document, entry.node, 'text');
   const existingRuns = Array.isArray(entry.node.textRuns) && entry.node.textRuns.map(run => run.text).join('') === text
     ? entry.node.textRuns : [{ text }];
-  renderTextEditorRuns(editor, existingRuns);
+  renderTextEditorRuns(editor, existingRuns, entry.node.paragraphStyles || []);
   $('#text-format-toolbar').hidden = false;
   $('#canvas-scroll').classList.add('is-text-editing');
   editor.hidden = false; editor.focus();
@@ -2390,7 +2894,7 @@ function absolutePosition(nodeId) {
   return { x, y };
 }
 
-function commitTextEdit() {
+function commitTextEdit({ restoreFocus = false } = {}) {
   const editor = $('#text-editor-overlay');
   if (!state.textNodeId) return;
   const node = findNode(state.document, state.textNodeId)?.node;
@@ -2398,26 +2902,34 @@ function commitTextEdit() {
     const oldWidth = node.width; const oldHeight = node.height;
     const oldText = node.text;
     const oldRuns = node.textRuns ? JSON.stringify(node.textRuns) : null;
+    const oldParagraphStyles = node.paragraphStyles ? JSON.stringify(node.paragraphStyles) : null;
     const content = readTextEditorContent(editor);
     let text = content.text;
     if (text.endsWith('\n')) text = text.slice(0, -1);
     const normalizedRuns = trimTextRuns(content.runs, text.length);
+    const normalizedParagraphStyles = normalizeTextParagraphStyles(text, content.paragraphStyles);
     const richRuns = normalizedRuns.some(run => textRunStyleKeys.some(property => run[property] != null)) ? normalizedRuns : null;
     const nextTextFit = node.textFit || 'auto-height';
     const nextRuns = richRuns ? JSON.stringify(richRuns) : null;
+    const normalizedListStyles = normalizedParagraphStyles.some(style => style.listStyle !== 'none') ? normalizedParagraphStyles : null;
+    const nextParagraphStyles = normalizedListStyles ? JSON.stringify(normalizedListStyles) : null;
     const textChanged = oldText !== text || (node.variableBindings?.text && getNodePropertyValue(state.document, node, 'text') !== text);
     const runsChanged = oldRuns !== nextRuns;
-    const changed = textChanged || runsChanged || node.textFit !== nextTextFit;
+    const paragraphStylesChanged = oldParagraphStyles !== nextParagraphStyles;
+    const changed = textChanged || runsChanged || paragraphStylesChanged || node.textFit !== nextTextFit;
     if (changed) checkpoint('Edit text');
     setNodePropertyValue(node, 'text', text);
     node.text = text;
     if (richRuns) node.textRuns = normalizedRuns;
     else delete node.textRuns;
+    if (normalizedListStyles) node.paragraphStyles = normalizedListStyles;
+    else delete node.paragraphStyles;
     node.textFit ||= 'auto-height';
     resizeTextNode(node);
     const instanceRoot = componentInstanceRoot(node.id);
     if (instanceRoot && textChanged) recordComponentOverride(instanceRoot, node, node.variableBindings?.text ? 'variableBindings' : 'text');
     if (instanceRoot && runsChanged) recordComponentOverride(instanceRoot, node, 'textRuns');
+    if (instanceRoot && paragraphStylesChanged) recordComponentOverride(instanceRoot, node, 'paragraphStyles');
     if (instanceRoot && node.width !== oldWidth) recordComponentOverride(instanceRoot, node, 'width');
     if (instanceRoot && node.height !== oldHeight) recordComponentOverride(instanceRoot, node, 'height');
     const parent = findNode(state.document, node.id)?.parent;
@@ -2425,6 +2937,13 @@ function commitTextEdit() {
   }
   editor.hidden = true; $('#text-format-toolbar').hidden = true; $('#canvas-scroll').classList.remove('is-text-editing'); state.textNodeId = null; state.textSelection = null;
   renderInspector(); renderLayers(); queueSave(); renderer.invalidate();
+  if (restoreFocus) {
+    // On phones the inspector is inert while the canvas editor is open. Reopen
+    // the panel before returning focus to its text action, or focus() silently
+    // fails and leaves keyboard users at the document body.
+    if (innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) toggleMobilePanel('right');
+    $('#inspector-content [data-action="edit-text"]')?.focus({ preventScroll: true });
+  }
 }
 
 function initRichTextEditorEvents() {
@@ -2439,18 +2958,41 @@ function initRichTextEditorEvents() {
     commitTextEdit();
   });
   editor.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); commitTextEdit(); }
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); commitTextEdit(); }
+    if (event.key === 'Escape') { event.preventDefault(); commitTextEdit({ restoreFocus: true }); }
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); commitTextEdit({ restoreFocus: true }); }
   });
   toolbar.addEventListener('pointerdown', event => {
     rememberTextSelection();
     if (event.target.closest('button')) event.preventDefault();
   });
+  toolbar.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+      || !event.target.closest('.text-format-button, .text-format-done')) return;
+    const controls = [...toolbar.querySelectorAll('.text-format-button:not(:disabled), .text-format-done:not(:disabled)')];
+    const current = controls.indexOf(document.activeElement);
+    if (current < 0) return;
+    const currentRect = controls[current].getBoundingClientRect();
+    const currentCenter = { x: currentRect.left + currentRect.width / 2, y: currentRect.top + currentRect.height / 2 };
+    const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown';
+    const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+    const candidates = controls.map((control, index) => {
+      const rect = control.getBoundingClientRect();
+      const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      const primary = vertical ? center.y - currentCenter.y : center.x - currentCenter.x;
+      if (index === current || Math.sign(primary) !== direction) return null;
+      const cross = vertical ? center.x - currentCenter.x : center.y - currentCenter.y;
+      return { control, score: Math.abs(primary) + Math.abs(cross) * 2 };
+    }).filter(Boolean).sort((left, right) => left.score - right.score);
+    const target = candidates[0]?.control || controls[(current + direction + controls.length) % controls.length];
+    target.focus({ preventScroll: true });
+    event.preventDefault();
+  });
   toolbar.addEventListener('click', event => {
     const button = event.target.closest('[data-text-format]');
     if (button?.dataset.textFormat === 'bold') toggleTextFormat('fontWeight');
     else if (button?.dataset.textFormat === 'italic') toggleTextFormat('fontStyle');
-    else if (event.target.closest('[data-text-format-done]')) commitTextEdit();
+    else if (event.target.closest('[data-paragraph-format]')) formatSelectedParagraphs(event.target.closest('[data-paragraph-format]').dataset.paragraphFormat);
+    else if (event.target.closest('[data-text-format-done]')) commitTextEdit({ restoreFocus: true });
   });
   toolbar.addEventListener('change', event => {
     if (event.target.id === 'text-format-family') {
@@ -2614,10 +3156,12 @@ function updateImageFillInput(input) {
   } else if (field === 'fit') imageFill.fit = input.value;
   else if (field.startsWith('adjustments.')) {
     const key = field.slice('adjustments.'.length);
-    imageFill.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...imageFill.adjustments };
+    imageFill.adjustments = { ...defaultImageAdjustments, ...imageFill.adjustments };
     if (!Object.hasOwn(imageFill.adjustments, key)) return;
-    imageFill.adjustments[key] = Number(input.value);
-    if (input.nextElementSibling) input.nextElementSibling.value = input.value;
+    imageFill.adjustments[key] = input.type === 'checkbox' ? input.checked : Number(input.value);
+    if (key === 'solarize') imageFill.adjustments.solarizeThreshold = input.checked ? (imageFill.adjustments.solarizeThreshold || 128) : 0;
+    if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = input.value;
+    syncImageToneControls(input, imageFill.adjustments, node.locked);
   } else return;
   if (fill) {
     if (fill === ensureFillStack(node)[0]) syncLegacyFillFields(node);
@@ -2717,9 +3261,9 @@ function updateInspectorInput(event) {
   const propertyValue = prop === 'opacity' ? value / 100
     : prop === 'points' ? Math.max(3, Math.min(32, Math.round(Number.isFinite(value) ? value : 3)))
     : prop === 'innerRadius' ? Math.max(0, Math.min(1, Number.isFinite(value) ? value : .48))
-      : ['paragraphSpacing', 'firstLineIndent'].includes(prop) ? Math.max(0, Math.min(10_000, Number.isFinite(value) ? value : 0))
+      : ['paragraphSpacing', 'firstLineIndent', 'listSpacing'].includes(prop) ? Math.max(0, Math.min(10_000, Number.isFinite(value) ? value : 0))
         : value;
-  if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${prop === 'opacity' ? '%' : ''}`;
+  if (input.type === 'range' && input.nextElementSibling) input.nextElementSibling.value = `${Math.round(value)}${['opacity', 'outputQuality'].includes(prop) ? '%' : ''}`;
   const adjustments = prop.startsWith('adjustments.');
   const layoutSetting = prop.startsWith('autoLayout.');
   const constraintSetting = prop.startsWith('constraints.');
@@ -2754,8 +3298,24 @@ function updateInspectorInput(event) {
       }
     }
     else if (boundVariableId) setNodePropertyValue(node, prop, propertyValue);
-    else if (adjustments) node.adjustments = { ...node.adjustments, [key]: value };
+    else if (prop === 'closed' && node.type === 'path') {
+      const contourIndex = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.contourIndex || 0 : 0;
+      const contour = vectorPathContours(node)[contourIndex];
+      if (contour) {
+        if (contourIndex === 0) node.closed = value;
+        else node.subpaths[contourIndex - 1].closed = value;
+        recordNodeComponentOverrides(node, contourIndex === 0 ? ['closed'] : ['subpaths']);
+      }
+    }
+    else if (adjustments) {
+      node.adjustments = { ...node.adjustments, [key]: value };
+      if (key === 'solarize') node.adjustments.solarizeThreshold = value ? (node.adjustments.solarizeThreshold || 128) : 0;
+    }
     else if (constraintSetting) { node.constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}), [key]: value }; }
+    else if (prop === 'layoutPositioning') {
+      if (value === 'absolute') node.layoutPositioning = 'absolute';
+      else delete node.layoutPositioning;
+    }
     else if (variableProperty && instanceRoot) { delete node[variableProperty]; if (prop === 'fill') delete node.fillStyleId; if (prop === 'color') delete node.textStyleId; node[prop] = value; }
     else if (prop === 'fill' && node.fillVariableId) setColorVariableValue(state.document, node.fillVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.fillVariableId)?.collectionId, node));
     else if (prop === 'color' && node.textVariableId) setColorVariableValue(state.document, node.textVariableId, value, variableModeForNode(state.document, state.document.variables.find(item => item.id === node.textVariableId)?.collectionId, node));
@@ -2791,10 +3351,18 @@ function updateInspectorInput(event) {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
-    else if (prop === 'points' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent') node[prop] = propertyValue;
+    else if (prop.startsWith('cornerRadii.')) {
+      const side = prop.slice('cornerRadii.'.length);
+      if (cornerRadiusKeys.includes(side)) {
+        const baseRadius = Math.max(0, Number(getNodePropertyValue(state.document, node, 'radius')) || 0);
+        node.cornerRadii ||= Object.fromEntries(cornerRadiusKeys.map(corner => [corner, baseRadius]));
+        node.cornerRadii[side] = Math.max(0, Math.min(100_000, Number(propertyValue) || 0));
+      }
+    }
+    else if (prop === 'points' || prop === 'innerRadius' || prop === 'paragraphSpacing' || prop === 'firstLineIndent' || prop === 'listSpacing') node[prop] = propertyValue;
     else if (prop === 'opacity' || prop === 'fillOpacity') node[prop] = value / 100;
     else node[prop] = value;
-    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
+    if (node.type === 'text' && ['fontFamily', 'fontWeight', 'fontStyle', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textFit', 'textCase', 'text', 'width'].includes(prop)) {
       const resized = resizeTextNode(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (boundVariableId && ['text', 'fontSize', 'lineHeight', 'letterSpacing'].includes(prop)) resizeTextLayers(state.document.pages.flatMap(page => page.children), boundVariableId);
@@ -2802,7 +3370,10 @@ function updateInspectorInput(event) {
     }
     const geometry = resolvedGeometry(node);
     if ((prop === 'width' || prop === 'height') && node.type === 'frame' && !node.autoLayout) applyFrameConstraints(node, oldWidth, oldHeight, geometry.width, geometry.height);
-    if (node.type === 'image' && adjustments) schedulePreview(node);
+    if (node.type === 'image' && adjustments) {
+      if (key === 'solarize') syncImageToneControls(input, node.adjustments, node.locked);
+      schedulePreview(node);
+    }
     if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       const parent = findNode(state.document, node.id)?.parent;
@@ -2813,8 +3384,13 @@ function updateInspectorInput(event) {
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
     }
+    if (prop === 'layoutPositioning') {
+      const parent = findNode(state.document, node.id)?.parent;
+      if (parent?.autoLayout) applyAutoLayout(parent);
+    }
     if (instanceRoot) {
-      recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : prop);
+      const overrideProperty = prop === 'closed' && state.selectedVectorPoint?.nodeId === node.id && (state.selectedVectorPoint.contourIndex || 0) > 0 ? 'subpaths' : prop;
+      recordComponentOverride(instanceRoot, node, boundVariableId ? 'variableBindings' : layoutSetting ? 'autoLayout' : gridCellSetting ? 'gridCell' : prop === 'fillType' ? 'fillGradient' : overrideProperty);
       if (prop === 'fillType' && value !== 'solid') {
         recordComponentOverride(instanceRoot, node, 'fillVariableId');
         recordComponentOverride(instanceRoot, node, 'fillStyleId');
@@ -2860,7 +3436,7 @@ function schedulePreview(node, immediate = false, fillId = null) {
   const assetId = imageFill?.assetId || node.assetId;
   const adjustments = imageFill?.adjustments || node.adjustments;
   const transforms = imageFill?.transforms || node.transforms;
-  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, 'Preview failed'); showToast(error.message); renderInspector(); });
+  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); renderInspector(); });
   let timer;
   timer = setTimeout(() => {
     if (previewTimers.get(previewKey) !== timer) return;
@@ -2884,6 +3460,38 @@ function updateSelectedImageStatus(nodeId, previewKey = nodeId, fillId = null) {
     status.classList.toggle('image-engine-status', isReady);
   }
 }
+
+function assetMemoryKey(assetId) { return `asset:${assetId}`; }
+function previewMemoryKey(previewKey) { return `preview:${previewKey}`; }
+function retainedImageLimitMessage() {
+  const megabytes = Math.round(imageMemoryBudget.limitBytes / 1048576);
+  return new ImageMemoryLimitError(`This image would exceed Tiny Image Star’s ${megabytes} MiB local image-memory limit. Import fewer or smaller images, or open a new design to release this design’s image resources.`);
+}
+function markImagePreviewFallbackShown(error) {
+  try {
+    if (!error || (typeof error !== 'object' && typeof error !== 'function')) throw new TypeError('Preview failure is not an error object.');
+    error.previewFallbackShown = true;
+    return error;
+  } catch {
+    const wrapped = new Error(error instanceof Error ? error.message : String(error ?? 'The edited preview could not be created.'), { cause: error });
+    if (error?.name) wrapped.name = error.name;
+    wrapped.previewFallbackShown = true;
+    return wrapped;
+  }
+}
+function releasePreviewResources(previewKey) {
+  const preview = state.previews.get(previewKey);
+  state.previews.delete(previewKey);
+  try { preview?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
+  const url = state.previewUrls.get(previewKey);
+  state.previewUrls.delete(previewKey);
+  try { if (url) URL.revokeObjectURL(url); } catch { /* URL may already be revoked */ }
+  state.previewAssetIds.delete(previewKey);
+  try { imageMemoryBudget.release(previewMemoryKey(previewKey)); } catch { /* always finish dropping preview references */ }
+  if (!previewKey.startsWith('image-fill:')) updateImageAssetThumbnail(previewKey);
+  renderer?.invalidate();
+}
+
 async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null) {
   const previewKey = imagePreviewKey(nodeId, fillId);
   const generation = state.documentGeneration;
@@ -2893,24 +3501,68 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   state.renderVersion.set(previewKey, version);
   state.imageStatus.set(previewKey, 'Processing locally…');
   updateSelectedImageStatus(nodeId, previewKey, fillId);
+  const sourceDimensions = inspectRasterDimensions(asset.sourceBytes);
+  if (!sourceDimensions) throw new Error('Tiny Image Star could not verify this image size before rendering.');
+  const outputDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
+  const minimumPreviewBytes = estimateBitmapBytes(outputDimensions.width, outputDimensions.height);
+  if (minimumPreviewBytes > imageMemoryBudget.limitBytes) throw retainedImageLimitMessage();
+  let reservation = null;
+  let bitmap = null;
+  let previewUrl = null;
+  let releasedPreviewForCapacity = false;
   try {
-    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, { replaceKey: `preview:${previewKey}` });
+    const imageNode = !fillId ? findNode(state.document, nodeId)?.node : null;
+    const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
+    const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
+    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, {
+      replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
+    });
     if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
-    const bitmap = await createImageBitmap(new Blob([result.bytes], { type: 'image/png' }));
-    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) { bitmap.close?.(); return false; }
-    state.previews.get(previewKey)?.close?.();
-    const previousUrl = state.previewUrls.get(previewKey); if (previousUrl) URL.revokeObjectURL(previousUrl);
-    state.previewUrls.set(previewKey, URL.createObjectURL(new Blob([result.bytes], { type: 'image/png' })));
+    const retainedBytes = estimatePreviewMemoryBytes({ width: result.width, height: result.height, encodedByteLength: result.bytes.byteLength });
+    const currentMemoryKey = previewMemoryKey(previewKey);
+    reservation = imageMemoryBudget.reserve(retainedBytes, { kind: 'preview-pending' });
+    if (!reservation && imageMemoryBudget.canFit(retainedBytes, { excluding: [currentMemoryKey] })) {
+      // Replacing a large preview may need its old surface released before the
+      // new one can be decoded. The source bitmap remains available as a
+      // bounded fallback if allocation or decoding of the replacement fails.
+      releasePreviewResources(previewKey);
+      releasedPreviewForCapacity = true;
+      previewsEvictedForCapacity.add(previewKey);
+      reservation = imageMemoryBudget.reserve(retainedBytes, { kind: 'preview-pending' });
+    }
+    if (!reservation) throw retainedImageLimitMessage();
+    const previewBlob = new Blob([result.bytes], { type: result.mimeType || 'image/png' });
+    bitmap = await createImageBitmap(previewBlob);
+    previewUrl = URL.createObjectURL(previewBlob);
+    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
+    releasePreviewResources(previewKey);
+    imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes, kind: 'preview' });
+    reservation = null;
+    previewsEvictedForCapacity.delete(previewKey);
+    state.previewUrls.set(previewKey, previewUrl);
     state.previews.set(previewKey, bitmap);
     state.previewAssetIds.set(previewKey, assetId);
     state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
+    previewUrl = null;
+    bitmap = null;
     state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
     renderer.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
     updateSelectedImageStatus(nodeId, previewKey, fillId);
     return true;
   } catch (error) {
     if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
+    if ((releasedPreviewForCapacity || previewsEvictedForCapacity.has(previewKey)) && !state.previews.has(previewKey)) {
+      error = markImagePreviewFallbackShown(error);
+      state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
+      renderer?.invalidate();
+      if (!fillId) updateImageAssetThumbnail(nodeId);
+      updateSelectedImageStatus(nodeId, previewKey, fillId);
+    }
     throw error;
+  } finally {
+    try { if (reservation) imageMemoryBudget.releaseReservation(reservation); } catch { /* finish releasing the bitmap and object URL */ }
+    try { bitmap?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
+    try { if (previewUrl) URL.revokeObjectURL(previewUrl); } catch { /* URL may already be revoked */ }
   }
 }
 
@@ -2919,7 +3571,8 @@ function reconcileImagePreviewRuntime() {
   for (const previewKey of state.renderVersion.keys()) {
     if (!livePreviewKeys.has(previewKey)) imageEngine.cancelQueuedByKey(`preview:${previewKey}`);
   }
-  return pruneImagePreviewRuntime({
+  const releasedKeys = new Set([...state.previews.keys(), ...state.previewUrls.keys()].filter(key => !livePreviewKeys.has(key)));
+  const released = pruneImagePreviewRuntime({
     liveNodeIds: livePreviewKeys,
     timers: previewTimers,
     previews: state.previews,
@@ -2928,6 +3581,23 @@ function reconcileImagePreviewRuntime() {
     previewVersions: state.previewVersions,
     imageStatus: state.imageStatus,
     renderVersion: state.renderVersion,
+  });
+  for (const previewKey of releasedKeys) imageMemoryBudget.release(previewMemoryKey(previewKey));
+  for (const previewKey of previewsEvictedForCapacity) if (!livePreviewKeys.has(previewKey)) previewsEvictedForCapacity.delete(previewKey);
+  return released;
+}
+
+function reconcileImageAssetRuntime() {
+  const snapshots = [
+    state.document,
+    ...history.undoStack.map(step => step.document),
+    ...history.redoStack.map(step => step.document),
+  ];
+  return pruneImageAssetRuntime({
+    liveAssetIds: collectLiveImageAssetIds(snapshots, state.clipboard?.items?.map(item => item.node) || []),
+    assets: state.assets,
+    disposeSource: assetId => imageEngine.dispose(assetId),
+    releaseMemory: assetId => imageMemoryBudget.release(assetMemoryKey(assetId)),
   });
 }
 
@@ -2957,29 +3627,72 @@ async function importImageFiles(files, point = null) {
   checkpoint(`Place ${inputs.length} image${inputs.length === 1 ? '' : 's'}`);
   const defaultWorld = point || { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
   let imported = 0;
+  const memoryLimitedFiles = [];
   for (const [index, file] of inputs.entries()) {
+    let assetId = null;
+    let assetReservation = null;
+    let decodeReservation = null;
+    let bitmap = null;
+    let bitmapUrl = null;
+    let retainedAsset = false;
+    let placed = false;
     try {
-      const assetId = createId('asset');
+      assetId = createId('asset');
       const headerBytes = new Uint8Array(await file.slice(0, IMAGE_HEADER_SCAN_BYTES).arrayBuffer());
-      assertSafeRasterDimensions(headerBytes);
+      const sourceDimensions = assertSafeRasterDimensions(headerBytes);
+      const fallbackDimensions = fallbackImageDimensions(sourceDimensions.width, sourceDimensions.height);
+      const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: file.size, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
+      assetReservation = imageMemoryBudget.reserve(assetBytes, { kind: 'asset-pending' });
+      if (!assetReservation) throw retainedImageLimitMessage();
+      decodeReservation = imageMemoryBudget.reserve(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
+      if (!decodeReservation) throw retainedImageLimitMessage();
       const sourceBytes = new Uint8Array(await file.arrayBuffer());
-      const { bitmap, sourceWidth, sourceHeight } = await createFallbackImage(file);
-      if (generation !== state.documentGeneration) { bitmap.close?.(); continue; }
+      const verifiedDimensions = assertSafeRasterDimensions(sourceBytes);
+      assertImagePayloadMatchesPreflight({ expectedDimensions: sourceDimensions, expectedByteLength: file.size, actualDimensions: verifiedDimensions, actualByteLength: sourceBytes.byteLength });
+      const fallback = await createFallbackImage(file);
+      bitmap = fallback.bitmap;
+      const { sourceWidth, sourceHeight } = fallback;
+      imageMemoryBudget.releaseReservation(decodeReservation); decodeReservation = null;
+      if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; imageMemoryBudget.releaseReservation(assetReservation); assetReservation = null; continue; }
       const width = bitmap.width; const height = bitmap.height;
-      const asset = { id: assetId, name: file.name, type: file.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(file) };
-      state.assets.set(assetId, asset);
-      await saveImageAsset(assetId, file);
-      if (generation !== state.documentGeneration) continue;
+      bitmapUrl = URL.createObjectURL(file);
+      await saveImageAssetBytes(assetId, file.name, file.type, sourceBytes);
+      if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; URL.revokeObjectURL(bitmapUrl); bitmapUrl = null; imageMemoryBudget.releaseReservation(assetReservation); assetReservation = null; continue; }
+      imageMemoryBudget.commit(assetReservation, assetMemoryKey(assetId), { bytes: assetBytes, kind: 'asset' });
+      assetReservation = null;
+      retainedAsset = true;
+      state.assets.set(assetId, { id: assetId, name: file.name, type: file.type, sourceBytes, bitmap, bitmapUrl, sourceWidth, sourceHeight });
+      bitmap = null; bitmapUrl = null;
       const node = createNode('image', { id: createId('image'), name: file.name.replace(/\.[^.]+$/, ''), fileName: file.name, assetId, width, height, sourceWidth, sourceHeight, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
       const center = { x: node.x + width / 2, y: node.y + height / 2 };
       const parent = deepestContainerAt(center);
       localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
       state.imageStatus.set(node.id, 'Processing locally…');
-      renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, 'Preview failed'); showToast(error.message); });
-      state.selectedIds = [node.id]; imported += 1;
-    } catch (error) { showToast(`${file.name}: ${error.message || 'Could not load image.'}`); }
+      renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, imagePreviewFailureStatus(error)); showToast(error.message); });
+      state.selectedIds = [node.id]; imported += 1; placed = true;
+    } catch (error) {
+      if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
+      if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
+      bitmap?.close?.();
+      if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
+      if (retainedAsset && !placed && assetId) {
+        const retained = state.assets.get(assetId);
+        retained?.bitmap?.close?.();
+        if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+        if (!retained) { bitmap?.close?.(); if (bitmapUrl) URL.revokeObjectURL(bitmapUrl); }
+        state.assets.delete(assetId);
+        imageMemoryBudget.release(assetMemoryKey(assetId));
+      }
+      if (error instanceof ImageMemoryLimitError) memoryLimitedFiles.push(file.name);
+      else showToast(`${file.name}: ${error.message || 'Could not load image.'}`);
+    }
   }
-  if (imported) { renderUI(); queueSave(); showToast(`${imported} image${imported === 1 ? '' : 's'} placed. Source images stay on this device.`); }
+  if (imported) { renderUI(); queueSave(); }
+  if (memoryLimitedFiles.length) {
+    const examples = memoryLimitedFiles.slice(0, 3).join(', ');
+    const more = memoryLimitedFiles.length > 3 ? `, and ${memoryLimitedFiles.length - 3} more` : '';
+    showToast(`${imported} placed · ${memoryLimitedFiles.length} skipped at the local memory limit: ${examples}${more}.`);
+  } else if (imported) showToast(`${imported} image${imported === 1 ? '' : 's'} placed. Source images stay on this device.`);
   } finally {
     state.pendingImageImports -= 1;
     $('#image-input').value = '';
@@ -2988,24 +3701,82 @@ async function importImageFiles(files, point = null) {
 
 async function restoreImageAssets(generation = state.documentGeneration) {
   const references = imageAssetReferencesAcrossPages();
+  const unavailableAssetIds = new Set();
+  let memoryLimitedCount = 0;
   for (const reference of references) {
     if (generation !== state.documentGeneration) return;
     const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, name, adjustments, transforms } = reference;
+    if (unavailableAssetIds.has(assetId)) { state.imageStatus.set(previewKey, 'Local image memory limit reached'); continue; }
+    const reservations = { assetReservation: null, decodeReservation: null };
+    let bitmap = null;
+    let bitmapUrl = null;
+    let retainedAsset = false;
     try {
       const existing = state.assets.get(assetId);
-      if (existing?.sourceBytes) { renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => showToast(error.message)); continue; }
-      const saved = await loadImageAsset(assetId);
+      if (existing?.sourceBytes) {
+        renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
+          setImagePreviewFailureStatus(state.imageStatus, previewKey, error);
+          updateSelectedImageStatus(node.id, previewKey, fillId);
+          showToast(error.message || 'Could not restore the image preview.');
+        });
+        continue;
+      }
+      const metadata = await loadImageAssetMetadata(assetId);
       if (generation !== state.documentGeneration) return;
-      if (!saved) { state.imageStatus.set(previewKey, 'Original image missing'); continue; }
-      const sourceBytes = new Uint8Array(saved.bytes);
-      assertSafeRasterDimensions(sourceBytes);
-      const { bitmap } = await createFallbackImage(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
-      if (generation !== state.documentGeneration) { bitmap.close?.(); return; }
-      state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl: URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' })) });
+      if (!metadata) { state.imageStatus.set(previewKey, 'Original image missing'); continue; }
+      const sourceDimensions = metadata.dimensions;
+      if (!sourceDimensions || !Number.isSafeInteger(metadata.byteLength) || metadata.byteLength < 1
+        || !Number.isSafeInteger(sourceDimensions.width) || sourceDimensions.width < 1
+        || !Number.isSafeInteger(sourceDimensions.height) || sourceDimensions.height < 1
+        || sourceDimensions.pixels !== sourceDimensions.width * sourceDimensions.height
+        || sourceDimensions.pixels > MAX_IMAGE_SOURCE_PIXELS) {
+        throw new Error('Tiny Image Star cannot safely restore this saved image. Reimport the original source file.');
+      }
+      const fallbackDimensions = fallbackImageDimensions(sourceDimensions.width, sourceDimensions.height);
+      const assetBytes = estimateAssetMemoryBytes({ sourceByteLength: metadata.byteLength, bitmapWidth: fallbackDimensions.width, bitmapHeight: fallbackDimensions.height });
+      reservations.assetReservation = imageMemoryBudget.reserve(assetBytes, { kind: 'asset-pending' });
+      if (!reservations.assetReservation) throw retainedImageLimitMessage();
+      reservations.decodeReservation = imageMemoryBudget.reserve(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
+      if (!reservations.decodeReservation) throw retainedImageLimitMessage();
+      const saved = await loadImageAsset(assetId);
+      if (generation !== state.documentGeneration) { releaseImageMemoryReservations(imageMemoryBudget, reservations); return; }
+      if (!saved) { releaseImageMemoryReservations(imageMemoryBudget, reservations); state.imageStatus.set(previewKey, 'Original image missing'); continue; }
+      const sourceBytes = saved.bytes instanceof Uint8Array ? saved.bytes : new Uint8Array(saved.bytes);
+      const actualDimensions = assertSafeRasterDimensions(sourceBytes);
+      assertImagePayloadMatchesPreflight({
+        expectedDimensions: sourceDimensions,
+        expectedByteLength: metadata.byteLength,
+        actualDimensions,
+        actualByteLength: sourceBytes.byteLength
+      });
+      const fallback = await createFallbackImage(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
+      bitmap = fallback.bitmap;
+      imageMemoryBudget.releaseReservation(reservations.decodeReservation);
+      reservations.decodeReservation = null;
+      if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; releaseImageMemoryReservations(imageMemoryBudget, reservations); return; }
+      bitmapUrl = URL.createObjectURL(new Blob([sourceBytes], { type: saved.type || 'image/png' }));
+      imageMemoryBudget.commit(reservations.assetReservation, assetMemoryKey(assetId), { bytes: assetBytes, kind: 'asset' });
+      reservations.assetReservation = null;
+      retainedAsset = true;
+      state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl, sourceWidth: sourceDimensions.width, sourceHeight: sourceDimensions.height });
+      bitmap = null; bitmapUrl = null;
       state.imageStatus.set(previewKey, 'Restoring local preview…');
-      renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, 'Preview failed'); showToast(error.message); });
-    } catch (error) { if (generation !== state.documentGeneration) return; state.imageStatus.set(previewKey, 'Could not restore image'); showToast(error.message); }
+      renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); });
+    } catch (error) {
+      releaseImageMemoryReservations(imageMemoryBudget, reservations);
+      bitmap?.close?.(); if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
+      if (retainedAsset) {
+        const retained = state.assets.get(assetId);
+        retained?.bitmap?.close?.(); if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
+        state.assets.delete(assetId); imageMemoryBudget.release(assetMemoryKey(assetId));
+      }
+      if (generation !== state.documentGeneration) return;
+      state.imageStatus.set(previewKey, error instanceof ImageMemoryLimitError ? 'Local image memory limit reached' : 'Could not restore image');
+      if (error instanceof ImageMemoryLimitError) { unavailableAssetIds.add(assetId); memoryLimitedCount += 1; }
+      else showToast(error.message);
+    }
   }
+  if (memoryLimitedCount && generation === state.documentGeneration) showToast(`${memoryLimitedCount} saved image${memoryLimitedCount === 1 ? '' : 's'} could not be restored because this design reached the local memory limit.`);
   if (generation === state.documentGeneration) renderAssetsTab();
 }
 
@@ -3015,8 +3786,17 @@ function renderBulkBar() {
   if (!bulk) return;
   const engineMetrics = imageEngine.metrics();
   const total = bulk.targets.length;
-  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
-  $('#bulk-subtitle').textContent = bulk.cancelled ? `${bulk.completed} completed · ${bulk.targets.length - bulk.completed} left untouched` : bulk.done ? `${bulk.completed} updated${bulk.failed ? ` · ${bulk.failed} failed` : ''} in place` : bulk.paused ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} queued or finishing before pause` : `Editing original layers · ${bulk.inflight} queued or processing`;
+  const updated = Math.max(0, bulk.completed - bulk.failed - (bulk.superseded || 0) - (bulk.skippedLocked || 0));
+  const lockedSkipped = (bulk.excludedLocked || 0) + (bulk.skippedLocked || 0);
+  const dismissible = canDismissImageRecipeBatch(bulk);
+  $('#bulk-title').textContent = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
+  $('#bulk-subtitle').textContent = bulk.cancelled
+    ? `${updated} updated · ${bulk.targets.length - bulk.completed} left untouched${bulk.failed ? ` · ${bulk.failed} failed` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}`
+    : bulk.done
+      ? `${updated} updated in place${bulk.failed ? ` · ${bulk.failed} failed` : ''}${bulk.superseded ? ` · ${bulk.superseded} newer edits preserved` : ''}${lockedSkipped ? ` · ${lockedSkipped} locked skipped` : ''}`
+      : bulk.paused
+        ? `${bulk.inflight} image${bulk.inflight === 1 ? '' : 's'} queued or finishing before pause`
+        : `Editing original layers · ${bulk.inflight} queued or processing`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
   $('#bulk-speed').value = bulk.concurrency;
@@ -3027,7 +3807,8 @@ function renderBulkBar() {
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
   $('#bulk-pause').textContent = bulk.paused ? 'Resume' : 'Pause';
   $('#bulk-cancel').hidden = bulk.done || bulk.cancelled;
-  $('#bulk-done').hidden = !(bulk.done || bulk.cancelled);
+  $('#bulk-speed').disabled = bulk.done || bulk.cancelled;
+  $('#bulk-done').hidden = !dismissible;
 }
 
 function snapshotRecipeField(object, key) {
@@ -3039,7 +3820,9 @@ function snapshotRecipeState(node) {
     adjustments: { ...(node.adjustments || {}) },
     transforms: snapshotRecipeField(node, 'transforms'),
     fit: snapshotRecipeField(node, 'fit'),
-    opacity: snapshotRecipeField(node, 'opacity')
+    opacity: snapshotRecipeField(node, 'opacity'),
+    outputFormat: snapshotRecipeField(node, 'outputFormat'),
+    outputQuality: snapshotRecipeField(node, 'outputQuality')
   };
 }
 
@@ -3070,7 +3853,7 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     changed = true;
   }
 
-  for (const key of ['fit', 'opacity']) {
+  for (const key of ['fit', 'opacity', 'outputFormat', 'outputQuality']) {
     const current = snapshotRecipeField(node, key);
     const recipeValue = applied[key];
     if (current.present !== recipeValue.present || (current.present && !Object.is(current.value, recipeValue.value))) continue;
@@ -3082,19 +3865,44 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
   return changed;
 }
 
+function isEditableImageRecipeTarget(entry) {
+  return entry?.node?.type === 'image'
+    && !entry.node.locked
+    && !(entry.parents || []).some(parent => parent.locked);
+}
+
 function scheduleBulk() {
   const bulk = state.bulk;
   if (!bulk || bulk.paused || bulk.cancelled || bulk.done) return;
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
     const entry = findNode(state.document, id);
-    if (!entry || entry.node.type !== 'image') { bulk.failed += 1; bulk.completed += 1; continue; }
+    if (!entry || entry.node.type !== 'image') { recordImageRecipeBatchTarget(bulk, { failed: true }); continue; }
+    if (!isEditableImageRecipeTarget(entry)) {
+      bulk.skippedLocked += 1;
+      recordImageRecipeBatchTarget(bulk);
+      continue;
+    }
     const node = entry.node; const before = snapshotRecipeState(node);
+    const previousStatus = state.imageStatus.get(id);
+    bulk.previousStatuses.set(id, previousStatus);
+    const pendingPreview = previewTimers.get(id);
+    if (pendingPreview) {
+      clearTimeout(pendingPreview);
+      previewTimers.delete(id);
+    }
+    if (pendingPreview || previousStatus === 'Updating preview…' || previousStatus === 'Processing locally…') {
+      bulk.restorePreviews.add(id);
+    }
     applyImageRecipe(state.document, id, bulk.recipe);
     const applied = snapshotRecipeState(node);
     bulk.inflight += 1; state.imageStatus.set(id, 'Processing recipe…');
     updateSelectedImageStatus(id);
-    renderImagePreview(id, node.assetId, node.adjustments, node.transforms).then(rendered => {
+    const previousRenderVersion = state.renderVersion.get(id);
+    const preview = renderImagePreview(id, node.assetId, node.adjustments, node.transforms);
+    const recipeRenderVersion = state.renderVersion.get(id);
+    if (recipeRenderVersion !== previousRenderVersion) bulk.renderVersions.set(id, recipeRenderVersion);
+    preview.then(rendered => {
       if (state.bulk !== bulk) return;
       if (!rendered) {
         const error = new Error('A newer image edit replaced this recipe preview before it could be displayed.');
@@ -3102,44 +3910,88 @@ function scheduleBulk() {
         error.superseded = true;
         throw error;
       }
-      bulk.completed += 1;
+      recordImageRecipeBatchTarget(bulk);
     }).catch(error => {
       if (state.bulk !== bulk) return;
-      rollbackRecipeStateIfUnchanged(node, before, applied);
-      // A stale recipe result may fail only because a newer edit replaced it.
-      // Preserve the newer render's status rather than labeling that edit as failed.
-      if (!error.superseded) state.imageStatus.set(id, 'Recipe failed');
-      updateSelectedImageStatus(id);
-      bulk.failed += 1; bulk.completed += 1;
-      showToast(`${node.name}: ${error.message}`);
+      const wasCanceledBeforeRender = bulk.cancelled && error.name === 'AbortError' && !error.superseded;
+      const renderStillCurrent = bulk.renderVersions.get(id) === state.renderVersion.get(id);
+      const canRestoreBeforeState = renderStillCurrent && !error.superseded;
+      if (canRestoreBeforeState) rollbackRecipeStateIfUnchanged(node, before, applied);
+      if (wasCanceledBeforeRender) {
+        if (renderStillCurrent) {
+          const previousStatus = bulk.previousStatuses.get(id);
+          if (canRestoreBeforeState && bulk.restorePreviews.has(id)) {
+            schedulePreview(node, true);
+          } else {
+            const stablePreviousStatus = previousStatus && !previousStatus.startsWith('Processing') && !previousStatus.startsWith('Updating preview')
+              ? previousStatus
+              : null;
+            state.imageStatus.set(id, stablePreviousStatus || (state.previews.has(id) ? 'Updated · Pillow-RS WASM' : 'Ready · original image'));
+            updateSelectedImageStatus(id);
+          }
+        }
+        recordImageRecipeBatchTarget(bulk, { canceled: true });
+        return;
+      }
+      if (error.superseded) {
+        // Keep recipe values beneath the user's newer edit and preserve its status.
+        recordImageRecipeBatchTarget(bulk, { superseded: true });
+      } else {
+        if (canRestoreBeforeState && bulk.restorePreviews.has(id)) {
+          schedulePreview(node, true);
+        } else {
+          state.imageStatus.set(id, error.previewFallbackShown ? 'Recipe failed · showing original' : 'Recipe failed');
+          updateSelectedImageStatus(id);
+        }
+        recordImageRecipeBatchTarget(bulk, { failed: true });
+        showToast(`${node.name}: ${error.message}`);
+      }
     }).finally(() => {
       if (state.bulk !== bulk) return;
       bulk.inflight -= 1;
       queueSave({ refreshLayerTree: false }); renderer.invalidate();
       if (!bulk.paused && !bulk.cancelled) scheduleBulk();
-      if ((bulk.next >= bulk.targets.length || bulk.cancelled) && bulk.inflight === 0) {
-        bulk.done = !bulk.cancelled;
-        if (bulk.cancelled) bulk.done = true;
-      }
+      completeImageRecipeBatchIfDrained(bulk);
       renderBulkBar();
     });
   }
+  completeImageRecipeBatchIfDrained(bulk);
   renderBulkBar();
 }
 
 function startRecipe(recipe, targets) {
-  if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) {
+  if (isImageRecipeBatchActive(state.bulk)) {
     showToast('A recipe batch is active. Finish or stop it before starting another.');
     renderBulkBar();
     return false;
   }
-  const unique = [...new Set(targets)].filter(id => findNode(state.document, id)?.node.type === 'image');
-  if (!unique.length) { showToast('Select one or more image layers first.'); return; }
+  const entries = [...new Set(targets)].map(id => ({ id, entry: findNode(state.document, id) }))
+    .filter(item => item.entry?.node.type === 'image');
+  const lockedCount = entries.filter(item => !isEditableImageRecipeTarget(item.entry)).length;
+  const unique = entries.filter(item => isEditableImageRecipeTarget(item.entry)).map(item => item.id);
+  if (!unique.length) { showToast('Select one or more unlocked image layers first.'); return false; }
+  if (lockedCount) showToast(`${lockedCount} locked image${lockedCount === 1 ? '' : 's'} skipped.`);
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
   const concurrency = Math.min(2, CPU_LIMIT);
-  state.bulk = { recipe, targets: unique, next: 0, completed: 0, failed: 0, inflight: 0, concurrency, paused: false, cancelled: false, done: false };
+  state.bulk = {
+    recipe, targets: unique, next: 0, completed: 0, failed: 0, superseded: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
+    paused: false, cancelled: false, done: false,
+    previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set()
+  };
   imageEngine.setConcurrency(concurrency);
   renderBulkBar(); scheduleBulk();
+  return true;
+}
+
+function cancelBulkRecipe() {
+  const bulk = state.bulk;
+  if (!cancelImageRecipeBatch(bulk)) return false;
+  for (const id of bulk.targets.slice(0, bulk.next)) {
+    const recipeVersion = bulk.renderVersions.get(id);
+    if (recipeVersion == null || recipeVersion !== state.renderVersion.get(id)) continue;
+    imageEngine.cancelQueuedByKey(`preview:${imagePreviewKey(id)}`);
+  }
+  renderBulkBar();
   return true;
 }
 
@@ -3150,12 +4002,31 @@ function saveRecipeFor(nodeId) {
   const adjustments = node.adjustments || {};
   const active = ['brightness', 'contrast', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
     .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
+  if (adjustments.autoContrast) active.push('Auto contrast');
+  if (Number(adjustments.posterizeBits) > 0) active.push(`Posterize ${adjustments.posterizeBits} bit`);
+  if (adjustments.solarize) active.push(`Solarize at ${adjustments.solarizeThreshold}`);
+  if (adjustments.invert) active.push('Invert');
   const transforms = createImageTransforms(node.transforms || {});
   if (transforms.crop) active.push(`Crop ${Math.round(transforms.crop.left * 100)}%/${Math.round(transforms.crop.top * 100)}% to ${Math.round(transforms.crop.right * 100)}%/${Math.round(transforms.crop.bottom * 100)}%`);
   if (transforms.rotation) active.push(`Rotate ${transforms.rotation}°`);
   $('#recipe-name').value = `${node.name} look`;
-  $('#recipe-preview-summary').textContent = active.length ? active.join(' · ') : 'Original image look · No adjustments';
+  $('#recipe-preview-summary').dataset.editSummary = active.length ? active.join(' · ') : 'Original image look · No adjustments';
+  $('#recipe-format').value = node.outputFormat ?? 'png';
+  $('#recipe-quality').value = String(node.outputQuality ?? 90);
+  syncRecipeOutputControls();
   $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
+}
+
+function syncRecipeOutputControls() {
+  const format = $('#recipe-format').value;
+  const quality = $('#recipe-quality');
+  const qualityValue = $('#recipe-quality-value');
+  quality.disabled = format === 'png';
+  qualityValue.textContent = `${quality.value}%`;
+  const label = { png: 'PNG', jpeg: 'JPEG', webp: 'WebP' }[format] || 'PNG';
+  const output = format === 'png' ? `Output ${label}` : `Output ${label} · ${quality.value}% quality`;
+  const editSummary = $('#recipe-preview-summary').dataset.editSummary || 'Original image look · No adjustments';
+  $('#recipe-preview-summary').textContent = `${editSummary} · ${output}`;
 }
 
 function saveTypographyStyleFor(nodeId) {
@@ -3190,7 +4061,7 @@ function applyTypographyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => node.type === 'text');
   if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
   const layoutParents = new Set();
   for (const node of compatible) {
     applyTypographyStyle(state.document, node.id, style.id);
@@ -3229,9 +4100,9 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
   if (variableId && !state.document.variables?.some(variable => variable.id === variableId && variable.type === 'color')) { showToast('This color variable no longer exists.'); return; }
   const nodes = selectedNodes();
   const changes = nodes.map(node => {
-    const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
+    const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
     const compatible = kind === 'text' ? node.type === 'text'
-      : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
+      : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
         : !['text', 'image', 'group', 'boolean'].includes(node.type);
     return compatible ? { node, kind } : null;
   }).filter(Boolean);
@@ -3264,9 +4135,9 @@ function applyVariablePropertyToSelection(property, variableId) {
 function createColorVariableFromSelection(kind = null) {
   const nodes = selectedNodes();
   if (!nodes.length) { showToast('Select a layer before creating a color variable.'); return; }
-  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0));
+  const source = nodes.find(node => kind === 'text' ? node.type === 'text' : kind === 'stroke' ? !['text', 'image', 'group', 'boolean'].includes(node.type) : !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
   if (!source) { showToast('Select a compatible color layer first.'); return; }
-  const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !source.closed) || (source.type === 'network' && !source.faces?.length) ? 'stroke' : 'fill');
+  const variableKind = kind || (source.type === 'text' ? 'text' : source.type === 'line' || (source.type === 'path' && !hasClosedPathContour(source)) || (source.type === 'network' && !source.faces?.length) ? 'stroke' : 'fill');
   const current = getNodeColor(state.document, source, variableKind);
   openVariableNameDialog({
     type: 'selection', colorKind: variableKind, colorValue: /^#[0-9a-f]{6}$/i.test(current) ? current : '#1e1e1e',
@@ -3277,7 +4148,7 @@ function createColorVariableFromSelection(kind = null) {
 function selectedColorForVariable() {
   const node = selectedNodes()[0];
   if (!node) return '#1e1e1e';
-  return getNodeColor(state.document, node, node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
+  return getNodeColor(state.document, node, node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
 }
 
 function handleVariableAssetsAction(action, details = {}) {
@@ -3344,7 +4215,7 @@ function commitVariableNameDialog() {
       const targetCollection = collection || createVariableCollection(state.document, 'Colors');
       const variable = createColorVariable(state.document, targetCollection.id, name, pending.colorValue || '#1e1e1e');
       for (const node of nodes) {
-        const kind = pending.colorKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !node.closed) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
+        const kind = pending.colorKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
         if (!bindColorVariable(state.document, node.id, variable.id, kind)) continue;
         const instanceRoot = componentInstanceRoot(node.id);
         if (instanceRoot) recordComponentOverride(instanceRoot, node, { fill: 'fillVariableId', text: 'textVariableId', stroke: 'strokeVariableId' }[kind]);
@@ -3356,7 +4227,9 @@ function commitVariableNameDialog() {
 }
 
 function showMenu(items, x, y) {
-  const menu = $('#context-menu'); menu.replaceChildren(); menu.hidden = false;
+  const menu = $('#context-menu');
+  menu._returnFocusElement?.setAttribute('aria-expanded', 'false');
+  menu.replaceChildren(); menu.hidden = false; menu._returnFocusElement = null;
   for (const item of items) {
     if (item.separator) { const divider = document.createElement('div'); divider.className = 'menu-separator'; menu.append(divider); continue; }
     if (item.labelOnly) { const label = document.createElement('div'); label.className = 'menu-label'; label.textContent = item.label; menu.append(label); continue; }
@@ -3364,7 +4237,20 @@ function showMenu(items, x, y) {
     const label = document.createElement('span'); label.textContent = item.label;
     button.append(label);
     if (item.shortcut) { const shortcut = document.createElement('span'); shortcut.className = 'shortcut'; shortcut.textContent = item.shortcut; button.append(shortcut); }
-    button.addEventListener('click', () => { menu.hidden = true; item.action?.(); });
+    button.addEventListener('click', () => {
+      const returnFocus = menu._returnFocusElement;
+      const returnLayerId = returnFocus?.closest('[data-layer-id]')?.dataset.layerId;
+      returnFocus?.setAttribute('aria-expanded', 'false');
+      menu.hidden = true; menu._returnFocusElement = null;
+      item.action?.();
+      if (returnFocus && !document.querySelector('dialog[open]')) {
+        const currentRow = (returnLayerId && layerRowsById.get(returnLayerId)) || layerRowsById.get(state.selectedIds[0]);
+        const target = currentRow?.querySelector('[data-action="layer-actions-menu"]')
+          || currentRow
+          || $('#layer-select-mode');
+        if (!target?.closest('[inert]')) target?.focus({ preventScroll: true });
+      }
+    });
     menu.append(button);
   }
   const width = menu.offsetWidth; const height = menu.offsetHeight;
@@ -3373,7 +4259,12 @@ function showMenu(items, x, y) {
   menu.style.left = `${Math.max(8, Math.min(x, innerWidth - width - 8))}px`;
   menu.style.top = `${Math.max(8, Math.min(y, innerHeight - height - 8))}px`;
 }
-function closeMenu() { $('#context-menu').hidden = true; }
+function closeMenu() {
+  const menu = $('#context-menu');
+  menu._returnFocusElement?.setAttribute('aria-expanded', 'false');
+  menu.hidden = true;
+  menu._returnFocusElement = null;
+}
 
 function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   const node = findNode(state.document, nodeId)?.node;
@@ -3437,6 +4328,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
     items.splice(0, 0, { label: 'Save text style…', action: () => saveTypographyStyleFor(nodeId) }, { separator: true });
   }
   if (images.length) {
+    items.push({ separator: true }, { label: images.length > 1 ? `Export ${images.length} images as ZIP` : 'Export selected image', action: exportSelectionPng });
     items.push({ separator: true }, { label: `Apply recipe to ${images.length} image${images.length === 1 ? '' : 's'}`, labelOnly: true });
     if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
     else items.push({ label: 'Save a recipe from an edited image first', className: 'recipe-option is-empty', disabled: true });
@@ -3536,6 +4428,11 @@ function separateSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
 }
 
 function openFileMenu(x, y, commentAnchor = null) {
+  const exportIds = orderedRootSelection();
+  const exportNodes = exportIds.map(id => findNode(state.document, id)?.node).filter(Boolean);
+  const exportLabel = exportNodes.length > 1 && exportNodes.length === exportIds.length && exportNodes.every(node => node.type === 'image')
+    ? `Export ${exportNodes.length} images as ZIP`
+    : 'Export selected layer as PNG';
   showMenu([
     ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
     { label: 'Your designs…', action: openDesignLibrary },
@@ -3548,14 +4445,14 @@ function openFileMenu(x, y, commentAnchor = null) {
     { label: 'Cut selected layers', shortcut: '⌘X', action: cutSelected, disabled: !rootSelectedIds().length },
     { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
     { label: 'Duplicate selected layers', shortcut: '⌘D', action: duplicateSelected, disabled: !rootSelectedIds().length },
-    { label: 'Export selected layer as PNG', action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
+    { label: exportLabel, action: exportSelectionPng, disabled: state.selectedIds.length === 0 },
     { label: 'Export selected layer as SVG', action: () => { exportSelectedNodeSvg(rootSelectedIds()[0]).catch(error => showToast(error.message || 'Could not export this layer as SVG.')); }, disabled: rootSelectedIds().length !== 1 },
     { label: 'Export current page as SVG', action: () => { exportActivePageSvg().catch(error => showToast(error.message || 'Could not export this page as SVG.')); } },
     { separator: true },
     { label: `${state.showLayoutGuides ? '✓' : '○'} Layout guides`, shortcut: '⇧G', action: toggleLayoutGuides },
     { separator: true },
-    { label: 'Undo', shortcut: '⌘Z', action: undo, disabled: !history.canUndo },
-    { label: 'Redo', shortcut: '⌘⇧Z', action: redo, disabled: !history.canRedo }
+    { label: 'Undo', shortcut: '⌘Z', action: undo, disabled: !history.canUndo || isImageRecipeBatchActive(state.bulk) },
+    { label: 'Redo', shortcut: '⌘⇧Z', action: redo, disabled: !history.canRedo || isImageRecipeBatchActive(state.bulk) }
   ], x, y);
 }
 function toggleLayoutGuides() { state.showLayoutGuides = !state.showLayoutGuides; renderer.invalidate(); }
@@ -3580,6 +4477,7 @@ function copySelected() {
   if (!entries.length) { showToast('Select one or more layers to copy.'); return; }
   try {
     state.clipboard = createLayerClipboard(state.document, entries, { mode: 'copy', pageId: activePage().id });
+    reconcileImageAssetRuntime();
     showToast(`Copied ${entries.length} layer${entries.length === 1 ? '' : 's'}.`);
   } catch (error) { showToast(error.message || 'Could not copy these layers.'); }
 }
@@ -3601,6 +4499,7 @@ function cutSelected() {
     state.document = nextDocument;
     reconcileImagePreviewRuntime();
     state.clipboard = clipboard;
+    reconcileImageAssetRuntime();
     state.selectedIds = []; state.selectedVectorPoint = null;
     renderUI(); queueSave();
     showToast(`Cut ${entries.length} layer${entries.length === 1 ? '' : 's'}. Paste to move them back into this design.`);
@@ -3620,6 +4519,7 @@ function pasteSelectedLayers({ duplicate = false } = {}) {
       if (clipboard.mode === 'cut') state.clipboard = [];
       else clipboard.pasteCount = result.pasteCount;
     }
+    reconcileImageAssetRuntime();
     setSelection(result.nodes.map(node => node.id));
     renderUI(); queueSave();
     showToast(duplicate ? `Duplicated ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.` : `Pasted ${result.nodes.length} layer${result.nodes.length === 1 ? '' : 's'}.`);
@@ -3960,24 +4860,20 @@ function refreshHistoryImagePreviews(previousDocument) {
     previewTimers.delete(previewKey);
     const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) {
-      state.previews.get(previewKey)?.close?.();
-      state.previews.delete(previewKey);
-      state.previewAssetIds.delete(previewKey);
-      const url = state.previewUrls.get(previewKey);
-      if (url) URL.revokeObjectURL(url);
-      state.previewUrls.delete(previewKey);
+      releasePreviewResources(previewKey);
       state.imageStatus.set(previewKey, 'Original image missing');
       continue;
     }
     state.imageStatus.set(previewKey, 'Updating preview…');
     renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
-      state.imageStatus.set(previewKey, 'Preview failed');
+      state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
       showToast(`${node.name}: ${error.message || 'Could not restore the image preview.'}`);
       if (state.selectedIds.includes(node.id)) renderInspector();
     });
   }
 }
 function undo() {
+  if (isImageRecipeBatchActive(state.bulk)) { showToast('Pause or stop the active image recipe, then wait for its workers to finish before undoing.'); return; }
   const previousDocument = state.document;
   const next = history.undo(previousDocument);
   if (!next) return;
@@ -3988,6 +4884,7 @@ function undo() {
   state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function redo() {
+  if (isImageRecipeBatchActive(state.bulk)) { showToast('Pause or stop the active image recipe, then wait for its workers to finish before redoing.'); return; }
   const previousDocument = state.document;
   const next = history.redo(previousDocument);
   if (!next) return;
@@ -4141,8 +5038,11 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     frame.variableModes = { ...(frame.variableModes || {}), ...modes };
     return frame;
   };
+  const resolveTransitionRadius = node => node.variableBindings?.radius
+    ? resolveVariableValueWithModeOverrides(runtimeDocument, node.variableBindings.radius, state.presenting.variableModes || {}, node)
+    : node.radius;
   const displayFrame = applySessionVariableModes(previousFrame && Number.isFinite(progress)
-    ? interpolateSmartFrame(previousFrame, target.node, progress)
+    ? interpolateSmartFrame(previousFrame, target.node, progress, { resolveRadius: resolveTransitionRadius })
     : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
@@ -4442,7 +5342,15 @@ async function exportDesign() {
       const saved = await loadImageAsset(reference.assetId);
       if (saved) assets.push({ id: saved.id, name: saved.name, type: saved.type, bytes: saved.bytes });
     }
-    await downloadLocalPackage(JSON.parse(serializeDocument(state.document)), assets);
+    const design = JSON.parse(serializeDocument(state.document));
+    const fonts = [];
+    for (const font of await listFontAssets()) {
+      if (!documentUsesFontFamily(design, font.family)) continue;
+      const saved = await loadFontAsset(font.id);
+      if (!saved) throw new Error(`The local font “${font.family}” is missing or damaged. Reinstall it before exporting this design.`);
+      fonts.push(saved);
+    }
+    await downloadLocalPackage(design, assets, fonts);
     showToast('Local design copy downloaded.');
   } catch (error) { showToast(error.message || 'Could not export this local design.'); }
 }
@@ -4537,31 +5445,35 @@ function releaseImageRuntimeForDocumentSwitch() {
   }
   for (const bitmap of state.previews.values()) bitmap.close?.();
   for (const url of state.previewUrls.values()) URL.revokeObjectURL(url);
+  previewsEvictedForCapacity.clear();
   state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear();
   state.previewVersions.clear(); state.imageStatus.clear(); state.renderVersion.clear();
+  imageMemoryBudget.releaseEntries();
 }
 
 async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null } = {}) {
-  if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) {
+  if (isImageRecipeBatchActive(state.bulk)) {
     showToast('Finish or stop the active image recipe before switching designs.');
     return false;
   }
   if (state.documentTransitioning) { showToast('A design switch is already in progress.'); return false; }
   if (state.interaction) { showToast('Finish the current canvas action before switching designs.'); return false; }
   if (state.pendingImageImports) { showToast('Wait for the current image import to finish before switching designs.'); return false; }
+  state.imageExportAbortController?.abort();
   state.documentTransitioning = true;
   setDocumentEditingBlocked(true);
   try {
     if (saveCurrent && !(await persistCurrentDocumentNow())) return false;
     if (beforeSwitch) await beforeSwitch(nextDocument);
     const generation = ++state.documentGeneration;
+    state.clipboard = [];
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
     state.prototypeConditionVariableId = null;
     state.prototypeConditionOperator = 'equals';
     state.prototypeConditionValue = null;
     state.selectedIds = []; state.selectedVectorPoint = null; state.smartGuides = []; state.pendingCommentAnchor = null; state.activeCommentId = null;
-    state.draftNode = null; state.penDraft = null; state.penHover = null; state.marquee = null; state.interaction = null;
+    state.draftNode = null; state.penDraft = null; state.penHover = null; state.pencilDraft = null; state.marquee = null; state.interaction = null;
     state.pointerMap.clear(); state.prototypeSourceId = null; state.textNodeId = null; state.textSelection = null;
     state.bulk = null; state.inspectorTab = 'design';
     state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
@@ -4650,7 +5562,7 @@ async function handleDesignLibraryAction(action, id) {
       return;
     }
     if (action === 'delete') {
-      if (state.bulk && (!state.bulk.done || state.bulk.inflight > 0)) { showToast('Finish or stop the active image recipe before deleting a design.'); return; }
+      if (isImageRecipeBatchActive(state.bulk)) { showToast('Finish or stop the active image recipe before deleting a design.'); return; }
       const saved = await loadDocumentById(id);
       if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
       if (!confirm(`Delete “${saved.name || 'Untitled'}” from this device? This cannot be undone.`)) return;
@@ -4769,7 +5681,7 @@ async function refreshImagesForExport(nodeIds) {
     if (timer || status === 'Updating preview…' || status === 'Processing locally…') {
       await renderImagePreview(node.id, assetId, adjustments, transforms, fillId);
     }
-    const hasEdits = Object.values(adjustments || {}).some(value => Number(value) !== 0)
+    const hasEdits = hasImageAdjustmentEdits(adjustments)
       || Boolean(transforms?.crop || transforms?.rotation);
     const previewMatchesAsset = state.previews.has(previewKey)
       && (state.previewAssetIds.get(previewKey) == null || state.previewAssetIds.get(previewKey) === assetId);
@@ -4779,7 +5691,13 @@ async function refreshImagesForExport(nodeIds) {
 
 function safeExportName(value) { return String(value || 'layer').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim() || 'layer'; }
 
-async function renderAndDownload(ids, setting, baseName) {
+function abortIfExportCanceled(signal) {
+  if (signal?.aborted) throw new DOMException('Image export canceled.', 'AbortError');
+}
+
+async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent = () => {}, refreshImages = true } = {}) {
+  const checkCurrent = () => { abortIfExportCanceled(signal); assertCurrent(); };
+  checkCurrent();
   if (!ids.length) throw new Error('Select a layer to export.');
   const boundsList = ids.map(exportBoundsForNode).filter(Boolean);
   if (!boundsList.length) throw new Error('The selected layer is no longer available.');
@@ -4788,8 +5706,10 @@ async function renderAndDownload(ids, setting, baseName) {
   const scale = Number(setting.scale) || 1;
   const width = Math.max(1, Math.ceil((right - left) * scale)); const height = Math.max(1, Math.ceil((bottom - top) * scale));
   if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
-  await refreshImagesForExport(ids);
+  if (refreshImages) await refreshImagesForExport(ids);
+  checkCurrent();
   await document.fonts?.ready;
+  checkCurrent();
   const output = document.createElement('canvas'); output.width = width; output.height = height;
   const context = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
   if (!context) throw new Error('This browser could not create an export surface.');
@@ -4806,14 +5726,24 @@ async function renderAndDownload(ids, setting, baseName) {
     try { output.toBlob(value => value ? resolve(value) : reject(new Error('The browser could not encode this export.')), mime, setting.format === 'png' ? undefined : setting.quality / 100); }
     catch (error) { reject(error); }
   });
+  checkCurrent();
   if (blob.type !== mime) throw new Error(`${setting.format.toUpperCase()} export is not supported by this browser.`);
   const suffix = String(setting.suffix || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').replace(/[. ]+$/g, '').trim();
   const scaleSuffix = !suffix && scale !== 1 ? `@${String(scale).replace('.', '_')}x` : suffix;
   const filename = `${safeExportName(baseName)}${scaleSuffix}.${extension}`;
+  return { blob, filename, width, height };
+}
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = Object.assign(document.createElement('a'), { href: url, download: filename });
   anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
-  return { blob, filename, width, height };
+}
+
+async function renderAndDownload(ids, setting, baseName) {
+  const result = await renderExportBlob(ids, setting, baseName);
+  downloadBlob(result.blob, result.filename);
+  return result;
 }
 
 async function exportLayerWithSetting(nodeId, settingId) {
@@ -4844,8 +5774,15 @@ function createSvgTextMeasurer() {
 }
 
 function hasRasterImageEdits(adjustments, transforms) {
-  return Object.values(adjustments || {}).some(value => Number(value) !== 0)
+  return hasImageAdjustmentEdits(adjustments)
     || Boolean(transforms?.crop || transforms?.rotation);
+}
+
+function hasImageAdjustmentEdits(adjustments = {}) {
+  return ['brightness', 'contrast', 'saturation', 'sharpness', 'blur']
+    .some(key => Number(adjustments[key] || 0) !== 0)
+    || Boolean(adjustments.autoContrast || adjustments.solarize || adjustments.invert)
+    || Number(adjustments.posterizeBits || 0) > 0;
 }
 
 async function imagePreviewsForSvgExport(rootNodeIds) {
@@ -4941,9 +5878,94 @@ async function exportActivePageSvg() {
 
 async function exportSelectionPng() {
   const ids = orderedRootSelection();
-  const names = ids.map(id => findNode(state.document, id)?.node.name).filter(Boolean);
-  try { await renderAndDownload(ids, { format: 'png', scale: 1, suffix: '', quality: 90 }, names.length === 1 ? names[0] : `selection-${names.length}`); }
+  const selected = ids.map(id => findNode(state.document, id)?.node).filter(Boolean);
+  if (ids.length > 1 && selected.length === ids.length && selected.every(node => node.type === 'image')) {
+    await exportImageSelectionArchive(ids, selected);
+    return;
+  }
+  const names = selected.map(node => node.name).filter(Boolean);
+  const single = ids.length === 1 ? findNode(state.document, ids[0])?.node : null;
+  const setting = single?.type === 'image'
+    ? { format: single.outputFormat ?? 'png', scale: 1, suffix: '', quality: single.outputQuality ?? 90 }
+    : { format: 'png', scale: 1, suffix: '', quality: 90 };
+  try { await renderAndDownload(ids, setting, names.length === 1 ? names[0] : `selection-${names.length}`); }
   catch (error) { showToast(error.message || 'Could not export this selection.'); }
+}
+
+async function exportImageSelectionArchive(ids, images) {
+  if (state.imageExportAbortController) {
+    showToast('An image export is already running. Press Escape to cancel it.');
+    return;
+  }
+  let plan;
+  try { plan = planImageArchive(images); }
+  catch (error) { showToast(error.message || 'These images could not be exported together.'); return; }
+
+  const generation = state.documentGeneration;
+  const documentSnapshot = state.document;
+  const pageId = state.document.activePageId;
+  const saveRevision = state.saveRevision;
+  const targets = plan.map(item => {
+    const node = findNode(documentSnapshot, item.id)?.node;
+    return { ...item, node, signature: JSON.stringify(node), assetId: node?.assetId, previewKey: imagePreviewKey(item.id) };
+  });
+  const controller = new AbortController();
+  state.imageExportAbortController = controller;
+  const assertCurrent = () => {
+    abortIfExportCanceled(controller.signal);
+    if (state.document !== documentSnapshot || state.documentGeneration !== generation || state.documentTransitioning
+      || state.document.activePageId !== pageId || state.saveRevision !== saveRevision) {
+      throw new Error('The design changed before the image archive finished. Try the export again.');
+    }
+    for (const target of targets) {
+      const current = findNode(state.document, target.id)?.node;
+      if (!current || current !== target.node || current.type !== 'image' || current.assetId !== target.assetId
+        || JSON.stringify(current) !== target.signature) {
+        throw new Error(`Image “${target.node?.name || target.id}” changed before the archive finished. Try the export again.`);
+      }
+    }
+  };
+  try {
+    assertCurrent();
+    await document.fonts?.ready;
+    assertCurrent();
+    const files = [];
+    let outputBytes = 0;
+    assertImageArchiveFits(plan, outputBytes);
+    for (let index = 0; index < plan.length; index += 1) {
+      const item = plan[index];
+      const target = targets[index];
+      assertCurrent();
+      showToast(`Preparing image ${index + 1} of ${plan.length}…`, 4000);
+      await refreshImagesForExport([item.id]);
+      assertCurrent();
+      const previewVersion = state.renderVersion.get(target.previewKey) ?? null;
+      const assertImageCurrent = () => {
+        assertCurrent();
+        if ((state.renderVersion.get(target.previewKey) ?? null) !== previewVersion) {
+          throw new Error(`The processed preview for “${target.node.name}” changed before the archive finished. Try the export again.`);
+        }
+      };
+      const baseName = item.filename.slice(0, -(item.format === 'jpeg' ? 4 : item.format === 'webp' ? 5 : 4));
+      const rendered = await renderExportBlob([item.id], {
+        format: item.format, scale: 1, suffix: '', quality: item.quality
+      }, baseName, { signal: controller.signal, assertCurrent: assertImageCurrent, refreshImages: false });
+      assertImageCurrent();
+      const nextOutputBytes = outputBytes + rendered.blob.size;
+      assertImageArchiveFits(plan, nextOutputBytes);
+      outputBytes = nextOutputBytes;
+      files.push({ name: item.filename, data: rendered.blob });
+    }
+    assertCurrent();
+    const archive = await createStoredZip(files, { signal: controller.signal });
+    assertCurrent();
+    downloadBlob(archive, `${safeExportName(documentSnapshot.name || 'Images')}-images.zip`);
+    showToast(`Downloaded ${files.length} separate images in one ZIP archive.`);
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not export the selected images.');
+  } finally {
+    if (state.imageExportAbortController === controller) state.imageExportAbortController = null;
+  }
 }
 
 function updateLayoutGuide(input, finalize = false) {
@@ -5219,6 +6241,8 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'release-mask' && node?.type === 'group' && node.mask) releaseSelectedMask(node.id);
   else if (action === 'insert-vector-point' && ['path', 'network'].includes(node?.type)) insertPathPointOnLongestSegment(node.id);
   else if (action === 'delete-vector-point' && ['path', 'network'].includes(node?.type)) deleteSelectedVectorPoint(node.id);
+  else if (action === 'add-vector-contour' && node?.type === 'path') addPathContour(node.id);
+  else if (action === 'remove-vector-contour' && node?.type === 'path') removeSelectedPathContour(node.id);
   else if (action === 'create-color-variable') createColorVariableFromSelection(details.kind || null);
   else if (action === 'create-color-style') {
     if (!node) { showToast('Select a layer with a solid Fill or Text color.'); return; }
@@ -5237,10 +6261,35 @@ function applyInspectorAction(action, details = {}) {
   }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
-    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }; node.transforms = createImageTransforms(); node.fit = 'cover';
+    checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover';
     recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit']);
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
+  else if (action === 'unlink-corners' && node && ['rectangle', 'frame', 'section', 'image'].includes(node.type)) {
+    if (node.locked) return;
+    checkpoint('Set independent corners');
+    const radius = Math.max(0, Math.min(100_000, Number(getNodePropertyValue(state.document, node, 'radius')) || 0));
+    node.radius = radius;
+    if (node.variableBindings) {
+      delete node.variableBindings.radius;
+      if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
+    }
+    node.cornerRadii = Object.fromEntries(cornerRadiusKeys.map(key => [key, radius]));
+    recordNodeComponentOverrides(node, ['radius', 'cornerRadii', 'variableBindings']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'link-corners' && node?.cornerRadii) {
+    if (node.locked) return;
+    checkpoint('Link corners');
+    const average = cornerRadiusKeys.reduce((sum, key) => sum + node.cornerRadii[key], 0) / cornerRadiusKeys.length;
+    node.radius = average;
+    if (node.variableBindings) {
+      delete node.variableBindings.radius;
+      if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
+    }
+    delete node.cornerRadii;
+    recordNodeComponentOverrides(node, ['radius', 'cornerRadii', 'variableBindings']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  }
   else if (action === 'add-stroke') {
     if (!node) return; checkpoint('Add stroke'); node.stroke ||= '#1e1e1e'; node.strokeWidth ||= 1; renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'auto-layout-toggle') {
@@ -5322,6 +6371,9 @@ function initEvents() {
   canvas.addEventListener('pointermove', onCanvasPointerMove);
   canvas.addEventListener('pointerup', onCanvasPointerUp);
   canvas.addEventListener('pointercancel', onCanvasPointerUp);
+  canvas.addEventListener('lostpointercapture', event => {
+    if (state.pencilDraft?.pointerId === event.pointerId) cancelPencilStroke();
+  });
   canvas.addEventListener('dblclick', event => {
     if (state.tool !== 'select') return;
     const world = screenToWorld(event, canvas, state);
@@ -5341,16 +6393,44 @@ function initEvents() {
     const point = screenToWorld(event, canvas, state); importImageFiles(event.dataTransfer.files, point);
   });
   $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files));
+  $('#add-local-font').addEventListener('click', () => {
+    if (typeof FontFace !== 'function' || !document.fonts?.add) { showToast('This browser cannot load local font files.'); return; }
+    $('#font-input').value = '';
+    $('#font-input').click();
+  });
+  $('#font-input').addEventListener('change', event => { void openLocalFontImport(event.currentTarget.files?.[0]); });
+  $('#font-import-form').addEventListener('submit', event => {
+    if (event.submitter?.value !== 'import') return;
+    event.preventDefault();
+    const button = $('#font-import-confirm');
+    button.disabled = true;
+    void savePendingLocalFont().catch(error => showToast(error.message || 'Could not install this font.'))
+      .finally(() => { button.disabled = false; });
+  });
+  $('#font-import-dialog').addEventListener('close', () => {
+    pendingFontImport = null;
+    $('#font-input').value = '';
+  });
+  $('#font-assets-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-action="remove-local-font"]');
+    if (!button) return;
+    void removeLocalFont(button.dataset.fontId).catch(error => showToast(error.message || 'Could not remove this font.'));
+  });
   $('#open-file-input').addEventListener('change', async event => {
     const input = event.currentTarget;
     const file = input.files?.[0]; if (!file) return;
     try {
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
+      await Promise.all(packageData.fonts.map(font => loadLocalFontFace(font, { register: false })));
       const importedDocument = parseDocument(packageData.document);
-      await switchToDocument(importedDocument, {
+      const switched = await switchToDocument(importedDocument, {
         message: 'Local design opened on this device.',
-        beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, packageData.assets)).document)
+        beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, packageData.assets, packageData.fonts)).document)
       });
+      if (switched) {
+        await refreshLocalFontAssets({ showFailureToast: true });
+        renderUI(); renderer.invalidate();
+      }
     } catch (error) { showToast(error.message || 'This file is not a valid local design package.'); }
     input.value = '';
   });
@@ -5392,12 +6472,28 @@ function initEvents() {
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
   $('#layer-select-mode').addEventListener('click', () => {
     state.layerSelectionMode = !state.layerSelectionMode;
-    if (state.layerSelectionMode) setSelection(selectedNodes().filter(node => node.type === 'image').map(node => node.id));
+    if (state.layerSelectionMode) {
+      renderLayers();
+      setSelection(selectedNodes().filter(node => node.type === 'image').map(node => node.id), { refreshLayers: false });
+    }
     else renderLayers();
   });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
     const node = findNode(state.document, row.dataset.layerId)?.node; if (!node) return;
+    const actionMenuButton = event.target.closest('[data-action="layer-actions-menu"]');
+    if (actionMenuButton) {
+      event.preventDefault();
+      if (!state.selectedIds.includes(node.id)) setSelection([node.id], { refreshLayers: false });
+      const currentButton = layerRowsById.get(node.id)?.querySelector('[data-action="layer-actions-menu"]') || actionMenuButton;
+      const bounds = currentButton.getBoundingClientRect();
+      openNodeMenu(node.id, bounds.right, bounds.top);
+      const menu = $('#context-menu');
+      menu._returnFocusElement = currentButton;
+      currentButton.setAttribute('aria-expanded', 'true');
+      menu.querySelector('button[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
+      return;
+    }
     const moveControl = event.target.closest('[data-action="layer-move-up"], [data-action="layer-move-down"]');
     if (moveControl) {
       if (moveControl.disabled || state.layerSelectionMode) return;
@@ -5412,16 +6508,16 @@ function initEvents() {
     if (state.layerSelectionMode) {
       if (node.type !== 'image') { showToast('Image selection mode only selects image layers.'); return; }
       const selectedImages = selectedNodes().filter(item => item.type === 'image').map(item => item.id);
-      setSelection(selectedImages.includes(node.id) ? selectedImages.filter(id => id !== node.id) : [...selectedImages, node.id]);
+      setSelection(selectedImages.includes(node.id) ? selectedImages.filter(id => id !== node.id) : [...selectedImages, node.id], { refreshLayers: false });
       state.lastLayerSelection = node.id;
       return;
     }
     if (event.shiftKey) {
       const rows = latestPageLayerIds; const a = rows.indexOf(state.lastLayerSelection || row.dataset.layerId); const b = rows.indexOf(row.dataset.layerId); const range = rows.slice(Math.min(a, b), Math.max(a, b) + 1);
-      setSelection([...new Set([...state.selectedIds, ...range])]);
+      setSelection([...new Set([...state.selectedIds, ...range])], { refreshLayers: false });
     } else if (event.metaKey || event.ctrlKey) {
-      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id]);
-    } else setSelection([node.id]);
+      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
+    } else setSelection([node.id], { refreshLayers: false });
     state.lastLayerSelection = node.id;
   });
   $('#layers-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-layer-id]'); if (row) { setSelection([row.dataset.layerId]); renameSelected(); } });
@@ -5498,8 +6594,20 @@ function initEvents() {
     if (event.target.matches('[data-frame-variable-mode]')) {
       const frame = selectedNodes()[0];
       if (frame?.type === 'frame') {
+        const collectionId = event.target.dataset.frameVariableMode;
+        const modeId = event.target.value || null;
+        const candidate = cloneDocument(state.document);
+        if (!setFrameVariableMode(candidate, frame.id, collectionId, modeId)) {
+          event.target.value = frame.variableModes?.[collectionId] || '';
+          showToast('That mode conflicts with a bound value on this frame. Resolve the binding first.');
+          return;
+        }
         checkpoint('Set frame variable mode');
-        setFrameVariableMode(state.document, frame.id, event.target.dataset.frameVariableMode, event.target.value || null);
+        if (!setFrameVariableMode(state.document, frame.id, collectionId, modeId)) {
+          event.target.value = frame.variableModes?.[collectionId] || '';
+          showToast('The frame mode could not be applied. Your previous mode was kept.');
+          return;
+        }
         resizeTextLayers([frame]);
         relayoutVariableBoundFrames();
         const instanceRoot = componentInstanceRoot(frame.id);
@@ -5706,9 +6814,14 @@ function initEvents() {
     if ($('#recipe-dialog').returnValue !== 'save' || !pendingRecipeNodeId) return;
     const node = findNode(state.document, pendingRecipeNodeId)?.node; if (!node) return;
     checkpoint('Save image recipe');
-    const recipe = createImageRecipe(node, $('#recipe-name').value); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
+    const recipe = createImageRecipe(node, $('#recipe-name').value, {
+      format: $('#recipe-format').value,
+      quality: Number($('#recipe-quality').value),
+    }); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
     queueSave(); renderInspector(); showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
   });
+  $('#recipe-format').addEventListener('change', syncRecipeOutputControls);
+  $('#recipe-quality').addEventListener('input', syncRecipeOutputControls);
   $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
   $('#component-slot-search').addEventListener('input', event => {
     if (!state.componentSlotDialog) return;
@@ -5732,10 +6845,17 @@ function initEvents() {
   $('#variable-dialog').addEventListener('close', commitVariableNameDialog);
   $('#variable-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#variable-dialog').returnValue = 'save'; });
   $('#bulk-speed').max = String(CPU_LIMIT);
-  $('#bulk-speed').addEventListener('input', event => { if (!state.bulk) return; state.bulk.concurrency = Number(event.currentTarget.value); imageEngine.setConcurrency(state.bulk.concurrency); renderBulkBar(); scheduleBulk(); });
-  $('#bulk-pause').addEventListener('click', () => { if (!state.bulk) return; state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk(); });
-  $('#bulk-cancel').addEventListener('click', () => { if (!state.bulk) return; state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; state.bulk.paused = false; renderBulkBar(); if (!state.bulk.inflight) { state.bulk.done = true; renderBulkBar(); } });
-  $('#bulk-done').addEventListener('click', () => { state.bulk = null; renderBulkBar(); });
+  $('#bulk-speed').addEventListener('input', event => {
+    if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
+    state.bulk.concurrency = Math.max(1, Math.min(CPU_LIMIT, Math.trunc(Number(event.currentTarget.value)) || 1));
+    imageEngine.setConcurrency(state.bulk.concurrency); renderBulkBar(); scheduleBulk();
+  });
+  $('#bulk-pause').addEventListener('click', () => {
+    if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
+    state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk();
+  });
+  $('#bulk-cancel').addEventListener('click', cancelBulkRecipe);
+  $('#bulk-done').addEventListener('click', () => { if (!canDismissImageRecipeBatch(state.bulk)) return; state.bulk = null; renderBulkBar(); });
   $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
   $('#outline-mode').addEventListener('click', toggleOutlineMode);
   $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
@@ -5756,6 +6876,35 @@ function initEvents() {
 
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
+  const contextMenu = $('#context-menu');
+  if (event.key === 'Escape' && !contextMenu.hidden) {
+    const returnFocus = contextMenu._returnFocusElement;
+    closeMenu();
+    if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus({ preventScroll: true });
+    event.preventDefault();
+    return;
+  }
+  const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && state.imageExportAbortController && !editing && !document.querySelector('dialog[open]')) {
+    state.imageExportAbortController.abort();
+    showToast('Image archive export canceled.');
+    event.preventDefault();
+    return;
+  }
+  if (!contextMenu.hidden && contextMenu.contains(document.activeElement)) {
+    const menuItems = [...contextMenu.querySelectorAll('button[role="menuitem"]:not(:disabled)')];
+    const activeIndex = menuItems.indexOf(document.activeElement);
+    let targetIndex = null;
+    if (event.key === 'ArrowDown') targetIndex = (activeIndex + 1 + menuItems.length) % menuItems.length;
+    else if (event.key === 'ArrowUp') targetIndex = (activeIndex - 1 + menuItems.length) % menuItems.length;
+    else if (event.key === 'Home') targetIndex = 0;
+    else if (event.key === 'End') targetIndex = menuItems.length - 1;
+    if (targetIndex != null && menuItems.length) {
+      menuItems[targetIndex].focus({ preventScroll: true });
+      event.preventDefault();
+      return;
+    }
+  }
   if (event.key.toLowerCase() === 'escape' && innerWidth <= 820
     && ($('#left-panel').classList.contains('is-open') || $('#right-panel').classList.contains('is-open'))
     && !document.querySelector('dialog[open]')) {
@@ -5763,7 +6912,6 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
-  const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
   if (event.code === 'Space' && !editing) { state.spaceDown = true; event.preventDefault(); }
   if (editing) return;
   const mod = event.metaKey || event.ctrlKey;
@@ -5771,6 +6919,7 @@ function onKeyDown(event) {
   if (mod && key === 'g') { event.preventDefault(); event.shiftKey ? ungroupSelectedLayers() : groupSelectedLayers(); return; }
   if (event.shiftKey && key === 'g') { event.preventDefault(); toggleLayoutGuides(); return; }
   if (key === 'escape' && state.presenting?.overlays.length) { event.preventDefault(); backPresentation(); return; }
+  if (state.pencilDraft && key === 'escape') { event.preventDefault(); cancelPencilStroke(); showToast('Pencil stroke cancelled.'); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
   if (key === 'escape' && state.prototypeSourceId) { state.prototypeSourceId = null; renderInspector(); renderer.invalidate(); event.preventDefault(); return; }
@@ -5788,7 +6937,7 @@ function onKeyDown(event) {
     return;
   }
   if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
-  if (key === 'escape') { closeMenu(); if (state.bulk && !state.bulk.done) { state.bulk.cancelled = true; state.bulk.next = state.bulk.targets.length; renderBulkBar(); } setSelection([]); return; }
+  if (key === 'escape') { closeMenu(); if (isImageRecipeBatchActive(state.bulk)) cancelBulkRecipe(); setSelection([]); return; }
   const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;
@@ -5814,6 +6963,8 @@ async function boot() {
     const saved = await loadLatestDocument();
     if (saved) state.document = parseDocument(saved);
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
+  try { await refreshLocalFontAssets({ showFailureToast: true }); }
+  catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   initEvents(); renderUI(); state.ready = true;
@@ -5824,7 +6975,7 @@ async function boot() {
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
-  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); });
+  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();

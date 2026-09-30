@@ -20,13 +20,14 @@ const MAX_VECTOR_TOKENS = 100_000;
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
 const MAX_TEXT_LENGTH = 100_000;
+const unsafeSvgElements = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
 const initialStyle = {
   fill: '#000000', fillAlpha: 1, fillColorAlpha: 1, fillOpacityValue: 1,
   stroke: null, strokeAlpha: 1, strokeColorAlpha: 1, strokeOpacityValue: 1, strokeWidth: 1,
   strokeCap: 'butt', strokeJoin: 'miter', strokePattern: 'solid', strokeMiterLimit: 4, strokeDashArray: null, fillGradient: null,
   fillRule: 'nonzero', opacity: 1,
   fontFamily: 'sans-serif', fontSize: 16, fontWeight: 400, fontStyle: 'normal', textAnchor: 'start',
-  dominantBaseline: 'alphabetic', letterSpacing: 0, textDecoration: 'none', textCase: 'none', xmlSpace: 'default',
+  dominantBaseline: 'alphabetic', letterSpacing: 0, lineHeight: 1.25, textDecoration: 'none', textCase: 'none', xmlSpace: 'default',
   display: true, visibility: 'visible', visible: true
 };
 
@@ -34,8 +35,24 @@ function fail(code, message, element = null) {
   throw new SvgImportError(code, message, element);
 }
 
+function validXmlCharacter(codePoint) {
+  return codePoint === 0x9 || codePoint === 0xa || codePoint === 0xd
+    || codePoint >= 0x20 && codePoint <= 0xd7ff
+    || codePoint >= 0xe000 && codePoint <= 0xfffd
+    || codePoint >= 0x10000 && codePoint <= 0x10ffff;
+}
+
+function hasInvalidXmlCharacter(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index);
+    if (!validXmlCharacter(codePoint)) return true;
+    if (codePoint > 0xffff) index += 1;
+  }
+  return false;
+}
+
 function decodeXml(value, element) {
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff\ufffe\uffff]/u.test(value)) {
+  if (hasInvalidXmlCharacter(value)) {
     fail('invalid-xml-character', 'SVG contains a character that XML does not permit.', element);
   }
   if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);)/i.test(value)) fail('invalid-xml', 'SVG contains an unescaped ampersand in text or an attribute.', element);
@@ -49,9 +66,7 @@ function decodeXml(value, element) {
     if (/^#\d+$/.test(entity)) codePoint = Number(entity.slice(1));
     else if (/^#x[\da-f]+$/i.test(entity)) codePoint = Number.parseInt(entity.slice(2), 16);
     else fail('unsafe-entity', `SVG uses an undeclared XML entity (&${entity};).`, element);
-    if (!Number.isInteger(codePoint) || codePoint === 0 || codePoint > 0x10ffff
-      || codePoint >= 0xd800 && codePoint <= 0xdfff
-      || codePoint < 0x20 && ![9, 10, 13].includes(codePoint)) {
+    if (!Number.isInteger(codePoint) || !validXmlCharacter(codePoint)) {
       fail('invalid-xml-character', 'SVG contains a character that XML does not permit.', element);
     }
     return String.fromCodePoint(codePoint);
@@ -103,8 +118,12 @@ function parseXml(source) {
       const parent = stack.at(-1);
       const context = parent?.tag;
       if (['script', 'foreignObject'].includes(context)) fail('active-content', `SVG element <${context}> contains active or embedded content.`, context);
-      if (context === 'text') parent.textContent = (parent.textContent ?? '') + decodeXml(textContent, 'text');
-      else if (stack.some(entry => entry.tag === 'text')) { /* nested text markup is rejected with a precise feature error below */ }
+      if (context === 'text' || context === 'tspan') {
+        const decoded = decodeXml(textContent, context);
+        parent.textContent = (parent.textContent ?? '') + decoded;
+        (parent.content ||= []).push(decoded);
+      }
+      else if (stack.some(entry => entry.tag === 'text')) { /* The text importer validates nested markup and preserves ordered tspan content. */ }
       else if (textContent.trim()) fail('unsupported-text', 'Text outside a supported <text> element is not accepted.', context);
     }
     if (text.startsWith('<!--', open)) {
@@ -119,7 +138,7 @@ function parseXml(source) {
       if (text.slice(open + 9, end).trim()) {
         const context = stack.at(-1)?.tag;
         if (['script', 'foreignObject'].includes(context)) fail('active-content', `SVG element <${context}> contains active or embedded content.`, context);
-        if (context === 'text') fail('unsupported-text-feature', 'CDATA sections inside SVG text are not supported; use escaped character data.', 'text');
+        if (context === 'text' || context === 'tspan') fail('unsupported-text-feature', 'CDATA sections inside SVG text are not supported; use escaped character data.', context);
         fail('unsupported-text', 'Text outside a supported <text> element is not accepted.', context);
       }
       cursor = end + 3;
@@ -165,7 +184,9 @@ function parseXml(source) {
     if (++count > MAX_ELEMENTS) fail('too-many-elements', `SVG contains more than ${MAX_ELEMENTS} elements.`);
     const node = { tag, qualifiedName, attrs, children: [], serial: count - 1 };
     if (qualifiedName.includes(':') && stack.length > 1) fail('unsupported-namespace', 'Prefixed SVG child elements are not accepted.', tag);
-    stack.at(-1).children.push(node);
+    const parent = stack.at(-1);
+    parent.children.push(node);
+    if (parent.tag === 'text' || parent.tag === 'tspan') (parent.content ||= []).push(node);
     if (!selfClosing) {
       if (stack.length >= MAX_DEPTH + 1) fail('too-deep', `SVG nesting exceeds ${MAX_DEPTH} elements.`, tag);
       stack.push(node);
@@ -487,7 +508,7 @@ function collectGradients(root) {
 const inheritedProperties = new Set([
   'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
   'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility', 'font-family', 'font-size',
-  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'letter-spacing', 'text-decoration', 'text-transform'
+  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
 ]);
 const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility']);
 
@@ -562,6 +583,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       }
       case 'letter-spacing':
         values.letterSpacing = value === 'normal' ? 0 : coordinateLength(value, key, node.tag); break;
+      case 'line-height': values.lineHeight = value; break;
       case 'text-decoration':
         if (!['none', 'underline', 'line-through', 'overline', 'blink'].includes(value)) fail('invalid-text-decoration', 'SVG text-decoration is not a recognized value.', node.tag);
         values.textDecoration = value; break;
@@ -587,7 +609,6 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       }
       case 'fill-rule':
         if (!['nonzero', 'evenodd'].includes(value)) fail('invalid-fill-rule', 'SVG fill-rule must be nonzero or evenodd.', node.tag);
-        if (value !== 'nonzero') fail('unsupported-fill-rule', 'Even-odd SVG fills cannot be represented by the current vector path model.', node.tag);
         values.fillRule = value; break;
       case 'display':
         if (!['none', 'inline', 'block'].includes(value)) fail('unsupported-display', `SVG display value “${value}” is unsupported.`, node.tag);
@@ -622,13 +643,24 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
   for (const [property, styleKey] of [
     ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'],
     ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['letter-spacing', 'letterSpacing'],
-    ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
+    ['line-height', 'lineHeight'], ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
   ]) if (!Object.hasOwn(declarations, property)) values[styleKey] = parentStyle[styleKey];
   if (Object.hasOwn(node.attrs, 'xml:space')) {
     if (!['default', 'preserve'].includes(node.attrs['xml:space'])) fail('invalid-xml-space', 'SVG xml:space must be default or preserve.', node.tag);
     values.xmlSpace = node.attrs['xml:space'];
   } else values.xmlSpace = parentStyle.xmlSpace;
   if (!Object.hasOwn(declarations, 'fill-rule')) values.fillRule = parentStyle.fillRule;
+  if (typeof values.lineHeight === 'string') {
+    const lineHeight = values.lineHeight.trim();
+    if (lineHeight === 'normal') values.lineHeight = 1.25;
+    else if (/^[+]?(?:\d+\.?\d*|\.\d+)(?:e[+]\d+)?$/i.test(lineHeight)) {
+      values.lineHeight = finiteNumber(lineHeight, 'line-height', node.tag, { min: 0.1, max: 100 });
+    } else {
+      const pixels = length(lineHeight, 'line-height', node.tag);
+      values.lineHeight = pixels / values.fontSize;
+      if (values.lineHeight < 0.1 || values.lineHeight > 100) fail('invalid-text-line-height', 'SVG line-height must be between 0.1 and 100 times the font size.', node.tag);
+    }
+  }
   values.fillAlpha = values.fillColorAlpha * values.fillOpacityValue;
   values.strokeAlpha = values.strokeColorAlpha * values.strokeOpacityValue;
   if (values.stroke && values.strokeAlpha > 0 && values.strokeWidth > 0
@@ -642,7 +674,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
 const geomAttrs = {
   svg: new Set(['xmlns', 'version', 'width', 'height', 'viewBox', 'preserveAspectRatio']),
   g: new Set(), defs: new Set(['id']),
-  text: new Set(['x', 'y']),
+  text: new Set(['x', 'y']), tspan: new Set(),
   rect: new Set(['x', 'y', 'width', 'height', 'rx', 'ry']),
   circle: new Set(['cx', 'cy', 'r']),
   ellipse: new Set(['cx', 'cy', 'rx', 'ry']),
@@ -653,17 +685,18 @@ const commonAttrs = new Set([
   'id', 'transform', 'style', 'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap',
   'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'opacity', 'display', 'visibility', 'color', 'class',
   'href', 'xlink:href', 'xml:space', 'role', 'focusable', 'font-family', 'font-size', 'font-weight', 'font-style',
-  'text-anchor', 'dominant-baseline', 'letter-spacing', 'text-decoration', 'text-transform'
+  'text-anchor', 'dominant-baseline', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
 ]);
 
 function checkElementAttributes(node) {
   const allowed = geomAttrs[node.tag];
   for (const key of Object.keys(node.attrs)) {
-    if (node.tag === 'text' && ['dx', 'dy', 'rotate'].includes(key)) {
-      fail('unsupported-text-positioning', `SVG <text> ${key} positioning is unsupported; use one x and y coordinate for the entire text layer.`, 'text');
+    if (node.tag === 'text' && ['dx', 'dy', 'rotate'].includes(key)
+      || node.tag === 'tspan' && ['x', 'y', 'dx', 'dy', 'rotate'].includes(key)) {
+      fail('unsupported-text-positioning', `SVG <${node.tag}> ${key} positioning cannot be preserved in the editable text layer.`, node.tag);
     }
-    if (node.tag === 'text' && ['textLength', 'lengthAdjust', 'writing-mode', 'glyph-orientation-horizontal', 'glyph-orientation-vertical'].includes(key)) {
-      fail('unsupported-text-feature', `SVG <text> attribute “${key}” is not supported by editable text layers.`, 'text');
+    if (['text', 'tspan'].includes(node.tag) && ['textLength', 'lengthAdjust', 'writing-mode', 'glyph-orientation-horizontal', 'glyph-orientation-vertical'].includes(key)) {
+      fail('unsupported-text-feature', `SVG <${node.tag}> attribute “${key}” is not supported by editable text layers.`, node.tag);
     }
     if (key === 'xmlns' && node.tag === 'svg' || key === 'version' && node.tag === 'svg' || key.startsWith('aria-') || key.startsWith('data-')) continue;
     if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, node.tag);
@@ -779,7 +812,8 @@ function parsePath(d, element, budget) {
   const reader = new PathTokenReader(d, element);
   let command = null; let current = { x: 0, y: 0 }; let start = null;
   let previousCommand = null; let previousCubic = null; let previousQuadratic = null; let closed = false;
-  const points = [];
+  let points = [];
+  const contours = [];
   const isCommand = token => /^[a-zA-Z]$/.test(token || '');
   const hasNumber = () => reader.peek() !== null && !isCommand(reader.peek());
   const number = label => {
@@ -797,7 +831,8 @@ function parsePath(d, element, budget) {
   };
   const absolutePoint = (x, y, relative) => ({ x: relative ? current.x + x : x, y: relative ? current.y + y : y });
   const moveTo = point => {
-    if (points.length) fail('unsupported-compound-path', 'SVG paths with multiple subpaths cannot be represented without changing fill holes.', element);
+    if (points.length) contours.push({ points, closed });
+    points = [];
     current = point; start = { ...point }; points.push({ x: point.x, y: point.y }); closed = false;
   };
   const lineTo = point => {
@@ -880,8 +915,9 @@ function parsePath(d, element, budget) {
       previousCommand = upper === 'M' && !firstMovePair ? 'L' : upper;
     }
   }
-  if (points.length < 2) fail('invalid-path', 'SVG path needs at least two points.', element);
-  return [{ points, closed }];
+  if (points.length) contours.push({ points, closed });
+  if (!contours.length || contours.some(contour => contour.points.length < 2)) fail('invalid-path', 'Every SVG path subpath needs at least two points.', element);
+  return [{ points: contours[0].points, closed: contours[0].closed, ...(contours.length > 1 ? { subpaths: contours.slice(1) } : {}) }];
 }
 
 function ellipsePath(cx, cy, rx, ry) {
@@ -1001,8 +1037,8 @@ function gradientBounds(subpath) {
     minX = Math.min(minX, point.x); minY = Math.min(minY, point.y);
     maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
   };
-  const points = subpath.points;
-  for (const point of points) include(point);
+  const contours = Array.isArray(subpath) ? subpath : [subpath];
+  for (const contour of contours) for (const point of contour.points) include(point);
   const cubicAt = (p0, p1, p2, p3, t) => {
     const inverse = 1 - t;
     return inverse ** 3 * p0 + 3 * inverse ** 2 * t * p1 + 3 * inverse * t ** 2 * p2 + t ** 3 * p3;
@@ -1017,8 +1053,10 @@ function gradientBounds(subpath) {
     const root = Math.sqrt(discriminant);
     return [(-b + root) / (2 * a), (-b - root) / (2 * a)];
   };
-  const segmentCount = subpath.closed ? points.length : Math.max(0, points.length - 1);
-  for (let index = 0; index < segmentCount; index += 1) {
+  for (const contour of contours) {
+    const points = contour.points;
+    const segmentCount = contour.closed ? points.length : Math.max(0, points.length - 1);
+    for (let index = 0; index < segmentCount; index += 1) {
     const from = points[index]; const to = points[(index + 1) % points.length];
     const control1 = from.out ? { x: from.x + from.out.x, y: from.y + from.out.y } : from;
     const control2 = to.in ? { x: to.x + to.in.x, y: to.y + to.in.y } : to;
@@ -1027,6 +1065,7 @@ function gradientBounds(subpath) {
       for (const t of roots(p0, p1, p2, p3)) {
         if (t > 0 && t < 1) include({ x: axis === 'x' ? cubicAt(p0, p1, p2, p3, t) : from.x, y: axis === 'y' ? cubicAt(p0, p1, p2, p3, t) : from.y });
       }
+    }
     }
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
@@ -1127,17 +1166,18 @@ function makePathNode(subpath, style, matrix, prefix, name) {
     }
     minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
   };
-  for (const point of subpath.points) {
+  const contours = [{ points: subpath.points, closed: subpath.closed }, ...(subpath.subpaths || [])];
+  for (const contour of contours) for (const point of contour.points) {
     include(mapPoint(matrix, point));
     if (point.in) include(mapPoint(matrix, { x: point.x + point.in.x, y: point.y + point.in.y }));
     if (point.out) include(mapPoint(matrix, { x: point.x + point.out.x, y: point.y + point.out.y }));
   }
   const actualWidth = maxX - minX; const actualHeight = maxY - minY;
   const width = actualWidth || 1; const height = actualHeight || 1;
-  const sourceBounds = gradientBounds(subpath);
+  const sourceBounds = gradientBounds(contours);
   const resolvedGradient = style.fillGradient && !subpath.noFill
     ? resolveGradient(style.fillGradient, sourceBounds, matrix, { x: minX, y: minY, width, height }) : null;
-  for (const point of subpath.points) {
+  for (const contour of contours) for (const point of contour.points) {
     const original = { x: point.x, y: point.y };
     const anchor = mapPoint(matrix, original);
     if (point.in) {
@@ -1154,7 +1194,9 @@ function makePathNode(subpath, style, matrix, prefix, name) {
   const base = createNode('path', {
     id: `${prefix}-${name}-geometry`, name: cleanLayerName(name), x: minX, y: minY, width, height,
     rotation: 0, fill: 'transparent', stroke: null, strokeWidth: 0, fillOpacity: 1,
-    closed: subpath.closed, points: subpath.points, children: []
+    closed: subpath.closed, points: subpath.points,
+    ...(contours.length > 1 ? { subpaths: contours.slice(1) } : {}),
+    fillRule: style.fillRule || 'nonzero', children: []
   });
   return { base, strokeWidth: style.strokeWidth * (scale ?? 1), fillGradient: resolvedGradient };
 }
@@ -1166,6 +1208,7 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
   const setFill = node => {
     node.fill = style.fill || 'transparent';
     node.fillOpacity = style.fillGradient ? style.fillAlpha * style.fillGradient.alpha : style.fillAlpha;
+    node.fillRule = style.fillRule || 'nonzero';
     if (style.fillGradient) {
       node.fillGradient = {
         type: style.fillGradient.type,
@@ -1191,6 +1234,7 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
     fillNode.opacity = 1;
     setFill(fillNode);
     fillNode.closed = true;
+    if (Array.isArray(fillNode.subpaths)) fillNode.subpaths = fillNode.subpaths.map(contour => ({ ...contour, closed: true }));
     strokeNode.id = `${prefix}-${serial}-stroke`;
     strokeNode.name = `${cleanLayerName(name)} stroke`;
     strokeNode.x = 0;
@@ -1208,7 +1252,10 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
     return [group];
   }
   const node = { ...base, id: `${prefix}-${serial}`, opacity: style.opacity, fill: 'transparent', stroke: null, strokeWidth: 0 };
-  if (fillVisible) { setFill(node); node.closed = true; }
+  if (fillVisible) {
+    setFill(node); node.closed = true;
+    if (Array.isArray(node.subpaths)) node.subpaths = node.subpaths.map(contour => ({ ...contour, closed: true }));
+  }
   if (strokeVisible) {
     node.stroke = style.stroke; node.strokeWidth = strokeWidth; node.opacity *= style.strokeAlpha;
     node.strokeCap = style.strokeCap; node.strokeJoin = style.strokeJoin; node.strokePattern = style.strokePattern;
@@ -1256,34 +1303,90 @@ function localName(node) {
   return node.attrs.id ? cleanLayerName(node.attrs.id) : `${node.tag} ${node.serial}`;
 }
 
-function svgTextValue(node, style) {
-  let value = String(node.textContent ?? '').replace(/\r\n?/g, '\n');
-  if (style.xmlSpace === 'default') value = value.replace(/[\t\n\r ]+/g, ' ').trim();
-  else if (/[\t\n\r]/.test(value) || /^ | $| {2,}/.test(value)) {
+function svgTextValue(node, style, gradients = new Map()) {
+  const runStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'textDecoration', 'fill', 'fillAlpha'];
+  const segments = [];
+  let rawLength = 0;
+  const pushSegment = (text, runStyle) => {
+    rawLength += text.length;
+    if (rawLength > MAX_TEXT_LENGTH) fail('resource-limit', `SVG text exceeds the ${MAX_TEXT_LENGTH}-character import limit.`, 'text');
+    if (text && runStyle.display && runStyle.visible) segments.push({ text, style: runStyle });
+  };
+  const validateTspanStyle = runStyle => {
+    if (runStyle.opacity !== 1) fail('unsupported-text-opacity', 'SVG tspan opacity cannot be preserved per text run.', 'tspan');
+    if (runStyle.fillGradient) fail('unsupported-text-paint', 'SVG gradient fills on text runs cannot be represented by editable text.', 'tspan');
+    if (Math.abs(runStyle.fillAlpha - style.fillAlpha) > 1e-8) fail('unsupported-text-paint', 'SVG text runs with different fill opacity cannot be represented faithfully.', 'tspan');
+    if (runStyle.stroke && runStyle.strokeAlpha > 0 && runStyle.strokeWidth > 0) {
+      fail('unsupported-text-paint', 'SVG stroke paint on text runs cannot be represented by editable text.', 'tspan');
+    }
+    if (runStyle.textAnchor !== style.textAnchor || runStyle.dominantBaseline !== style.dominantBaseline
+      || runStyle.textCase !== style.textCase || runStyle.xmlSpace !== style.xmlSpace) {
+      fail('unsupported-text-feature', 'SVG tspan alignment, baseline, text transform, and whitespace mode must match the parent text layer.', 'tspan');
+    }
+    if (runStyle.fontStyle === 'oblique') fail('unsupported-text-font', 'Oblique SVG text runs are not supported; use normal or italic font-style.', 'tspan');
+    if (!['none', 'underline', 'line-through'].includes(runStyle.textDecoration)) {
+      fail('unsupported-text-decoration', 'SVG text runs support only none, underline, or line-through decoration.', 'tspan');
+    }
+  };
+  const collect = (parent, inheritedStyle) => {
+    for (const item of parent.content || []) {
+      if (typeof item === 'string') { pushSegment(item, inheritedStyle); continue; }
+      if (['script', 'foreignObject'].includes(item.tag)) fail('active-content', `SVG element <${item.tag}> contains active or embedded content.`, item.tag);
+      if (['image', 'use'].includes(item.tag) || Object.hasOwn(item.attrs, 'href') || Object.hasOwn(item.attrs, 'xlink:href')) {
+        fail('external-reference', 'SVG text cannot contain linked or embedded elements.', item.tag);
+      }
+      if (Object.keys(item.attrs).some(key => /^on/i.test(key))) fail('active-content', 'SVG text contains an event handler attribute.', item.tag);
+      if (item.tag !== 'tspan') fail('unsupported-text-feature', 'Only nested <tspan> elements with editable text styles are supported inside SVG <text>.', item.tag);
+      checkElementAttributes(item);
+      if (item.attrs.transform != null) fail('unsupported-text-transform', 'Transforms on SVG tspan elements cannot be preserved as editable text runs.', 'tspan');
+      const runStyle = parseStyle(item, inheritedStyle, gradients);
+      validateTspanStyle(runStyle);
+      collect(item, runStyle);
+    }
+  };
+  collect(node, style);
+  const rawValue = segments.map(segment => segment.text).join('').replace(/\r\n?/g, '\n');
+  if (style.xmlSpace === 'preserve' && (/[\t\n\r]/.test(rawValue) || /^ | $| {2,}/.test(rawValue))) {
     fail('unsupported-text-whitespace', 'SVG xml:space="preserve" text with tabs, line breaks, or repeated spaces cannot be represented faithfully.', 'text');
   }
-  if (value.length > MAX_TEXT_LENGTH) fail('resource-limit', `SVG text exceeds the ${MAX_TEXT_LENGTH}-character import limit.`, 'text');
-  return value;
-}
 
-function estimateTextBoxWidth(text, fontSize, letterSpacing, element) {
-  // A generous per-codepoint bound prevents the editor's fixed text box from wrapping a
-  // single SVG text run while keeping the source text anchored at x/middle/end.
-  const glyphCount = [...text].length;
-  const width = Math.max(fontSize, glyphCount * fontSize * 1.25 + Math.max(0, glyphCount - 1) * Math.max(0, letterSpacing) + 2);
-  if (!Number.isFinite(width) || width > 100_000) fail('resource-limit', 'SVG text would exceed the editor’s 100000 px text-layer width limit.', element);
-  return Math.ceil(width);
+  const normalized = [];
+  const append = (character, runStyle) => {
+    const previous = normalized.at(-1);
+    const sameStyle = previous && runStyleKeys.every(key => Object.is(previous.style[key], runStyle[key]));
+    if (sameStyle) previous.text += character;
+    else normalized.push({ text: character, style: runStyle });
+  };
+  if (style.xmlSpace === 'default') {
+    let pendingSpaceStyle = null;
+    for (const segment of segments) {
+      for (const character of segment.text.replace(/\r\n?/g, '\n')) {
+        if (/[\t\n\r ]/.test(character)) { pendingSpaceStyle ||= segment.style; continue; }
+        if (pendingSpaceStyle && normalized.length) append(' ', pendingSpaceStyle);
+        pendingSpaceStyle = null;
+        append(character, segment.style);
+      }
+    }
+  } else {
+    for (const segment of segments) {
+      for (const character of segment.text.replace(/\r\n?/g, '\n')) append(character, segment.style);
+    }
+  }
+  const text = normalized.map(segment => segment.text).join('');
+  if (text.length > MAX_TEXT_LENGTH) fail('resource-limit', `SVG text exceeds the ${MAX_TEXT_LENGTH}-character import limit.`, 'text');
+  return { text, segments: normalized };
 }
 
 function validateNestedTextMarkup(node) {
   const pending = [...node.children];
   while (pending.length) {
     const child = pending.pop();
-    if (['script', 'foreignObject'].includes(child.tag)) {
-      fail('active-content', `SVG element <${child.tag}> contains active or embedded content.`, child.tag);
-    }
     if (['image', 'use'].includes(child.tag) || Object.hasOwn(child.attrs, 'href') || Object.hasOwn(child.attrs, 'xlink:href')) {
       fail('external-reference', 'SVG text cannot contain linked or embedded elements.', child.tag);
+    }
+    if (unsafeSvgElements.has(child.tag)) {
+      const code = ['script', 'foreignObject'].includes(child.tag) ? 'active-content' : 'unsupported-element';
+      fail(code, `SVG element <${child.tag}> is not accepted.`, child.tag);
     }
     for (const key of Object.keys(child.attrs)) {
       if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, child.tag);
@@ -1292,15 +1395,9 @@ function validateNestedTextMarkup(node) {
   }
 }
 
-function textLayer(node, style, matrix, prefix, serial) {
-  if (node.children.length) {
-    validateNestedTextMarkup(node);
-    if (node.children.some(child => child.tag === 'tspan')) {
-      fail('unsupported-text-tspan', 'SVG <tspan> runs are not supported; use one plain text run per <text> element.', 'tspan');
-    }
-    fail('unsupported-text-feature', 'Nested SVG elements inside <text> are not supported.', 'text');
-  }
-  const value = svgTextValue(node, style);
+function textLayer(node, style, matrix, prefix, serial, gradients) {
+  const content = svgTextValue(node, style, gradients);
+  const value = content.text;
   if (!value) return null;
   if (style.dominantBaseline !== 'text-before-edge') {
     fail('unsupported-text-baseline', 'Editable SVG text requires dominant-baseline="text-before-edge" so its top edge maps exactly to the text layer.', 'text');
@@ -1330,9 +1427,28 @@ function textLayer(node, style, matrix, prefix, serial) {
   }
   const x = coordinateLength(xText, 'text x', 'text');
   const y = coordinateLength(yText, 'text y', 'text');
-  const width = estimateTextBoxWidth(value, style.fontSize, style.letterSpacing, 'text');
+  const textRuns = content.segments.map(segment => {
+    const run = { text: segment.text };
+    for (const [source, target] of [
+      ['fontFamily', 'fontFamily'], ['fontSize', 'fontSize'], ['fontWeight', 'fontWeight'], ['fontStyle', 'fontStyle'],
+      ['lineHeight', 'lineHeight'], ['letterSpacing', 'letterSpacing'], ['textDecoration', 'textDecoration']
+    ]) if (!Object.is(segment.style[source], style[source])) run[target] = segment.style[source];
+    const colorValue = segment.style.fill || '#000000';
+    if (colorValue !== (style.fill || '#000000')) run.color = colorValue;
+    return run;
+  });
+  const hasStyledRuns = textRuns.some(run => Object.keys(run).length > 1);
+  const estimatedRunWidth = content.segments.reduce((sum, segment) => {
+    const glyphCount = [...segment.text].length;
+    return sum + glyphCount * segment.style.fontSize * 1.25
+      + Math.max(0, glyphCount - 1) * Math.max(0, segment.style.letterSpacing);
+  }, 0);
+  const width = Math.max(1, Math.ceil(estimatedRunWidth + 2));
+  if (!Number.isFinite(width) || width > 100_000) fail('resource-limit', 'SVG text would exceed the editor’s 100000 px text-layer width limit.', 'text');
   const outputFontSize = style.fontSize * scale;
-  const height = Math.max(36, Math.ceil(outputFontSize * 1.25 + 4));
+  const maximumRunLineHeight = content.segments.reduce((maximum, segment) =>
+    Math.max(maximum, segment.style.fontSize * segment.style.lineHeight), style.fontSize * style.lineHeight);
+  const height = Math.max(36, Math.ceil(maximumRunLineHeight * scale + 4));
   const anchor = style.textAnchor === 'middle' ? 'center' : style.textAnchor === 'end' ? 'right' : 'left';
   const localLeft = anchor === 'center' ? x - width / 2 : anchor === 'right' ? x - width : x;
   const mappedTopLeft = mapPoint(matrix, { x: localLeft, y });
@@ -1360,9 +1476,14 @@ function textLayer(node, style, matrix, prefix, serial) {
     x: layerX, y: layerY, width: outputWidth, height: outputHeight, rotation: angle,
     opacity: style.opacity, text: value, textFit: 'auto-width',
     fontFamily: style.fontFamily, fontSize: outputFontSize, fontWeight: style.fontWeight,
-    fontStyle: style.fontStyle, lineHeight: 1.25, letterSpacing: outputLetterSpacing,
+    fontStyle: style.fontStyle, lineHeight: style.lineHeight, letterSpacing: outputLetterSpacing,
     color: style.fill || '#000000', fillOpacity: style.fill ? style.fillColorAlpha * style.fillOpacityValue : 0,
     align: anchor, verticalAlign: 'top', textCase: style.textCase, textDecoration: style.textDecoration,
+    ...(hasStyledRuns ? { textRuns: textRuns.map(run => ({ ...run,
+      ...(run.fontSize != null ? { fontSize: run.fontSize * scale } : {}),
+      ...(run.letterSpacing != null ? { letterSpacing: run.letterSpacing * scale } : {}),
+      ...(run.lineHeight != null ? { lineHeight: run.lineHeight } : {})
+    })) } : {}),
     stroke: null, strokeWidth: 0, children: []
   });
 }
@@ -1371,19 +1492,19 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
   if (node.tag === 'svg' && node !== counter.root) fail('unsupported-nested-svg', 'Nested <svg> viewports are not supported.', 'svg');
   if (node.tag === 'defs') return [];
   if (node.tag === 'tspan') fail('unsupported-text-tspan', 'SVG <tspan> runs are not supported; use one plain text run per <text> element.', 'tspan');
-  const unsafe = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
-  if (unsafe.has(node.tag)) {
+  if (unsafeSvgElements.has(node.tag)) {
     const code = ['script', 'foreignObject'].includes(node.tag) ? 'active-content' : ['image', 'use'].includes(node.tag) ? 'external-reference' : 'unsupported-element';
     fail(code, `SVG element <${node.tag}> is not accepted.`, node.tag);
   }
   if (!geomAttrs[node.tag]) fail('unsupported-element', `SVG element <${node.tag}> is not supported.`, node.tag);
   checkElementAttributes(node);
+  if (node.tag === 'text') validateNestedTextMarkup(node);
   const style = parseStyle(node, parentStyle, gradients);
   if (!style.display || (node.tag !== 'g' && node.tag !== 'svg' && !style.visible)) return [];
   const matrix = matrixMultiply(parentMatrix, parseTransform(node.attrs.transform, node.tag));
   if (node.tag === 'text') {
     const serial = counter.next++;
-    const layer = textLayer(node, style, matrix, prefix, serial);
+    const layer = textLayer(node, style, matrix, prefix, serial, gradients);
     return layer ? [layer] : [];
   }
   if (node.tag !== 'g' && node.tag !== 'svg') {

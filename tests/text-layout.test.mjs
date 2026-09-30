@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, layoutPlainText, layoutTextRuns, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
@@ -98,6 +98,158 @@ test('plain and rich paragraph layout apply spacing and first-line indentation',
     { displayText: 'first', y: 0, indent: 8 },
     { displayText: 'second', y: 14, indent: 8 }
   ]);
+});
+
+test('plain list layout emits nested markers, hangs wrapped lines, and separates item spacing from paragraph spacing', () => {
+  const measure = value => [...String(value)].length * 5;
+  const list = layoutPlainText('alpha beta\nchild\ngrand\nnext\nbody\nbody two', 100, measure, {
+    lineHeight: 10,
+    paragraphSpacing: 9,
+    listSpacing: 3,
+    paragraphStyles: [
+      { listStyle: 'numbered', listLevel: 0, listStart: 3 },
+      { listStyle: 'numbered', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 2 },
+      { listStyle: 'numbered', listLevel: 0 },
+      { listStyle: 'none' },
+      { listStyle: 'none' }
+    ]
+  });
+
+  assert.deepEqual(list.lines.filter(line => line.marker).map(line => [line.paragraphIndex, line.marker.text, line.indent]), [
+    [0, '3.', 18], [1, 'a.', 42], [2, 'i.', 66], [3, '4.', 18]
+  ]);
+  assert.equal(list.lines[0].displayText, 'alpha beta');
+  assert.equal(list.lines[0].firstLine, true);
+  assert.deepEqual(normalizeTextParagraphStyles('a\r\nb\rc', [{ listStyle: 'bulleted', listLevel: 0 }]), [
+    { listStyle: 'bulleted', listLevel: 0 }, { listStyle: 'none', listLevel: 0 }, { listStyle: 'none', listLevel: 0 }
+  ], 'paragraph records align with CRLF and CR paragraph delimiters');
+
+  const wrapped = layoutPlainText('alpha beta', 55, measure, {
+    lineHeight: 10,
+    paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }]
+  });
+  assert.deepEqual(wrapped.lines.map(line => [line.displayText, line.indent, Boolean(line.marker)]), [
+    ['alpha', 13, true], ['beta', 13, false]
+  ], 'continuation lines keep the hanging text indent without repeating the marker');
+
+  const spaced = layoutPlainText('one\ntwo\nbody\nbody two', 100, measure, {
+    lineHeight: 10, paragraphSpacing: 9, listSpacing: 3,
+    paragraphStyles: [
+      { listStyle: 'bulleted', listLevel: 0 }, { listStyle: 'bulleted', listLevel: 0 },
+      { listStyle: 'none' }, { listStyle: 'none' }
+    ]
+  });
+  assert.deepEqual(spaced.lines.map(line => line.y), [0, 13, 32, 51],
+    'list spacing applies between list items while paragraph spacing applies at list boundaries and plain paragraphs');
+});
+
+test('rich list layout keeps inline runs and uses the item text style for its marker', () => {
+  const layout = layoutTextRuns([
+    { text: 'Bold', fontWeight: 700, color: '#aa2211' },
+    { text: ' item\nSecond', fontStyle: 'italic' }
+  ], 120, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, paragraphSpacing: 7, listSpacing: 2,
+    paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }, { listStyle: 'numbered', listLevel: 0, listStart: 8 }]
+  }, (value, style) => [...String(value)].length * (style.fontWeight === 700 ? 6 : 5));
+
+  assert.deepEqual(layout.lines.map(line => [line.paragraphIndex, line.marker?.text, line.y]), [
+    [0, '•', 0], [1, '8.', 12]
+  ]);
+  assert.equal(layout.lines[0].marker.style.fontWeight, 700);
+  assert.equal(layout.lines[0].marker.style.color, '#aa2211');
+  assert.deepEqual(layout.lines[0].parts.map(part => [part.text, part.style.fontWeight, part.style.fontStyle]), [
+    ['Bold', 700, 'normal'], [' item', 400, 'italic']
+  ], 'list metadata does not flatten rich text runs');
+});
+
+test('text auto-sizing accounts for list hanging indents and list item spacing', () => {
+  const node = createNode('text', {
+    text: 'one\ntwo\nthree\nfour\nfive', fontSize: 10, lineHeight: 1,
+    textFit: 'auto-height', listSpacing: 4,
+    paragraphStyles: Array.from({ length: 5 }, () => ({ listStyle: 'numbered', listLevel: 0 }))
+  });
+  const withSpacing = calculateTextBox(context(), node);
+  node.listSpacing = 0;
+  const withoutSpacing = calculateTextBox(context(), node);
+  assert.equal(withSpacing.height - withoutSpacing.height, 16);
+  assert.ok(withSpacing.width > 30, 'auto-width includes the number marker column and hanging indent');
+});
+
+test('plain and rich text layout preserve repeated, leading, and trailing spaces unless wrapping at them', () => {
+  const measure = value => [...String(value)].reduce((width, character) => width + (character === ' ' ? 5 : 10), 0);
+  const plain = layoutPlainText('  one   two  ', Infinity, measure, { lineHeight: 10 });
+  assert.equal(plain.lines[0].displayText, '  one   two  ');
+  assert.equal(plain.lines[0].naturalWidth, measure('  one   two  '));
+
+  const wrapped = layoutPlainText('one   two', 50, measure, { lineHeight: 10 });
+  assert.deepEqual(wrapped.lines.map(line => line.displayText), ['one', 'two'],
+    'the whitespace at a soft-wrap boundary is omitted, while in-line whitespace remains exact');
+
+  const baseStyle = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0
+  };
+  const rich = layoutTextRuns([
+    { text: '  one  ', fontWeight: 700 },
+    { text: 'two   ' }
+  ], Infinity, baseStyle, value => [...String(value)].length * 5);
+  assert.equal(rich.lines[0].displayText, '  one  two   ');
+  assert.deepEqual(rich.lines[0].parts.map(part => [part.text, part.style.fontWeight]), [
+    ['  one  ', 700], ['two   ', 400]
+  ], 'spaces retain the style of the rich-text run that supplied them');
+
+  const richWrapped = layoutTextRuns([{ text: 'one   two' }], 30, baseStyle, value => [...String(value)].length * 5);
+  assert.deepEqual(richWrapped.lines.map(line => line.displayText), ['one', 'two']);
+});
+
+test('rich text treats CR, LF, and CRLF as single paragraph breaks across run boundaries', () => {
+  const plain = layoutPlainText('first\r\nsecond\rthird', Infinity, value => [...String(value)].length * 5, {
+    lineHeight: 10, paragraphSpacing: 3
+  });
+  assert.deepEqual(plain.lines.map(({ displayText, y }) => ({ displayText, y })), [
+    { displayText: 'first', y: 0 }, { displayText: 'second', y: 13 }, { displayText: 'third', y: 26 }
+  ]);
+
+  const result = layoutTextRuns([{ text: 'first\r' }, { text: '\nsecond\rthird' }], Infinity, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, paragraphSpacing: 3
+  }, value => [...String(value)].length * 5);
+  assert.deepEqual(result.lines.map(({ displayText, paragraphIndex, y }) => ({ displayText, paragraphIndex, y })), [
+    { displayText: 'first', paragraphIndex: 0, y: 0 },
+    { displayText: 'second', paragraphIndex: 1, y: 13 },
+    { displayText: 'third', paragraphIndex: 2, y: 26 }
+  ]);
+});
+
+test('justified plain and rich paragraphs fill only soft-wrapped lines and leave paragraph endings natural', () => {
+  const measure = value => [...String(value)].length * 5;
+  const plain = layoutPlainText('aa bb cc\ndd ee', 35, measure, { lineHeight: 10, align: 'justify' });
+  assert.deepEqual(plain.lines.map(({ displayText, width, naturalWidth, justify, justificationExtraSpace }) => ({
+    displayText, width, naturalWidth, justify, justificationExtraSpace
+  })), [
+    { displayText: 'aa bb', width: 35, naturalWidth: 25, justify: true, justificationExtraSpace: 10 },
+    { displayText: 'cc', width: 10, naturalWidth: 10, justify: false, justificationExtraSpace: 0 },
+    { displayText: 'dd ee', width: 25, naturalWidth: 25, justify: false, justificationExtraSpace: 0 }
+  ]);
+
+  const rich = layoutTextRuns([{ text: 'aa ' }, { text: 'bb cc\ndd ee' }], 35, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, align: 'justify'
+  }, value => [...String(value)].length * 5);
+  assert.deepEqual(rich.lines.map(({ displayText, width, naturalWidth, justify, justificationExtraSpace }) => ({
+    displayText, width, naturalWidth, justify, justificationExtraSpace
+  })), [
+    { displayText: 'aa bb', width: 35, naturalWidth: 25, justify: true, justificationExtraSpace: 10 },
+    { displayText: 'cc', width: 10, naturalWidth: 10, justify: false, justificationExtraSpace: 0 },
+    { displayText: 'dd ee', width: 25, naturalWidth: 25, justify: false, justificationExtraSpace: 0 }
+  ]);
+
+  const repeatedSpaces = layoutPlainText('aa   bb cc', 45, measure, { lineHeight: 10, align: 'justify' });
+  assert.equal(repeatedSpaces.lines[0].width, 45);
+  assert.ok(Math.abs(repeatedSpaces.lines[0].justificationExtraSpace - 10 / 3) < 1e-10,
+    'expansion is divided across each preserved whitespace grapheme');
 });
 
 test('paragraph spacing contributes to auto height and indentation reduces first-line wrap width', () => {

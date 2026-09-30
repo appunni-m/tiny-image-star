@@ -187,11 +187,13 @@ test('Inspect output hands off enabled layer effects as CSS filters and structur
   const document = createDocument();
   const shape = createNode('rectangle', { effects: [
     createLayerEffect('drop-shadow', { offsetX: 4, offsetY: 8, blur: 6, opacity: 0.3 }),
+    createLayerEffect('inner-shadow', { offsetX: -1, offsetY: 2, blur: 3, opacity: 0.4, color: '#123456' }),
     createLayerEffect('layer-blur', { radius: 2, visible: false })
   ] });
   addNode(document, shape);
   const output = buildInspectOutput(document, [findNode(document, shape.id)]);
   assert.match(output.css, /filter: drop-shadow\(4px 8px 6px rgba\(0, 0, 0, 0\.3\)\);/);
+  assert.match(output.css, /box-shadow: inset -1px 2px 3px rgba\(18, 52, 86, 0\.4\);/);
   assert.deepEqual(output.layers[0].effects, shape.effects);
 });
 
@@ -236,8 +238,69 @@ test('Inspect output exports custom font fallbacks, weights, and italic text sty
   assert.match(output.css, /font-weight: 800;/);
   assert.match(output.css, /font-style: italic;/);
   assert.deepEqual(output.layers[0].typography, {
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 24, fontWeight: 800, fontStyle: 'italic', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, paragraphStyles: [], align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none'
   });
+});
+
+test('Inspect preserves per-paragraph list markers, levels, spacing, and numbering in HTML, JSX, CSS, and typography data', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    name: 'Recipe list',
+    text: 'Top\nNested one\nNested two\nBack to top\nBullet\nNested bullet\nRestart',
+    textCase: 'uppercase', firstLineIndent: 5, paragraphSpacing: 10, listSpacing: 6,
+    paragraphStyles: [
+      { listStyle: 'numbered', listLevel: 0 },
+      { listStyle: 'numbered', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 0 },
+      { listStyle: 'bulleted', listLevel: 0 },
+      { listStyle: 'bulleted', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 0, listStart: 8 }
+    ]
+  });
+  addNode(document, text);
+
+  const output = buildInspectOutput(document, [findNode(document, text.id)]);
+  const layer = output.layers[0];
+  assert.equal(layer.typography.listSpacing, 6);
+  assert.deepEqual(layer.typography.paragraphStyles, text.paragraphStyles);
+
+  for (const [style, level, marker, content] of [
+    ['numbered', 0, '1.', 'Top'],
+    ['numbered', 1, 'a.', 'Nested one'],
+    ['numbered', 1, 'b.', 'Nested two'],
+    ['numbered', 0, '2.', 'Back to top'],
+    ['bulleted', 0, '•', 'Bullet'],
+    ['bulleted', 1, '•', 'Nested bullet'],
+    ['numbered', 0, '8.', 'Restart']
+  ]) {
+    assert.match(output.html, new RegExp(`data-list-style="${style}" data-list-level="${level}" data-list-marker="${marker.replace('.', '\\.')}"[^>]*>${content}<`));
+    assert.ok(output.jsx.includes(`data-list-style={"${style}"} data-list-level={${level}} data-list-marker={"${marker}"}>{"${content}"}</span>`));
+  }
+  assert.match(output.css, /content: attr\(data-list-marker\);/);
+  assert.match(output.css, /text-transform: none;/, 'generated markers remain unchanged by text-case styling');
+  assert.match(output.css, /data-list-level="1"/);
+  assert.match(output.css, /padding-inline-start: 56px;/, 'level one content is indented by one list step');
+  assert.match(output.css, /left: 24px;/, 'level one markers share the matching marker gutter');
+  assert.match(output.css, /\[data-list-style\] \+ \.recipe-list-[a-z0-9_-]+__paragraph\[data-list-style\] \{\n  margin-block-start: 6px;/);
+  assert.match(output.css, /\[data-list-style\] \{\n  position: relative;\n\}/);
+  assert.match(output.css, /\.recipe-list-[a-z0-9_-]+__paragraph\[data-list-style\] \{\n  position: relative;/);
+  assert.match(output.css, /text-transform: uppercase;/);
+});
+
+test('Inspect keeps generated text markup and CSS stable for non-list paragraphs', () => {
+  const document = createDocument();
+  const text = createNode('text', { name: 'Plain', text: 'First\nSecond', paragraphSpacing: 4 });
+  addNode(document, text);
+
+  const output = buildInspectOutput(document, [findNode(document, text.id)]);
+  assert.match(output.html, /<span class="plain-[a-z0-9_-]+__paragraph">First<\/span><span class="plain-[a-z0-9_-]+__paragraph">Second<\/span>/);
+  assert.match(output.jsx, /<span className=\{"plain-[a-z0-9_-]+__paragraph"\}>\{"First"\}<\/span>[\s\S]*<span className=\{"plain-[a-z0-9_-]+__paragraph"\}>\{"Second"\}<\/span>/);
+  assert.doesNotMatch(output.html, /data-list-(?:style|level|marker)/);
+  assert.doesNotMatch(output.jsx, /data-list-(?:style|level|marker)/);
+  assert.doesNotMatch(output.css, /content: attr\(data-list-marker\)/);
+  assert.equal(output.layers[0].typography.listSpacing, 0);
+  assert.deepEqual(output.layers[0].typography.paragraphStyles, []);
 });
 
 test('Inspect preserves vertical alignment in copyable CSS and typography data', () => {
@@ -250,6 +313,16 @@ test('Inspect preserves vertical alignment in copyable CSS and typography data',
   assert.match(output.css, /justify-content: center;/);
   assert.equal(output.layers[0].typography.verticalAlign, 'middle');
   assert.equal(JSON.parse(output.json).verticalAlign, 'middle');
+});
+
+test('Inspect preserves justified paragraph alignment in copyable CSS and layer data', () => {
+  const document = createDocument();
+  const node = createNode('text', { text: 'A paragraph with aligned lines', align: 'justify' });
+  addNode(document, node);
+  const output = buildInspectOutput(document, [findNode(document, node.id)]);
+  assert.match(output.css, /text-align: justify;/);
+  assert.equal(output.layers[0].typography.align, 'justify');
+  assert.equal(JSON.parse(output.json).align, 'justify');
 });
 
 test('Inspect handoff reports mode-resolved geometry instead of stale raw layer fields', () => {

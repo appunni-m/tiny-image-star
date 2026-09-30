@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage } from '../src/image-processing.js';
+import { createImageFill } from '../src/image-fills.js';
 
 function twoPixelBmp() {
   const bytes = Buffer.alloc(62);
@@ -38,6 +39,17 @@ function edgeBandsBmp() {
   return new Uint8Array(bytes);
 }
 
+function fourPixelRgbaPng() {
+  const image = new pillow.Image('RGBA', 4, 1, null);
+  try {
+    image.putpixel(0, 0, 10, 20, 30, 0);
+    image.putpixel(1, 0, 50, 100, 150, 64);
+    image.putpixel(2, 0, 100, 150, 200, 128);
+    image.putpixel(3, 0, 250, 240, 230, 255);
+    return new Uint8Array(image.saveWithInput('PNG', null));
+  } finally { image.free(); }
+}
+
 function pixel(image, x, y) { return [...image.getpixel(x, y)].slice(0, 3); }
 
 test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG bytes', async () => {
@@ -51,6 +63,22 @@ test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG
     assert.ok(adjusted.bytes.length > 50); assert.notDeepEqual(adjusted.bytes, baseline.bytes);
     const reopened = decodeOriginal(pillow, adjusted.bytes);
     assert.equal(reopened.width, 2); assert.equal(reopened.height, 1); reopened.free();
+  } finally { original.free(); }
+});
+
+test('recipe output format and quality travel through Pillow jobs without lossy editor previews', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  try {
+    for (const [format, quality] of [['png', 90], ['jpeg', 73], ['webp', 62]]) {
+      const rendered = renderImage(original, { brightness: 12 }, {}, pillow, { format, quality });
+      assert.equal(rendered.mimeType, 'image/png', 'the editable preview remains lossless PNG');
+      assert.deepEqual([rendered.outputFormat, rendered.outputQuality], [format, quality]);
+      assert.deepEqual([...rendered.bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    }
+    assert.throws(() => renderImage(original, {}, {}, pillow, { format: 'gif' }), /PNG, JPEG, or WebP/);
+    assert.throws(() => renderImage(original, {}, {}, pillow, { quality: 0 }), /1 to 100/);
   } finally { original.free(); }
 });
 
@@ -118,5 +146,79 @@ test('Pillow-RS validates normalized crop bounds and quarter-turn rotation', asy
     assert.throws(() => renderImage(original, {}, { crop: { left: 0.5, top: 0, right: 0.5, bottom: 1 } }), /crop edges/);
     assert.throws(() => renderImage(original, {}, { rotation: 45 }), /quarter turns/);
     assert.throws(() => renderImage(original, {}, { rotation: 90.5 }), /quarter turns/);
+  } finally { original.free(); }
+});
+
+test('Pillow-RS creative tone effects change RGBA pixels while preserving alpha and the decoded source', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  const sourcePixels = Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]);
+  const cases = [
+    { settings: { autoContrast: true }, expected: [[0, 0, 0, 0], [42, 92, 153, 64], [95, 150, 216, 128], [255, 255, 255, 255]] },
+    { settings: { posterizeBits: 2 }, expected: [[0, 0, 0, 0], [0, 64, 128, 64], [64, 128, 192, 128], [192, 192, 192, 255]] },
+    { settings: { solarize: true, solarizeThreshold: 100 }, expected: [[10, 20, 30, 0], [50, 155, 105, 64], [155, 105, 55, 128], [5, 15, 25, 255]] },
+    { settings: { invert: true }, expected: [[245, 235, 225, 0], [205, 155, 105, 64], [155, 105, 55, 128], [5, 15, 25, 255]] },
+  ];
+  try {
+    assert.equal(original.mode, 'RGBA');
+    for (const { settings, expected } of cases) {
+      const rendered = renderImage(original, settings, {}, pillow);
+      const output = decodeOriginal(pillow, rendered.bytes);
+      try {
+        const actual = Array.from({ length: 4 }, (_, x) => [...output.getpixel(x, 0)]);
+        assert.deepEqual(actual, expected, `${Object.keys(settings).join(', ')} output pixels`);
+        assert.deepEqual(actual.map(pixel => pixel[3]), sourcePixels.map(pixel => pixel[3]), 'all original alpha values, including zero and partial transparency, remain exact');
+      } finally { output.free(); }
+      assert.deepEqual(Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]), sourcePixels, 'each render starts from and preserves the decoded source');
+    }
+  } finally { original.free(); }
+});
+
+test('RGBA tone-effect setup frees the color intermediate when alpha extraction fails', () => {
+  let colorFreed = false;
+  const color = { free() { colorFreed = true; } };
+  const source = {
+    mode: 'RGBA', width: 1, height: 1,
+    copy() { return this; },
+    getbands() { return ['R', 'G', 'B', 'A']; },
+    convert() { return color; },
+    getchannel() { throw new Error('synthetic alpha allocation failure'); },
+    free() {},
+  };
+
+  assert.throws(() => renderImage(source, { invert: true }, {}, { ImageOps: { invert() {} } }), /synthetic alpha allocation failure/);
+  assert.equal(colorFreed, true, 'the allocated RGB intermediate is released even when extracting alpha fails');
+});
+
+test('creative tone settings validate and image-fill recipes use the same local renderer', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  try {
+    for (const settings of [
+      { autoContrast: 1 }, { posterizeBits: -1 }, { posterizeBits: 2.5 },
+      { solarize: true, solarizeThreshold: 256 }, { invert: 'yes' }, { inventedTone: true },
+    ]) assert.throws(() => renderImage(original, settings, {}, pillow), /invalid setting/);
+    assert.throws(() => renderImage(original, { invert: true }), /does not provide the requested tone effect/);
+
+    const fill = createImageFill('asset-tone', { adjustments: { posterizeBits: 2, invert: true } });
+    const rendered = renderImage(original, fill.adjustments, fill.transforms, pillow);
+    const output = decodeOriginal(pillow, rendered.bytes);
+    try {
+      assert.deepEqual([...output.getpixel(1, 0)], [255, 191, 127, 64]);
+      assert.deepEqual([...output.getpixel(2, 0)], [191, 127, 63, 128]);
+      assert.deepEqual([...output.getpixel(3, 0)], [63, 63, 63, 255]);
+    } finally { output.free(); }
+
+    const rgb = decodeOriginal(pillow, twoPixelBmp());
+    try {
+      assert.equal(rgb.mode, 'RGB');
+      const inverted = decodeOriginal(pillow, renderImage(rgb, { invert: true }, {}, pillow).bytes);
+      try {
+        assert.deepEqual([...inverted.getpixel(0, 0)].slice(0, 3), [0, 255, 255]);
+        assert.deepEqual([...inverted.getpixel(1, 0)].slice(0, 3), [255, 0, 255]);
+      } finally { inverted.free(); }
+    } finally { rgb.free(); }
   } finally { original.free(); }
 });

@@ -1,3 +1,5 @@
+import { createImageRecipe, createNode, findNode, validateDocument } from '../src/model.js';
+
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
 
@@ -64,6 +66,20 @@ function readDocuments(app) {
     };
   });
 }
+function writeDocumentRecord(app, record) {
+  return new Promise((resolve, reject) => {
+    const request = app.defaultView.indexedDB.open('figma-local-documents');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction('documents', 'readwrite');
+      transaction.objectStore('documents').put({ ...record, savedAt: Date.now() });
+      transaction.oncomplete = () => { resolve(); db.close(); };
+      transaction.onerror = () => { reject(transaction.error); db.close(); };
+      transaction.onabort = () => { reject(transaction.error || new Error('Could not seed the locked image recipe fixture.')); db.close(); };
+    };
+  });
+}
 function sampleUntouchedSecondImage(app) {
   const canvas = app.querySelector('#scene-canvas'); const rect = canvas.getBoundingClientRect();
   const scale = app.defaultView.devicePixelRatio || 1;
@@ -90,7 +106,7 @@ function assertReachable(app, element, label) {
 
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
-  const app = frame.contentDocument;
+  let app = frame.contentDocument;
   assert(app.defaultView.innerWidth === 390 && app.defaultView.innerHeight === 844, 'the workflow should run at a 390×844 phone viewport.');
   assert(app.title === 'Tiny Image Star', 'the editor should use the Tiny Image Star product name.');
   for (const [toggleSelector, panelSelector] of [['#sidebar-toggle', '#left-panel'], ['#inspector-toggle', '#right-panel']]) {
@@ -167,6 +183,40 @@ try {
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
   const imageIds = [...app.querySelectorAll('.layer-row[data-layer-id]')].map(row => row.dataset.layerId);
+  const sourceActionButton = app.querySelector(`[data-layer-id="${imageIds[2]}"] [data-action="layer-actions-menu"]`);
+  assertTouchTarget(app, sourceActionButton, 'Per-layer actions button');
+  assert(sourceActionButton.getAttribute('aria-haspopup') === 'menu' && sourceActionButton.getAttribute('aria-controls') === 'context-menu',
+    'the per-layer action control should expose its menu relationship to assistive technology.');
+  tap(app, sourceActionButton);
+  const nodeMenu = app.querySelector('#context-menu');
+  const menuItemLabel = button => button.textContent.replace(button.querySelector('.shortcut')?.textContent || '', '').trim();
+  const nodeMenuLabels = [...nodeMenu.querySelectorAll('[role="menuitem"]')].map(menuItemLabel);
+  for (const label of ['Duplicate', 'Rename', 'Delete', 'Create component', 'Save image recipe…']) {
+    assert(nodeMenuLabels.includes(label), `the touch-accessible layer menu should expose ${label} (found: ${nodeMenuLabels.join(' | ')}).`);
+  }
+  assert(nodeMenu.contains(app.activeElement), 'opening layer actions should move keyboard focus into the menu.');
+  const menuFocusBeforeArrow = app.activeElement;
+  menuFocusBeforeArrow.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  assert(nodeMenu.contains(app.activeElement) && app.activeElement !== menuFocusBeforeArrow, 'ArrowDown should move through layer menu items.');
+  app.activeElement.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert(nodeMenu.hidden && app.activeElement === app.querySelector(`[data-layer-id="${imageIds[2]}"] [data-action="layer-actions-menu"]`),
+    'Escape should close the layer menu and restore focus to its row action button.');
+  tap(app, app.querySelector(`[data-layer-id="${imageIds[2]}"] [data-action="layer-actions-menu"]`));
+  tap(app, [...nodeMenu.querySelectorAll('[role="menuitem"]')].find(button => menuItemLabel(button) === 'Duplicate'));
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 4, 'duplicate from mobile layer actions');
+  const duplicateRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
+  assert(duplicateRow && !imageIds.includes(duplicateRow.dataset.layerId), 'Duplicate should select the newly created layer from the mobile menu.');
+  const originalPrompt = app.defaultView.prompt;
+  app.defaultView.prompt = () => 'Phone menu renamed';
+  tap(app, duplicateRow.querySelector('[data-action="layer-actions-menu"]'));
+  tap(app, [...nodeMenu.querySelectorAll('[role="menuitem"]')].find(button => menuItemLabel(button) === 'Rename'));
+  app.defaultView.prompt = originalPrompt;
+  assert(app.querySelector(`[data-layer-id="${duplicateRow.dataset.layerId}"] .layer-name`)?.textContent === 'Phone menu renamed',
+    'Rename should work from the touch-accessible menu.');
+  const duplicateId = duplicateRow.dataset.layerId;
+  tap(app, app.querySelector(`[data-layer-id="${duplicateId}"] [data-action="layer-actions-menu"]`));
+  tap(app, [...nodeMenu.querySelectorAll('[role="menuitem"]')].find(button => menuItemLabel(button) === 'Delete'));
+  await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 3, 'delete from mobile layer actions');
   // Layer rows are stacked in reverse insertion order, so save the recipe from
   // the first import while the pixel assertion below samples the third import.
   tap(app, app.querySelector(`[data-layer-id="${imageIds[2]}"]`));
@@ -210,6 +260,30 @@ try {
     return records[0]?.document?.recipes?.some(recipe => recipe.name === 'Phone batch look');
   }, 'saved local recipe');
 
+  // Applying a recipe immediately after an adjustment must cancel that
+  // adjustment's debounced preview. Otherwise the old timer renders its
+  // captured settings after the recipe and replaces the correct thumbnail.
+  const quickApplyThumbnailSelector = `#assets-list .asset-card[data-layer-id="${imageIds[2]}"] img`;
+  const quickApplyThumbnail = app.querySelector(quickApplyThumbnailSelector);
+  assert(quickApplyThumbnail, 'the image library should expose the quick-apply target thumbnail.');
+  setInspectorInput(app, '[data-prop="adjustments.brightness"]', 17);
+  const quickRecipePicker = app.querySelector('#selection-image-recipe');
+  quickRecipePicker.value = [...quickRecipePicker.options].find(option => option.textContent.trim() === 'Phone batch look').value;
+  quickRecipePicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  tap(app, app.querySelector('[data-action="apply-image-recipe"]'));
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied', 'immediate single-image recipe application');
+  const recipeThumbnailUrl = app.querySelector(quickApplyThumbnailSelector)?.src;
+  assert(recipeThumbnailUrl, 'the recipe should leave a rendered image thumbnail in the library.');
+  await new Promise(resolve => setTimeout(resolve, 180));
+  assert(app.querySelector(quickApplyThumbnailSelector)?.src === recipeThumbnailUrl,
+    'a delayed pre-recipe adjustment preview must not overwrite the successfully applied recipe preview.');
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    const source = records[0]?.document?.pages.flatMap(page => page.children).find(node => node.id === imageIds[2]);
+    return source?.adjustments?.brightness === -65 && source?.transforms?.rotation === 90;
+  }, 'quick recipe values to remain applied after the old preview delay');
+  tap(app, app.querySelector('#bulk-done'));
+
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
   const selectMode = app.querySelector('#layer-select-mode');
@@ -221,6 +295,12 @@ try {
     if (!row.classList.contains('is-selected')) tap(app, row);
   }
   assert(app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 3, 'three image layers should be selectable by touch taps alone, without keyboard modifiers.');
+  const selectedLayerActions = app.querySelector(`[data-layer-id="${imageIds[0]}"] [data-action="layer-actions-menu"]`);
+  tap(app, selectedLayerActions);
+  assert([...app.querySelectorAll('#context-menu [role="menuitem"]')].some(button => menuItemLabel(button) === 'Group 3 layers'),
+    'the touch-accessible layer menu should expose grouping when multiple layers are selected.');
+  app.activeElement.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert(app.querySelector('#context-menu').hidden, 'Escape should dismiss the multi-selection layer menu.');
 
   tap(app, app.querySelector('#inspector-toggle'));
   await waitForPhonePanel(app, '#right-panel', 'right');
@@ -304,8 +384,8 @@ try {
   setInspectorInput(app, '[data-prop="fit"]', 'contain');
   setInspectorInput(app, '[data-image-transform-field="left"]', 30);
   tap(app, app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="layer"]'));
-  rejectRecipeBitmap(new Error('Injected recipe-render failure for rollback regression.'));
-  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe finished with errors', 'failed recipe batch completion');
+  rejectRecipeBitmap(new Error('Injected obsolete recipe-render failure.'));
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied · edits preserved', 'superseded recipe batch completion');
   const latestImageStatus = app.querySelector('#image-engine-status')?.textContent;
   assert(['Updating preview…', 'Processing locally…', 'Updated · Pillow-RS WASM'].includes(latestImageStatus),
     `the superseded recipe failure must not overwrite the newer image edit status (received ${latestImageStatus || 'no status'}).`);
@@ -314,16 +394,116 @@ try {
     const stored = await readDocuments(app); stored.sort((a, b) => b.savedAt - a.savedAt);
     const target = stored[0]?.document?.pages.flatMap(page => page.children).find(node => node.id === failureTargetId);
     return target?.adjustments?.brightness === -19
-      && target?.adjustments?.contrast === 24
+      && target?.adjustments?.contrast === 0
       && target?.adjustments?.sharpness === 40
       && target?.transforms?.crop?.left === 0.3
       && target?.transforms?.rotation === 180
       && target?.opacity === 0.37
       && target?.fit === 'contain';
-  }, 'newer edit and unchanged recipe fields to persist after rollback');
+  }, 'newer edits and remaining recipe fields to persist after the superseded render');
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitForPhonePanel(app, '#right-panel', 'right');
+  const hardFailureRecipePicker = app.querySelector('#selection-image-recipe');
+  assert(hardFailureRecipePicker, 'the phone inspector should expose the saved recipe after a superseded render.');
+  hardFailureRecipePicker.value = [...hardFailureRecipePicker.options].find(option => option.textContent.trim() === 'Phone batch look').value;
+  hardFailureRecipePicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  const hardFailureApply = app.querySelector('[data-action="apply-image-recipe"]');
+  assert(hardFailureApply, 'the phone inspector should remain able to retry the saved recipe after a superseded render.');
+  rejectRecipeBitmap = null;
+  app.defaultView.createImageBitmap = () => new Promise((resolve, reject) => { rejectRecipeBitmap = reject; });
+  tap(app, hardFailureApply);
+  await waitFor(() => typeof rejectRecipeBitmap === 'function', 'a current recipe render to reach its controlled bitmap failure');
+  rejectRecipeBitmap(new Error('Injected current recipe-render failure for rollback regression.'));
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe finished with errors', 'non-superseded failed recipe batch completion');
+  await waitFor(async () => {
+    const stored = await readDocuments(app); stored.sort((a, b) => b.savedAt - a.savedAt);
+    const target = stored[0]?.document?.pages.flatMap(page => page.children).find(node => node.id === failureTargetId);
+    return target?.adjustments?.brightness === -19
+      && target?.adjustments?.contrast === 0
+      && target?.adjustments?.sharpness === 40
+      && target?.transforms?.crop?.left === 0.3
+      && target?.transforms?.rotation === 180
+      && target?.opacity === 0.37
+      && target?.fit === 'contain';
+  }, 'failed recipe rollback to the last committed image settings');
   app.defaultView.createImageBitmap = nativeCreateImageBitmap;
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, sharpnessPreview: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, recipeRenderFailureInjected: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], unchangedRecipeFieldsRestored: ['contrast', 'sharpness'], liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
+  // Seed direct and ancestor locks in the persisted fixture because lock
+  // state is intentionally not toggled by this mobile recipe workflow.
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'all prior image recipe changes saved');
+  const storedRecords = await readDocuments(app);
+  storedRecords.sort((left, right) => right.savedAt - left.savedAt);
+  const lockRecord = storedRecords[0];
+  const lockDocument = lockRecord.document;
+  const directlyLocked = findNode(lockDocument, imageIds[0])?.node;
+  const ancestorLocked = findNode(lockDocument, imageIds[1])?.node;
+  assert(directlyLocked?.type === 'image' && ancestorLocked?.type === 'image', 'the persisted lock fixture should contain two image targets.');
+  directlyLocked.locked = true;
+  directlyLocked.adjustments = { ...directlyLocked.adjustments, brightness: 11 };
+  ancestorLocked.adjustments = { ...ancestorLocked.adjustments, brightness: 13 };
+  const lockedParentPage = lockDocument.pages.find(page => page.children.some(node => node.id === ancestorLocked.id));
+  const lockedParentIndex = lockedParentPage.children.findIndex(node => node.id === ancestorLocked.id);
+  lockedParentPage.children.splice(lockedParentIndex, 1);
+  const lockedParent = createNode('group', {
+    id: 'locked-recipe-parent-fixture', name: 'Locked recipe parent', locked: true,
+    x: 0, y: 0, width: 240, height: 180, children: [ancestorLocked]
+  });
+  lockedParentPage.children.splice(lockedParentIndex, 0, lockedParent);
+  lockDocument.recipes.push(createImageRecipe({
+    ...directlyLocked,
+    locked: false,
+    adjustments: { ...directlyLocked.adjustments, brightness: 77 }
+  }, 'Locked target regression'));
+  validateDocument(lockDocument);
+  await writeDocumentRecord(app, lockRecord);
+  const previousApp = app;
+  frame.contentWindow.location.reload();
+  await waitFor(() => frame.contentDocument !== previousApp && frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor reload with locked recipe fixture');
+  app = frame.contentDocument;
+  await waitFor(() => app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === 3, 'locked fixture image rows');
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  tap(app, app.querySelector('#layer-select-mode'));
+  for (const id of [imageIds[0], imageIds[1]]) tap(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${id}"]`));
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitForPhonePanel(app, '#right-panel', 'right');
+  const lockedRecipePicker = app.querySelector('#selection-image-recipe');
+  lockedRecipePicker.value = [...lockedRecipePicker.options].find(option => option.textContent.trim() === 'Locked target regression').value;
+  lockedRecipePicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  tap(app, app.querySelector('[data-action="apply-selection-image-recipe"]'));
+  assert(app.querySelector('#bulk-bar').hidden, 'a fully locked recipe selection must not open a misleading batch bar.');
+  assert(app.querySelector('#toast-region')?.textContent.includes('unlocked image layers'), 'a fully locked recipe selection should explain that no editable image was selected.');
+
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  tap(app, app.querySelector('#layer-select-mode'));
+  tap(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${imageIds[2]}"]`));
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitForPhonePanel(app, '#right-panel', 'right');
+  const mixedRecipePicker = app.querySelector('#selection-image-recipe');
+  mixedRecipePicker.value = [...mixedRecipePicker.options].find(option => option.textContent.trim() === 'Locked target regression').value;
+  mixedRecipePicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  tap(app, app.querySelector('[data-action="apply-selection-image-recipe"]'));
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied · locked images skipped'
+    && app.querySelector('#bulk-progress-label')?.textContent === '1 / 1', 'locked recipe selection to process only the unlocked image');
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((left, right) => right.savedAt - left.savedAt);
+    const document = records[0]?.document;
+    const directResult = findNode(document, imageIds[0])?.node;
+    const ancestorResult = findNode(document, imageIds[1])?.node;
+    const unlockedResult = findNode(document, imageIds[2])?.node;
+    return directResult?.locked === true && directResult.adjustments?.brightness === 11
+      && ancestorResult?.adjustments?.brightness === 13
+      && unlockedResult?.adjustments?.brightness === 77;
+  }, 'directly and ancestrally locked image settings to remain unchanged');
+  const lockedResults = await readDocuments(app);
+  lockedResults.sort((left, right) => right.savedAt - left.savedAt);
+  const lockedResultDocument = lockedResults[0].document;
+  const parentResult = findNode(lockedResultDocument, imageIds[1]);
+  assert(parentResult?.parents.some(parent => parent.id === 'locked-recipe-parent-fixture' && parent.locked),
+    'the skipped nested image should remain inside its locked parent.');
+
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, stalePendingPreviewCannotOverwriteRecipe: true, lockedTargetsSkipped: { directlyLocked: true, lockedAncestor: true, appliedCount: 1 }, sharpnessPreview: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, supersededRecipeRender: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], untouchedRecipeFieldsPreserved: ['contrast', 'sharpness'], nonSupersededRecipeFailureRollback: true, liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

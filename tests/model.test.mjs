@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, createDocument, createImageRecipe, createNode, duplicateNode, findNode, parseDocument, removeNode, serializeDocument, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, createComponent, createComponentInstance, createDocument, createImageRecipe, createNode, duplicateNode, findNode, parseDocument, removeNode, serializeDocument, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -9,6 +9,75 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(document.pages.length, 1);
   assert.equal(document.pages[0].id, document.activePageId);
   assert.equal(validateDocument(document), true);
+});
+
+test('auto-layout absolute positioning round-trips and is limited to direct layout children', () => {
+  const document = createDocument();
+  const layout = createNode('frame', { autoLayout: { axis: 'horizontal' }, width: 320, height: 120 });
+  const positioned = createNode('rectangle', { layoutPositioning: 'absolute' });
+  const defaultPositioning = createNode('rectangle', { layoutPositioning: 'auto' });
+  addNode(document, layout);
+  addNode(document, positioned, { parentId: layout.id });
+  addNode(document, defaultPositioning);
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reopened, positioned.id).node.layoutPositioning, 'absolute');
+  assert.equal(findNode(reopened, defaultPositioning.id).node.layoutPositioning, 'auto');
+  assert.equal(validateDocument(reopened), true);
+
+  const unsupported = structuredClone(reopened);
+  findNode(unsupported, positioned.id).node.layoutPositioning = 'overlay';
+  assert.throws(() => validateDocument(unsupported), /Invalid layout positioning/);
+
+  const rootAbsolute = createDocument();
+  addNode(rootAbsolute, createNode('rectangle', { layoutPositioning: 'absolute' }));
+  assert.throws(() => validateDocument(rootAbsolute), /Invalid layout positioning/);
+
+  const nestedAbsolute = createDocument();
+  const outerLayout = createNode('frame', { autoLayout: { axis: 'horizontal' } });
+  const innerGroup = createNode('group');
+  const nestedChild = createNode('rectangle', { layoutPositioning: 'absolute' });
+  addNode(nestedAbsolute, outerLayout);
+  addNode(nestedAbsolute, innerGroup, { parentId: outerLayout.id });
+  addNode(nestedAbsolute, nestedChild, { parentId: innerGroup.id });
+  assert.throws(() => validateDocument(nestedAbsolute), /Invalid layout positioning/,
+    'an auto-layout ancestor does not make a deeper descendant an absolute layout child');
+});
+
+test('component layout-positioning overrides round-trip and validate supported values', () => {
+  const document = createDocument();
+  const master = createNode('frame', { autoLayout: { axis: 'vertical' } });
+  const child = createNode('rectangle');
+  addNode(document, master);
+  addNode(document, child, { parentId: master.id });
+  const component = createComponent(document, master.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  instanceNode.componentOverrides[child.id] = { layoutPositioning: 'absolute' };
+  syncComponentInstances(document, component.id);
+
+  assert.equal(findNode(document, instance.id).node.children[0].layoutPositioning, 'absolute');
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(findNode(reopened, instance.id).node.componentOverrides[child.id], { layoutPositioning: 'absolute' });
+  assert.equal(findNode(reopened, instance.id).node.children[0].layoutPositioning, 'absolute');
+
+  const unsupported = structuredClone(reopened);
+  findNode(unsupported, instance.id).node.componentOverrides[child.id].layoutPositioning = 'fixed';
+  assert.throws(() => validateDocument(unsupported), /Invalid component layout positioning override/);
+
+  const outsideAutoLayout = createDocument();
+  const plainMaster = createNode('frame');
+  const plainChild = createNode('rectangle');
+  addNode(outsideAutoLayout, plainMaster);
+  addNode(outsideAutoLayout, plainChild, { parentId: plainMaster.id });
+  const plainComponent = createComponent(outsideAutoLayout, plainMaster.id);
+  const plainInstance = createComponentInstance(outsideAutoLayout, plainComponent.id);
+  const plainInstanceNode = findNode(outsideAutoLayout, plainInstance.id).node;
+  const plainSourceId = plainInstanceNode.children[0].componentSourceId;
+  plainInstanceNode.componentOverrides[plainSourceId] = { layoutPositioning: 'absolute' };
+  assert.throws(() => validateDocument(outsideAutoLayout), /Invalid component layout positioning override/,
+    'absolute override is invalid when the source layer is not a direct child of auto layout');
 });
 
 test('paragraph spacing and first-line indentation validate and survive local serialization', () => {
@@ -32,6 +101,77 @@ test('paragraph spacing and first-line indentation validate and survive local se
   const wrongLayer = createNode('rectangle', { paragraphSpacing: 1 });
   addNode(document, wrongLayer);
   assert.throws(() => validateDocument(document), /Invalid paragraph typography/);
+});
+
+test('bulleted and numbered paragraph metadata round-trips, stays independent of rich runs, and has bounded validation', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    text: 'Plan\nBuild\nShip',
+    textRuns: [{ text: 'Plan', fontWeight: 700 }, { text: '\nBuild\nShip', fontStyle: 'italic' }],
+    paragraphStyles: [
+      { listStyle: 'numbered', listLevel: 0, listStart: 4 },
+      { listStyle: 'bulleted', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 0 }
+    ],
+    paragraphSpacing: 12,
+    listSpacing: 5
+  });
+  addNode(document, text);
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[0].paragraphStyles, text.paragraphStyles);
+  assert.deepEqual(reopened.pages[0].children[0].textRuns, text.textRuns);
+  assert.equal(reopened.pages[0].children[0].paragraphSpacing, 12);
+  assert.equal(reopened.pages[0].children[0].listSpacing, 5);
+  assert.equal(validateDocument(reopened), true);
+
+  const oldDocument = createDocument();
+  addNode(oldDocument, createNode('text', { text: 'Legacy\nparagraphs' }));
+  assert.equal(validateDocument(parseDocument(serializeDocument(oldDocument))), true,
+    'older text layers without paragraph metadata remain valid');
+
+  const nonText = createDocument();
+  addNode(nonText, createNode('rectangle', { paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }] }));
+  assert.throws(() => validateDocument(nonText), /Invalid text paragraph styles/);
+  const nonTextSpacing = createDocument();
+  addNode(nonTextSpacing, createNode('rectangle', { listSpacing: 1 }));
+  assert.throws(() => validateDocument(nonTextSpacing), /Invalid list spacing/);
+
+  for (const [label, mutate] of [
+    ['wrong paragraph count', node => { node.paragraphStyles.pop(); }],
+    ['unsupported list style', node => { node.paragraphStyles[0].listStyle = 'checklist'; }],
+    ['depth beyond five levels', node => { node.paragraphStyles[1].listLevel = 5; }],
+    ['fractional depth', node => { node.paragraphStyles[1].listLevel = 1.5; }],
+    ['start on a bullet', node => { node.paragraphStyles[1].listStart = 2; }],
+    ['zero start', node => { node.paragraphStyles[0].listStart = 0; }],
+    ['unknown paragraph property', node => { node.paragraphStyles[1].counterFormat = 'roman'; }]
+  ]) {
+    const invalid = structuredClone(reopened);
+    mutate(invalid.pages[0].children[0]);
+    assert.throws(() => validateDocument(invalid), /Invalid text paragraph styles/, label);
+  }
+
+  for (const invalidSpacing of [-1, 10_001, Infinity]) {
+    const invalid = structuredClone(reopened);
+    invalid.pages[0].children[0].listSpacing = invalidSpacing;
+    assert.throws(() => validateDocument(invalid), /Invalid list spacing/);
+  }
+});
+
+test('text alignment accepts justified paragraphs, round-trips, and rejects unsupported values', () => {
+  const document = createDocument();
+  const text = createNode('text', { align: 'justify' });
+  addNode(document, text);
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children[0].align, 'justify');
+  assert.equal(validateDocument(restored), true);
+
+  const unsupported = structuredClone(restored);
+  unsupported.pages[0].children[0].align = 'distributed';
+  assert.throws(() => validateDocument(unsupported), /Invalid text alignment/);
+  const wrongLayer = structuredClone(restored);
+  wrongLayer.pages[0].children[0] = createNode('rectangle', { align: 'justify' });
+  assert.throws(() => validateDocument(wrongLayer), /Invalid text alignment/);
 });
 
 test('editable polygon and star geometry persists and rejects invalid shape values', () => {
@@ -79,6 +219,29 @@ test('vector path anchor modes are restricted to supported persisted values', ()
   }
 });
 
+test('compound vector paths and fill rules survive local document round trips and reject invalid contours', () => {
+  const document = createDocument();
+  const path = createNode('path', {
+    closed: true,
+    fillRule: 'evenodd',
+    points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }],
+    subpaths: [{ closed: true, points: [{ x: .25, y: .25 }, { x: .75, y: .25 }, { x: .75, y: .75 }] }]
+  });
+  addNode(document, path);
+  assert.equal(validateDocument(document), true);
+  assert.deepEqual(parseDocument(serializeDocument(document)).pages[0].children[0], path);
+
+  const invalidRule = structuredClone(document);
+  invalidRule.pages[0].children[0].fillRule = 'inverse';
+  assert.throws(() => validateDocument(invalidRule), /Invalid vector path/);
+  const invalidContour = structuredClone(document);
+  invalidContour.pages[0].children[0].subpaths[0].closed = 'yes';
+  assert.throws(() => validateDocument(invalidContour), /Invalid vector path/);
+  const tooManyPoints = structuredClone(document);
+  tooManyPoints.pages[0].children[0].subpaths[0].points = Array.from({ length: 20_001 }, () => ({ x: 0, y: 0 }));
+  assert.throws(() => validateDocument(tooManyPoints), /Invalid vector path/);
+});
+
 test('stroke cap, join, and pattern settings persist and reject invalid values', () => {
   const document = createDocument();
   const line = createNode('line', { strokeWidth: 4, strokeCap: 'round', strokeJoin: 'bevel', strokePattern: 'dashed', strokeMiterLimit: 4 });
@@ -124,20 +287,60 @@ test('node edits, duplication and removal preserve independent identities', () =
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
   const source = createNode('image', {
-    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2 },
-    transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 }
+    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
+    transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 },
+    outputFormat: 'webp', outputQuality: 74,
   });
   const target = createNode('image', { assetId: 'asset-b' });
   addNode(document, source); addNode(document, target);
   const recipe = createImageRecipe(source, 'Warm dusk');
+  document.recipes.push(recipe);
   source.adjustments.brightness = 0;
   source.transforms.crop.left = 0.4;
   target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
   assert.equal(applyImageRecipe(document, target.id, recipe), true);
-  assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2 });
+  assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 });
+  assert.deepEqual([recipe.format, recipe.quality], ['webp', 74]);
   assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop and quarter-turn rotation');
+  assert.deepEqual([target.outputFormat, target.outputQuality], ['webp', 74], 'recipe output format and quality follow the image layer');
   assert.equal(target.assetId, 'asset-b');
+
+  const reopened = parseDocument(serializeDocument(document));
+  const savedRecipe = reopened.recipes[0];
+  assert.deepEqual(savedRecipe.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
+  assert.deepEqual([savedRecipe.format, savedRecipe.quality], ['webp', 74], 'output settings persist with the recipe');
+  const reopenedTarget = findNode(reopened, target.id).node;
+  assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
+  assert.deepEqual(reopenedTarget.adjustments, savedRecipe.adjustments, 'creative tone controls round-trip and apply to another source');
+});
+
+test('legacy image recipes default to PNG output and reject invalid format or quality', () => {
+  const document = createDocument();
+  const image = createNode('image', { assetId: 'asset-legacy' }); addNode(document, image);
+  const legacy = { id: 'recipe-legacy', name: 'Legacy', adjustments: {}, transforms: { crop: null, rotation: 0 } };
+  document.recipes.push(legacy);
+  assert.equal(validateDocument(document), true, 'older saved recipes remain valid without output settings');
+  assert.equal(applyImageRecipe(document, image.id, legacy), true);
+  assert.deepEqual([image.outputFormat, image.outputQuality], ['png', 90]);
+  assert.throws(() => createImageRecipe(image, 'Bad format', { format: 'gif' }), /PNG, JPEG, or WebP/);
+  assert.throws(() => createImageRecipe(image, 'Bad quality', { quality: 101 }), /1 to 100/);
+  legacy.format = 'gif';
+  assert.throws(() => validateDocument(document), /Invalid image output format in image recipe/);
+  legacy.format = 'jpeg'; legacy.quality = 0;
+  assert.throws(() => validateDocument(document), /Invalid image output quality in image recipe/);
+});
+
+test('image adjustment validation rejects invalid creative tone settings', () => {
+  const document = createDocument();
+  const image = createNode('image'); addNode(document, image);
+  image.adjustments.posterizeBits = 9;
+  assert.throws(() => validateDocument(document), /Invalid image adjustments/);
+  image.adjustments.posterizeBits = 3;
+  image.adjustments.invert = 'true';
+  assert.throws(() => validateDocument(document), /Invalid image adjustments/);
+  image.adjustments = { brightness: 0, solarizeThreshold: 256 };
+  assert.throws(() => validateDocument(document), /Invalid image adjustments/);
 });
 
 test('image layers default to no crop and zero rotation, and persist normalized transforms', () => {
@@ -195,7 +398,7 @@ test('serialized design validates after reload and rejects duplicate layer ident
 
 test('image fills validate and survive a portable design round trip', () => {
   const document = createDocument();
-  const fill = createImageFill('asset-local-photo', { fit: 'contain', adjustments: { brightness: -18, contrast: 12, saturation: 8, sharpness: 35, blur: 2 } });
+  const fill = createImageFill('asset-local-photo', { fit: 'contain', adjustments: { brightness: -18, contrast: 12, saturation: 8, sharpness: 35, blur: 2, autoContrast: true, posterizeBits: 3, solarize: true, solarizeThreshold: 110, invert: true } });
   const rectangle = createNode('rectangle', { imageFill: fill });
   addNode(document, rectangle);
   const reopened = parseDocument(serializeDocument(document));
@@ -214,6 +417,9 @@ test('image fills validate and survive a portable design round trip', () => {
   assert.throws(() => validateDocument(reopened), /Invalid image fill/);
   reopened.pages[0].children[0].imageFill = fill;
   reopened.pages[0].children[0].imageFill.adjustments.blur = 25;
+  assert.throws(() => validateDocument(reopened), /Invalid image fill/);
+  reopened.pages[0].children[0].imageFill = fill;
+  reopened.pages[0].children[0].imageFill.adjustments.solarizeThreshold = 300;
   assert.throws(() => validateDocument(reopened), /Invalid image fill/);
   reopened.pages[0].children[0] = createNode('text', { imageFill: fill });
   assert.throws(() => validateDocument(reopened), /Image fill is not supported/);

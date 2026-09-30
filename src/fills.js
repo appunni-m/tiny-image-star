@@ -1,3 +1,5 @@
+import { vectorPathContours } from './vector-path.js';
+
 export const gradientTypes = new Set(['linear', 'radial']);
 export const fillTypes = new Set(['solid', 'linear', 'radial', 'image']);
 
@@ -106,7 +108,7 @@ export function detachPrimaryFillBinding(node, previousPrimary, resolvedColor) {
 export function isFillStackSupported(node) {
   if (!node) return false;
   return ['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
-    || (node.type === 'path' && node.closed === true)
+    || (node.type === 'path' && vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2))
     || (node.type === 'network' && Array.isArray(node.faces) && node.faces.length > 0);
 }
 

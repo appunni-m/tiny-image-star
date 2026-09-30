@@ -81,6 +81,18 @@ test('exports a selected node in its own rotated local bounds and supports vecto
   assert.match(exportNodeToSvg(vector), /<path d="M 0 0 C 25 0 75 80 100 80 L 0 0 Z" fill="#ccddaa"/);
 });
 
+test('exports compound editable contours and preserves the even-odd fill rule', () => {
+  const compound = createNode('path', {
+    width: 100, height: 80, closed: true, fillRule: 'evenodd', fill: '#123456',
+    points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
+    subpaths: [{ closed: true, points: [{ x: .25, y: .25 }, { x: .25, y: .75 }, { x: .75, y: .75 }, { x: .75, y: .25 }] }]
+  });
+  const svg = exportNodeToSvg(compound);
+  assert.match(svg, /d="M 0 0 L 100 0 L 100 80 L 0 80 L 0 0 Z M 25 20 L 25 60 L 75 60 L 75 20 L 25 20 Z"/);
+  assert.match(svg, /fill-rule="evenodd"/);
+  assert.match(svg, /fill="#123456"/);
+});
+
 test('SVG export preserves non-default stroke cap, join, and pattern styles', () => {
   const dashed = createNode('line', { width: 40, height: 0, stroke: '#123456', strokeWidth: 3, strokeCap: 'square', strokeJoin: 'bevel', strokePattern: 'dashed' });
   const dashedSvg = exportNodeToSvg(dashed);
@@ -241,13 +253,212 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
   assert.equal(effectSvg, exportNodeToSvg(effected), 'generated paint and effect IDs remain stable across exports');
 });
 
+test('exports inner shadows as editable SVG alpha-mask filter primitives', () => {
+  const shape = createNode('rectangle', {
+    id: 'inset-card', width: 80, height: 40, fill: '#ffffff',
+    effects: [{ id: 'inner', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.35, offsetX: 3, offsetY: -2, blur: 5 }]
+  });
+  const svg = exportNodeToSvg(shape);
+  assert.match(svg, /<feGaussianBlur in="SourceGraphic" stdDeviation="5" result="tis-effect-0-result-0-blur"\/><feOffset in="tis-effect-0-result-0-blur" dx="3" dy="-2" result="tis-effect-0-result-0-offset"\/><feComposite in="SourceGraphic" in2="tis-effect-0-result-0-offset" operator="out" result="tis-effect-0-result-0-shape"\/><feFlood flood-color="#102030" flood-opacity="0\.35" result="tis-effect-0-result-0-paint"\/><feComposite in="tis-effect-0-result-0-paint" in2="tis-effect-0-result-0-shape" operator="in" result="tis-effect-0-result-0-shadow"\/><feComposite in="tis-effect-0-result-0-shadow" in2="SourceGraphic" operator="over" result="tis-effect-0-result-0"\/>/);
+  assert.match(svg, /filter="url\(#tis-effect-0\)"/);
+});
+
+test('orders SVG inner shadows before authored blur and drop-shadow effects like the canvas renderer', () => {
+  const shape = createNode('rectangle', {
+    width: 80, height: 40, fill: '#ffffff',
+    effects: [
+      { id: 'blur-first', type: 'layer-blur', visible: true, radius: 3 },
+      { id: 'inner-first', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.35, offsetX: 3, offsetY: -2, blur: 5 },
+      { id: 'drop-shadow', type: 'drop-shadow', visible: true, color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 6 },
+      { id: 'inner-second', type: 'inner-shadow', visible: true, color: '#506070', opacity: 0.2, offsetX: -2, offsetY: 1, blur: 2 },
+      { id: 'blur-hidden', type: 'layer-blur', visible: false, radius: 9 },
+      { id: 'blur-second', type: 'layer-blur', visible: true, radius: 1 }
+    ]
+  });
+  const svg = exportNodeToSvg(shape);
+  const filter = svg.match(/<filter id="tis-effect-0"[^>]*>([\s\S]*?)<\/filter>/)?.[1];
+  assert.ok(filter, 'expected the SVG effect filter');
+  const firstShadow = filter.indexOf('<feGaussianBlur in="SourceGraphic" stdDeviation="5"');
+  const secondShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-0" stdDeviation="2"');
+  const firstBlur = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-1" stdDeviation="3"');
+  const dropShadow = filter.indexOf('<feDropShadow in="tis-effect-0-result-2"');
+  const secondBlur = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-3" stdDeviation="1"');
+  const positions = [firstShadow, secondShadow, firstBlur, dropShadow, secondBlur];
+  assert.ok(positions.every(position => position >= 0), 'all visible effects should be represented');
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right),
+    'inner shadows should precede outer effects while outer effects retain authored order');
+  assert.match(filter, /<feComposite in="tis-effect-0-result-0" in2="tis-effect-0-result-1-offset" operator="out" result="tis-effect-0-result-1-shape"\/>/,
+    'the second inner shadow must use the first shadow result alpha, matching sequential Canvas compositing');
+  assert.doesNotMatch(filter, /stdDeviation="9"/, 'hidden effects should remain omitted');
+});
+
+test('exports Boolean unions with editable vector operands and an alpha mask', () => {
+  const group = createNode('boolean', {
+    id: 'union', operation: 'union', x: 5, y: 8, width: 120, height: 80,
+    fill: '#123456', fillOpacity: 0.65, radius: 12, stroke: '#000000', strokeWidth: 4,
+    children: [
+      createNode('ellipse', { id: 'left', x: 0, y: 0, width: 60, height: 60, fill: '#ff0000', opacity: 0.5 }),
+      createNode('rectangle', { id: 'right', x: 30, y: 20, width: 90, height: 60, fill: '#00ff00' })
+    ]
+  });
+  const svg = exportNodeToSvg(group);
+  assert.match(svg, /<mask id="tis-boolean-0" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="120" height="80">/);
+  assert.match(svg, /<ellipse[^>]*fill="#ffffff" fill-opacity="1"[^>]*\/><\/g>/);
+  assert.match(svg, /opacity="0\.5"><ellipse/);
+  assert.match(svg, /<rect x="0" y="0" width="120" height="80" rx="0" ry="0" fill="#123456" fill-opacity="0\.65"/);
+  assert.doesNotMatch(svg, /stroke="#000000"/);
+  assert.match(svg, /mask="url\(#tis-boolean-0\)" data-tiny-image-star-type="boolean" data-tiny-image-star-node-id="union"/);
+  assert.doesNotMatch(svg, /data-tiny-image-star-node-id="left"/);
+  assert.equal(svg, exportNodeToSvg(group));
+
+  const nested = createNode('boolean', {
+    id: 'nested-union', width: 100, height: 60,
+    children: [createNode('rectangle', { width: 40, height: 40 }), createNode('boolean', {
+      operation: 'union', x: 30, width: 70, height: 60,
+      children: [createNode('ellipse', { width: 30, height: 30 }), createNode('polygon', { x: 20, width: 40, height: 50 })]
+    })]
+  });
+  assert.match(exportNodeToSvg(nested), /tis-boolean-0/);
+  const nestedSubtract = createNode('boolean', {
+    operation: 'union', width: 100, height: 60,
+    children: [createNode('rectangle', { width: 30, height: 30 }), createNode('boolean', {
+      operation: 'subtract', x: 20, width: 70, height: 60,
+      children: [createNode('ellipse', { width: 70, height: 60 }), createNode('rectangle', { x: 25, width: 20, height: 60 })]
+    })]
+  });
+  assert.match(exportNodeToSvg(nestedSubtract), /tis-boolean-0-operand-1-result-inverse-0-filter/);
+});
+
+test('exports Boolean subtract and intersect with editable alpha mask composition', () => {
+  const subtract = createNode('boolean', {
+    id: 'cutout', operation: 'subtract', width: 100, height: 80,
+    children: [
+      createNode('ellipse', { id: 'base', x: 5, y: 5, width: 80, height: 70, opacity: 0.6, fillOpacity: 0.5 }),
+      createNode('rectangle', { id: 'cutter', x: 35, y: 0, width: 50, height: 80 }),
+      createNode('ellipse', { id: 'second-cutter', x: 20, y: 30, width: 30, height: 40, opacity: 0.25 })
+    ]
+  });
+  const subtractSvg = exportNodeToSvg(subtract);
+  assert.match(subtractSvg, /tis-boolean-0-inverse-0-filter/);
+  assert.match(subtractSvg, /<feFuncA type="table" tableValues="1 0"\/>/);
+  assert.match(subtractSvg, /mask="url\(#tis-boolean-0-operand-0\)"/);
+  assert.match(subtractSvg, /<g[^>]*opacity="0\.3"><ellipse/,
+    'base shape opacity and fill opacity multiply before subtraction');
+  assert.match(subtractSvg, /opacity="0\.25"><ellipse/,
+    'translucent cutters retain their alpha for destination-out composition');
+
+  const intersect = createNode('boolean', {
+    id: 'overlap', operation: 'intersect', width: 100, height: 80,
+    children: [
+      createNode('rectangle', { x: 0, y: 0, width: 75, height: 70, opacity: 0.4 }),
+      createNode('ellipse', { x: 25, y: 10, width: 70, height: 60, opacity: 0.5 })
+    ]
+  });
+  const intersectSvg = exportNodeToSvg(intersect);
+  assert.match(intersectSvg, /<g><g mask="url\(#tis-boolean-0-operand-0\)"><g mask="url\(#tis-boolean-0-operand-1\)">/);
+  assert.match(intersectSvg, /opacity="0\.4"><rect/);
+  assert.match(intersectSvg, /opacity="0\.5"><ellipse/);
+
+  const hiddenSubtract = createNode('boolean', {
+    operation: 'subtract', width: 60, height: 40,
+    children: [createNode('rectangle', { width: 60, height: 40 }), createNode('ellipse', { visible: false, width: 20, height: 20 })]
+  });
+  const hiddenSubtractSvg = exportNodeToSvg(hiddenSubtract);
+  assert.doesNotMatch(hiddenSubtractSvg, /inverse-0|operand-1/);
+  const hiddenBaseSubtract = createNode('boolean', {
+    operation: 'subtract', width: 60, height: 40,
+    children: [
+      createNode('rectangle', { id: 'hidden-base', visible: false, width: 60, height: 40 }),
+      createNode('ellipse', { id: 'visible-cutter', width: 20, height: 20 })
+    ]
+  });
+  const hiddenBaseSubtractSvg = exportNodeToSvg(hiddenBaseSubtract);
+  assert.match(hiddenBaseSubtractSvg, /<mask id="tis-boolean-0"[^>]*><\/mask>/,
+    'a hidden original subtract base makes the Boolean result empty');
+  assert.doesNotMatch(hiddenBaseSubtractSvg, /tis-boolean-0-operand|inverse-0/,
+    'a visible cutter must not be promoted to the subtract base');
+  const hiddenIntersect = createNode('boolean', {
+    operation: 'intersect', width: 60, height: 40,
+    children: [createNode('rectangle', { width: 60, height: 40 }), createNode('ellipse', { visible: false, width: 20, height: 20 })]
+  });
+  const hiddenIntersectSvg = exportNodeToSvg(hiddenIntersect);
+  assert.match(hiddenIntersectSvg, /<mask id="tis-boolean-0"[^>]*><\/mask>/,
+    'a hidden intersection operand makes the result empty, matching the editor');
+});
+
+test('exports Boolean exclude as editable vector operands with alpha-correct XOR composition', () => {
+  const overlapping = createNode('boolean', {
+    id: 'translucent-exclude', operation: 'exclude', width: 100, height: 50,
+    children: [
+      createNode('rectangle', { id: 'base', x: 0, y: 0, width: 45, height: 45, opacity: 0.5 }),
+      createNode('ellipse', { id: 'overlap', x: 25, y: 5, width: 45, height: 40, opacity: 0.25 })
+    ]
+  });
+  const overlappingSvg = exportNodeToSvg(overlapping);
+  assert.match(overlappingSvg, /<rect[^>]*fill="#ffffff" fill-opacity="1"[^>]*\/><\/g>/,
+    'the first vector operand remains an editable alpha-mask source');
+  assert.match(overlappingSvg, /opacity="0\.5"><rect/);
+  assert.match(overlappingSvg, /opacity="0\.25"><ellipse/);
+  assert.match(overlappingSvg, /<feImage href="#tis-boolean-0-operand-0-surface"[^>]*result="tis-boolean-0-exclude-1-filter-previous"\/><feImage href="#tis-boolean-0-operand-1-surface"[^>]*result="tis-boolean-0-exclude-1-filter-operand"\/><feComposite in="tis-boolean-0-exclude-1-filter-previous" in2="tis-boolean-0-exclude-1-filter-operand" operator="xor" result="tis-boolean-0-exclude-1-filter-result"\/>/,
+    'overlap is combined with Porter-Duff XOR, preserving partial alpha instead of making a binary cut');
+  assert.match(overlappingSvg, /mask="url\(#tis-boolean-0\)" data-tiny-image-star-type="boolean" data-tiny-image-star-node-id="translucent-exclude"/);
+
+  const disjoint = createNode('boolean', {
+    operation: 'exclude', width: 100, height: 50,
+    children: [
+      createNode('rectangle', { x: 0, y: 0, width: 20, height: 20 }),
+      createNode('polygon', { x: 65, y: 20, width: 25, height: 25 })
+    ]
+  });
+  const disjointSvg = exportNodeToSvg(disjoint);
+  assert.match(disjointSvg, /<rect[^>]*mask="url\(#tis-boolean-0-operand-0\)"/);
+  assert.match(disjointSvg, /<polygon[^>]*fill="#ffffff"/);
+  assert.match(disjointSvg, /operator="xor"/,
+    'disjoint operands still pass through the same vector-preserving XOR operation');
+  assert.equal(disjointSvg, exportNodeToSvg(disjoint), 'generated filter and surface IDs remain deterministic');
+
+  const hidden = createNode('boolean', {
+    operation: 'exclude', width: 60, height: 40,
+    children: [
+      createNode('rectangle', { visible: false, width: 60, height: 40 }),
+      createNode('ellipse', { width: 20, height: 20 }),
+      createNode('polygon', { visible: false, width: 30, height: 30 })
+    ]
+  });
+  const hiddenSvg = exportNodeToSvg(hidden);
+  assert.match(hiddenSvg, /<use href="#tis-boolean-0-operand-1-surface"\/>/,
+    'a lone visible operand is unchanged when XORed with the empty surface');
+  assert.doesNotMatch(hiddenSvg, /operand-0|operand-2|exclude-1-filter/,
+    'hidden operands are omitted from the visible XOR chain');
+});
+
+test('rejects Boolean operations and structures that cannot be represented faithfully', () => {
+  for (const operation of ['unsupported-operation']) {
+    const node = createNode('boolean', {
+      id: `${operation}-union`, operation,
+      children: [createNode('rectangle'), createNode('ellipse')]
+    });
+    assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError && error.feature === `Boolean ${operation} operations`);
+  }
+  const malformed = createNode('boolean', { id: 'empty-boolean', children: [createNode('rectangle')] });
+  assert.throws(() => exportNodeToSvg(malformed), error => error instanceof SvgExportError && error.feature === 'invalid Boolean group structures');
+  const openOperand = createNode('boolean', {
+    id: 'open-operand', children: [createNode('path', { closed: false }), createNode('ellipse')]
+  });
+  assert.throws(() => exportNodeToSvg(openOperand), error => error instanceof SvgExportError && error.feature === 'unsupported Boolean operands');
+  const blendedOperand = createNode('boolean', {
+    id: 'blended-operand', children: [createNode('rectangle', { blendMode: 'multiply' }), createNode('ellipse')]
+  });
+  assert.throws(() => exportNodeToSvg(blendedOperand), error => error instanceof SvgExportError && error.feature === 'blended Boolean operands');
+});
+
 test('rejects unsupported content explicitly instead of dropping design features', () => {
   const unsupported = [
     [createNode('image'), 'image layers'],
     [createNode('group', { mask: true, maskSourceId: 'mask' }), 'mask groups'],
     [createNode('rectangle', { imageFill: {} }), 'image fills'],
     [createNode('text', { fillGradient: { type: 'linear', angle: 0, stops: [] } }), 'gradient fills'],
-    [createNode('boolean'), 'boolean layers']
+    [createNode('boolean'), 'invalid Boolean group structures']
   ];
   for (const [node, feature] of unsupported) {
     assert.throws(() => exportNodeToSvg(node), error => {
@@ -375,19 +586,46 @@ test('serializes vector network fill stacks per face and emits network edges onc
     fills: [
       createFillLayer('solid', { id: 'base-solid', color: '#ff0000', opacity: .4 }),
       createFillLayer('radial', { id: 'gradient-overlay', gradient, opacity: .2 }),
-      createFillLayer('image', { id: 'image-overlay', assetId: 'network-photo', opacity: .3 }),
+      createFillLayer('image', {
+        id: 'image-overlay', opacity: .3,
+        imageFill: {
+          assetId: 'network-photo', fit: 'cover',
+          transforms: { crop: { left: .1, top: .25, right: .9, bottom: .75 }, rotation: 90 },
+          adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }
+        }
+      }),
     ]
   });
   const assets = new Map([['network-photo', {
-    id: 'network-photo', type: 'image/png', width: 2, height: 1,
+    id: 'network-photo', type: 'image/png', width: 400, height: 200,
     sourceBytes: new Uint8Array([0, 1])
   }]]);
   const svg = exportNodeToSvg(network, { assets });
 
   assert.match(svg, /data-tiny-image-star-face-id="triangle"[^>]*fill="#00ff00" fill-opacity="0\.2" data-tiny-image-star-fill-id="base-solid"/);
   assert.match(svg, /fill="url\(#tis-gradient-0-fill-1\)" fill-opacity="0\.1" data-tiny-image-star-fill-id="gradient-overlay"/);
-  assert.match(svg, /href="data:image\/png;base64,AAE=" opacity="0\.15"[^>]*data-tiny-image-star-face-id="triangle" data-tiny-image-star-fill-id="image-overlay"/);
+  assert.match(svg, /<g data-tiny-image-star-fill-id="image-overlay" data-tiny-image-star-fill-type="image" opacity="0\.15" clip-path="url\(#tis-fill-clip-0-2-0\)" data-tiny-image-star-face-id="triangle"><image x="0" y="0" width="400" height="200" preserveAspectRatio="none" transform="matrix\(0 0\.8 -0\.8 0 120 -130\)" href="data:image\/png;base64,AAE="\/><\/g>/);
   assert.equal((svg.match(/data-tiny-image-star-edge-id=/g) || []).length, 3, 'network edges should be serialized once after all face fills');
+});
+
+test('serializes transformed image fills in explicit fill stacks against the original source', () => {
+  const source = new Map([['photo', {
+    type: 'image/jpeg', sourceWidth: 400, sourceHeight: 200,
+    bitmap: { width: 1200, height: 600 }, sourceBytes: new Uint8Array([4, 5])
+  }]]);
+  const shape = createNode('rectangle', {
+    width: 90, height: 60,
+    fills: [createFillLayer('image', {
+      id: 'cropped-fill', opacity: .7,
+      imageFill: {
+        assetId: 'photo', fit: 'contain',
+        transforms: { crop: { left: 0, top: 0, right: .5, bottom: 1 }, rotation: 0 },
+        adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }
+      }
+    })]
+  });
+  const svg = exportNodeToSvg(shape, { assets: source });
+  assert.match(svg, /<g data-tiny-image-star-fill-id="cropped-fill" data-tiny-image-star-fill-type="image" opacity="0\.7" clip-path="url\(#tis-fill-clip-0\)"><image x="0" y="0" width="400" height="200" preserveAspectRatio="none" transform="matrix\(0\.3 0 0 0\.3 15 0\)" href="data:image\/jpeg;base64,BAU="\/><\/g>/);
 });
 
 test('explicit image fills sharing a source keep per-layer previews isolated and untouched bytes intact', () => {
@@ -498,10 +736,30 @@ test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () =>
     imagePreviews: new Map([[adjusted.id, { type: 'image/png', sourceBytes: new Uint8Array([2]), width: 1, height: 1 }]])
   }), /href="data:image\/png;base64,Ag=="/);
 
-  const cropped = createNode('image', { assetId: 'local', transforms: { crop: { left: 0.1, top: 0, right: 0.9, bottom: 1 }, rotation: 0 } });
-  assert.throws(() => exportNodeToSvg(cropped, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
+  const dimensionedAssets = new Map([['local', {
+    type: 'image/png', sourceBytes: new Uint8Array([1]), sourceWidth: 400, sourceHeight: 200,
+    bitmap: { width: 1200, height: 600 }
+  }]]);
+  const cropped = createNode('image', {
+    assetId: 'local', width: 120, height: 80,
+    transforms: { crop: { left: 0.1, top: 0.25, right: 0.9, bottom: 0.75 }, rotation: 90 }
+  });
+  const croppedSvg = exportNodeToSvg(cropped, { assets: dimensionedAssets });
+  assert.match(croppedSvg, /<g clip-path="url\(#tis-image-clip-0\)"><image x="0" y="0" width="400" height="200" preserveAspectRatio="none" transform="matrix\(0 1\.2 -1\.2 0 180 -200\)" href="data:image\/png;base64,AQ=="\/><\/g>/,
+    'crop and rotation transform the source image while keeping the target clip stationary');
   const rotated = createNode('rectangle', { imageFill: { assetId: 'local', fit: 'cover', transforms: { crop: null, rotation: 90 }, adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 } } });
-  assert.throws(() => exportNodeToSvg(rotated, { assets }), error => error instanceof SvgExportError && error.feature === 'raster image crop or rotation');
+  const rotatedSvg = exportNodeToSvg(rotated, { assets: dimensionedAssets });
+  assert.match(rotatedSvg, /transform="matrix\(0 0\.6 -0\.6 0 120 -80\)"/);
+  for (const [rotation, matrix] of [
+    [180, 'matrix(-0.2 0 0 -0.2 80 80)'],
+    [270, 'matrix(0 -0.3 0.3 0 10 120)']
+  ]) {
+    const quarterTurn = createNode('image', {
+      assetId: 'local', width: 80, height: 120, fit: 'contain',
+      transforms: { crop: null, rotation }
+    });
+    assert.ok(exportNodeToSvg(quarterTurn, { assets: dimensionedAssets }).includes(`transform="${matrix}"`), `rotation ${rotation} should use the expected fitted matrix`);
+  }
   assert.match(exportNodeToSvg(rotated, {
     assets,
     imagePreviews: new Map([[rotated.id, { type: 'image/png', sourceBytes: new Uint8Array([3]), width: 1, height: 1 }]])
@@ -577,6 +835,49 @@ test('text wraps into positioned tspans like the canvas editor and requires reli
   assert.throws(() => exportNodeToSvg(createNode('text', {
     width: 0, height: 0, fontSize: 24, text: 'WIDE', textFit: 'fixed'
   }), { measureText: value => value.length * 16 }), /zero-width box/);
+});
+
+test('SVG preserves justified spacing on soft-wrapped plain and rich text lines', () => {
+  const measureText = value => value.length * 5;
+  const plain = createNode('text', { width: 35, height: 40, fontSize: 10, lineHeight: 1.25, text: 'aa bb cc', align: 'justify', textFit: 'fixed' });
+  const plainSvg = exportNodeToSvg(plain, { measureText });
+  assert.match(plainSvg, /<tspan x="0" y="0" word-spacing="10">aa bb<\/tspan>/);
+  assert.match(plainSvg, /<tspan x="0" y="12\.5" textLength="10" lengthAdjust="spacingAndGlyphs">cc<\/tspan>/,
+    'the final paragraph line remains natural instead of being stretched');
+
+  const rich = createNode('text', {
+    width: 35, height: 40, fontSize: 10, lineHeight: 1.25, text: 'aa bb cc', align: 'justify', textFit: 'fixed',
+    textRuns: [{ text: 'aa ' }, { text: 'bb cc', fontWeight: 700 }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText });
+  assert.match(richSvg, /<tspan x="0" y="0" word-spacing="10"><tspan font-family=/);
+  assert.doesNotMatch(richSvg, /<tspan x="0" y="0"[^>]*textLength=/,
+    'word spacing supplies the justified width without glyph scaling');
+
+  const repeatedSpaces = createNode('text', {
+    width: 45, height: 40, fontSize: 10, lineHeight: 1.25, text: 'aa   bb cc', align: 'justify', textFit: 'fixed'
+  });
+  assert.match(exportNodeToSvg(repeatedSpaces, { measureText }), /word-spacing="3\.33333333333"/,
+    'SVG word spacing accounts for each preserved space in a multi-space gap');
+});
+
+test('SVG text export preserves leading, repeated, and trailing spaces for plain and rich text', () => {
+  const source = '  spaced   words  ';
+  const plain = createNode('text', {
+    width: 200, height: 30, fontSize: 10, lineHeight: 1, text: source, textFit: 'fixed'
+  });
+  const plainSvg = exportNodeToSvg(plain, { measureText: value => [...value].length * 5 });
+  assert.match(plainSvg, /xml:space="preserve"/);
+  assert.match(plainSvg, /<tspan x="0" y="0" textLength="90" lengthAdjust="spacingAndGlyphs">  spaced   words  <\/tspan>/);
+
+  const rich = createNode('text', {
+    width: 200, height: 30, fontSize: 10, lineHeight: 1, text: source, textFit: 'fixed',
+    textRuns: [{ text: '  spaced   ', fontWeight: 700 }, { text: 'words  ' }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText: value => [...value].length * 5 });
+  assert.match(richSvg, /xml:space="preserve"/);
+  assert.match(richSvg, />  spaced   <\/tspan>/);
+  assert.match(richSvg, />words  <\/tspan>/);
 });
 
 test('SVG output applies vertical text alignment to plain and rich runs, including decoration geometry', () => {
@@ -668,6 +969,41 @@ test('paragraph spacing and first-line indentation match plain and rich SVG text
   const trailingSvg = exportNodeToSvg(trailingEmptyParagraphs, { measureText: value => value.length * 5 });
   assert.match(trailingSvg, /<tspan x="0" y="50"><\/tspan>/);
   assert.match(trailingSvg, /viewBox="0 -1\.5 50 21\.5"/, 'empty trailing paragraphs advance layout but add no painted bounds');
+});
+
+test('SVG exports nested list markers as editable positioned text and preserves rich marker styling', () => {
+  const plain = createNode('text', {
+    text: 'First item\nNested item\nSecond item', width: 150, height: 60,
+    fontSize: 10, lineHeight: 1.25, listSpacing: 3,
+    paragraphStyles: [
+      { listStyle: 'numbered', listLevel: 0, listStart: 4 },
+      { listStyle: 'bulleted', listLevel: 1 },
+      { listStyle: 'numbered', listLevel: 0 }
+    ]
+  });
+  const svg = exportNodeToSvg(plain, { measureText: value => [...String(value)].length * 5 });
+  assert.match(svg, /data-tiny-image-star-list-marker="numbered" data-list-level="0" x="10" y="0" text-anchor="end"[^>]*>4\.<\/tspan>/);
+  assert.match(svg, /data-tiny-image-star-list-marker="bulleted" data-list-level="1" x="29" y="15\.5" text-anchor="end"[^>]*>•<\/tspan>/);
+  assert.match(svg, /data-tiny-image-star-list-marker="numbered" data-list-level="0" x="10" y="31" text-anchor="end"[^>]*>5\.<\/tspan>/);
+  assert.match(svg, /<tspan x="18" y="0"[^>]*>First item<\/tspan>/, 'text content starts after the marker column');
+
+  const rich = createNode('text', {
+    text: 'Bold item\nNormal item', width: 150, height: 60, fontSize: 10,
+    paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }, { listStyle: 'bulleted', listLevel: 0 }],
+    textRuns: [{ text: 'Bold', fontWeight: 700, color: '#aa2211' }, { text: ' item\nNormal item' }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText: (value, node) => [...String(value)].length * (Number(node.fontWeight) === 700 ? 6 : 5) });
+  assert.match(richSvg, /data-tiny-image-star-list-marker="bulleted" data-list-level="0"[^>]*font-weight="700"[^>]*fill="#aa2211"[^>]*>•<\/tspan>/,
+    'rich list markers inherit the paragraph’s first text run style');
+  assert.match(richSvg, /<tspan font-family="Inter, Arial, sans-serif" font-size="10" font-weight="700"[^>]*>Bold<\/tspan>/);
+
+  const emptyItem = createNode('text', {
+    text: '', width: 80, height: 16, fontSize: 10,
+    paragraphStyles: [{ listStyle: 'bulleted', listLevel: 0 }]
+  });
+  assert.match(exportNodeToSvg(emptyItem, { measureText: value => [...String(value)].length * 5 }),
+    /data-tiny-image-star-list-marker="bulleted"[^>]*>•<\/tspan>/,
+    'an empty list item still exports its marker');
 });
 
 test('polygon and star point generation matches the editor for fractional counts', () => {

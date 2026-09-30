@@ -34,15 +34,25 @@ export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
 
 export function wrapTextWithMeasure(text, maxWidth, measure) {
   const lines = [];
-  for (const paragraph of String(text ?? '').split('\n')) {
-    const words = paragraph.split(/\s+/);
+  for (const paragraph of String(text ?? '').split(/\r\n|\r|\n/u)) {
+    const pieces = paragraph.match(/\s+|[^\s]+/gu) || [];
     let line = '';
-    for (const word of words) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && measure(candidate) > maxWidth) { lines.push(line); line = word; }
-      else line = candidate;
+    let pendingWhitespace = '';
+    for (const piece of pieces) {
+      if (/^\s+$/u.test(piece)) {
+        if (line) pendingWhitespace += piece;
+        else line += piece;
+        continue;
+      }
+      const candidate = `${line}${pendingWhitespace}${piece}`;
+      const lineHasContent = line && !/^\s+$/u.test(line);
+      if (lineHasContent && measure(candidate) > maxWidth) {
+        lines.push(line);
+        line = piece;
+      } else line = candidate;
+      pendingWhitespace = '';
     }
-    lines.push(line);
+    lines.push(`${line}${pendingWhitespace}`);
   }
   return lines;
 }
@@ -52,49 +62,203 @@ function nonNegativeTextMetric(value) {
   return Number.isFinite(number) ? Math.max(0, Math.min(10_000, number)) : 0;
 }
 
+const maxTextParagraphStyles = 100_000;
+const maxTextListLevel = 4;
+const listIndentStep = 24;
+const listMarkerGap = 8;
+
+function normalizedParagraphStyle(style) {
+  const listStyle = ['bulleted', 'numbered'].includes(style?.listStyle) ? style.listStyle : 'none';
+  const listLevel = Number.isInteger(style?.listLevel) && style.listLevel >= 0 && style.listLevel <= maxTextListLevel
+    ? style.listLevel : 0;
+  if (listStyle === 'none') return { listStyle, listLevel: 0 };
+  const normalized = { listStyle, listLevel };
+  if (listStyle === 'numbered' && Number.isInteger(style?.listStart) && style.listStart >= 1 && style.listStart <= 999_999) {
+    normalized.listStart = style.listStart;
+  }
+  return normalized;
+}
+
+/** Return canonical metadata aligned one-to-one with CR/LF-delimited paragraphs. */
+export function normalizeTextParagraphStyles(text, paragraphStyles = []) {
+  const paragraphCount = String(text ?? '').replace(/\r\n?/gu, '\n').split('\n').length;
+  if (paragraphCount > maxTextParagraphStyles) throw new RangeError('Text can contain at most 100,000 formatted paragraphs.');
+  return Array.from({ length: paragraphCount }, (_, index) => normalizedParagraphStyle(paragraphStyles?.[index]));
+}
+
+function alphabeticCounter(value) {
+  let number = Math.max(1, Math.floor(value));
+  let label = '';
+  while (number > 0 && label.length < 12) {
+    number -= 1;
+    label = String.fromCharCode(97 + number % 26) + label;
+    number = Math.floor(number / 26);
+  }
+  return label || 'a';
+}
+
+function romanCounter(value) {
+  let number = Math.max(1, Math.floor(value));
+  if (number > 3999) return String(number);
+  const symbols = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+  let label = '';
+  for (const [amount, symbol] of symbols) while (number >= amount) { label += symbol; number -= amount; }
+  return label;
+}
+
+function numberedListMarker(counter, level) {
+  const format = level % 3;
+  const label = format === 1 ? alphabeticCounter(counter) : format === 2 ? romanCounter(counter) : String(counter);
+  return `${label}.`;
+}
+
+function createParagraphListPlans(paragraphStyles, paragraphCount, measureMarker, markerStyles = []) {
+  const styles = Array.from({ length: paragraphCount }, (_, index) => normalizedParagraphStyle(paragraphStyles?.[index]));
+  const counters = new Map();
+  const activeStyles = new Map();
+  const plans = styles.map((style, index) => {
+    if (style.listStyle === 'none') {
+      counters.clear(); activeStyles.clear();
+      return { ...style, markerText: '', markerStyle: markerStyles[index] || null };
+    }
+    for (const level of [...activeStyles.keys()]) if (level > style.listLevel) activeStyles.delete(level);
+    for (const level of [...counters.keys()]) if (level > style.listLevel) counters.delete(level);
+    if (activeStyles.get(style.listLevel) !== style.listStyle) counters.delete(style.listLevel);
+    activeStyles.set(style.listLevel, style.listStyle);
+    let markerText = '•';
+    if (style.listStyle === 'numbered') {
+      const counter = style.listStart ?? (counters.get(style.listLevel) || 0) + 1;
+      counters.set(style.listLevel, counter);
+      markerText = numberedListMarker(counter, style.listLevel);
+    }
+    const markerStyle = markerStyles[index] || null;
+    const naturalWidth = Math.max(0, Number(measureMarker(markerText, markerStyle)) || 0);
+    return { ...style, markerText, markerStyle, naturalWidth, nestingIndent: style.listLevel * listIndentStep };
+  });
+  const columnWidths = new Map();
+  for (const plan of plans) if (plan.listStyle !== 'none') {
+    const key = `${plan.listStyle}:${plan.listLevel}`;
+    columnWidths.set(key, Math.max(columnWidths.get(key) || 0, plan.naturalWidth || 0));
+  }
+  for (const plan of plans) if (plan.listStyle !== 'none') {
+    plan.markerColumnWidth = columnWidths.get(`${plan.listStyle}:${plan.listLevel}`) || 0;
+    plan.markerGap = listMarkerGap;
+    plan.contentIndent = plan.nestingIndent + plan.markerColumnWidth + plan.markerGap;
+    plan.markerAnchorX = plan.nestingIndent + plan.markerColumnWidth;
+  }
+  return plans;
+}
+
+function paragraphBreakSpacing(index, plans, paragraphSpacing, listSpacing) {
+  if (index <= 0) return 0;
+  return plans[index - 1]?.listStyle !== 'none' && plans[index]?.listStyle !== 'none'
+    ? listSpacing : paragraphSpacing;
+}
+
+function wrapParagraphWithFirstLineWidth(text, firstLineWidth, continuationWidth, measure) {
+  const lines = [];
+  const pieces = String(text ?? '').match(/\s+|[^\s]+/gu) || [];
+  let line = '';
+  let pendingWhitespace = '';
+  let lineWidth = firstLineWidth;
+  for (const piece of pieces) {
+    if (/^\s+$/u.test(piece)) {
+      if (line) pendingWhitespace += piece;
+      else line += piece;
+      continue;
+    }
+    const candidate = `${line}${pendingWhitespace}${piece}`;
+    const lineHasContent = line && !/^\s+$/u.test(line);
+    if (lineHasContent && measure(candidate) > lineWidth) {
+      lines.push(line);
+      line = piece;
+      lineWidth = continuationWidth;
+    } else line = candidate;
+    pendingWhitespace = '';
+  }
+  lines.push(`${line}${pendingWhitespace}`);
+  return lines;
+}
+
 function indentWithinWidth(indent, width) {
   return Number.isFinite(width) ? Math.min(indent, Math.max(0, width - 1)) : indent;
+}
+
+function justificationGapCount(text) {
+  const value = String(text ?? '');
+  let gaps = 0;
+  let hasTextBefore = false;
+  for (const match of value.matchAll(/\s+|\S+/gu)) {
+    if (/^\s+$/u.test(match[0])) {
+      const next = value.slice(match.index + match[0].length);
+      if (hasTextBefore && /^\S/u.test(next)) gaps += textGraphemes(match[0]).length;
+    } else hasTextBefore = true;
+  }
+  return gaps;
 }
 
 /** Lay out unstyled text while treating explicit newlines as paragraph breaks. */
 export function layoutPlainText(text, maxWidth, measure, {
   lineHeight = 0,
   paragraphSpacing = 0,
-  firstLineIndent = 0
+  firstLineIndent = 0,
+  align = 'left',
+  listSpacing = 0,
+  paragraphStyles = [],
+  markerStyle = null
 } = {}) {
   if (typeof measure !== 'function') throw new TypeError('Text layout requires a measurement function.');
   const limit = Number(maxWidth);
   if (!(limit > 0) && limit !== Infinity) throw new TypeError('Text layout requires a positive maximum width.');
   const spacing = nonNegativeTextMetric(paragraphSpacing);
+  const itemSpacing = nonNegativeTextMetric(listSpacing);
   const requestedIndent = nonNegativeTextMetric(firstLineIndent);
   const lineHeightPx = Math.max(0, Number(lineHeight) || 0);
   const lines = [];
   let y = 0;
   let width = 0;
   const paragraphs = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const plans = createParagraphListPlans(paragraphStyles, paragraphs.length, marker => measure(marker), paragraphs.map(() => markerStyle));
 
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
-    if (paragraphIndex > 0) y += spacing;
-    const indent = paragraph ? indentWithinWidth(requestedIndent, limit) : 0;
-    const availableWidth = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
-    const wrapped = wrapTextWithMeasure(paragraph, availableWidth, measure);
+    const plan = plans[paragraphIndex];
+    y += paragraphBreakSpacing(paragraphIndex, plans, spacing, itemSpacing);
+    const isListItem = plan.listStyle !== 'none';
+    const firstIndent = paragraph || isListItem
+      ? indentWithinWidth((isListItem ? plan.contentIndent : 0) + requestedIndent, limit) : 0;
+    const continuationIndent = isListItem ? indentWithinWidth(plan.contentIndent, limit) : 0;
+    const availableWidth = Number.isFinite(limit) ? Math.max(1, limit - firstIndent) : Infinity;
+    const wrapped = isListItem
+      ? wrapParagraphWithFirstLineWidth(paragraph, availableWidth, Number.isFinite(limit) ? Math.max(1, limit - continuationIndent) : Infinity, measure)
+      : wrapTextWithMeasure(paragraph, availableWidth, measure);
     for (const [paragraphLineIndex, displayText] of wrapped.entries()) {
       const naturalWidth = Number(measure(displayText));
-      const lineIndent = paragraphLineIndex === 0 ? indent : 0;
+      const lineIndent = paragraphLineIndex === 0 ? firstIndent : continuationIndent;
       const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - lineIndent) : Infinity;
-      const visibleWidth = Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
+      const gaps = justificationGapCount(displayText);
+      const justify = align === 'justify' && Number.isFinite(lineLimit) && paragraphLineIndex < wrapped.length - 1 && gaps > 0 && naturalWidth < lineLimit;
+      const visibleWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
       lines.push({
         displayText,
         index: lines.length,
         paragraphIndex,
         firstLine: paragraphLineIndex === 0,
         indent: lineIndent,
+        listStyle: plan.listStyle,
+        listLevel: plan.listLevel,
+        marker: paragraphLineIndex === 0 && isListItem ? {
+          listStyle: plan.listStyle, listLevel: plan.listLevel,
+          text: plan.markerText, x: plan.nestingIndent, anchorX: plan.markerAnchorX,
+          width: plan.naturalWidth, columnWidth: plan.markerColumnWidth, style: plan.markerStyle
+        } : null,
         naturalWidth,
         width: visibleWidth,
+        justify,
+        justificationExtraSpace: justify ? (lineLimit - naturalWidth) / gaps : 0,
         y,
         lineHeight: lineHeightPx
       });
-      width = Math.max(width, lineIndent + naturalWidth);
+      width = Math.max(width, lineIndent + naturalWidth, paragraphLineIndex === 0 && isListItem ? plan.nestingIndent + plan.naturalWidth : 0);
       y += lineHeightPx;
     }
   }
@@ -158,6 +322,13 @@ function appendRichPart(parts, text, style) {
   else parts.push({ text, style });
 }
 
+function flushTrailingRichWhitespace(paragraph) {
+  if (!paragraph.words.length || !paragraph.pendingSpaceParts.length) return;
+  const lastWord = paragraph.words.at(-1);
+  for (const part of paragraph.pendingSpaceParts) appendRichPart(lastWord.parts, part.text, part.style);
+  paragraph.pendingSpaceParts = [];
+}
+
 function measuredPartsWidth(parts, measure) {
   return parts.reduce((width, part) => width + Number(measure(part.text, part.style)), 0);
 }
@@ -172,57 +343,88 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
   if (!Array.isArray(runs) || typeof measure !== 'function') throw new TypeError('Rich text layout requires runs and a measurement function.');
   const limit = Number(maxWidth);
   if (!(limit > 0) && limit !== Infinity) throw new TypeError('Rich text layout requires a positive maximum width.');
-  const paragraphs = [{ words: [], current: [], pendingSpaceStyle: null }];
+  const paragraphs = [{ words: [], current: [], pendingSpaceParts: [] }];
   const finishWord = paragraph => {
     if (!paragraph.current.length) return;
-    paragraph.words.push({ parts: paragraph.current, spaceStyle: paragraph.words.length ? paragraph.pendingSpaceStyle : null });
+    paragraph.words.push({
+      parts: paragraph.current,
+      separatorParts: paragraph.words.length ? paragraph.pendingSpaceParts : []
+    });
     paragraph.current = [];
-    paragraph.pendingSpaceStyle = null;
+    paragraph.pendingSpaceParts = [];
   };
 
-  for (const character of transformRichCharacters(runs, baseStyle.textCase || 'none', baseStyle)) {
+  const characters = transformRichCharacters(runs, baseStyle.textCase || 'none', baseStyle);
+  for (let characterIndex = 0; characterIndex < characters.length; characterIndex += 1) {
+    const character = characters[characterIndex];
     const paragraph = paragraphs.at(-1);
-    if (character.text === '\n' || character.text === '\r\n') {
+    if (character.text === '\n' || character.text === '\r' || character.text === '\r\n') {
       finishWord(paragraph);
-      paragraphs.push({ words: [], current: [], pendingSpaceStyle: null });
+      flushTrailingRichWhitespace(paragraph);
+      paragraphs.push({ words: [], current: [], pendingSpaceParts: [] });
+      if (character.text === '\r' && characters[characterIndex + 1]?.text === '\n') characterIndex += 1;
     } else if (/^\s+$/u.test(character.text)) {
-      finishWord(paragraph);
-      if (paragraph.words.length && !paragraph.pendingSpaceStyle) paragraph.pendingSpaceStyle = character.style;
+      if (paragraph.current.length) finishWord(paragraph);
+      if (paragraph.words.length) appendRichPart(paragraph.pendingSpaceParts, character.text, character.style);
+      else appendRichPart(paragraph.current, character.text, character.style);
     } else appendRichPart(paragraph.current, character.text, character.style);
   }
-  for (const paragraph of paragraphs) finishWord(paragraph);
+  for (const paragraph of paragraphs) {
+    finishWord(paragraph);
+    flushTrailingRichWhitespace(paragraph);
+  }
 
+  const fallback = richTextStyle(baseStyle, {});
+  const plans = createParagraphListPlans(
+    baseStyle.paragraphStyles,
+    paragraphs.length,
+    (markerText, markerStyle) => measure(markerText, markerStyle || fallback),
+    paragraphs.map(paragraph => paragraph.words[0]?.parts[0]?.style || paragraph.current[0]?.style || fallback)
+  );
   const rawLines = [];
   const paragraphSpacing = nonNegativeTextMetric(baseStyle.paragraphSpacing);
+  const listSpacing = nonNegativeTextMetric(baseStyle.listSpacing);
   const requestedIndent = nonNegativeTextMetric(baseStyle.firstLineIndent);
   for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+    const plan = plans[paragraphIndex];
+    const isListItem = plan.listStyle !== 'none';
+    const contentIndent = isListItem ? plan.contentIndent : 0;
+    const firstIndent = indentWithinWidth(contentIndent + requestedIndent, limit);
+    const continuationIndent = indentWithinWidth(contentIndent, limit);
     let line = [];
     let firstLine = true;
     for (const word of paragraph.words) {
       const candidate = line.length
-        ? [...line, { text: ' ', style: word.spaceStyle || line.at(-1).style }, ...word.parts]
+        ? [...line, ...word.separatorParts, ...word.parts]
         : word.parts;
       const mergedCandidate = [];
       for (const part of candidate) appendRichPart(mergedCandidate, part.text, part.style);
-      const indent = firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
+      const indent = firstLine ? firstIndent : continuationIndent;
       const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
       if (line.length && measuredPartsWidth(mergedCandidate, measure) > lineLimit) {
-        rawLines.push({ parts: line, paragraphIndex, firstLine });
+        rawLines.push({ parts: line, paragraphIndex, firstLine, plan });
         line = word.parts;
         firstLine = false;
       } else line = mergedCandidate;
     }
-    rawLines.push({ parts: line, paragraphIndex, firstLine });
+    rawLines.push({ parts: line, paragraphIndex, firstLine, plan });
   }
 
-  const fallback = richTextStyle(baseStyle, {});
   let y = 0;
-  const lines = rawLines.map(({ parts, paragraphIndex, firstLine }, index) => {
-    if (firstLine && paragraphIndex > 0) y += paragraphSpacing;
-    const indent = parts.length && firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
+  const lines = rawLines.map(({ parts, paragraphIndex, firstLine, plan }, index) => {
+    if (firstLine && paragraphIndex > 0) y += paragraphBreakSpacing(paragraphIndex, plans, paragraphSpacing, listSpacing);
+    const isListItem = plan.listStyle !== 'none';
+    const contentIndent = isListItem ? plan.contentIndent : 0;
+    const indent = isListItem
+      ? indentWithinWidth(contentIndent + (firstLine ? requestedIndent : 0), limit)
+      : parts.length && firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
     const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
     const naturalWidth = measuredPartsWidth(parts, measure);
-    const lineWidth = Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
+    const displayText = parts.map(part => part.text).join('');
+    const gaps = justificationGapCount(displayText);
+    const isLastParagraphLine = index === rawLines.length - 1 || rawLines[index + 1].paragraphIndex !== paragraphIndex;
+    const justify = baseStyle.align === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
+    const lineWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
     const lineHeight = parts.length
       ? Math.max(...parts.map(part => part.style.fontSize * part.style.lineHeight))
       : fallback.fontSize * fallback.lineHeight;
@@ -234,11 +436,24 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
       offsetX += width;
       return positioned;
     });
-    const current = { index, paragraphIndex, firstLine, indent, y, parts: positionedParts, naturalWidth, width: lineWidth, lineHeight: resolvedHeight, displayText: positionedParts.map(part => part.text).join('') };
+    const marker = firstLine && isListItem ? {
+      listStyle: plan.listStyle, listLevel: plan.listLevel,
+      text: plan.markerText, x: plan.nestingIndent, anchorX: plan.markerAnchorX,
+      width: plan.naturalWidth, columnWidth: plan.markerColumnWidth, style: plan.markerStyle
+    } : null;
+    const current = {
+      index, paragraphIndex, firstLine, indent, y, parts: positionedParts, naturalWidth, width: lineWidth,
+      justify, justificationExtraSpace: justify ? (lineLimit - naturalWidth) / gaps : 0,
+      lineHeight: resolvedHeight, displayText, listStyle: plan.listStyle, listLevel: plan.listLevel, marker
+    };
     y += resolvedHeight;
     return current;
   });
-  return { lines, width: Math.max(0, ...lines.map(line => line.indent + line.naturalWidth)), height: y };
+  return {
+    lines,
+    width: Math.max(0, ...lines.flatMap(line => [line.indent + line.naturalWidth, line.marker ? line.marker.x + line.marker.width : 0])),
+    height: y
+  };
 }
 
 export function calculateTextBox(ctx, node, {
@@ -247,6 +462,8 @@ export function calculateTextBox(ctx, node, {
   letterSpacing = node.letterSpacing,
   paragraphSpacing = node.paragraphSpacing,
   firstLineIndent = node.firstLineIndent,
+  listSpacing = node.listSpacing,
+  paragraphStyles = node.paragraphStyles,
   text = node.text
 } = {}) {
   const width = Math.max(0, Number(node.width) || 0);
@@ -268,6 +485,8 @@ export function calculateTextBox(ctx, node, {
       lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
       paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
       firstLineIndent: nonNegativeTextMetric(firstLineIndent),
+      listSpacing: nonNegativeTextMetric(listSpacing),
+      paragraphStyles,
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
       textCase: node.textCase || 'none'
     };
@@ -292,7 +511,10 @@ export function calculateTextBox(ctx, node, {
   if (mode === 'auto-width') {
     const layout = layoutPlainText(textValue, Infinity,
       line => measureTrackedText(ctx, line, spacing),
-      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent });
+      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, markerStyle: {
+        fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
+        fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
+      } });
     return {
       width: Math.max(1, Math.min(100_000, Math.ceil(layout.width + 2))),
       height: Math.max(36, Math.ceil(layout.height + 4))
@@ -301,7 +523,10 @@ export function calculateTextBox(ctx, node, {
 
   const layout = layoutPlainText(textValue, Math.max(1, width),
     line => measureTrackedText(ctx, line, spacing),
-    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent });
+    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, markerStyle: {
+      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
+      fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
+    } });
   return { width, height: Math.max(36, Math.ceil(layout.height + 4)) };
 }
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   getTransformHandles, invertAffine, multiplyAffine, nodeLocalToPage, nodeLocalToPageTransform,
-  pageToNodeLocal, resizeOrientedRect, transformPoint, transformVector
+  pageToNodeLocal, resizeOrientedRect, shortestAngleDelta, transformPoint, transformVector
 } from '../src/transform-geometry.js';
 
 const closePoint = (actual, expected, epsilon = 1e-9) => {
@@ -38,6 +38,21 @@ test('point and vector transforms distinguish translation and invert consistentl
   closePoint(transformPoint(invertAffine(matrix), transformPoint(matrix, point)), point);
   assert.deepEqual(transformVector(matrix, { x: 1, y: 0 }), { x: 6.123233995736766e-17, y: 1 });
   assert.deepEqual(transformPoint(multiplyAffine(matrix, invertAffine(matrix)), point), point);
+});
+
+test('shortest angle steps cross the wrap boundary and accumulate rotations beyond one turn', () => {
+  const radians = degrees => degrees * Math.PI / 180;
+  assert.ok(Math.abs(shortestAngleDelta(radians(179), radians(-179)) - radians(2)) < 1e-12);
+  assert.ok(Math.abs(shortestAngleDelta(radians(-179), radians(179)) + radians(2)) < 1e-12);
+  assert.throws(() => shortestAngleDelta(Number.NaN, 0), /finite radians/);
+
+  const samples = [0, 90, 179, -179, -90, 0, 90, 179, -179, -90, 0].map(radians);
+  let accumulated = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    accumulated += shortestAngleDelta(samples[index - 1], samples[index]);
+  }
+  assert.ok(Math.abs(accumulated - Math.PI * 4) < 1e-12,
+    'incremental tracking should preserve two full turns instead of clamping at ±180°');
 });
 
 test('resize and rotation handles report exact oriented page coordinates', () => {

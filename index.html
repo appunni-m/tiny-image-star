@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1b1d22" media="(prefers-color-scheme: dark)" />
     <meta name="description" content="Tiny Image Star is a local-first visual design editor. Your files stay on this device." />
     <title>Tiny Image Star</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -59,6 +60,9 @@
             <div id="color-styles-list" class="color-styles-list"></div>
             <div class="section-heading"><span>Text styles</span></div>
             <div id="text-styles-list" class="text-styles-list"></div>
+            <div class="section-heading local-fonts-heading"><span>Local fonts</span><button class="tiny-icon-button" id="add-local-font" type="button" aria-label="Add a local font" title="Add a font file">＋</button></div>
+            <div class="image-properties-note local-fonts-note">Font files stay on this device and travel with exported .flocal designs.</div>
+            <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
             <div class="section-heading local-assets-heading"><span>Local images</span><button class="tiny-icon-button" id="place-image-assets" title="Place image">＋</button></div>
             <div id="assets-list" class="assets-list"></div>
             <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
@@ -77,7 +81,11 @@
             <div class="text-format-toolbar" id="text-format-toolbar" role="toolbar" aria-label="Format selected text" hidden>
               <button class="text-format-button" type="button" data-text-format="bold" aria-label="Bold" aria-pressed="false" title="Bold"><strong>B</strong></button>
               <button class="text-format-button" type="button" data-text-format="italic" aria-label="Italic" aria-pressed="false" title="Italic"><em>I</em></button>
-              <label class="text-format-family-label" for="text-format-family">Font<input id="text-format-family" type="text" maxlength="160" value="Arial, sans-serif" aria-label="Selected text font family"></label>
+              <button class="text-format-button" type="button" data-paragraph-format="bulleted" aria-label="Bulleted list" aria-pressed="false" title="Bulleted list">• List</button>
+              <button class="text-format-button" type="button" data-paragraph-format="numbered" aria-label="Numbered list" aria-pressed="false" title="Numbered list">1. List</button>
+              <button class="text-format-button" type="button" data-paragraph-format="outdent" aria-label="Decrease list level" title="Decrease list level">⇤</button>
+              <button class="text-format-button" type="button" data-paragraph-format="indent" aria-label="Increase list level" title="Increase list level">⇥</button>
+              <label class="text-format-family-label" for="text-format-family">Font<input id="text-format-family" type="text" maxlength="160" list="font-family-options" value="Arial, sans-serif" aria-label="Selected text font family"></label>
               <label class="text-format-weight-label" for="text-format-weight">Weight<select id="text-format-weight" aria-label="Selected text font weight"><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="600">600</option><option value="700">700</option><option value="800">800</option><option value="900">900</option></select></label>
               <label class="text-format-size-label" for="text-format-size">Size<input id="text-format-size" type="number" min="1" max="512" step="1" value="24" aria-label="Selected text font size"></label>
               <label class="text-format-line-height-label" for="text-format-line-height">Line<input id="text-format-line-height" type="number" min="0.05" max="100" step="0.05" value="1.25" aria-label="Selected text line height"></label>
@@ -109,6 +117,7 @@
             <button class="tool-button" data-tool="star" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
             <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
+            <button class="tool-button" data-tool="pencil" title="Pencil · draw freehand" aria-label="Pencil · draw freehand"><span data-icon="pencil"></span><kbd></kbd></button>
             <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
             <button class="tool-button" data-tool="image" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
@@ -141,13 +150,28 @@
       <div class="context-menu" id="context-menu" role="menu" hidden></div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />
+      <input id="font-input" type="file" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf" hidden />
+      <datalist id="font-family-options"></datalist>
       <input id="open-file-input" type="file" accept=".flocal,application/octet-stream" hidden />
       <input id="svg-input" type="file" accept=".svg,image/svg+xml" hidden />
+      <dialog class="modal" id="font-import-dialog" aria-labelledby="font-import-title">
+        <form method="dialog" id="font-import-form">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL FONT</span><h2 id="font-import-title">Add font to this device</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <p class="modal-copy" id="font-import-file-name">Choose a WOFF2, WOFF, TTF, or OTF file. It will be stored locally.</p>
+          <label class="field-label" for="font-family-name">Family name</label><input id="font-family-name" class="text-field" maxlength="120" required autocomplete="off" />
+          <div class="property-grid font-import-descriptors">
+            <label class="field-label" for="font-weight-value">Weight<select id="font-weight-value" class="select-field"><option value="100">100 · Thin</option><option value="200">200 · Extra light</option><option value="300">300 · Light</option><option value="400" selected>400 · Regular</option><option value="500">500 · Medium</option><option value="600">600 · Semi bold</option><option value="700">700 · Bold</option><option value="800">800 · Extra bold</option><option value="900">900 · Black</option></select></label>
+            <label class="field-label" for="font-style-value">Style<select id="font-style-value" class="select-field"><option value="normal" selected>Regular</option><option value="italic">Italic</option></select></label>
+          </div>
+          <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="font-import-confirm" value="import">Install locally</button></div>
+        </form>
+      </dialog>
       <dialog class="modal" id="recipe-dialog">
         <form method="dialog" id="recipe-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2>Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
           <p class="modal-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
           <label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required />
+          <div class="recipe-output-controls"><label class="field-label" for="recipe-format">Output format</label><select id="recipe-format" class="select-field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select><label class="field-label" for="recipe-quality">Quality <output id="recipe-quality-value">90%</output></label><input id="recipe-quality" type="range" min="1" max="100" step="1" value="90" aria-label="Recipe output quality" /></div>
           <div class="recipe-preview" id="recipe-preview"><span class="recipe-preview-icon">✦</span><span id="recipe-preview-summary">Brightness · Contrast · Color</span></div>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-recipe-confirm" value="save">Save recipe</button></div>
         </form>

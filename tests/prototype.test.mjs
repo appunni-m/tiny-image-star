@@ -50,6 +50,37 @@ test('prototype change-variant swaps only its presentation instance and survives
   }), /different variant from this component instance/);
 });
 
+test('hover variant cleanup survives navigation and back history', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Home' });
+  const defaultMaster = createNode('rectangle', { name: 'Button/State=Default', fill: '#2255cc' });
+  const hoverMaster = createNode('rectangle', { name: 'Button/State=Hover', fill: '#1144aa' });
+  const destination = createNode('frame', { name: 'Destination' });
+  addNode(document, home); addNode(document, defaultMaster); addNode(document, hoverMaster); addNode(document, destination);
+  const defaultComponent = createComponent(document, defaultMaster.id);
+  const hoverComponent = createComponent(document, hoverMaster.id);
+  createComponentSet(document, [defaultComponent.id, hoverComponent.id]);
+  const instance = createComponentInstance(document, defaultComponent.id, { parentId: home.id, x: 20, y: 24 });
+  const hover = addPrototypeInteraction(document, instance.id, null, {
+    action: 'change-variant', trigger: 'while-hovering', targetVariantId: hoverComponent.id
+  });
+  const navigate = addPrototypeInteraction(document, instance.id, destination.id, { trigger: 'on-click' });
+  const runtime = structuredClone(document);
+  const session = createPrototypeSession({ page: runtime.pages[0], frame: findNode(runtime, home.id).node });
+
+  assert.equal(applyPrototypeInteraction(runtime, session, hover), 'variant-changed');
+  assert.equal(findNode(runtime, instance.id).node.componentId, hoverComponent.id);
+  assert.equal(applyPrototypeInteraction(runtime, session, navigate), 'navigated');
+  assert.equal(session.hoverVariantOriginal.componentId, defaultComponent.id,
+    'navigation must retain the hover reset point while the source frame is hidden');
+  assert.equal(backPrototypeSession(session), 'navigated-back');
+  assert.equal(session.lastHoverInteractionId, hover.id,
+    'returning to the source frame must leave the hover route active until pointer movement is observed');
+  assert.equal(clearPrototypeHoverInteraction(runtime, session), true);
+  assert.equal(findNode(runtime, instance.id).node.componentId, defaultComponent.id,
+    'leaving the hotspot after returning should restore the authored presentation variant');
+});
+
 test('while-hovering variant changes return to the original component when the hotspot is left', () => {
   const document = createDocument();
   const home = createNode('frame', { name: 'Hover variant demo' });
@@ -70,6 +101,8 @@ test('while-hovering variant changes return to the original component when the h
   const session = createPrototypeSession({ page: runtime.pages[0], frame: findNode(runtime, home.id).node });
   assert.equal(applyPrototypeInteraction(runtime, session, runtimeInstance.interactions[0]), 'variant-changed');
   assert.equal(findNode(runtime, instance.id).node.componentId, hoverComponent.id);
+  assert.equal(applyPrototypeInteraction(runtime, session, runtimeInstance.interactions[0]), 'variant-changed',
+    'reapplying the active hover route should be idempotent');
   assert.equal(clearPrototypeHoverInteraction(runtime, session), true, 'leaving the active hover route should restore its original component');
   assert.equal(findNode(runtime, instance.id).node.componentId, defaultComponent.id);
   assert.equal(session.variantSelections[instance.id], defaultComponent.id);

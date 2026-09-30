@@ -17,6 +17,7 @@ const styleValues = style => ({
   letterSpacing: style.letterSpacing,
   paragraphSpacing: style.paragraphSpacing,
   firstLineIndent: style.firstLineIndent,
+  listSpacing: style.listSpacing,
   align: style.align,
   color: style.color,
   textCase: style.textCase,
@@ -39,7 +40,7 @@ function makeTypographyFixture() {
   const frame = createNode('frame', { variableModes: { [collection.id]: dark.id } });
   const source = createNode('text', {
     name: 'Hero heading', text: 'Source copy', x: 16, y: 24, width: 320, height: 72,
-    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 650, paragraphSpacing: 9, firstLineIndent: 18,
+    fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 650, paragraphSpacing: 9, firstLineIndent: 18, listSpacing: 5,
     fontStyle: 'italic', align: 'center', textCase: 'capitalize', textDecoration: 'underline'
   });
   addNode(document, frame);
@@ -60,7 +61,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
-    align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   const id = style.id;
@@ -73,7 +74,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
-    align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
   }, 'existing style values do not follow later variable edits');
 
   assert.equal(updateTypographyStyle(document, style.id, source.id), true);
@@ -82,7 +83,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
-    align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   });
 
   setColorVariableValue(document, ink.id, '#1e824c', dark.id);
@@ -90,7 +91,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
-    align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
   }, 'updated values remain a snapshot');
 });
 
@@ -131,6 +132,7 @@ test('applying a typography style preserves text and geometry and clears conflic
   assert.deepEqual(target.variableBindings, {}, 'font-size, line-height, and tracking bindings are cleared');
   assert.equal(getNodeColor(document, target, 'text'), target.color, 'the copied color is now local to the layer');
   assert.equal(getNodePropertyValue(document, target, 'fontSize'), style.fontSize);
+  assert.equal(target.listSpacing, 5, 'applying a text style copies its list spacing setting');
 
   const shape = createNode('rectangle');
   addNode(document, shape);
@@ -155,6 +157,22 @@ test('typography styles are deleted by identity and survive document serializati
   assert.equal(deleteTypographyStyle(document, 'missing-style'), false);
 });
 
+test('justified paragraph alignment survives style save, serialization, update, and application', () => {
+  const { document, source } = makeTypographyFixture();
+  source.align = 'justify';
+  const style = createTypographyStyle(document, source.id, 'Justified body');
+  assert.equal(style.align, 'justify');
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.typographyStyles[0].align, 'justify');
+  const target = createNode('text', { align: 'center' });
+  addNode(restored, target);
+  assert.equal(applyTypographyStyle(restored, target.id, style.id), true);
+  assert.equal(target.align, 'justify');
+  target.align = 'left';
+  assert.equal(updateTypographyStyle(restored, style.id, target.id), true);
+  assert.equal(restored.typographyStyles[0].align, 'left');
+});
+
 test('legacy typography styles without case or decoration remain valid and apply with defaults', () => {
   const { document, source } = makeTypographyFixture();
   const style = createTypographyStyle(document, source.id, 'Legacy style');
@@ -162,6 +180,7 @@ test('legacy typography styles without case or decoration remain valid and apply
   delete style.textDecoration;
   delete style.paragraphSpacing;
   delete style.firstLineIndent;
+  delete style.listSpacing;
   const target = createNode('text', { textCase: 'uppercase', textDecoration: 'line-through' });
   addNode(document, target);
 
@@ -171,6 +190,7 @@ test('legacy typography styles without case or decoration remain valid and apply
   assert.equal(target.textDecoration, 'none');
   assert.equal(target.paragraphSpacing, 0);
   assert.equal(target.firstLineIndent, 0);
+  assert.equal(target.listSpacing, 0);
 });
 
 test('document validation and serialization reject malformed and duplicate typography styles', () => {
@@ -186,7 +206,8 @@ test('document validation and serialization reject malformed and duplicate typog
     ['non-finite tracking', value => { value.letterSpacing = Infinity; }],
     ['negative paragraph spacing', value => { value.paragraphSpacing = -1; }],
     ['oversized first-line indent', value => { value.firstLineIndent = 10_001; }],
-    ['unsupported alignment', value => { value.align = 'justify'; }],
+    ['oversized list spacing', value => { value.listSpacing = 10_001; }],
+    ['unsupported alignment', value => { value.align = 'distributed'; }],
     ['unsupported text case', value => { value.textCase = 'title-case'; }],
     ['unsupported text decoration', value => { value.textDecoration = 'overline'; }],
     ['invalid color', value => { value.color = 'blue'; }]

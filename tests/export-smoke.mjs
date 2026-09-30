@@ -17,7 +17,7 @@ function waitFor(test, label, timeout = 10000) {
     poll();
   });
 }
-function click(element) { assert(element, 'Expected an interactive editor control.'); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })); }
+function click(element, options = {}) { assert(element, 'Expected an interactive editor control.'); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...options })); }
 function packageFile(documentData, assets = []) {
   const manifest = new TextEncoder().encode(JSON.stringify({
     schema: documentData.schema,
@@ -68,6 +68,26 @@ function expectedPillowPreview(sourceBytes, adjustments, transforms) {
 function assertSameBytes(actual, expected, message) {
   assert(actual.length === expected.length && actual.every((value, index) => value === expected[index]), message);
 }
+async function unpackStoredZip(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const files = new Map();
+  let offset = 0;
+  while (offset + 30 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const size = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLength));
+    const contentStart = nameStart + nameLength + extraLength;
+    assert(method === 0, 'The image archive should store already-compressed raster payloads without recompressing them.');
+    files.set(name, bytes.slice(contentStart, contentStart + size));
+    offset = contentStart + size;
+  }
+  assert(view.getUint32(offset, true) === 0x02014b50, 'The central directory should follow the image entries.');
+  return files;
+}
 
 try {
   await pillow.default();
@@ -87,6 +107,15 @@ try {
     name: 'Local photo', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
     x: 112, y: 20, width: 40, height: 28, rotation: -8, opacity: 0.8, fit: 'cover'
   });
+  const batchJpeg = createNode('image', {
+    name: 'Batch JPEG', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    x: 20, y: 360, width: 40, height: 28, outputFormat: 'jpeg', outputQuality: 76
+  });
+  const batchWebp = createNode('image', {
+    name: 'Batch Edited WebP', assetId: imageAssetId, sourceWidth: 4, sourceHeight: 2,
+    x: 84, y: 360, width: 40, height: 28, outputFormat: 'webp', outputQuality: 61,
+    adjustments: { invert: true }
+  });
   const imageFilled = createNode('rectangle', {
     name: 'Image-filled export', x: 220, y: 30, width: 40, height: 40, fill: '#ffffff',
     imageFill: createImageFill(imageAssetId, { fit: 'contain' })
@@ -94,6 +123,7 @@ try {
   addNode(design, group); addNode(design, artwork, { parentId: group.id });
   addNode(design, caption, { parentId: group.id });
   addNode(design, localImage, { parentId: group.id });
+  addNode(design, batchJpeg); addNode(design, batchWebp);
   addNode(design, imageFilled);
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
   const imageAssets = [{ id: imageAssetId, name: 'local-photo.png', type: 'image/png', bytes: imageBytes }];
@@ -301,7 +331,47 @@ try {
   const expectedFillPreview = expectedPillowPreview(imageBytes, fillAdjustments, fillTransforms);
   assertSameBytes(embeddedImageBytes(editedPageSvg, imageFilled.id), expectedFillPreview,
     'Page SVG should embed the image fill’s distinct Pillow-RS crop/rotation/adjustment preview.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, rasterExportUnaffectedByOutlineView: true })}`;
+  click(app.querySelector(`[data-layer-id="${batchJpeg.id}"]`));
+  click(app.querySelector(`[data-layer-id="${batchWebp.id}"]`), { ctrlKey: true });
+  assert(app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 2, 'Batch export should begin with both selected image layers.');
+  const encodeCalls = [];
+  const canvasPrototype = view.HTMLCanvasElement.prototype;
+  const originalToBlob = canvasPrototype.toBlob;
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    encodeCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  const keyboardEscape = () => app.body.dispatchEvent(new view.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Escape' }));
+  try {
+    click(app.querySelector('#export-selection'));
+    keyboardEscape();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert(downloads.length === 10, 'Canceling a multi-image export should not download a partial archive.');
+    click(app.querySelector('#export-selection'));
+    await waitFor(() => downloads.length === 11, 'separate-image ZIP download');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const imageArchive = downloads[10];
+  assert(imageArchive.filename === 'Untitled-images.zip' && imageArchive.blob?.type === 'application/zip', 'Multi-image export should download one ZIP archive.');
+  const archiveEntries = await unpackStoredZip(imageArchive.blob);
+  assert([...archiveEntries.keys()].join(',') === 'Batch JPEG.jpg,Batch Edited WebP.webp', 'The ZIP should contain one separately named image file per selected layer.');
+  const jpegBytes = archiveEntries.get('Batch JPEG.jpg');
+  const webpBytes = archiveEntries.get('Batch Edited WebP.webp');
+  assert(jpegBytes[0] === 0xff && jpegBytes[1] === 0xd8 && jpegBytes[2] === 0xff, 'Each image should use its saved JPEG output format.');
+  assert(new TextDecoder().decode(webpBytes.subarray(0, 4)) === 'RIFF' && new TextDecoder().decode(webpBytes.subarray(8, 12)) === 'WEBP', 'Each image should use its saved WebP output format.');
+  assert(encodeCalls.some(call => call.type === 'image/jpeg' && call.quality === 0.76)
+    && encodeCalls.some(call => call.type === 'image/webp' && call.quality === 0.61), 'Batch export should pass each image’s saved quality to its own encoder.');
+  const processedBitmap = await view.createImageBitmap(new Blob([webpBytes], { type: 'image/webp' }));
+  const processedCanvas = view.document.createElement('canvas'); processedCanvas.width = processedBitmap.width; processedCanvas.height = processedBitmap.height;
+  const processedContext = processedCanvas.getContext('2d', { willReadFrequently: true }); processedContext.drawImage(processedBitmap, 0, 0); processedBitmap.close();
+  const originalBitmap = await view.createImageBitmap(new Blob([imageBytes], { type: 'image/png' }));
+  const originalCanvas = view.document.createElement('canvas'); originalCanvas.width = originalBitmap.width; originalCanvas.height = originalBitmap.height;
+  const originalContext = originalCanvas.getContext('2d', { willReadFrequently: true }); originalContext.drawImage(originalBitmap, 0, 0); originalBitmap.close();
+  const processedPixel = processedContext.getImageData(5, 12, 1, 1).data;
+  const originalPixel = originalContext.getImageData(0, 0, 1, 1).data;
+  assert(processedPixel.some((channel, index) => index < 3 && channel !== originalPixel[index]), 'The archive should contain the current edited preview, not the untouched source image.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

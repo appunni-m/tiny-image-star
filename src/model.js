@@ -1,9 +1,10 @@
 import { isValidLayerEffects } from './layer-effects.js';
 import { isValidFillStack, isValidGradientFill } from './fills.js';
-import { createImageFill, isImageFillSupported, isValidImageFill } from './image-fills.js';
+import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageAdjustments, isValidImageFill, normalizeImageAdjustments } from './image-fills.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
+import { isValidCornerRadii } from './corner-radii.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -117,6 +118,28 @@ function isValidTextRuns(runs, text = undefined) {
   return text === undefined || (typeof text === 'string' && runText === text);
 }
 
+const paragraphListStyles = new Set(['none', 'bulleted', 'numbered']);
+const maxTextParagraphStyles = 100_000;
+
+function isValidTextParagraphStyles(styles, text = undefined) {
+  if (!Array.isArray(styles) || styles.length > maxTextParagraphStyles) return false;
+  if (text !== undefined) {
+    if (typeof text !== 'string' || text.length > 1_000_000) return false;
+    if (styles.length !== text.split(/\r\n|\r|\n/u).length) return false;
+  }
+  for (let index = 0; index < styles.length; index += 1) {
+    const style = styles[index];
+    if (!style || typeof style !== 'object' || Array.isArray(style)
+      || Object.keys(style).some(key => !['listStyle', 'listLevel', 'listStart'].includes(key))) return false;
+    const listStyle = style.listStyle ?? 'none';
+    const listLevel = style.listLevel ?? 0;
+    if (!paragraphListStyles.has(listStyle) || !Number.isInteger(listLevel) || listLevel < 0 || listLevel > 4) return false;
+    if (listStyle === 'none' && listLevel !== 0) return false;
+    if (style.listStart != null && (listStyle !== 'numbered' || !Number.isInteger(style.listStart) || style.listStart < 1 || style.listStart > 999_999)) return false;
+  }
+  return true;
+}
+
 export function createId(prefix = 'id') {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${id}`;
@@ -153,8 +176,8 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
-  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }, transforms: { crop: null, rotation: 0 }, fit: 'cover' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
+  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0 }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
@@ -219,26 +242,58 @@ const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
 const booleanOperations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const textCases = new Set(['none', 'uppercase', 'lowercase', 'capitalize']);
 const textDecorations = new Set(['none', 'underline', 'line-through']);
+const textAlignments = new Set(['left', 'center', 'right', 'justify']);
 const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
 const strokeCaps = new Set(['butt', 'round', 'square']);
 const strokeJoins = new Set(['miter', 'round', 'bevel']);
 const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
 const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
+const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'innerRadius', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'layoutGuides', 'interactions', '__childOrder'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
+
+function vectorPathContours(node) {
+  return [{ points: node?.points, closed: node?.closed ?? false }, ...(Array.isArray(node?.subpaths) ? node.subpaths : [])];
+}
+
+function hasFillablePathContour(node) {
+  return vectorPathContours(node).some(contour => contour.closed === true && Array.isArray(contour.points) && contour.points.length >= 2);
+}
+
+function hasOnlyClosedPathContours(node) {
+  const contours = vectorPathContours(node);
+  return contours.length > 0 && contours.every(contour => contour.closed === true && Array.isArray(contour.points) && contour.points.length >= 2);
+}
+
+function validVectorPath(node) {
+  if (!Array.isArray(node.points) || (node.closed != null && typeof node.closed !== 'boolean')
+    || (node.fillRule != null && !vectorFillRules.has(node.fillRule))
+    || (node.subpaths != null && (!Array.isArray(node.subpaths) || node.subpaths.length > 9_999))) return false;
+  const paths = vectorPathContours(node);
+  if (paths.length > 10_000) return false;
+  let pointCount = 0;
+  for (const [index, path] of paths.entries()) {
+    if (!Array.isArray(path.points) || (index > 0 && (path.points.length < 2 || typeof path.closed !== 'boolean'))) return false;
+    pointCount += path.points.length;
+    if (pointCount > 20_000 || path.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
+      || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))
+      || (point.mode != null && !vectorAnchorModes.has(point.mode)))) return false;
+  }
+  return true;
+}
 
 export function createNode(type, overrides = {}) {
   const preset = defaults[type];
@@ -259,7 +314,12 @@ export function createNode(type, overrides = {}) {
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
     children: overrides.children ? clone(overrides.children) : [],
     ...(Array.isArray(overrides.fills) ? { fills: clone(overrides.fills) } : {}),
-    ...(type === 'image' ? { transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {}) } : {})
+    ...(overrides.cornerRadii ? { cornerRadii: clone(overrides.cornerRadii) } : {}),
+    ...(Array.isArray(overrides.paragraphStyles) ? { paragraphStyles: clone(overrides.paragraphStyles) } : {}),
+    ...(type === 'image' ? {
+      adjustments: normalizeImageAdjustments(overrides.adjustments ?? preset.adjustments),
+      transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {})
+    } : {})
   };
 }
 
@@ -278,6 +338,7 @@ export function createLayoutGuide(type = 'grid', overrides = {}) {
 
 export function createLayerEffect(type, overrides = {}) {
   if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
+  if (type === 'inner-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
   if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, radius: 4, ...overrides };
   throw new TypeError(`Unsupported layer effect: ${type}`);
 }
@@ -712,7 +773,7 @@ export function alignLayers(document, nodeIds, mode, pageId = document.activePag
 }
 
 function isBooleanOperand(node) {
-  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0);
+  return booleanOperandTypes.has(node.type) && (node.type !== 'path' || hasOnlyClosedPathContours(node)) && (node.type !== 'network' || (node.faces || []).length > 0);
 }
 
 /** Return whether these layers can become one live, editable Boolean group. */
@@ -765,7 +826,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
 
 const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 function isMaskSource(node) {
-  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || node.closed === true) && (node.type !== 'network' || (node.faces || []).length > 0));
+  return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
 }
 
 /** Return whether selected sibling layers can become a live alpha-mask group. */
@@ -885,15 +946,21 @@ export function renameNode(document, nodeId, name, pageId = document.activePageI
   return updateNode(document, nodeId, { name: String(name).trim() || 'Untitled layer' }, pageId);
 }
 
-export function createImageRecipe(imageNode, name) {
+export function createImageRecipe(imageNode, name, output = {}) {
   if (!imageNode || imageNode.type !== 'image') throw new TypeError('Recipes can only be created from an image layer.');
+  const format = output.format ?? imageNode.outputFormat ?? 'png';
+  const quality = output.quality ?? imageNode.outputQuality ?? 90;
+  if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
+  if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
   return {
     id: createId('recipe'),
     name: String(name).trim() || `${imageNode.name} recipe`,
-    adjustments: { ...imageNode.adjustments },
+    adjustments: normalizeImageAdjustments(imageNode.adjustments || {}),
     transforms: createImageTransforms(imageNode.transforms || {}),
     fit: imageNode.fit ?? 'cover',
     opacity: imageNode.opacity ?? 1,
+    format,
+    quality,
     createdAt: new Date().toISOString()
   };
 }
@@ -901,10 +968,16 @@ export function createImageRecipe(imageNode, name) {
 export function applyImageRecipe(document, nodeId, recipe, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry || entry.node.type !== 'image') return false;
-  entry.node.adjustments = { ...recipe.adjustments };
+  const format = recipe.format ?? 'png';
+  const quality = recipe.quality ?? 90;
+  if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
+  if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
+  entry.node.adjustments = normalizeImageAdjustments(recipe.adjustments || {});
   entry.node.transforms = createImageTransforms(recipe.transforms || {});
   entry.node.fit = recipe.fit ?? entry.node.fit;
   entry.node.opacity = recipe.opacity ?? entry.node.opacity;
+  entry.node.outputFormat = format;
+  entry.node.outputQuality = quality;
   return true;
 }
 
@@ -1208,9 +1281,15 @@ export function setFrameVariableMode(document, frameId, collectionId, modeId = n
   const frame = findNode(document, frameId, pageId)?.node;
   const collection = document.variableCollections?.find(item => item.id === collectionId);
   if (!frame || frame.type !== 'frame' || !collection || (modeId && !collection.modes.some(mode => mode.id === modeId))) return false;
+  const previousModes = frame.variableModes ? { ...frame.variableModes } : null;
   frame.variableModes ||= {};
   if (modeId) frame.variableModes[collectionId] = modeId;
   else delete frame.variableModes[collectionId];
+  if (!variableBindingsAreValid(document)) {
+    if (previousModes) frame.variableModes = previousModes;
+    else delete frame.variableModes;
+    return false;
+  }
   if (!Object.keys(frame.variableModes).length) delete frame.variableModes;
   return true;
 }
@@ -1239,7 +1318,7 @@ export function bindColorVariable(document, nodeId, variableId, kind = 'fill', p
   const property = properties[kind];
   if (!node || !property || (variableId && !variable)) return false;
   const compatible = kind === 'text' ? node.type === 'text'
-    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
+    : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
       : !['text', 'image', 'group', 'boolean'].includes(node.type);
   if (!compatible) return false;
   if (variableId) {
@@ -1286,7 +1365,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration'];
 
 function typographyStyleValues(document, node) {
   return {
@@ -1298,6 +1377,7 @@ function typographyStyleValues(document, node) {
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
     paragraphSpacing: Number(node.paragraphSpacing) || 0,
     firstLineIndent: Number(node.firstLineIndent) || 0,
+    listSpacing: Number(node.listSpacing) || 0,
     align: node.align || 'left',
     verticalAlign: textVerticalAlignments.has(node.verticalAlign) ? node.verticalAlign : 'top',
     color: getNodeColor(document, node, 'text'),
@@ -1322,7 +1402,7 @@ export function applyTypographyStyle(document, nodeId, styleId, pageId = documen
   const style = document.typographyStyles?.find(item => item.id === styleId);
   if (!node || node.type !== 'text' || !style) return false;
   for (const property of typographyStyleProperties) {
-    if (property === 'paragraphSpacing' || property === 'firstLineIndent') node[property] = Number(style[property]) || 0;
+    if (property === 'paragraphSpacing' || property === 'firstLineIndent' || property === 'listSpacing') node[property] = Number(style[property]) || 0;
     else node[property] = style[property];
   }
   node.textVariableId = null;
@@ -1556,7 +1636,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -2151,6 +2231,12 @@ export function validateDocument(document) {
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
         || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
         || (node.strokePattern === 'dotted' && node.strokeCap != null && node.strokeCap !== 'round')) throw new TypeError(`Invalid stroke style on layer ${node.name || node.id}.`);
+      if (node.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(node.type) || !isValidCornerRadii(node.cornerRadii))) {
+        throw new TypeError(`Invalid independent corner radii on layer ${node.name || node.id}.`);
+      }
+      if (node.cornerRadii != null && node.variableBindings?.radius != null) {
+        throw new TypeError(`Independent corner radii cannot use a uniform radius variable binding on layer ${node.name || node.id}.`);
+      }
       if (Object.hasOwn(node, 'overflowBehavior') && (node.type !== 'frame' || !frameOverflowBehaviors.has(node.overflowBehavior))) {
         throw new TypeError(`Invalid frame overflow behavior on layer ${node.name || node.id}.`);
       }
@@ -2164,10 +2250,17 @@ export function validateDocument(document) {
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
+      if (node.align != null && (node.type !== 'text' || !textAlignments.has(node.align))) throw new TypeError(`Invalid text alignment on layer ${node.name || node.id}.`);
       if (node.verticalAlign != null && (node.type !== 'text' || !textVerticalAlignments.has(node.verticalAlign))) throw new TypeError(`Invalid text vertical alignment on layer ${node.name || node.id}.`);
       if (['paragraphSpacing', 'firstLineIndent'].some(property => node[property] != null
         && (node.type !== 'text' || !Number.isFinite(node[property]) || node[property] < 0 || node[property] > 10_000))) {
         throw new TypeError(`Invalid paragraph typography on layer ${node.name || node.id}.`);
+      }
+      if (node.listSpacing != null && (node.type !== 'text' || !Number.isFinite(node.listSpacing) || node.listSpacing < 0 || node.listSpacing > 10_000)) {
+        throw new TypeError(`Invalid list spacing on layer ${node.name || node.id}.`);
+      }
+      if (node.paragraphStyles != null && (node.type !== 'text' || typeof node.text !== 'string' || !isValidTextParagraphStyles(node.paragraphStyles, node.text))) {
+        throw new TypeError(`Invalid text paragraph styles on layer ${node.name || node.id}.`);
       }
       if (node.textRuns != null && (node.type !== 'text' || !isValidTextRuns(node.textRuns, node.text))) throw new TypeError(`Invalid rich text runs on layer ${node.name || node.id}.`);
       if (node.fontFamily != null && (node.type !== 'text' || typeof node.fontFamily !== 'string' || !node.fontFamily.trim() || node.fontFamily.length > 160 || /[\x00-\x1f]/.test(node.fontFamily))) throw new TypeError(`Invalid font family on layer ${node.name || node.id}.`);
@@ -2179,16 +2272,16 @@ export function validateDocument(document) {
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
-        && !(node.type === 'path' && node.closed) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
+        && !(node.type === 'path' && hasFillablePathContour(node)) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isImageFillSupported(node)) throw new TypeError(`Image fill is not supported on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isValidImageFill(node.imageFill)) throw new TypeError(`Invalid image fill on layer ${node.name || node.id}.`);
       if (Object.hasOwn(node, 'fills') && !isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid fill stack on layer ${node.name || node.id}.`);
+      if (node.adjustments != null && (node.type !== 'image' || !isValidImageAdjustments(node.adjustments))) throw new TypeError(`Invalid image adjustments on layer ${node.name || node.id}.`);
       if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
-      if (node.type === 'path' && (!Array.isArray(node.points) || node.points.some(point => !point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))
-        || ['in', 'out'].some(part => point[part] != null && (!Number.isFinite(Number(point[part].x)) || !Number.isFinite(Number(point[part].y))))
-        || (point.mode != null && !['corner', 'smooth', 'symmetric'].includes(point.mode)))
-        || (node.closed != null && typeof node.closed !== 'boolean'))) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
+      if (node.outputFormat != null && (node.type !== 'image' || !exportFormats.has(node.outputFormat))) throw new TypeError(`Invalid image output format on layer ${node.name || node.id}.`);
+      if (node.outputQuality != null && (node.type !== 'image' || !Number.isInteger(node.outputQuality) || node.outputQuality < 1 || node.outputQuality > 100)) throw new TypeError(`Invalid image output quality on layer ${node.name || node.id}.`);
+      if (node.type === 'path' && !validVectorPath(node)) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
       if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
@@ -2240,6 +2333,10 @@ export function validateDocument(document) {
         || ['row', 'column', 'rowSpan', 'columnSpan'].some(key => node.gridCell[key] != null && (!Number.isInteger(Number(node.gridCell[key])) || Number(node.gridCell[key]) < 1 || Number(node.gridCell[key]) > 64))
         || (node.gridCell.alignX != null && !['start', 'center', 'end'].includes(node.gridCell.alignX))
         || (node.gridCell.alignY != null && !['start', 'center', 'end'].includes(node.gridCell.alignY)))) throw new TypeError(`Invalid grid cell on layer ${node.name || node.id}.`);
+      if (node.layoutPositioning != null && (!['auto', 'absolute'].includes(node.layoutPositioning)
+        || (node.layoutPositioning === 'absolute' && !parent?.autoLayout))) {
+        throw new TypeError(`Invalid layout positioning on layer ${node.name || node.id}.`);
+      }
       if ((node.layoutSizingX != null && !['fixed', 'fill'].includes(node.layoutSizingX)) || (node.layoutSizingY != null && !['fixed', 'fill'].includes(node.layoutSizingY))) throw new TypeError(`Invalid grid sizing on layer ${node.name || node.id}.`);
       if (node.interactions != null && hasInvalidPrototypeInteractions(node.interactions, document)) throw new TypeError(`Invalid prototype interactions on layer ${node.name || node.id}.`);
       if (node.constraints != null && (!['left', 'right', 'left-right', 'center', 'scale'].includes(node.constraints.horizontal) || !['top', 'bottom', 'top-bottom', 'center', 'scale'].includes(node.constraints.vertical))) throw new TypeError(`Invalid frame constraints on layer ${node.name || node.id}.`);
@@ -2281,7 +2378,19 @@ export function validateDocument(document) {
               }
             } else throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
           }
+          const pathGeometryProperties = ['points', 'subpaths', 'closed', 'fillRule'];
+          const hasPathGeometryOverride = ['subpaths', 'closed', 'fillRule'].some(property => Object.hasOwn(overrides, property))
+            || (sourceNode?.type === 'path' && Object.hasOwn(overrides, 'points'));
+          if (hasPathGeometryOverride) {
+            if (sourceNode?.type !== 'path') throw new TypeError(`Invalid component vector path geometry override on ${node.name || node.id}.`);
+            const candidate = { ...sourceNode };
+            for (const property of pathGeometryProperties) {
+              if (Object.hasOwn(overrides, property)) candidate[property] = overrides[property];
+            }
+            if (!validVectorPath(candidate)) throw new TypeError(`Invalid component vector path geometry override on ${node.name || node.id}.`);
+          }
           if (overrides.innerRadius != null && (sourceNode?.type !== 'star' || !Number.isFinite(overrides.innerRadius) || overrides.innerRadius < 0 || overrides.innerRadius > 1)) throw new TypeError(`Invalid component star inner-radius override on ${node.name || node.id}.`);
+          if (overrides.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(sourceNode?.type) || !isValidCornerRadii(overrides.cornerRadii))) throw new TypeError(`Invalid component corner-radius override on ${node.name || node.id}.`);
           if (overrides.interactions != null) {
             if (hasInvalidPrototypeInteractions(overrides.interactions, document)) throw new TypeError(`Invalid component interactions override on ${node.name || node.id}.`);
             const matchingInstanceNodes = [];
@@ -2316,6 +2425,7 @@ export function validateDocument(document) {
           if (overrides.fontStyle != null && (node.type !== 'text' || !['normal', 'italic'].includes(overrides.fontStyle))) throw new TypeError(`Invalid component font style override on ${node.name || node.id}.`);
           if (overrides.textCase != null && (node.type !== 'text' || !textCases.has(overrides.textCase))) throw new TypeError(`Invalid component text case override on ${node.name || node.id}.`);
           if (overrides.textDecoration != null && (node.type !== 'text' || !textDecorations.has(overrides.textDecoration))) throw new TypeError(`Invalid component text decoration override on ${node.name || node.id}.`);
+          if (overrides.align != null && (sourceNode?.type !== 'text' || !textAlignments.has(overrides.align))) throw new TypeError(`Invalid component text alignment override on ${node.name || node.id}.`);
           if (overrides.verticalAlign != null) {
             if (sourceNode?.type !== 'text' || !textVerticalAlignments.has(overrides.verticalAlign)) throw new TypeError(`Invalid component text vertical alignment override on ${node.name || node.id}.`);
           }
@@ -2323,7 +2433,20 @@ export function validateDocument(document) {
             && (sourceNode?.type !== 'text' || !Number.isFinite(overrides[property]) || overrides[property] < 0 || overrides[property] > 10_000))) {
             throw new TypeError(`Invalid component paragraph typography override on ${node.name || node.id}.`);
           }
+          if (overrides.listSpacing != null && (sourceNode?.type !== 'text' || !Number.isFinite(overrides.listSpacing) || overrides.listSpacing < 0 || overrides.listSpacing > 10_000)) {
+            throw new TypeError(`Invalid component list spacing override on ${node.name || node.id}.`);
+          }
+          if (overrides.paragraphStyles != null) {
+            const sourceText = overrides.text ?? sourceNode?.text;
+            if (sourceNode?.type !== 'text' || typeof sourceText !== 'string' || !isValidTextParagraphStyles(overrides.paragraphStyles, sourceText)) {
+              throw new TypeError(`Invalid component text paragraph styles override on ${node.name || node.id}.`);
+            }
+          }
           if (overrides.effects != null && !isValidLayerEffects(overrides.effects)) throw new TypeError(`Invalid component effects override on ${node.name || node.id}.`);
+          if (overrides.layoutPositioning != null && (!['auto', 'absolute'].includes(overrides.layoutPositioning)
+            || (overrides.layoutPositioning === 'absolute' && !findNodeAcrossPages(document, sourceId)?.parent?.autoLayout))) {
+            throw new TypeError(`Invalid component layout positioning override on ${node.name || node.id}.`);
+          }
         }
       }
       if (node.componentPropertyValues != null && (!node.isInstance || typeof node.componentPropertyValues !== 'object' || Array.isArray(node.componentPropertyValues))) throw new TypeError(`Invalid component property values on ${node.name || node.id}.`);
@@ -2490,7 +2613,7 @@ export function validateDocument(document) {
       if (node[property] && (!variable || variable.type !== 'color')) throw new TypeError(`Missing ${kind} variable on layer ${node.name || node.id}.`);
       if (!variable) continue;
       const compatible = kind === 'text' ? node.type === 'text'
-        : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || node.closed) && (node.type !== 'network' || (node.faces || []).length > 0)
+        : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
           : !['text', 'image', 'group', 'boolean'].includes(node.type);
       if (!compatible) throw new TypeError(`Incompatible ${kind} variable on layer ${node.name || node.id}.`);
     }
@@ -2523,8 +2646,18 @@ export function validateDocument(document) {
     }
   });
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
+  if (document.recipes.some(recipe => recipe?.adjustments != null && !isValidImageAdjustments(recipe.adjustments))) {
+    throw new TypeError('Invalid image adjustments in image recipe.');
+  }
   if (document.recipes.some(recipe => recipe?.transforms != null && !isValidImageTransforms(recipe.transforms))) {
     throw new TypeError('Invalid image transforms in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.format != null && !exportFormats.has(recipe.format))) {
+    throw new TypeError('Invalid image output format in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.quality != null
+    && (!Number.isInteger(recipe.quality) || recipe.quality < 1 || recipe.quality > 100))) {
+    throw new TypeError('Invalid image output quality in image recipe.');
   }
   if (document.colorStyles != null) {
     if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');
@@ -2552,7 +2685,8 @@ export function validateDocument(document) {
         || !Number.isFinite(style.letterSpacing)
         || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))
         || (style.firstLineIndent != null && (!Number.isFinite(style.firstLineIndent) || style.firstLineIndent < 0 || style.firstLineIndent > 10_000))
-        || !['left', 'center', 'right'].includes(style.align)
+        || (style.listSpacing != null && (!Number.isFinite(style.listSpacing) || style.listSpacing < 0 || style.listSpacing > 10_000))
+        || !textAlignments.has(style.align)
         || (style.verticalAlign != null && !textVerticalAlignments.has(style.verticalAlign))
         || (style.textCase != null && !textCases.has(style.textCase))
         || (style.textDecoration != null && !textDecorations.has(style.textDecoration))

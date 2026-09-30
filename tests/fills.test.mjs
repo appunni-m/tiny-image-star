@@ -1,13 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createDocument, createGradientFill, createNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { createGradientPaint, gradientFillToCSS, isValidGradientFill } from '../src/fills.js';
-import { createImageFill, isValidImageFill } from '../src/image-fills.js';
+import { createGradientPaint, gradientFillToCSS, isFillStackSupported, isValidGradientFill } from '../src/fills.js';
+import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageFill } from '../src/image-fills.js';
 
 test('image fills default to uncropped upright pixels and validate normalized crop and rotation', () => {
   const defaults = createImageFill('asset-photo');
   assert.deepEqual(defaults.transforms, { crop: null, rotation: 0 });
+  assert.deepEqual(defaults.adjustments, defaultImageAdjustments);
   assert.equal(isValidImageFill(defaults), true);
+
+  const creativeFill = createImageFill('asset-photo', { adjustments: { autoContrast: true, posterizeBits: 5, solarize: true, solarizeThreshold: 80, invert: true } });
+  assert.equal(isValidImageFill(creativeFill), true);
+  assert.equal(isValidImageFill({ ...creativeFill, adjustments: { ...creativeFill.adjustments, posterizeBits: 9 } }), false);
 
   const cropped = createImageFill('asset-photo', {
     transforms: { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90 }
@@ -25,6 +30,20 @@ test('image fills default to uncropped upright pixels and validate normalized cr
   }
   assert.throws(() => createImageFill('asset-photo', { transforms: { crop: { left: 0, top: 0, right: 1.1, bottom: 1 } } }), /crop edges/);
   assert.throws(() => createImageFill('asset-photo', { transforms: { rotation: 45 } }), /quarter turns/);
+});
+
+test('compound paths with any closed contour support ordered solid and image fills', () => {
+  const path = createNode('path', {
+    closed: false,
+    points: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+    subpaths: [{ closed: true, points: [{ x: .2, y: .2 }, { x: .8, y: .2 }, { x: .5, y: .8 }] }]
+  });
+  assert.equal(isFillStackSupported(path), true);
+  assert.equal(isImageFillSupported(path), true);
+
+  path.subpaths[0].closed = false;
+  assert.equal(isFillStackSupported(path), false);
+  assert.equal(isImageFillSupported(path), false);
 });
 
 test('linear and radial gradients survive local design serialization', () => {

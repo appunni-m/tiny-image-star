@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, bindColorVariable, createColorStyle, createColorVariable, createComponent, createDocument,
-  createImageRecipe, createMaskGroup, createNode, createVariableCollection, deleteVariable, findNode,
-  removeNode, serializeDocument, validateDocument
+  addNode, bindColorVariable, bindVariable, createColorStyle, createColorVariable, createComponent,
+  createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createMaskGroup, createNode,
+  createVariable, createVariableCollection, deleteVariable, findNode, getNodeGeometry, getNodePropertyValue,
+  removeNode, setComponentSlotContent,
+  serializeDocument, validateDocument
 } from '../src/model.js';
 import { createLayerClipboard, layerClipboardSchema, pasteLayerClipboard } from '../src/layer-clipboard.js';
+import { History } from '../src/history.js';
+import { parentLocalToPageTransform, transformPoint } from '../src/transform-geometry.js';
 
 test('copying a nested mask tree remaps every layer reference and keeps one shared local image asset', () => {
   const document = createDocument();
@@ -53,6 +57,96 @@ test('repeated copy-paste creates fresh IDs with progressive offsets; cut-paste 
   assert.equal(validateDocument(moved.document), true);
 });
 
+test('cut-paste restores non-contiguous siblings to their original positions', () => {
+  const document = createDocument();
+  const siblings = ['A', 'B', 'C', 'D', 'E'].map(name => createNode('rectangle', { name }));
+  siblings.forEach(node => addNode(document, node));
+  const clipboard = createLayerClipboard(document, [findNode(document, siblings[1].id), findNode(document, siblings[3].id)], { mode: 'cut' });
+  removeNode(document, siblings[1].id);
+  removeNode(document, siblings[3].id);
+
+  const restored = pasteLayerClipboard(document, clipboard);
+  assert.deepEqual(restored.document.pages[0].children.map(node => node.name), ['A', 'B', 'C', 'D', 'E']);
+  assert.deepEqual(restored.nodes.map(node => node.x), [siblings[1].x, siblings[3].x]);
+  assert.notEqual(restored.nodes[0].id, siblings[1].id, 'cut-paste remaps IDs after the originals were removed');
+  assert.equal(validateDocument(restored.document), true);
+});
+
+test('cut and paste candidates survive independent undo and redo snapshots', () => {
+  const document = createDocument();
+  const image = createNode('image', { name: 'Original', assetId: 'asset-history', fileName: 'original.png' });
+  addNode(document, image);
+  const original = serializeDocument(document);
+  const clipboard = createLayerClipboard(document, [findNode(document, image.id)], { mode: 'cut' });
+  const history = new History();
+
+  history.checkpoint(document, 'Cut layers');
+  const cutDocument = structuredClone(document);
+  removeNode(cutDocument, image.id);
+  const undoCut = history.undo(cutDocument);
+  assert.equal(serializeDocument(undoCut), original);
+  const redoCut = history.redo(undoCut);
+  assert.equal(redoCut.pages[0].children.length, 0);
+
+  history.checkpoint(redoCut, 'Paste layers');
+  const pasted = pasteLayerClipboard(redoCut, clipboard);
+  const undoPaste = history.undo(pasted.document);
+  assert.equal(undoPaste.pages[0].children.length, 0);
+  const undoCutAgain = history.undo(undoPaste);
+  assert.equal(serializeDocument(undoCutAgain), original);
+  const redoCutAgain = history.redo(undoCutAgain);
+  const redoPaste = history.redo(redoCutAgain);
+  assert.equal(redoPaste.pages[0].children.length, 1);
+  assert.equal(redoPaste.pages[0].children[0].assetId, 'asset-history');
+  assert.notEqual(redoPaste.pages[0].children[0].id, image.id);
+  assert.equal(validateDocument(redoPaste), true);
+});
+
+test('paste keeps children inside sections, which are valid layer containers', () => {
+  const document = createDocument();
+  const section = createNode('section', { name: 'Section', x: 80, y: 30 });
+  const child = createNode('rectangle', { name: 'Child', x: 12, y: 9 });
+  addNode(document, section); addNode(document, child, { parentId: section.id });
+
+  const pasted = pasteLayerClipboard(document, createLayerClipboard(document, [findNode(document, child.id)]));
+  const entry = findNode(pasted.document, pasted.nodes[0].id);
+  assert.equal(entry.parent.id, section.id);
+  assert.equal(pasted.nodes[0].x, child.x + 16);
+  assert.equal(pasted.nodes[0].y, child.y + 16);
+  assert.equal(validateDocument(pasted.document), true);
+});
+
+test('copying from rotated nesting preserves page placement when pasted to another page or after its parent is removed', () => {
+  const document = createDocument();
+  const geometry = createVariableCollection(document, 'Parent geometry');
+  const outer = createNode('frame', { x: 120, y: 45, width: 180, height: 130, rotation: 37 });
+  const inner = createNode('group', { x: 28, y: 19, width: 90, height: 70, rotation: -21 });
+  const child = createNode('rectangle', { x: 13, y: 8, width: 25, height: 17, rotation: 12 });
+  addNode(document, outer); addNode(document, inner, { parentId: outer.id }); addNode(document, child, { parentId: inner.id });
+  const variableX = createVariable(document, geometry.id, 'Outer X', 'number', 145);
+  const variableRotation = createVariable(document, geometry.id, 'Outer rotation', 'number', 50);
+  assert.equal(bindVariable(document, outer.id, variableX.id, 'x'), true);
+  assert.equal(bindVariable(document, outer.id, variableRotation.id, 'rotation'), true);
+  const entry = findNode(document, child.id);
+  const resolvedParents = entry.parents.map(parent => ({ ...parent, ...getNodeGeometry(document, parent) }));
+  const pageAnchor = transformPoint(parentLocalToPageTransform(resolvedParents), { x: child.x, y: child.y });
+  const clipboard = createLayerClipboard(document, [entry]);
+  const secondPage = structuredClone(document.pages[0]);
+  secondPage.id = 'page-secondary'; secondPage.name = 'Page 2'; secondPage.children = [];
+  document.pages.push(secondPage);
+
+  const crossPage = pasteLayerClipboard(document, clipboard, { pageId: secondPage.id });
+  assert.deepEqual({ x: crossPage.nodes[0].x, y: crossPage.nodes[0].y }, { x: pageAnchor.x + 16, y: pageAnchor.y + 16 });
+  assert.equal(findNode(crossPage.document, crossPage.nodes[0].id, secondPage.id).parent, null);
+
+  const withoutParent = structuredClone(document);
+  removeNode(withoutParent, outer.id);
+  const recovered = pasteLayerClipboard(withoutParent, clipboard);
+  assert.deepEqual({ x: recovered.nodes[0].x, y: recovered.nodes[0].y }, { x: pageAnchor.x + 16, y: pageAnchor.y + 16 });
+  assert.equal(findNode(recovered.document, recovered.nodes[0].id).parent, null);
+  assert.equal(validateDocument(recovered.document), true);
+});
+
 test('component masters get independent component identities while linked instances keep their shared definition', () => {
   const document = createDocument();
   const master = createNode('rectangle', { name: 'Button', fill: '#445566' }); addNode(document, master);
@@ -65,6 +159,67 @@ test('component masters get independent component identities while linked instan
   assert.equal(pasted.document.components.length, 2);
   assert.equal(pasted.document.components.find(item => item.id === clonedMaster.componentId)?.rootNodeId, clonedMaster.id);
   assert.equal(validateDocument(pasted.document), true);
+});
+
+test('copying a component master preserves its property definitions and remaps their internal targets', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Card' });
+  const label = createNode('text', { name: 'Label', text: 'Default label' });
+  addNode(document, master); addNode(document, label, { parentId: master.id });
+  const component = createComponent(document, master.id);
+  const property = createComponentProperty(document, component.id, { name: 'Label', type: 'TEXT', targetNodeId: label.id });
+  const pasted = pasteLayerClipboard(document, createLayerClipboard(document, [findNode(document, master.id)]));
+  const copiedMaster = pasted.nodes[0];
+  const copiedComponent = pasted.document.components.find(item => item.id === copiedMaster.componentId);
+  const copiedProperty = copiedComponent.componentProperties[0];
+
+  assert.notEqual(copiedProperty.id, property.id);
+  assert.notEqual(copiedProperty.targetSourceId, property.targetSourceId);
+  assert.equal(findNode(pasted.document, copiedProperty.targetSourceId).node.id, copiedMaster.children[0].id);
+  assert.equal(copiedProperty.defaultValue, 'Default label');
+  assert.equal(validateDocument(pasted.document), true);
+});
+
+test('clipboard edits use overridden SLOT rules and reject unsupported linked-instance children atomically', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Card' });
+  const slot = createNode('section', { name: 'Content' });
+  const holder = createNode('frame', { name: 'Fixed content' });
+  const inherited = createNode('rectangle', { name: 'Inherited' });
+  addNode(document, master); addNode(document, slot, { parentId: master.id });
+  addNode(document, holder, { parentId: master.id }); addNode(document, inherited, { parentId: holder.id });
+  const component = createComponent(document, master.id);
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const instance = createComponentInstance(document, component.id);
+  const customGroup = createNode('group', { name: 'Custom content' });
+  const customLayer = createNode('rectangle', { name: 'Custom layer' });
+  customGroup.children.push(customLayer);
+  setComponentSlotContent(document, instance.id, property.id, [customGroup]);
+
+  const instanceSlot = findNode(document, instance.id).node.children.find(node => node.componentSourceId === slot.id);
+  const customGroupInSlot = instanceSlot.children[0];
+  const customLayerInSlot = customGroupInSlot.children[0];
+  const slotClipboard = createLayerClipboard(document, [findNode(document, customLayerInSlot.id)]);
+  const pastedIntoSlot = pasteLayerClipboard(document, slotClipboard);
+  const updatedInstance = findNode(pastedIntoSlot.document, instance.id).node;
+  const updatedSlot = updatedInstance.children.find(node => node.componentSourceId === slot.id);
+  assert.deepEqual(updatedSlot.children.map(node => node.id), [customGroupInSlot.id]);
+  assert.equal(customGroupInSlot.children.length, 1, 'the source document was not mutated by building the candidate');
+  assert.equal(findNode(pastedIntoSlot.document, customGroupInSlot.id).node.children.length, 2);
+  assert.deepEqual(updatedInstance.componentPropertyValues[property.id], [customGroupInSlot.id]);
+  assert.equal(validateDocument(pastedIntoSlot.document), true);
+
+  const inheritedInInstance = findNode(document, instance.id).node.children.find(node => node.componentSourceId === holder.id).children[0];
+  const blockedClipboard = createLayerClipboard(document, [findNode(document, inheritedInInstance.id)]);
+  const before = serializeDocument(document);
+  assert.throws(() => pasteLayerClipboard(document, blockedClipboard), /Cannot paste into linked component layers/);
+  assert.equal(serializeDocument(document), before, 'unsupported linked-instance insertion leaves the design unchanged');
+
+  const withoutInstance = structuredClone(document);
+  removeNode(withoutInstance, instance.id);
+  const detachedCopy = pasteLayerClipboard(withoutInstance, blockedClipboard).nodes[0];
+  assert.equal(detachedCopy.componentSourceId, undefined, 'a layer copied out of a removed instance becomes a standalone visual copy');
+  assert.equal(validateDocument(pasteLayerClipboard(withoutInstance, blockedClipboard).document), true);
 });
 
 test('existing variable, color-style, recipe, and component references stay shared; removed variables materialize their copied color', () => {
@@ -90,6 +245,32 @@ test('existing variable, color-style, recipe, and component references stay shar
   assert.equal(detached.nodes[0].fillVariableId, undefined);
   assert.equal(detached.nodes[0].fill, '#224466', 'stale variable links fall back to their copy-time resolved value');
   assert.equal(validateDocument(detached.document), true);
+});
+
+test('copying preserves all schema-supported variable bindings and materializes removed nested layout bindings', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Layout');
+  const x = createVariable(document, collection.id, 'Horizontal position', 'number', 42);
+  const axis = createVariable(document, collection.id, 'Direction', 'string', 'vertical');
+  const frame = createNode('frame', { x: 7, width: 160, height: 90 });
+  frame.autoLayout = { axis: 'horizontal', mainSizing: 'fixed', crossSizing: 'fixed', gap: 8, padding: { top: 0, right: 0, bottom: 0, left: 0 } };
+  addNode(document, frame);
+  assert.equal(bindVariable(document, frame.id, x.id, 'x'), true);
+  assert.equal(bindVariable(document, frame.id, axis.id, 'autoLayout.axis'), true);
+  const clipboard = createLayerClipboard(document, [findNode(document, frame.id)]);
+
+  const linkedCopy = pasteLayerClipboard(document, clipboard).nodes[0];
+  assert.equal(linkedCopy.variableBindings.x, x.id);
+  assert.equal(linkedCopy.variableBindings['autoLayout.axis'], axis.id);
+  assert.equal(getNodePropertyValue(document, linkedCopy, 'x'), 42);
+
+  deleteVariable(document, x.id);
+  deleteVariable(document, axis.id);
+  const detachedCopy = pasteLayerClipboard(document, clipboard).nodes[0];
+  assert.equal(detachedCopy.variableBindings, undefined);
+  assert.equal(detachedCopy.x, 58, 'the copy-time resolved coordinate is materialized before the standard copy offset');
+  assert.equal(detachedCopy.autoLayout.axis, 'vertical');
+  assert.equal(validateDocument(pasteLayerClipboard(document, clipboard).document), true);
 });
 
 test('broken component links detach into visual copies and a stale parent falls back to page coordinates', () => {

@@ -243,11 +243,17 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
   const crossAvailable = horizontal
     ? Math.max(0, frame.height - padding.top - padding.bottom)
     : Math.max(0, frame.width - padding.left - padding.right);
+  const naturalCrossSizes = groups.map(group => group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0));
+  const naturalCrossExtent = naturalCrossSizes.reduce((sum, size) => sum + size, 0) + Math.max(0, groups.length - 1) * crossGap;
+  const stretchPerGroup = settings.align === 'stretch' && settings.crossSizing !== 'hug' && groups.length
+    ? Math.max(0, crossAvailable - naturalCrossExtent) / groups.length
+    : 0;
   let crossCursor = horizontal ? padding.top : padding.left;
   let computedMain = 0;
 
-  for (const group of groups) {
-    const lineCross = group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0);
+  for (const [groupIndex, group] of groups.entries()) {
+    const lineCross = naturalCrossSizes[groupIndex];
+    const groupCross = lineCross + stretchPerGroup;
     const fillItems = settings.mainSizing === 'fixed' ? group.filter(item => item.layoutSizingMain === 'fill') : [];
     if (fillItems.length) {
       const usedByFixedItems = group.filter(item => item.layoutSizingMain !== 'fill').reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0);
@@ -262,8 +268,8 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
       const mainSize = horizontal ? item.width : item.height;
       const crossSize = horizontal ? item.height : item.width;
       const canStretch = settings.align === 'stretch' && item.layoutSizingCross !== 'fixed';
-      const nextCrossSize = canStretch ? constrainSize(item, horizontal ? 'Height' : 'Width', crossAvailable) : crossSize;
-      const alignOffset = settings.align === 'center' ? (lineCross - crossSize) / 2 : settings.align === 'end' ? lineCross - crossSize : 0;
+      const nextCrossSize = canStretch ? constrainSize(item, horizontal ? 'Height' : 'Width', groupCross) : crossSize;
+      const alignOffset = settings.align === 'center' ? (groupCross - crossSize) / 2 : settings.align === 'end' ? groupCross - crossSize : 0;
       if (horizontal) {
         item.x = mainCursor;
         item.y = crossCursor + Math.max(0, alignOffset);
@@ -275,7 +281,7 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
       }
       mainCursor += mainSize + content.gap;
     }
-    crossCursor += lineCross + crossGap;
+    crossCursor += groupCross + crossGap;
   }
 
   if (flowItems.length) {

@@ -29,14 +29,30 @@ async function runWorkflowModule(modulePath, label) {
   assert(report.startsWith('PASS\n'), `${label} failed:\n${report}`);
   return JSON.parse(report.slice(report.indexOf('\n') + 1));
 }
+async function runWorkflowModuleSafely(modulePath, label, width, height, viewportLabel) {
+  try {
+    await reloadEditorAtViewport(width, height, viewportLabel);
+    return { label, passed: true, report: await runWorkflowModule(modulePath, label) };
+  } catch (error) {
+    return { label, passed: false, error: error?.message || String(error) };
+  }
+}
 async function reloadEditorAtViewport(width, height, label) {
   const previousDocument = frame.contentDocument;
   frame.style.width = `${width}px`;
   frame.style.height = `${height}px`;
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  previousDocument.defaultView.location.reload();
-  await waitFor(() => frame.contentDocument && frame.contentDocument !== previousDocument
-    && frame.contentDocument.documentElement.dataset.appReady === 'true', label, 30000);
+  const viewportToken = `${width}x${height}-${Date.now()}`;
+  const editorUrl = new URL(frame.getAttribute('src') || '../index.html', location.href);
+  editorUrl.searchParams.set('smoke-viewport', viewportToken);
+  frame.src = editorUrl.href;
+  await waitFor(() => {
+    const currentDocument = frame.contentDocument;
+    if (!currentDocument || currentDocument === previousDocument) return false;
+    const currentUrl = new URL(currentDocument.location.href);
+    return currentUrl.searchParams.get('smoke-viewport') === viewportToken
+      && currentDocument.documentElement.dataset.appReady === 'true';
+  }, label, 30000);
 }
 async function waitForSaveCycle(app, label) {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
@@ -1241,6 +1257,57 @@ try {
   assert(savedEditedNetwork?.vertices.length === 7 && savedEditedNetwork.edges.length === 7 && savedEditedNetwork.faces.length === 1
     && savedEditedNetwork.faces[0].fill === '#e14a6d' && savedEditedNetwork.faces[0].fillOpacity === .62, 'network editing did not preserve the branch, region paint, and closed region on disk');
 
+  const compoundDocument = createDocument();
+  const compoundPath = createNode('path', {
+    name: 'Compound contour smoke', x: 48, y: 52, width: 180, height: 140,
+    fill: '#7654d6', closed: false, fillRule: 'evenodd',
+    points: [
+      { x: .08, y: .12, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .46, y: .12, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .27, y: .47, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }
+    ],
+    subpaths: [{ closed: true, points: [
+      { x: .55, y: .12, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .92, y: .12, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .73, y: .47, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }
+    ] }]
+  });
+  addNode(compoundDocument, compoundPath);
+  const compoundInput = app.querySelector('#open-file-input'); const compoundTransfer = new DataTransfer();
+  compoundTransfer.items.add(new File([buildPackage(compoundDocument, [])], 'compound-contour-smoke.flocal', { type: 'application/octet-stream' }));
+  Object.defineProperty(compoundInput, 'files', { configurable: true, value: compoundTransfer.files });
+  compoundInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'compound contour fixture import');
+  const compoundRow = app.querySelector(`[data-layer-id="${compoundPath.id}"]`);
+  assert(compoundRow, 'compound contour fixture was missing after opening its local design');
+  dispatchClick(compoundRow);
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('2 contours · 6 points'), 'compound contour inspector');
+  let compoundFillRule = app.querySelector('#inspector-content [data-prop="fillRule"]');
+  assert(compoundFillRule?.value === 'evenodd', 'the compound path did not expose its saved even-odd fill rule');
+  dispatchClick(app.querySelector('#inspector-content [data-action="add-vector-contour"]'));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('3 contours · 8 points'), 'add vector contour from inspector');
+  let closeContour = app.querySelector('#inspector-content [data-prop="closed"]');
+  assert(closeContour && !closeContour.checked, 'a newly added contour should start open and selected');
+  closeContour.checked = true; closeContour.dispatchEvent(new Event('input', { bubbles: true }));
+  await waitFor(() => app.querySelector('#inspector-content [data-prop="closed"]')?.checked === true, 'close selected secondary contour');
+  compoundFillRule = app.querySelector('#inspector-content [data-prop="fillRule"]');
+  compoundFillRule.value = 'nonzero'; compoundFillRule.dispatchEvent(new Event('input', { bubbles: true }));
+  await waitFor(() => app.querySelector('#inspector-content [data-prop="fillRule"]')?.value === 'nonzero', 'change compound path fill rule');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'compound contour edits autosave');
+  let compoundRecords = await readStore('documents');
+  let savedCompound = compoundRecords.find(record => (record.document?.id || record.id) === compoundDocument.id)?.document;
+  let savedCompoundPath = flattenNodes(savedCompound?.pages.flatMap(page => page.children)).find(node => node.id === compoundPath.id);
+  assert(savedCompoundPath?.closed === false && savedCompoundPath.subpaths?.map(contour => contour.closed).join(',') === 'true,true'
+    && savedCompoundPath.fillRule === 'nonzero', 'editing a secondary contour changed primary closure, lost its own closure, or failed to persist the fill rule');
+  dispatchClick(app.querySelector('#inspector-content [data-action="remove-vector-contour"]'));
+  await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('2 contours · 6 points'), 'remove selected vector contour');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'compound contour removal autosave');
+  compoundRecords = await readStore('documents');
+  savedCompound = compoundRecords.find(record => (record.document?.id || record.id) === compoundDocument.id)?.document;
+  savedCompoundPath = flattenNodes(savedCompound?.pages.flatMap(page => page.children)).find(node => node.id === compoundPath.id);
+  assert(savedCompoundPath?.closed === false && savedCompoundPath.subpaths?.length === 1 && savedCompoundPath.subpaths[0].closed === true
+    && savedCompoundPath.fillRule === 'nonzero', 'removing the selected contour did not preserve the remaining compound path data');
+
   const variablesDocument = createDocument();
   const brandColors = createVariableCollection(variablesDocument, 'Brand colors');
   brandColors.modes[0].name = 'Light';
@@ -1762,6 +1829,24 @@ try {
   savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
   const visibleGridChildren = savedGridFrame.children.filter(node => node.visible && node.layoutPositioning !== 'absolute');
   assert(savedGridFrame.autoLayout.columns === 1 && visibleGridChildren.length >= 2 && visibleGridChildren[1].gridCell.row > visibleGridChildren[0].gridCell.row, `reducing grid columns did not reflow visible children into more rows: ${JSON.stringify({ columns: savedGridFrame.autoLayout.columns, visible: visibleGridChildren.map(node => ({ name: node.name, row: node.gridCell?.row, column: node.gridCell?.column, visible: node.visible })) })}`);
+  const absoluteChildId = visibleGridChildren[0].id;
+  dispatchClick(app.querySelector(`[data-layer-id="${absoluteChildId}"]`));
+  let placementControl = app.querySelector('#inspector-content [data-prop="layoutPositioning"]');
+  assert(placementControl && [...placementControl.options].some(option => option.value === 'absolute'), 'auto layout children cannot be placed absolutely from the inspector');
+  const positionBeforeAbsolute = { x: visibleGridChildren[0].x, y: visibleGridChildren[0].y };
+  placementControl.value = 'absolute'; placementControl.dispatchEvent(new Event('input', { bubbles: true })); placementControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'absolute auto layout placement');
+  layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  const absoluteChild = savedGridFrame?.children.find(node => node.id === absoluteChildId);
+  assert(absoluteChild?.layoutPositioning === 'absolute' && absoluteChild.x === positionBeforeAbsolute.x && absoluteChild.y === positionBeforeAbsolute.y,
+    'absolute auto layout placement did not preserve its explicit X/Y position');
+  placementControl = app.querySelector('#inspector-content [data-prop="layoutPositioning"]');
+  placementControl.value = 'flow'; placementControl.dispatchEvent(new Event('input', { bubbles: true })); placementControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'auto layout flow placement restore');
+  layoutRecords = await readStore('documents'); layoutRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedGridFrame = flattenNodes(layoutRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === nestedThemeFrame.id);
+  assert(!Object.hasOwn(savedGridFrame.children.find(node => node.id === absoluteChildId), 'layoutPositioning'), 'returning a child to flow left an absolute-position override behind');
 
   const booleanDocument = createDocument();
   const booleanUnderlay = createNode('rectangle', { name: 'Boolean underlay', x: 0, y: 0, width: 190, height: 90, fill: '#00cc44' });
@@ -2057,12 +2142,20 @@ try {
 
   // Run the focused phone and desktop context-menu workflows against this
   // same isolated editor after the broad integration work is complete.
-  await reloadEditorAtViewport(390, 844, 'fresh phone editor boot');
-  const mobileRecipeWorkflow = await runWorkflowModule('./mobile-recipe-smoke.mjs', 'phone recipe workflow');
-  await reloadEditorAtViewport(1280, 720, 'fresh desktop editor boot');
-  const contextRecipeWorkflow = await runWorkflowModule('./bulk-recipe-context-smoke.mjs', 'desktop context-menu recipe workflow');
+  const mobileRecipeRun = await runWorkflowModuleSafely('./mobile-recipe-smoke.mjs', 'phone recipe workflow', 390, 844, 'fresh phone editor boot');
+  const contextRecipeRun = await runWorkflowModuleSafely('./bulk-recipe-context-smoke.mjs', 'desktop context-menu recipe workflow', 1280, 720, 'fresh desktop editor boot');
+  const exportRun = await runWorkflowModuleSafely('./export-smoke.mjs', 'mobile raster and image archive export workflow', 390, 844, 'fresh mobile export editor boot');
+  const localFontRun = await runWorkflowModuleSafely('./local-fonts-smoke.mjs', 'local font import and package workflow', 390, 844, 'fresh local-font editor boot');
+  const cornerRadiusRun = await runWorkflowModuleSafely('./corner-radii-smoke.mjs', 'mobile independent corner radius workflow', 390, 844, 'fresh corner-radius editor boot');
+  const mobileRecipeWorkflow = mobileRecipeRun.report || {};
+  const contextRecipeWorkflow = contextRecipeRun.report || {};
+  const exportWorkflow = exportRun.report || {};
+  const localFontWorkflow = localFontRun.report || {};
+  const cornerRadiusWorkflow = cornerRadiusRun.report || {};
+  const workflowRuns = [mobileRecipeRun, contextRecipeRun, exportRun, localFontRun, cornerRadiusRun];
+  const workflowFailures = workflowRuns.filter(run => !run.passed).map(({ label, error }) => ({ label, error }));
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, multiFillSolidOverlay: true, multiFillGradientComposite: true, multiFillImageComposite: true, multiFillVisibilityOpacityOrder: true, inspectorFillAddReorderOpacity: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, phoneRecipeWorkflow: { recipeSaved: mobileRecipeWorkflow.recipeSaved, inPlaceLayers: mobileRecipeWorkflow.inPlaceLayers, fingerSizedControls: mobileRecipeWorkflow.fingerSizedControls }, contextMenuRecipeWorkflow: { savedRecipe: contextRecipeWorkflow.savedRecipe, canvasMenuKeptMultiSelection: contextRecipeWorkflow.canvasMenuKeptMultiSelection, progressBar: contextRecipeWorkflow.progressBar, updatedInPlace: contextRecipeWorkflow.updatedInPlace }, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, scrollablePrototypeFrames: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `${workflowFailures.length ? 'FAIL' : 'PASS'}\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, multiFillSolidOverlay: true, multiFillGradientComposite: true, multiFillImageComposite: true, multiFillVisibilityOpacityOrder: true, inspectorFillAddReorderOpacity: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, phoneRecipeWorkflow: { recipeSaved: mobileRecipeWorkflow.recipeSaved, inPlaceLayers: mobileRecipeWorkflow.inPlaceLayers, fingerSizedControls: mobileRecipeWorkflow.fingerSizedControls }, contextMenuRecipeWorkflow: { savedRecipe: contextRecipeWorkflow.savedRecipe, canvasMenuKeptMultiSelection: contextRecipeWorkflow.canvasMenuKeptMultiSelection, progressBar: contextRecipeWorkflow.progressBar, updatedInPlace: contextRecipeWorkflow.updatedInPlace }, imageExportWorkflow: { individualImageZip: exportWorkflow.individualImageZip, perImageOutputFormatAndQuality: exportWorkflow.perImageOutputFormatAndQuality, batchExportCancellation: exportWorkflow.batchExportCancellation }, localFontWorkflow: { fontDialog: localFontWorkflow.fontDialog, indexedDbBytesRoundTrip: localFontWorkflow.indexedDbBytesRoundTrip, textFamilyApplied: localFontWorkflow.textFamilyApplied, flocalFontBytes: localFontWorkflow.flocalFontBytes, flocalCollisionRemapping: localFontWorkflow.flocalCollisionRemapping }, cornerRadiusWorkflow: { fourCornerEdits: cornerRadiusWorkflow.fourCornerEdits, persistedAndReloaded: cornerRadiusWorkflow.persistedAndReloaded, exportedSvgPath: cornerRadiusWorkflow.exportedSvgPath, labels: cornerRadiusWorkflow.labels, touchTargets: cornerRadiusWorkflow.touchTargets, variableRadiusDetachedLocally: cornerRadiusWorkflow.variableRadiusDetachedLocally }, workflowFailures, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, scrollablePrototypeFrames: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, compoundPathContourCreateCloseAndRemove: true, compoundPathFillRule: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

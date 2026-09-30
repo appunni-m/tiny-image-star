@@ -49,10 +49,40 @@ test('component text typography overrides validate with the component property s
   const instance = createComponentInstance(document, component.id);
   const instanceNode = findNode(document, instance.id).node;
   const sourceId = instanceNode.componentSourceId;
-  instanceNode.componentOverrides[sourceId] = { fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic' };
+  instanceNode.componentOverrides[sourceId] = { fontFamily: 'Atkinson Hyperlegible, sans-serif', fontWeight: 800, fontStyle: 'italic', align: 'justify' };
   assert.equal(validateDocument(document), true);
   instanceNode.componentOverrides[sourceId].fontStyle = 'oblique';
   assert.throws(() => validateDocument(document), /Invalid component font style override/);
+  instanceNode.componentOverrides[sourceId].fontStyle = 'italic';
+  instanceNode.componentOverrides[sourceId].align = 'distributed';
+  assert.throws(() => validateDocument(document), /Invalid component text alignment override/);
+});
+
+test('component text list overrides preserve paragraph structure and validate depth and spacing', () => {
+  const document = createDocument();
+  const main = createNode('text', { text: 'One\nTwo' });
+  addNode(document, main);
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceNode = findNode(document, instance.id).node;
+  const sourceId = instanceNode.componentSourceId;
+  const paragraphStyles = [
+    { listStyle: 'numbered', listLevel: 0, listStart: 6 },
+    { listStyle: 'bulleted', listLevel: 1 }
+  ];
+  instanceNode.componentOverrides[sourceId] = { paragraphStyles, listSpacing: 4 };
+  syncComponentInstances(document, component.id);
+  const syncedInstance = findNode(document, instance.id).node;
+  assert.deepEqual(syncedInstance.paragraphStyles, paragraphStyles);
+  assert.equal(syncedInstance.listSpacing, 4);
+  assert.equal(validateDocument(document), true);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[1].componentOverrides[sourceId], { paragraphStyles, listSpacing: 4 });
+
+  instanceNode.componentOverrides[sourceId].paragraphStyles[1].listLevel = 5;
+  assert.throws(() => validateDocument(document), /Invalid component text paragraph styles override/);
+  instanceNode.componentOverrides[sourceId] = { paragraphStyles, listSpacing: 10_001 };
+  assert.throws(() => validateDocument(document), /Invalid component list spacing override/);
 });
 
 test('component shape geometry overrides persist and validate against the source shape', () => {
@@ -94,6 +124,41 @@ test('component vector-path point overrides validate and survive document reload
   assert.throws(() => validateDocument(document), /Invalid component vector path points override/);
   instance.componentOverrides[main.id].points = null;
   assert.throws(() => validateDocument(document), /Invalid component vector path points override/);
+});
+
+test('compound vector path component overrides validate closure, contours, and fill rule', () => {
+  const document = createDocument();
+  const main = createNode('path', {
+    name: 'Compound badge', closed: false, fillRule: 'nonzero',
+    points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: .5, y: 1 }]
+  });
+  addNode(document, main);
+  const component = createComponent(document, main.id);
+  const instance = createComponentInstance(document, component.id);
+  const subpaths = [{ closed: true, points: [{ x: .2, y: .2 }, { x: .8, y: .2 }, { x: .5, y: .8 }] }];
+  instance.componentOverrides[main.id] = { closed: true, fillRule: 'evenodd', subpaths };
+
+  assert.equal(validateDocument(document), true);
+  syncComponentInstances(document, component.id);
+  const synced = findNode(document, instance.id).node;
+  assert.equal(synced.closed, true);
+  assert.equal(synced.fillRule, 'evenodd');
+  assert.deepEqual(synced.subpaths, subpaths);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].children[1].componentOverrides[main.id], { closed: true, fillRule: 'evenodd', subpaths });
+
+  for (const malformed of [
+    { subpaths: [{ closed: 'yes', points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }] },
+    { subpaths: [{ closed: true, points: [{ x: 0, y: 0 }] }] },
+    { closed: 'yes' },
+    { fillRule: 'inverse' }
+  ]) {
+    const invalid = structuredClone(document);
+    const invalidInstance = findNode(invalid, instance.id).node;
+    invalidInstance.componentOverrides[main.id] = malformed;
+    assert.throws(() => validateDocument(invalid), /Invalid component vector path geometry override/);
+    assert.throws(() => parseDocument(JSON.stringify(invalid)), /Invalid component vector path geometry override/);
+  }
 });
 
 test('main component edits synchronize while preserving instance placement and stable layer identities', () => {

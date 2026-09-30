@@ -1,14 +1,16 @@
 import { isValidGradientFill } from './fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
+import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
 
-const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
-const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent'];
+const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent', 'listSpacing'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const midpointProperties = [
-  ...colorProperties,
+  ...colorProperties, 'fills',
   'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
-  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'align', 'verticalAlign', 'textFit', 'textStyleId'
+  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
+  'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
 ];
 
 function interpolateColor(from, to, progress) {
@@ -48,11 +50,82 @@ function interpolateGradient(from, to, progress) {
   };
 }
 
+function fillBindingKey(node, fill) {
+  // The current editor binds fill variables/styles at the node's primary-fill
+  // level. Keep the per-fill keys too, so imported or future bound paints use
+  // the same conservative compatibility rule.
+  return JSON.stringify({
+    nodeVariable: node.fillVariableId || null,
+    nodeStyle: node.fillStyleId || null,
+    nodeBinding: node.variableBindings?.fill || null,
+    variable: fill.variableId || fill.fillVariableId || null,
+    style: fill.styleId || fill.fillStyleId || null,
+    binding: fill.variableBindings || null
+  });
+}
+
+function canInterpolateFillStack(fromNode, toNode) {
+  const from = fromNode.fills;
+  const to = toNode.fills;
+  return Array.isArray(from) && Array.isArray(to)
+    && from.length === to.length
+    && fillBindingKey(fromNode, from[0] || {}) === fillBindingKey(toNode, to[0] || {})
+    && from.every((fill, index) => {
+      const destination = to[index];
+      if (!fill || !destination || fill.type !== destination.type
+          || fill.visible !== destination.visible
+          || fillBindingKey(fromNode, fill) !== fillBindingKey(toNode, destination)) return false;
+      if (fill.type === 'linear' || fill.type === 'radial') {
+        return canInterpolateGradient(fill.gradient, destination.gradient);
+      }
+      return ['solid', 'image'].includes(fill.type);
+    });
+}
+
+function interpolateFillStack(fromNode, toNode, progress) {
+  if (progress === 0) return structuredClone(fromNode.fills);
+  if (progress === 1) return structuredClone(toNode.fills);
+  if (!canInterpolateFillStack(fromNode, toNode)) return null;
+
+  const boundPrimary = Boolean(toNode.fillVariableId || toNode.fillStyleId || toNode.variableBindings?.fill);
+  return toNode.fills.map((fill, index) => {
+    const start = fromNode.fills[index];
+    const categorical = progress < 0.5 ? start : fill;
+    const result = structuredClone(categorical);
+    if (Number.isFinite(start.opacity) && Number.isFinite(fill.opacity)) {
+      result.opacity = start.opacity + (fill.opacity - start.opacity) * progress;
+    }
+    if (fill.type === 'solid') {
+      const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
+      if (!(index === 0 && boundPrimary) && !boundPaint) {
+        const color = interpolateColor(start.color, fill.color, progress);
+        if (color) result.color = color;
+        else if (progress >= 0.5) result.color = structuredClone(fill.color);
+      }
+    } else if (fill.type === 'linear' || fill.type === 'radial') {
+      const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
+      if (!boundPaint) result.gradient = interpolateGradient(start.gradient, fill.gradient, progress);
+    }
+    // Image fills deliberately retain the source reference before halfway and
+    // take the destination reference at halfway; their crop/fit semantics are
+    // categorical, while the fill's own opacity remains continuous.
+    return result;
+  });
+}
+
 function canInterpolateEffects(from, to) {
   return Array.isArray(from) && Array.isArray(to)
     && from.length === to.length
     && isValidLayerEffects(from) && isValidLayerEffects(to)
-    && from.every((effect, index) => effect.type === to[index].type);
+    && from.every((effect, index) => {
+      const destination = to[index];
+      if (effect.type !== destination.type || effect.visible !== destination.visible) return false;
+      // Shadow colors are only interpolated as six-digit hex values. Keep the
+      // entire stack on its existing midpoint fallback if either endpoint
+      // cannot be represented by that color interpolation path.
+      return effect.type === 'layer-blur'
+        || interpolateColor(effect.color, destination.color, 0.5) !== null;
+    });
 }
 
 function interpolateEffects(from, to, progress) {
@@ -64,7 +137,7 @@ function interpolateEffects(from, to, progress) {
   return to.map((effect, index) => {
     const start = from[index];
     const result = structuredClone(categoricalSource[index]);
-    if (effect.type === 'drop-shadow') {
+    if (effect.type === 'drop-shadow' || effect.type === 'inner-shadow') {
       for (const property of ['opacity', 'offsetX', 'offsetY', 'blur']) {
         result[property] = start[property] + (effect[property] - start[property]) * progress;
       }
@@ -225,12 +298,18 @@ function isValidPathPoint(point) {
 }
 
 function canInterpolatePath(from, to) {
-  const fromClosed = from.closed ?? false;
-  const toClosed = to.closed ?? false;
-  if (typeof fromClosed !== 'boolean' || typeof toClosed !== 'boolean' || fromClosed !== toClosed) return false;
-  if (!Array.isArray(from.points) || !Array.isArray(to.points) || from.points.length !== to.points.length) return false;
-  for (let index = 0; index < from.points.length; index += 1) {
-    if (!isValidPathPoint(from.points[index]) || !isValidPathPoint(to.points[index])) return false;
+  const contours = node => [{ points: node.points, closed: node.closed ?? false }, ...(node.subpaths || [])];
+  const fromContours = contours(from);
+  const toContours = contours(to);
+  if (fromContours.length !== toContours.length) return false;
+  for (let contourIndex = 0; contourIndex < fromContours.length; contourIndex += 1) {
+    const fromContour = fromContours[contourIndex];
+    const toContour = toContours[contourIndex];
+    if (typeof fromContour.closed !== 'boolean' || typeof toContour.closed !== 'boolean' || fromContour.closed !== toContour.closed
+      || !Array.isArray(fromContour.points) || !Array.isArray(toContour.points) || fromContour.points.length !== toContour.points.length) return false;
+    for (let index = 0; index < fromContour.points.length; index += 1) {
+      if (!isValidPathPoint(fromContour.points[index]) || !isValidPathPoint(toContour.points[index])) return false;
+    }
   }
   return true;
 }
@@ -282,6 +361,27 @@ function snapProperties(copy, from, to, progress) {
   for (const property of midpointProperties) snapProperty(copy, from, to, property, progress);
 }
 
+function interpolateCornerRadii(copy, from, to, progress, resolveRadius = null) {
+  if (progress === 0 || progress === 1) {
+    // Keep authored endpoint structure exact, including whether the layer uses
+    // one linked radius or four independent values.
+    snapProperty(copy, from, to, 'cornerRadii', progress);
+    return;
+  }
+  if (from.cornerRadii == null && to.cornerRadii == null) return;
+
+  // A linked radius represents the same value at all four corners. Expanding
+  // it for the transition lets a layer smoothly enter or leave independent
+  // corner mode without changing either authored endpoint.
+  const radiusFor = node => finiteStyleNumber(resolveRadius?.(node)) ?? finiteStyleNumber(node.radius) ?? 0;
+  const fromRadii = cornerRadiiForNode(from, radiusFor(from));
+  const toRadii = cornerRadiiForNode(to, radiusFor(to));
+  copy.cornerRadii = Object.fromEntries(cornerRadiusKeys.map(key => [
+    key,
+    fromRadii[key] + (toRadii[key] - fromRadii[key]) * progress
+  ]));
+}
+
 function fadeLayer(node, progress, entering) {
   const copy = structuredClone(node);
   if (copy.visible !== false) {
@@ -291,7 +391,7 @@ function fadeLayer(node, progress, entering) {
   return copy;
 }
 
-function interpolateLayer(from, to, progress) {
+function interpolateLayer(from, to, progress, resolveRadius = null) {
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
   const effects = interpolateEffects(from.effects, to.effects, progress);
@@ -305,6 +405,7 @@ function interpolateLayer(from, to, progress) {
       : progress === 1 ? to[property]
         : start + (end - start) * progress;
   }
+  interpolateCornerRadii(copy, from, to, progress, resolveRadius);
   for (const property of colorProperties) {
     const variable = property === 'fill' ? 'fillVariableId' : property === 'stroke' ? 'strokeVariableId' : 'textVariableId';
     if (from[variable] || to[variable]) continue;
@@ -314,6 +415,8 @@ function interpolateLayer(from, to, progress) {
   if (!from.fillVariableId && !to.fillVariableId && canInterpolateGradient(from.fillGradient, to.fillGradient)) {
     copy.fillGradient = interpolateGradient(from.fillGradient, to.fillGradient, progress);
   }
+  const fills = interpolateFillStack(from, to, progress);
+  if (fills) copy.fills = fills;
   if (from.visible === false && to.visible !== false) {
     copy.visible = true;
     copy.opacity = layerOpacity(to) * progress;
@@ -342,6 +445,14 @@ function interpolateLayer(from, to, progress) {
   }
   if (from.type === 'path' && to.type === 'path') {
     copy.points = interpolatePathPoints(from.points, to.points, progress);
+    const fromSubpaths = from.subpaths || [];
+    const toSubpaths = to.subpaths || [];
+    if (toSubpaths.length) {
+      copy.subpaths = toSubpaths.map((subpath, index) => ({
+        ...structuredClone(subpath),
+        points: interpolatePathPoints(fromSubpaths[index].points, subpath.points, progress)
+      }));
+    } else delete copy.subpaths;
   }
   if (from.type === 'network' && to.type === 'network') {
     const network = interpolateNetwork(from, to, progress);
@@ -349,7 +460,7 @@ function interpolateLayer(from, to, progress) {
     copy.edges = network.edges;
     copy.faces = network.faces;
   }
-  copy.children = blendChildren(from.children || [], to.children || [], progress);
+  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius);
   return copy;
 }
 
@@ -397,7 +508,7 @@ function interpolateTextRuns(fromRuns, toRuns, progress) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress) {
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null) {
   const fromKeys = siblingKeys(fromChildren);
   const toKeys = siblingKeys(toChildren);
   const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
@@ -406,7 +517,7 @@ function blendChildren(fromChildren, toChildren, progress) {
     const match = sourceByKey.get(toKeys[index]);
     if (match && canMatch(match.node, node)) {
       matchedSourceIndexes.add(match.index);
-      return interpolateLayer(match.node, node, progress);
+      return interpolateLayer(match.node, node, progress, resolveRadius);
     }
     return fadeLayer(node, progress, true);
   });
@@ -416,9 +527,10 @@ function blendChildren(fromChildren, toChildren, progress) {
   return result;
 }
 
-export function interpolateSmartFrame(fromFrame, toFrame, progress) {
+export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
   if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
   const amount = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
+  const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
   const frame = structuredClone(toFrame);
   snapProperties(frame, fromFrame, toFrame, amount);
   for (const property of ['width', 'height', 'opacity', 'rotation']) {
@@ -426,14 +538,17 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress) {
       frame[property] = property === 'rotation' ? interpolateRotation(fromFrame[property], toFrame[property], amount)
         : amount === 0 ? fromFrame[property]
           : amount === 1 ? toFrame[property]
-            : fromFrame[property] + (toFrame[property] - fromFrame[property]) * amount;
+          : fromFrame[property] + (toFrame[property] - fromFrame[property]) * amount;
     }
   }
+  interpolateCornerRadii(frame, fromFrame, toFrame, amount, resolveRadius);
   const fill = interpolateColor(fromFrame.fill, toFrame.fill, amount);
   if (fill && !fromFrame.fillVariableId && !toFrame.fillVariableId) frame.fill = fill;
   if (!fromFrame.fillVariableId && !toFrame.fillVariableId && canInterpolateGradient(fromFrame.fillGradient, toFrame.fillGradient)) {
     frame.fillGradient = interpolateGradient(fromFrame.fillGradient, toFrame.fillGradient, amount);
   }
-  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount);
+  const fills = interpolateFillStack(fromFrame, toFrame, amount);
+  if (fills) frame.fills = fills;
+  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius);
   return frame;
 }

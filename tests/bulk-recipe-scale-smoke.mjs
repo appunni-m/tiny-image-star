@@ -247,9 +247,16 @@ try {
   click(app, app.querySelector(`[data-layer-id="${lastImageId}"]`));
   await saveRecipeFromSelected(app, 'Scale recipe', -55, 24);
 
-  const selectedRows = selectAllImages(app);
+  const mode = app.querySelector('#layer-select-mode');
+  if (mode.getAttribute('aria-pressed') !== 'true') click(app, mode);
   const layerTreeProbe = watchBulkUiRebuilds(app);
   layerTreeProbeForCleanup = layerTreeProbe;
+  const selectedRows = selectAllImages(app);
+  assert(layerTreeProbe.rebuildsFor('#layers-list') === 0
+    && selectedRows.every(row => row.isConnected && row.classList.contains('is-selected')
+      && row.getAttribute('aria-selected') === 'true' && layerTreeProbe.rows.get(row.dataset.layerId) === row),
+  'Selecting a large image set should update existing layer rows in place.');
+  const selectionPanelRebuilds = layerTreeProbe.allRebuilds;
   const initialWorkerBudget = Number(app.querySelector('#bulk-speed').max);
   assert(Number.isSafeInteger(initialWorkerBudget) && initialWorkerBudget > 0, 'The worker slider reported an invalid CPU budget.');
   // Keep the live scale-up bounded to three workers in browser CI: the suite
@@ -408,6 +415,11 @@ try {
     'Recipe processing replaced or dropped original image layers.');
   assert(layerTreeProbe.allRebuilds === 0,
     `Bulk completion rebuilt layer or asset panels ${layerTreeProbe.allRebuilds} times for ${BATCH_SIZE} images (layers: ${layerTreeProbe.rebuildsFor('#layers-list')}, asset/library sections: ${layerTreeProbe.rebuildsFor('#assets-list') + layerTreeProbe.rebuildsFor('#components-list') + layerTreeProbe.rebuildsFor('#component-library-list') + layerTreeProbe.rebuildsFor('#variable-collections-list') + layerTreeProbe.rebuildsFor('#color-styles-list') + layerTreeProbe.rebuildsFor('#text-styles-list')}).`);
+  const firstBatchPanelRebuilds = {
+    total: layerTreeProbe.allRebuilds,
+    layerTree: layerTreeProbe.rebuildsFor('#layers-list'),
+    assetAndLibrarySections: layerTreeProbe.allRebuilds - layerTreeProbe.rebuildsFor('#layers-list')
+  };
   assert(selectedRows.every(row => row.isConnected && row.classList.contains('is-selected')
     && layerTreeProbe.rows.get(row.dataset.layerId) === row),
   'Bulk completion replaced layer rows or lost the existing multi-image selection.');
@@ -427,8 +439,8 @@ try {
 
   // A second, distinct recipe makes cancellation observable: only the images
   // already in flight may receive it; the remaining selected images stay at -55.
-  const mode = app.querySelector('#layer-select-mode');
-  if (mode.getAttribute('aria-pressed') === 'true') click(app, mode);
+  const modeForCancel = app.querySelector('#layer-select-mode');
+  if (modeForCancel.getAttribute('aria-pressed') === 'true') click(app, modeForCancel);
   const speed = app.querySelector('#bulk-speed');
   speed.value = String(initialConcurrency);
   speed.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
@@ -436,7 +448,15 @@ try {
   const cancelSourceId = initialNodes[0].id;
   click(app, app.querySelector(`[data-layer-id="${cancelSourceId}"]`));
   await saveRecipeFromSelected(app, 'Cancel recipe', -82);
+  const beforeCancelSelectionRebuilds = {
+    total: layerTreeProbe.allRebuilds,
+    layerTree: layerTreeProbe.rebuildsFor('#layers-list')
+  };
   const cancelRows = selectAllImages(app);
+  const cancelSelectionRebuilds = {
+    total: layerTreeProbe.allRebuilds - beforeCancelSelectionRebuilds.total,
+    layerTree: layerTreeProbe.rebuildsFor('#layers-list') - beforeCancelSelectionRebuilds.layerTree
+  };
   const cancelStart = workerGate.submissions.length;
   workerGate.hold = true;
   startFromLayerMenu(app, cancelRows[0], 'Cancel recipe');
@@ -478,9 +498,9 @@ try {
 
   result.textContent = `PASS\n${JSON.stringify({
     images: BATCH_SIZE,
-    fullPanelRebuildsDuringBatch: layerTreeProbe.allRebuilds,
-    layerTreeRebuildsDuringBatch: layerTreeProbe.rebuildsFor('#layers-list'),
-    assetLibraryRebuildsDuringBatch: layerTreeProbe.allRebuilds - layerTreeProbe.rebuildsFor('#layers-list'),
+    selectionPanelRebuilds,
+    firstBatchPanelRebuilds,
+    cancellationSelectionRebuilds: cancelSelectionRebuilds,
     selectedRowsPreservedDuringBatch: true,
     recipeContextMenuTargets: BATCH_SIZE,
     uniqueSubmittedAndRenderedResults: true,

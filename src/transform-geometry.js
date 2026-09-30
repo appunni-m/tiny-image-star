@@ -2,6 +2,17 @@
 
 const EPSILON = 1e-12;
 
+/** Return the signed shortest angular step between two radian samples. */
+export function shortestAngleDelta(previousAngle, nextAngle) {
+  if (!Number.isFinite(previousAngle) || !Number.isFinite(nextAngle)) {
+    throw new TypeError('Rotation angles must be finite radians.');
+  }
+  let delta = nextAngle - previousAngle;
+  if (delta > Math.PI) delta -= Math.PI * 2;
+  else if (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
 export const IDENTITY_AFFINE = Object.freeze({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
 
 function finiteGeometry(node) {

@@ -1,11 +1,19 @@
-import { createId, walkNodes } from './model.js';
+import { createId } from './model.js';
 import { publishComponent, validateComponentLibrary } from './component-library.js';
+import { inspectRasterDimensions } from './image-engine.js';
+import { validateLocalFontAsset } from './font-assets.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
+const DB_VERSION = 4;
+const COMPONENT_LIBRARY_DB_VERSION = 1;
+const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
+const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
 const dbPromises = new Map();
+let assetMetadataMigrationPromise = null;
+let fontMetadataMigrationPromise = null;
 
-function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets']) {
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
@@ -29,7 +37,7 @@ function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets']) {
     }
 
     let request;
-    try { request = indexedDB.open(name); }
+    try { request = indexedDB.open(name, version); }
     catch (error) { fail(error); return; }
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -61,7 +69,7 @@ function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets']) {
 }
 
 function openComponentLibraryDatabase() {
-  return openDatabase(COMPONENT_LIBRARY_DB_NAME, ['componentLibraries']);
+  return openDatabase(COMPONENT_LIBRARY_DB_NAME, ['componentLibraries'], COMPONENT_LIBRARY_DB_VERSION);
 }
 
 function requestResult(request) {
@@ -77,6 +85,122 @@ function transactionDone(transaction) {
     transaction.onerror = () => reject(transaction.error || new Error('Local storage write failed.'));
     transaction.onabort = () => reject(transaction.error || new Error('Local storage write was cancelled.'));
   });
+}
+
+function asBytes(value) {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return null;
+}
+
+function imageAssetMetadata(id, name, type, sourceBytes) {
+  const bytes = asBytes(sourceBytes);
+  const dimensions = bytes ? inspectRasterDimensions(bytes) : null;
+  return {
+    id,
+    name: typeof name === 'string' ? name : '',
+    type: typeof type === 'string' ? type : '',
+    byteLength: bytes?.byteLength ?? 0,
+    dimensions: dimensions ? { width: dimensions.width, height: dimensions.height, pixels: dimensions.pixels } : null
+  };
+}
+
+function localFontMetadata(font) {
+  const bytes = asBytes(font?.bytes);
+  return {
+    id: font.id,
+    name: font.name,
+    type: font.type,
+    family: font.family,
+    weight: font.weight,
+    style: font.style,
+    byteLength: bytes?.byteLength ?? 0
+  };
+}
+
+function fontFaceKey(font) {
+  return `${String(font?.family || '').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()}\u0000${font?.weight}\u0000${font?.style}`;
+}
+
+/** Backfill a compact font catalog once without retaining every font buffer. */
+function migrateFontMetadataOnce() {
+  if (fontMetadataMigrationPromise) return fontMetadataMigrationPromise;
+  const migration = (async () => {
+    const db = await openDatabase();
+    const tx = db.transaction(['fontAssets', 'fontMetadata', 'fontMetadataState'], 'readwrite');
+    const done = transactionDone(tx);
+    const metadataStore = tx.objectStore('fontMetadata');
+    const stateStore = tx.objectStore('fontMetadataState');
+    const stateRequest = stateStore.get(FONT_METADATA_MIGRATION_ID);
+    stateRequest.onsuccess = () => {
+      if (stateRequest.result?.complete === true) return;
+      const cursorRequest = tx.objectStore('fontAssets').openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) {
+          stateStore.put({ id: FONT_METADATA_MIGRATION_ID, complete: true, completedAt: Date.now() });
+          return;
+        }
+        const record = cursor.value;
+        if (record && typeof record.id === 'string' && record.id) metadataStore.put(localFontMetadata(record));
+        cursor.continue();
+      };
+    };
+    await done;
+  })();
+  fontMetadataMigrationPromise = migration;
+  migration.catch(() => {
+    if (fontMetadataMigrationPromise === migration) fontMetadataMigrationPromise = null;
+  });
+  return migration;
+}
+
+/**
+ * Backfill the lightweight metadata index once for databases created before
+ * assetMetadata existed. A cursor visits one legacy asset at a time, so the
+ * migration does not retain every original image buffer at once.
+ */
+function migrateAssetMetadataOnce() {
+  if (assetMetadataMigrationPromise) return assetMetadataMigrationPromise;
+  const migration = (async () => {
+    const db = await openDatabase();
+    const tx = db.transaction(['assets', 'assetMetadata', 'assetMetadataState'], 'readwrite');
+    const done = transactionDone(tx);
+    const metadataStore = tx.objectStore('assetMetadata');
+    const stateStore = tx.objectStore('assetMetadataState');
+    const stateRequest = stateStore.get(ASSET_METADATA_MIGRATION_ID);
+    stateRequest.onsuccess = () => {
+      if (stateRequest.result?.complete === true) return;
+      const metadataToWrite = [];
+      const cursorRequest = tx.objectStore('assets').openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) {
+          for (const metadata of metadataToWrite) metadataStore.put(metadata);
+          stateStore.put({ id: ASSET_METADATA_MIGRATION_ID, complete: true, completedAt: Date.now() });
+          return;
+        }
+        const record = cursor.value;
+        if (!record || typeof record.id !== 'string' || !record.id) {
+          cursor.continue();
+          return;
+        }
+        const existingMetadata = metadataStore.get(record.id);
+        existingMetadata.onsuccess = () => {
+          if (!existingMetadata.result) {
+            metadataToWrite.push(imageAssetMetadata(record.id, record.name, record.type, record.bytes));
+          }
+          cursor.continue();
+        };
+      };
+    };
+    await done;
+  })();
+  assetMetadataMigrationPromise = migration;
+  migration.catch(() => {
+    if (assetMetadataMigrationPromise === migration) assetMetadataMigrationPromise = null;
+  });
+  return migration;
 }
 
 export async function saveDocument(document) {
@@ -190,6 +314,189 @@ function validateStoredComponentLibrary(record) {
   return record.library;
 }
 
+function referencedPackageAssetIds(document) {
+  if (!document || !Array.isArray(document.pages) || !document.pages.length) {
+    throw new TypeError('Local design package does not contain a valid design.');
+  }
+  const references = new Set();
+  const visited = new WeakSet();
+  const visitNode = node => {
+    if (!node || typeof node !== 'object' || visited.has(node)) return;
+    visited.add(node);
+    if (node.type === 'image' && typeof node.assetId === 'string' && node.assetId) references.add(node.assetId);
+    if (typeof node.imageFill?.assetId === 'string' && node.imageFill.assetId) references.add(node.imageFill.assetId);
+    if (Array.isArray(node.fills)) {
+      for (const fill of node.fills) {
+        if (fill.type === 'image' && typeof fill.imageFill?.assetId === 'string' && fill.imageFill.assetId) references.add(fill.imageFill.assetId);
+      }
+    }
+    for (const child of node.children || []) visitNode(child);
+    const linkedComponent = node.linkedComponent;
+    visitNode(linkedComponent?.sourceSnapshot?.root);
+    visitNode(linkedComponent?.root);
+  };
+  for (const page of document.pages) {
+    if (!page || !Array.isArray(page.children)) throw new TypeError('Local design package contains an invalid page.');
+    for (const node of page.children) visitNode(node);
+  }
+  return references;
+}
+
+/** Walk regular page layers and both frozen/resolved linked-component trees. */
+function visitPackageNodes(nodes, visitor, visited = new WeakSet()) {
+  for (const node of nodes || []) {
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    visited.add(node);
+    visitor(node);
+    visitPackageNodes(node.children, visitor, visited);
+    const linkedComponent = node.linkedComponent;
+    visitPackageNodes(linkedComponent?.sourceSnapshot?.root ? [linkedComponent.sourceSnapshot.root] : [], visitor, visited);
+    visitPackageNodes(linkedComponent?.root ? [linkedComponent.root] : [], visitor, visited);
+  }
+}
+
+function remapPackageNodeAssets(node, mapping) {
+  if (node.type === 'image' && mapping.has(node.assetId)) node.assetId = mapping.get(node.assetId);
+  if (node.imageFill && mapping.has(node.imageFill.assetId)) node.imageFill.assetId = mapping.get(node.imageFill.assetId);
+  const remapFills = fills => {
+    if (!Array.isArray(fills)) return;
+    for (const fill of fills) {
+      if (fill?.type === 'image' && fill.imageFill && mapping.has(fill.imageFill.assetId)) {
+        fill.imageFill.assetId = mapping.get(fill.imageFill.assetId);
+      }
+    }
+  };
+  remapFills(node.fills);
+  for (const overrides of Object.values(node.componentOverrides || {})) {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) continue;
+    if (overrides.imageFill && mapping.has(overrides.imageFill.assetId)) {
+      overrides.imageFill.assetId = mapping.get(overrides.imageFill.assetId);
+    }
+    remapFills(overrides.fills);
+  }
+}
+
+function assertPackageAssetReferences(document, assets) {
+  const available = new Set();
+  for (const asset of assets) {
+    if (!asset || typeof asset.id !== 'string' || !asset.id || available.has(asset.id)) {
+      throw new TypeError('Local design package contains an invalid or duplicate image asset.');
+    }
+    available.add(asset.id);
+  }
+  for (const assetId of referencedPackageAssetIds(document)) {
+    if (!available.has(assetId)) {
+      throw new TypeError(`The design references image source “${assetId}”, but its bytes are missing. Restore the source image and try again.`);
+    }
+  }
+}
+
+function validatePackageFonts(fonts) {
+  if (!Array.isArray(fonts)) throw new TypeError('Local design package fonts must be a list.');
+  const seen = new Set();
+  const faces = new Set();
+  return fonts.map(source => {
+    let font;
+    try { font = validateLocalFontAsset(source); }
+    catch (error) { throw new TypeError(`Local design package contains an invalid font: ${error.message}`); }
+    if (seen.has(font.id)) throw new TypeError('Local design package contains a duplicate font asset ID.');
+    seen.add(font.id);
+    const faceKey = fontFaceKey(font);
+    if (faces.has(faceKey)) throw new TypeError(`Local design package contains duplicate ${font.weight} ${font.style} faces for “${font.family}”.`);
+    faces.add(faceKey);
+    return font;
+  });
+}
+
+function fontBytesEqual(left, right) {
+  const a = left?.bytes ? new Uint8Array(left.bytes) : null;
+  const b = right?.bytes ? new Uint8Array(right.bytes) : null;
+  return Boolean(a && b && a.byteLength === b.byteLength && a.every((value, index) => value === b[index]));
+}
+
+function importFontFamilyAliases(fonts, existingFonts, existingFontAssetsById) {
+  const existing = new Set(existingFonts.map(font => String(font?.family || '').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()));
+  const renames = new Map();
+  for (const font of fonts) {
+    if (renames.has(font.family)) continue;
+    const conflict = existingFonts.some(candidate => fontFaceKey(candidate) === fontFaceKey(font)
+      && !fontBytesEqual(existingFontAssetsById.get(candidate.id), { bytes: font.bytes.buffer }));
+    if (!conflict) continue;
+    let suffix = 1;
+    let alias;
+    do { alias = `${font.family} Imported${suffix === 1 ? '' : ` ${suffix}`}`; suffix += 1; }
+    while (existing.has(alias.trim().replace(/\s+/gu, ' ').toLocaleLowerCase()));
+    existing.add(alias.trim().replace(/\s+/gu, ' ').toLocaleLowerCase());
+    renames.set(font.family, alias);
+  }
+  return renames;
+}
+
+function splitFontFamilyStack(value) {
+  const parts = [];
+  let start = 0;
+  let quote = '';
+  let escaped = false;
+  const source = String(value || '');
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === ',') {
+      parts.push(source.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(source.slice(start));
+  return parts;
+}
+
+function normalizeFontFamilyToken(token) {
+  let value = String(token || '').trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.at(-1) === quote) {
+    value = value.slice(1, -1).replace(/\\(["'\\])/gu, '$1');
+  }
+  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+}
+
+function remapFontFamilyStack(value, aliases) {
+  const aliasesByName = new Map([...aliases].map(([family, alias]) => [normalizeFontFamilyToken(family), alias]));
+  return splitFontFamilyStack(value).map(token => {
+    const alias = aliasesByName.get(normalizeFontFamilyToken(token));
+    if (!alias) return token;
+    const leading = token.match(/^\s*/u)?.[0] || '';
+    const trailing = token.match(/\s*$/u)?.[0] || '';
+    const trimmed = token.trim();
+    const quote = trimmed[0];
+    if ((quote === '"' || quote === "'") && trimmed.at(-1) === quote) {
+      const escaped = [...alias].map(character => character === '\\' || character === quote ? `\\${character}` : character).join('');
+      return `${leading}${quote}${escaped}${quote}${trailing}`;
+    }
+    return `${leading}${alias}${trailing}`;
+  }).join(',');
+}
+
+function remapDocumentFontFamilies(document, aliases) {
+  if (!aliases.size) return;
+  const visited = new WeakSet();
+  const visit = value => {
+    if (!value || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) { for (const item of value) visit(item); return; }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'fontFamily' && typeof child === 'string') {
+        if (aliases.has(child)) value[key] = aliases.get(child);
+        else value[key] = remapFontFamilyStack(child, aliases);
+      } else visit(child);
+    }
+  };
+  visit(document);
+}
+
 /** Persist one validated component-library snapshot without retaining caller-owned objects. */
 export async function saveComponentLibrary(library) {
   const snapshot = structuredClone(library);
@@ -296,10 +603,91 @@ export async function saveImageAsset(id, file) {
 }
 
 export async function saveImageAssetBytes(id, name, type, bytes) {
+  if (typeof id !== 'string' || !id || !(bytes instanceof Uint8Array)
+    || typeof name !== 'string' || typeof type !== 'string') {
+    throw new TypeError('A saved image asset needs an ID, name, MIME type, and byte data.');
+  }
+  await migrateAssetMetadataOnce();
   const db = await openDatabase();
-  const tx = db.transaction('assets', 'readwrite');
-  tx.objectStore('assets').put({ id, name, type, bytes: bytes.slice().buffer });
+  const tx = db.transaction(['assets', 'assetMetadata'], 'readwrite');
+  const copy = bytes.slice();
+  tx.objectStore('assets').put({ id, name, type, bytes: copy.buffer });
+  tx.objectStore('assetMetadata').put(imageAssetMetadata(id, name, type, copy));
   await transactionDone(tx);
+}
+
+/** Save a validated local font face without copying its bytes into a design tree. */
+export async function saveFontAsset(asset) {
+  const font = validateLocalFontAsset(asset);
+  await migrateFontMetadataOnce();
+  const db = await openDatabase();
+  const tx = db.transaction(['fontAssets', 'fontMetadata'], 'readwrite');
+  const done = transactionDone(tx);
+  const binaries = tx.objectStore('fontAssets');
+  const metadataStore = tx.objectStore('fontMetadata');
+  let operationError = null;
+  const request = metadataStore.getAll();
+  request.onsuccess = () => {
+    try {
+      const current = request.result || [];
+      if (current.some(record => record.id === font.id)) throw new TypeError('A local font with this ID is already installed.');
+      if (current.some(record => fontFaceKey(record) === fontFaceKey(font))) {
+        throw new TypeError(`A ${font.weight} ${font.style} face for “${font.family}” is already installed.`);
+      }
+      binaries.add({ ...localFontMetadata(font), bytes: font.bytes.slice().buffer });
+      metadataStore.add(localFontMetadata(font));
+    } catch (error) {
+      operationError = error;
+      try { tx.abort(); } catch { /* The transaction may already be aborting. */ }
+    }
+  };
+  try { await done; }
+  catch (error) { throw operationError || error; }
+  if (operationError) throw operationError;
+  const { bytes: _bytes, ...fontRecord } = font;
+  return fontRecord;
+}
+
+/** Return local font metadata without reading font binaries. */
+export async function listFontAssets() {
+  await migrateFontMetadataOnce();
+  const db = await openDatabase();
+  const records = await requestResult(db.transaction('fontMetadata').objectStore('fontMetadata').getAll());
+  return records
+    .filter(record => record && typeof record.id === 'string')
+    .map(({ id, name, type, family, weight, style, byteLength }) => ({ id, name, type, family, weight, style, byteLength }))
+    .sort((left, right) => left.family.localeCompare(right.family) || left.weight - right.weight || left.style.localeCompare(right.style) || left.name.localeCompare(right.name));
+}
+
+/** Retrieve one font binary for FontFace loading or a portable design export. */
+export async function loadFontAsset(id) {
+  if (typeof id !== 'string' || !id) return null;
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('fontAssets').objectStore('fontAssets').get(id));
+  if (!record) return null;
+  try { return validateLocalFontAsset({ ...record, bytes: record.bytes }); }
+  catch { return null; }
+}
+
+/** Remove one local font face; design text retains its family name and falls back. */
+export async function deleteFontAsset(id) {
+  if (typeof id !== 'string' || !id) return false;
+  await migrateFontMetadataOnce();
+  const db = await openDatabase();
+  const tx = db.transaction(['fontAssets', 'fontMetadata'], 'readwrite');
+  const store = tx.objectStore('fontAssets');
+  const metadata = tx.objectStore('fontMetadata');
+  let found = false;
+  const done = transactionDone(tx);
+  const request = metadata.get(id);
+  request.onsuccess = () => {
+    if (!request.result) return;
+    found = true;
+    store.delete(id);
+    metadata.delete(id);
+  };
+  await done;
+  return found;
 }
 
 /**
@@ -308,11 +696,13 @@ export async function saveImageAssetBytes(id, name, type, bytes) {
  * ID. All reads and writes share one readwrite transaction, so the collision
  * decision cannot race another tab and the entire import rolls back on error.
  */
-export async function importLocalPackage(document, assets) {
+export async function importLocalPackage(document, assets, fonts = []) {
   if (!document || typeof document.id !== 'string' || !document.id || !Array.isArray(document.pages)) {
     throw new TypeError('Local design package does not contain a valid design.');
   }
   if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
+  const packageFonts = validatePackageFonts(fonts);
+  assertPackageAssetReferences(document, assets);
   const seen = new Set();
   for (const asset of assets) {
     if (!asset || typeof asset.id !== 'string' || !asset.id || seen.has(asset.id)
@@ -322,10 +712,14 @@ export async function importLocalPackage(document, assets) {
     seen.add(asset.id);
   }
 
+  await Promise.all([migrateAssetMetadataOnce(), migrateFontMetadataOnce()]);
   const db = await openDatabase();
-  const tx = db.transaction(['assets', 'documents'], 'readwrite');
+  const tx = db.transaction(['assets', 'assetMetadata', 'documents', 'fontAssets', 'fontMetadata'], 'readwrite');
   const assetStore = tx.objectStore('assets');
+  const metadataStore = tx.objectStore('assetMetadata');
   const documentStore = tx.objectStore('documents');
+  const fontStore = tx.objectStore('fontAssets');
+  const fontMetadataStore = tx.objectStore('fontMetadata');
   const done = transactionDone(tx);
   const mappingPromise = new Promise((resolve, reject) => {
     const fail = error => {
@@ -333,11 +727,15 @@ export async function importLocalPackage(document, assets) {
       try { tx.abort(); } catch { /* IndexedDB may already be aborting. */ }
     };
     const existing = new Array(assets.length);
+    const existingFontAssets = new Array(packageFonts.length);
+    const existingFontAssetRecords = new Map();
+    let existingFontRecords = [];
     let existingDocument;
-    let remaining = assets.length + 1;
+    let remaining = assets.length + packageFonts.length + 2;
     const prepareImport = () => {
       if (remaining !== 0) return;
       const mapping = new Map();
+      const fontMapping = new Map();
       const reserved = new Set(seen);
       const importedDocument = structuredClone(document);
       if (existingDocument) importedDocument.id = createId('file');
@@ -358,17 +756,44 @@ export async function importLocalPackage(document, assets) {
             do { id = createId('asset'); } while (reserved.has(id));
           }
           reserved.add(id);
-          assetStore.add({ id, name: assetToSave.name, type: assetToSave.type, bytes: source.slice().buffer });
+          const assetBytes = source.slice();
+          assetStore.add({ id, name: assetToSave.name, type: assetToSave.type, bytes: assetBytes.buffer });
+          metadataStore.put(imageAssetMetadata(id, assetToSave.name, assetToSave.type, assetBytes));
           mapping.set(assetToSave.id, id);
         }
+        const familyAliases = importFontFamilyAliases(packageFonts, existingFontRecords, existingFontAssetRecords);
+        remapDocumentFontFamilies(importedDocument, familyAliases);
+        const reservedFonts = new Set([...packageFonts.map(font => font.id), ...existingFontRecords.map(font => font.id)]);
+        for (let itemIndex = 0; itemIndex < packageFonts.length; itemIndex += 1) {
+          const source = packageFonts[itemIndex];
+          const importedFamily = familyAliases.get(source.family) || source.family;
+          const stored = existingFontAssets[itemIndex];
+          const identicalFace = existingFontRecords.find(candidate => fontFaceKey(candidate) === fontFaceKey({ ...source, family: importedFamily })
+            && candidate.type === source.type
+            && fontBytesEqual(existingFontAssetRecords.get(candidate.id), { bytes: source.bytes.buffer }));
+          if (identicalFace) {
+            fontMapping.set(source.id, identicalFace.id);
+            continue;
+          }
+          let id = source.id;
+          if (stored) {
+            do { id = createId('font'); } while (reservedFonts.has(id));
+          }
+          reservedFonts.add(id);
+          const fontBytes = source.bytes.slice();
+          const importedFont = {
+            id, name: source.name, type: source.type, family: importedFamily,
+            weight: source.weight, style: source.style, bytes: fontBytes.buffer
+          };
+          fontStore.add(importedFont);
+          fontMetadataStore.add(localFontMetadata(importedFont));
+          fontMapping.set(source.id, id);
+        }
         for (const page of importedDocument.pages) {
-          walkNodes(page.children || [], ({ node }) => {
-            if (node.type === 'image' && mapping.has(node.assetId)) node.assetId = mapping.get(node.assetId);
-            if (node.imageFill && mapping.has(node.imageFill.assetId)) node.imageFill.assetId = mapping.get(node.imageFill.assetId);
-          });
+          visitPackageNodes(page.children || [], node => remapPackageNodeAssets(node, mapping));
         }
         documentStore.add({ id: importedDocument.id, savedAt: Date.now(), document: importedDocument });
-        resolve({ document: importedDocument, assetIds: mapping });
+        resolve({ document: importedDocument, assetIds: mapping, fontIds: fontMapping, fontFamilies: familyAliases });
       } catch (error) {
         fail(error);
       }
@@ -384,6 +809,38 @@ export async function importLocalPackage(document, assets) {
         prepareImport();
       };
       request.onerror = () => fail(request.error || new Error('Could not check imported image assets.'));
+    }
+    const fontsRequest = fontMetadataStore.getAll();
+    fontsRequest.onsuccess = () => {
+      existingFontRecords = fontsRequest.result || [];
+      const relevantKeys = new Set(packageFonts.map(fontFaceKey));
+      const candidates = existingFontRecords.filter(record => relevantKeys.has(fontFaceKey(record)));
+      const candidatesById = new Map(candidates.map(record => [record.id, record]));
+      for (const record of existingFontAssetRecords.values()) candidatesById.set(record.id, record);
+      const toLoad = [...candidatesById.keys()];
+      remaining += toLoad.length;
+      remaining -= 1;
+      prepareImport();
+      for (const id of toLoad) {
+        const request = fontStore.get(id);
+        request.onsuccess = () => {
+          existingFontAssetRecords.set(id, request.result);
+          remaining -= 1;
+          prepareImport();
+        };
+        request.onerror = () => fail(request.error || new Error('Could not inspect a matching local font face.'));
+      }
+    };
+    fontsRequest.onerror = () => fail(fontsRequest.error || new Error('Could not check local font assets.'));
+    for (const [index, font] of packageFonts.entries()) {
+      const request = fontStore.get(font.id);
+      request.onsuccess = () => {
+        existingFontAssets[index] = request.result;
+        if (request.result) existingFontAssetRecords.set(request.result.id, request.result);
+        remaining -= 1;
+        prepareImport();
+      };
+      request.onerror = () => fail(request.error || new Error('Could not check imported font assets.'));
     }
   });
   try {
@@ -401,26 +858,70 @@ export async function loadImageAsset(id) {
   return requestResult(db.transaction('assets').objectStore('assets').get(id));
 }
 
-export async function deleteImageAsset(id) {
+/**
+ * Load an image's compact catalog metadata without retrieving its source bytes.
+ * Legacy records are backfilled once on the first metadata-aware operation.
+ */
+export async function loadImageAssetMetadata(id) {
+  if (typeof id !== 'string' || !id) return null;
+  await migrateAssetMetadataOnce();
   const db = await openDatabase();
-  const tx = db.transaction('assets', 'readwrite');
+  const record = await requestResult(db.transaction('assetMetadata').objectStore('assetMetadata').get(id));
+  if (!record) return null;
+  return {
+    id: record.id,
+    name: record.name,
+    type: record.type,
+    byteLength: record.byteLength,
+    dimensions: record.dimensions ? { ...record.dimensions } : null
+  };
+}
+
+export async function deleteImageAsset(id) {
+  await migrateAssetMetadataOnce();
+  const db = await openDatabase();
+  const tx = db.transaction(['assets', 'assetMetadata'], 'readwrite');
   tx.objectStore('assets').delete(id);
+  tx.objectStore('assetMetadata').delete(id);
   await transactionDone(tx);
 }
 
-export function packLocalPackage(design, assets) {
-  const manifest = new TextEncoder().encode(JSON.stringify({ schema: design.schema, document: design, assets: assets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })) }));
+export function packLocalPackage(design, assets, fonts = []) {
+  if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
+  const packageAssets = assets.map(asset => {
+    if (!asset || typeof asset.id !== 'string' || !asset.id || typeof asset.name !== 'string' || typeof asset.type !== 'string') {
+      throw new TypeError('Local design package contains an invalid image asset.');
+    }
+    const bytes = asset.bytes instanceof Uint8Array
+      ? asset.bytes
+      : asset.bytes instanceof ArrayBuffer
+        ? new Uint8Array(asset.bytes)
+        : ArrayBuffer.isView(asset.bytes)
+          ? new Uint8Array(asset.bytes.buffer, asset.bytes.byteOffset, asset.bytes.byteLength)
+          : null;
+    if (!bytes) throw new TypeError(`The image source “${asset.id}” has no readable bytes. Restore the source image and try again.`);
+    return { id: asset.id, name: asset.name, type: asset.type, bytes };
+  });
+  const packageFonts = validatePackageFonts(fonts);
+  assertPackageAssetReferences(design, packageAssets);
+  const manifest = new TextEncoder().encode(JSON.stringify({
+    schema: design.schema,
+    document: design,
+    assets: packageAssets.map(({ id, name, type, bytes }) => ({ id, name, type, length: bytes.byteLength })),
+    fonts: packageFonts.map(({ id, name, type, family, weight, style, bytes }) => ({ id, name, type, family, weight, style, length: bytes.byteLength }))
+  }));
   const length = new Uint8Array(4); new DataView(length.buffer).setUint32(0, manifest.length, true);
   const parts = [new Uint8Array([70, 76, 79, 67, 65, 76, 1]), length, manifest];
-  for (const asset of assets) parts.push(new Uint8Array(asset.bytes));
+  for (const asset of packageAssets) parts.push(asset.bytes);
+  for (const font of packageFonts) parts.push(font.bytes);
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
   const packed = new Uint8Array(total); let offset = 0;
   for (const part of parts) { packed.set(part, offset); offset += part.byteLength; }
   return packed;
 }
 
-export async function downloadLocalPackage(design, assets) {
-  const bytes = packLocalPackage(design, assets);
+export async function downloadLocalPackage(design, assets, fonts = []) {
+  const bytes = packLocalPackage(design, assets, fonts);
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
   const anchor = Object.assign(globalThis.document.createElement('a'), { href: url, download: `${design.name || 'design'}.flocal` });
   anchor.click();
@@ -437,13 +938,49 @@ export function unpackLocalPackage(input) {
   try { manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(11, 11 + manifestLength))); }
   catch { throw new TypeError('Invalid local design package manifest.'); }
   if (manifest.schema !== 'figma-local/1' || !manifest.document || !Array.isArray(manifest.assets)) throw new TypeError('Unsupported local design package.');
+  if (manifest.fonts !== undefined && !Array.isArray(manifest.fonts)) throw new TypeError('Invalid local design package font manifest.');
   let offset = 11 + manifestLength;
   const assets = [];
+  const seen = new Set();
   for (const entry of manifest.assets) {
-    if (!entry.id || !Number.isSafeInteger(entry.length) || entry.length < 0 || offset + entry.length > bytes.length) throw new TypeError('Invalid local design package asset data.');
+    if (!entry || typeof entry.id !== 'string' || !entry.id
+      || !Number.isSafeInteger(entry.length) || entry.length < 0 || offset + entry.length > bytes.length) {
+      throw new TypeError('Invalid local design package asset data.');
+    }
+    if (seen.has(entry.id)) throw new TypeError('Invalid local design package: duplicate image asset ID.');
     assets.push({ id: entry.id, name: String(entry.name || 'image'), type: String(entry.type || 'application/octet-stream'), bytes: bytes.slice(offset, offset + entry.length) });
+    seen.add(entry.id);
+    offset += entry.length;
+  }
+  const fonts = [];
+  const seenFontIds = new Set();
+  for (const entry of manifest.fonts || []) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id
+      || !Number.isSafeInteger(entry.length) || entry.length < 0 || offset + entry.length > bytes.length) {
+      throw new TypeError('Invalid local design package font data.');
+    }
+    if (seenFontIds.has(entry.id)) throw new TypeError('Invalid local design package: duplicate font asset ID.');
+    const fontBytes = bytes.slice(offset, offset + entry.length);
+    let font;
+    try {
+      font = validateLocalFontAsset({
+        id: entry.id,
+        name: String(entry.name || 'font.woff2'),
+        type: String(entry.type || 'application/octet-stream'),
+        family: entry.family,
+        weight: entry.weight,
+        style: entry.style,
+        bytes: fontBytes
+      });
+    } catch (error) {
+      throw new TypeError(`Invalid local design package font: ${error.message}`);
+    }
+    fonts.push(font);
+    seenFontIds.add(entry.id);
     offset += entry.length;
   }
   if (offset !== bytes.length) throw new TypeError('Invalid local design package: unexpected trailing data.');
-  return { document: manifest.document, assets };
+  assertPackageAssetReferences(manifest.document, assets);
+  validatePackageFonts(fonts);
+  return { document: manifest.document, assets, fonts };
 }

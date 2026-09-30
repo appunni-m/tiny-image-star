@@ -1,11 +1,26 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
-import { buildLayerEffectFilter } from './layer-effects.js';
+import { buildLayerEffectBoxShadow, buildLayerEffectFilter } from './layer-effects.js';
 import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
+import { vectorPathContours } from './vector-path.js';
+
+function hasFillablePathContour(node) {
+  return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
+}
 
 function number(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? String(Number(parsed.toFixed(4))) : '0';
+}
+
+function borderRadiusCss(document, node) {
+  if (node.cornerRadii) {
+    const values = ['topLeft', 'topRight', 'bottomRight', 'bottomLeft'].map(side => Math.max(0, Number(node.cornerRadii[side]) || 0));
+    if (values.some(Boolean)) return values.map(value => `${number(value)}px`).join(' ');
+    return null;
+  }
+  const radius = Number(getNodePropertyValue(document, node, 'radius')) || 0;
+  return radius ? `${number(radius)}px` : null;
 }
 
 function cssString(value) {
@@ -148,6 +163,8 @@ function cssForEntry(document, entry) {
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
   const effectFilter = buildLayerEffectFilter(node.effects);
   if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
+  const effectBoxShadow = buildLayerEffectBoxShadow(node.effects);
+  if (effectBoxShadow !== 'none') declarations.push(`box-shadow: ${effectBoxShadow};`);
   if (node.blendMode && node.blendMode !== 'normal') declarations.push(`mix-blend-mode: ${node.blendMode};`);
 
   if (node.type === 'text') {
@@ -160,6 +177,9 @@ function cssForEntry(document, entry) {
       Math.max(0, Number(node.firstLineIndent) || 0),
       Math.max(0, Number(geometry.width) - 1)
     );
+    const paragraphStyles = normalizedParagraphStyles(node.text, node.paragraphStyles);
+    const hasListParagraphs = paragraphStyles.some(paragraph => paragraph.listStyle !== 'none');
+    const listSpacing = Math.max(0, Number(node.listSpacing) || 0);
     const color = cssColor(getNodeColor(document, node, 'text'));
     if (color) declarations.push(`color: ${color};`);
     declarations.push(
@@ -170,7 +190,7 @@ function cssForEntry(document, entry) {
       `line-height: ${number(fontSize * lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       'display: block;',
-      `text-align: ${['left', 'center', 'right'].includes(node.align) ? node.align : 'left'};`,
+      `text-align: ${['left', 'center', 'right', 'justify'].includes(node.align) ? node.align : 'left'};`,
       ...(['middle', 'bottom'].includes(node.verticalAlign) ? [
         'display: flex;',
         'flex-direction: column;',
@@ -184,17 +204,29 @@ function cssForEntry(document, entry) {
       `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(fontSize * lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
       `.${cssClass(node)} > .${paragraphClass} + .${paragraphClass} {\n  margin-block-start: ${number(paragraphSpacing)}px;\n}`
     );
+    if (hasListParagraphs) {
+      additionalRules.push(
+        `.${cssClass(node)} > .${paragraphClass}[data-list-style] {\n  position: relative;\n}`,
+        `.${cssClass(node)} > .${paragraphClass}[data-list-style]::before {\n  position: absolute;\n  left: 0;\n  width: 24px;\n  text-align: right;\n  white-space: nowrap;\n  text-indent: 0;\n  text-transform: none;\n  content: attr(data-list-marker);\n}`,
+        ...Array.from({ length: 5 }, (_, level) => {
+          const contentIndent = 32 + level * 24;
+          const markerOffset = level * 24;
+          return `.${cssClass(node)} > .${paragraphClass}[data-list-level="${level}"] {\n  padding-inline-start: ${contentIndent}px;\n}\n.${cssClass(node)} > .${paragraphClass}[data-list-level="${level}"]::before {\n  left: ${markerOffset}px;\n}`;
+        }),
+        `.${cssClass(node)} > .${paragraphClass}[data-list-style] + .${paragraphClass}[data-list-style] {\n  margin-block-start: ${number(listSpacing)}px;\n}`
+      );
+    }
   } else if (node.type === 'image') {
     declarations.push(`object-fit: ${node.fit === 'contain' ? 'contain' : 'cover'};`);
-    const radius = Number(getNodePropertyValue(document, node, 'radius')) || 0;
-    if (radius) declarations.push(`border-radius: ${number(radius)}px;`);
+    const radius = borderRadiusCss(document, node);
+    if (radius) declarations.push(`border-radius: ${radius};`);
   } else {
     const fill = getNodeColor(document, node, 'fill');
     const background = cssColor(fill, node.fillOpacity ?? 1);
     const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1);
-    if (node.imageFill && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push('/* Local image fill source and adjustments are retained in layer JSON. */');
-    else if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background: ${gradientBackground};`);
-    else if (background && node.type !== 'line' && (node.type !== 'path' || node.closed !== false)) declarations.push(`background-color: ${background};`);
+    if (node.imageFill && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push('/* Local image fill source and adjustments are retained in layer JSON. */');
+    else if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background: ${gradientBackground};`);
+    else if (background && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background-color: ${background};`);
     if (node.type === 'line') {
       const stroke = cssColor(getNodeColor(document, node, 'stroke'));
       if (stroke && Number(node.strokeWidth) > 0) declarations.push(`border-top: ${number(node.strokeWidth)}px ${strokePatternStyle(node)} ${stroke};`);
@@ -208,8 +240,8 @@ function cssForEntry(document, entry) {
         || (node.strokeMiterLimit != null && node.strokeMiterLimit !== 10))) {
       declarations.push(`/* Vector stroke cap/join/miter limit (${node.strokePattern === 'dotted' ? 'round' : node.strokeCap || 'butt'}/${node.strokeJoin || 'miter'}/${node.strokeMiterLimit ?? 10}) remain exact in layer JSON. */`);
     }
-    const radius = Number(getNodePropertyValue(document, node, 'radius')) || 0;
-    if (radius) declarations.push(`border-radius: ${number(radius)}px;`);
+    const radius = borderRadiusCss(document, node);
+    if (radius) declarations.push(`border-radius: ${radius};`);
   }
 
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');
@@ -224,8 +256,15 @@ function markupForNode(document, node) {
   const type = escapeMarkup(node.type || 'layer');
   if (node.type === 'text') {
     const value = getNodePropertyValue(document, node, 'text') ?? '';
+    const styles = normalizedParagraphStyles(value, node.paragraphStyles);
+    const markers = paragraphMarkerLabels(styles);
     const paragraphs = String(value).replace(/\r\n?/g, '\n').split('\n')
-      .map(paragraph => `<span class="${className}__paragraph">${escapeMarkup(paragraph)}</span>`).join('');
+      .map((paragraph, index) => {
+        const style = styles[index];
+        const attributes = style.listStyle === 'none' ? ''
+          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`;
+        return `<span class="${className}__paragraph"${attributes}>${escapeMarkup(paragraph)}</span>`;
+      }).join('');
     return `<span class="${className}" data-layer-type="text">${paragraphs}</span>`;
   }
   if (node.type === 'image') {
@@ -246,8 +285,16 @@ function jsxForNode(document, node, depth = 0) {
   const className = jsxString(cssClass(node));
   const type = jsxString(node.type || 'layer');
   if (node.type === 'text') {
-    const paragraphs = String(getNodePropertyValue(document, node, 'text') ?? '').replace(/\r\n?/g, '\n').split('\n')
-      .map(paragraph => `${indent}  <span className={${jsxString(`${cssClass(node)}__paragraph`)}}>{${jsxString(paragraph)}}</span>`).join('\n');
+    const value = String(getNodePropertyValue(document, node, 'text') ?? '');
+    const styles = normalizedParagraphStyles(value, node.paragraphStyles);
+    const markers = paragraphMarkerLabels(styles);
+    const paragraphs = value.replace(/\r\n?/g, '\n').split('\n')
+      .map((paragraph, index) => {
+        const style = styles[index];
+        const attributes = style.listStyle === 'none' ? ''
+          : ` data-list-style={${jsxString(style.listStyle)}} data-list-level={${style.listLevel}} data-list-marker={${jsxString(markers[index])}}`;
+        return `${indent}  <span className={${jsxString(`${cssClass(node)}__paragraph`)}}${attributes}>{${jsxString(paragraph)}}</span>`;
+      }).join('\n');
     return `${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>\n${paragraphs}\n${indent}</span>`;
   }
   if (node.type === 'image') {
@@ -257,6 +304,62 @@ function jsxForNode(document, node, depth = 0) {
   const children = (node.children || []).map(child => jsxForNode(document, child, depth + 1));
   if (!children.length) return `${indent}<div className={${className}} data-layer-type={${type}} />`;
   return `${indent}<div className={${className}} data-layer-type={${type}}>\n${children.join('\n')}\n${indent}</div>`;
+}
+
+function normalizedParagraphStyles(text, paragraphStyles) {
+  const paragraphCount = String(text ?? '').replace(/\r\n?/g, '\n').split('\n').length;
+  return Array.from({ length: paragraphCount }, (_, index) => {
+    const source = Array.isArray(paragraphStyles) ? paragraphStyles[index] : null;
+    const listStyle = ['bulleted', 'numbered'].includes(source?.listStyle) ? source.listStyle : 'none';
+    const listLevel = listStyle !== 'none' && Number.isInteger(source?.listLevel) && source.listLevel >= 0 && source.listLevel <= 4
+      ? source.listLevel : 0;
+    const style = { listStyle, listLevel };
+    if (listStyle === 'numbered' && Number.isInteger(source?.listStart) && source.listStart >= 1 && source.listStart <= 999_999) {
+      style.listStart = source.listStart;
+    }
+    return style;
+  });
+}
+
+function paragraphMarkerLabels(paragraphStyles) {
+  const counters = new Map();
+  const activeStyles = new Map();
+  const alpha = value => {
+    let numberValue = value;
+    let label = '';
+    while (numberValue > 0 && label.length < 12) {
+      numberValue -= 1;
+      label = String.fromCharCode(97 + numberValue % 26) + label;
+      numberValue = Math.floor(numberValue / 26);
+    }
+    return label || 'a';
+  };
+  const roman = value => {
+    if (value > 3999) return String(value);
+    let numberValue = value;
+    let label = '';
+    for (const [amount, symbol] of [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]) {
+      while (numberValue >= amount) { label += symbol; numberValue -= amount; }
+    }
+    return label;
+  };
+  return paragraphStyles.map(style => {
+    if (style.listStyle === 'none') {
+      counters.clear(); activeStyles.clear();
+      return '';
+    }
+    const level = style.listLevel;
+    for (const current of [...activeStyles.keys()]) if (current > level) activeStyles.delete(current);
+    for (const current of [...counters.keys()]) if (current > level) counters.delete(current);
+    if (activeStyles.get(level) !== style.listStyle) counters.delete(level);
+    activeStyles.set(level, style.listStyle);
+    if (style.listStyle === 'bulleted') return '•';
+    const count = style.listStart ?? (counters.get(level) || 0) + 1;
+    counters.set(level, count);
+    const format = level % 3;
+    const label = format === 1 ? alpha(count) : format === 2 ? roman(count) : String(count);
+    return `${label}.`;
+  });
 }
 
 function reactComponent(css, roots, document) {
@@ -295,6 +398,8 @@ function summaryForEntry(document, entry) {
   if (fill) summary.color = fill;
   if (node.fillGradient) summary.fillGradient = node.fillGradient;
   if (node.imageFill) summary.imageFill = node.imageFill;
+  const radius = borderRadiusCss(document, node);
+  if (radius) summary.borderRadius = radius;
   if (node.blendMode && node.blendMode !== 'normal') summary.blendMode = node.blendMode;
   if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = {
     color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth,
@@ -312,6 +417,8 @@ function summaryForEntry(document, entry) {
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing'),
       paragraphSpacing: Number(node.paragraphSpacing) || 0,
       firstLineIndent: Number(node.firstLineIndent) || 0,
+      listSpacing: Number(node.listSpacing) || 0,
+      paragraphStyles: Array.isArray(node.paragraphStyles) ? node.paragraphStyles : [],
       align: node.align,
       verticalAlign: ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top',
       textCase: ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none',
