@@ -144,7 +144,7 @@ export function createDocument() {
 }
 
 const defaults = {
-  frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true },
+  frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true, overflowBehavior: 'none' },
   section: { name: 'Section', width: 480, height: 320, fill: '#e6e6e6', clip: false },
   group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false, mask: false },
   boolean: { name: 'Boolean group', width: 120, height: 80, fill: '#d9d9d9', operation: 'union', clip: false },
@@ -223,6 +223,8 @@ const textVerticalAlignments = new Set(['top', 'middle', 'bottom']);
 const strokeCaps = new Set(['butt', 'round', 'square']);
 const strokeJoins = new Set(['miter', 'round', 'bevel']);
 const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
+const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
+const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fillOpacity', 'fillStyleId',
@@ -2002,6 +2004,7 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     y: isRoot ? rootY : copy.y,
     name: isRoot ? rootName : copy.name
   });
+  if (target.type !== 'frame') delete target.overflowBehavior;
   if (isRoot) {
     target.componentId = componentId;
     target.isInstance = true;
@@ -2072,6 +2075,7 @@ function validNetworkGeometry(node) {
   const vertexIds = new Set();
   for (const vertex of node.vertices) {
     if (!vertex || typeof vertex.id !== 'string' || !vertex.id || vertexIds.has(vertex.id) || !Number.isFinite(vertex.x) || !Number.isFinite(vertex.y)) return false;
+    if (Object.hasOwn(vertex, 'mode') && !vectorAnchorModes.has(vertex.mode)) return false;
     if (vertex.split != null) {
       const split = vertex.split;
       const original = split?.originalEdge;
@@ -2133,6 +2137,9 @@ export function validateDocument(document) {
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
         || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
         || (node.strokePattern === 'dotted' && node.strokeCap != null && node.strokeCap !== 'round')) throw new TypeError(`Invalid stroke style on layer ${node.name || node.id}.`);
+      if (Object.hasOwn(node, 'overflowBehavior') && (node.type !== 'frame' || !frameOverflowBehaviors.has(node.overflowBehavior))) {
+        throw new TypeError(`Invalid frame overflow behavior on layer ${node.name || node.id}.`);
+      }
       const sizeLimits = ['minWidth', 'maxWidth', 'minHeight', 'maxHeight'];
       const hasSizeLimit = sizeLimits.some(property => node[property] != null);
       if (hasSizeLimit && !(node.type === 'frame' && node.autoLayout) && !parent?.autoLayout) throw new TypeError(`Size limits require an auto layout frame on layer ${node.name || node.id}.`);

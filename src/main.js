@@ -9,7 +9,7 @@ import { createImageFill } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
-import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
 import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
@@ -30,7 +30,7 @@ import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
-  setVectorNetworkEdgeControlPoint, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
+  getVectorNetworkVertexMode, setVectorNetworkEdgeControlPoint, setVectorNetworkVertexMode, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
   vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint, vectorNodePoint
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
@@ -684,6 +684,11 @@ function frameVariableModesSection(frame) {
   }).join('');
   return section('Variables', `${controls}<div class="image-properties-note">Nested layers use the closest frame mode override.</div>`);
 }
+function frameOverflowSection(frame) {
+  const options = [['none', 'No scrolling'], ['vertical', 'Vertical'], ['horizontal', 'Horizontal'], ['both', 'Vertical and horizontal']];
+  const selected = ['none', 'vertical', 'horizontal', 'both'].includes(frame.overflowBehavior) ? frame.overflowBehavior : 'none';
+  return section('Overflow', `<select class="prop-input select-field" data-prop="overflowBehavior" aria-label="Frame overflow behavior"${frame.locked ? ' disabled' : ''}>${options.map(([value, label]) => `<option value="${value}"${selected === value ? ' selected' : ''}>${label}</option>`).join('')}</select><div class="image-properties-note">Presentation lets users drag inside this clipped frame to reveal content beyond its edges.</div>`);
+}
 function inspectPanel() {
   const entries = selectedEntries();
   if (!entries.length) return '<div class="inspect-empty"><strong>Inspect design values</strong><span>Select a layer to review its page-space geometry, resolved styles, and copyable handoff data.</span></div>';
@@ -955,14 +960,16 @@ function renderInspector() {
     if (node.closed) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   } else if (node.type === 'network') {
-    const selectedVertex = state.selectedVectorPoint?.nodeId === node.id && state.selectedVectorPoint.vertexId;
-    body += section('Vector network', `<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point, then use Pen to branch from it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
+    const selectedVertexId = state.selectedVectorPoint?.nodeId === node.id ? state.selectedVectorPoint.vertexId : null;
+    const selectedVertex = selectedVertexId ? node.vertices.find(vertex => vertex.id === selectedVertexId) : null;
+    const anchorMode = selectedVertex ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${node.locked || entries[0].parents.some(parent => parent.locked) ? ' disabled' : ''}><option value="corner"${getVectorNetworkVertexMode(node, selectedVertexId) === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${getVectorNetworkVertexMode(node, selectedVertexId) === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${getVectorNetworkVertexMode(node, selectedVertexId) === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
+    body += section('Vector network', `${anchorMode}<div class="image-properties-note">${node.vertices.length} points · ${node.edges.length} edges · ${node.faces.length} closed regions. Select a point to set its handle mode; branched junctions remain independently editable.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedVertex ? '' : ' disabled'}>− Delete point</button></div>`);
     if (node.faces.length && !node.imageFill) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
   } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   body += layerEffectsSection(node);
-  if (node.type === 'frame') body += frameVariableModesSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
+  if (node.type === 'frame') body += frameVariableModesSection(node) + frameOverflowSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
   const parent = entries[0].parent;
   if (parent?.autoLayout) {
     if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
@@ -1411,23 +1418,30 @@ function updateVectorAnchorMode(input) {
   const selected = state.selectedVectorPoint;
   const entry = selected?.nodeId ? findNode(state.document, selected.nodeId) : null;
   const node = entry?.node;
-  const point = node?.type === 'path' && Number.isInteger(selected.index) ? node.points?.[selected.index] : null;
-  if (!point) { renderInspector(); return false; }
+  const pathPoint = node?.type === 'path' && Number.isInteger(selected.index) ? node.points?.[selected.index] : null;
+  const networkVertex = node?.type === 'network' && selected.vertexId ? node.vertices?.find(vertex => vertex.id === selected.vertexId) : null;
+  if (!pathPoint && !networkVertex) { renderInspector(); return false; }
   if (node.locked || entry.parents.some(parent => parent.locked)) {
     renderInspector();
-    showToast('Unlock this path before changing an anchor.');
+    showToast('Unlock this vector layer before changing an anchor.');
     return false;
   }
   if (!['corner', 'smooth', 'symmetric'].includes(input.value)) { renderInspector(); return false; }
-  if ((point.mode || 'corner') === input.value) return true;
+  const currentMode = node.type === 'network'
+    ? getVectorNetworkVertexMode(node, selected.vertexId)
+    : pathPoint.mode || 'corner';
+  if (currentMode === input.value) return true;
 
   checkpoint('Change vector anchor mode');
-  if (!setVectorNodePointMode(node, selected.index, input.value)) {
+  const changed = node.type === 'network'
+    ? setVectorNetworkVertexMode(node, selected.vertexId, input.value, { origin: nodeTransformContext(node)?.origin })
+    : setVectorNodePointMode(node, selected.index, input.value);
+  if (!changed) {
     renderInspector();
     showToast('That anchor mode could not be applied.');
     return false;
   }
-  recordNodeComponentOverrides(node, ['points']);
+  recordNodeComponentOverrides(node, node.type === 'network' ? ['vertices', 'edges'] : ['points']);
   renderInspector(); queueSave(); renderer.invalidate();
   return true;
 }
@@ -3865,6 +3879,109 @@ function isNodeInSubtree(root, nodeId) {
   return found;
 }
 
+function presentationFrameContentBounds(frame, ancestors = []) {
+  const document = presentRenderState?.document;
+  const resolvedGeometry = getNodeGeometry(document, frame);
+  const geometry = { ...frame, ...resolvedGeometry, x: frame.x, y: frame.y };
+  const bounds = { right: geometry.width, bottom: geometry.height };
+  const visit = (nodes, parentPath) => {
+    for (const child of nodes || []) {
+      if (!getNodePropertyValue(document, child, 'visible')) continue;
+      const childGeometry = { ...child, ...getNodeGeometry(document, child) };
+      const corners = [
+        { x: 0, y: 0 }, { x: childGeometry.width, y: 0 },
+        { x: childGeometry.width, y: childGeometry.height }, { x: 0, y: childGeometry.height }
+      ].map(point => pageToNodeLocal(geometry, nodeLocalToPage(childGeometry, point, parentPath), ancestors));
+      bounds.right = Math.max(bounds.right, ...corners.map(point => point.x));
+      bounds.bottom = Math.max(bounds.bottom, ...corners.map(point => point.y));
+      // A clipping or scrollable child contributes only its own viewport to this frame.
+      const childClips = Boolean(child.clip) || (child.type === 'frame' && child.overflowBehavior !== 'none');
+      if (!childClips && child.children?.length) visit(child.children, [...parentPath, childGeometry]);
+    }
+  };
+  visit(frame.children, [...ancestors, geometry]);
+  return bounds;
+}
+
+function presentationScrollLimits(frame, ancestors = []) {
+  const behavior = frame?.overflowBehavior || 'none';
+  const bounds = presentationFrameContentBounds(frame, ancestors);
+  const horizontal = behavior === 'horizontal' || behavior === 'both';
+  const vertical = behavior === 'vertical' || behavior === 'both';
+  return {
+    maxX: horizontal ? Math.max(0, bounds.right - frame.width) : 0,
+    maxY: vertical ? Math.max(0, bounds.bottom - frame.height) : 0
+  };
+}
+
+function presentationScrollableFramesAt(world) {
+  const page = presentRenderState?.document?.pages?.[0];
+  if (!page) return [];
+  return scrollableFramePathAtPagePoint(
+    page,
+    world,
+    (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true,
+    presentRenderState.document,
+    presentRenderState.presentationScrollOffsets
+  )
+    .map(candidate => ({ ...candidate, limits: presentationScrollLimits(candidate.frame, candidate.ancestors) }))
+    .filter(candidate => candidate.limits.maxX > 0 || candidate.limits.maxY > 0);
+}
+
+function scrollPresentationGesture(event, gesture) {
+  if (!gesture?.scrollFramePath?.length || !presentRenderState?.presentationScrollOffsets) return false;
+  const world = screenToWorld(event, $('#present-canvas'), presentRenderState);
+  const screenDeltaX = event.clientX - gesture.startX;
+  const screenDeltaY = event.clientY - gesture.startY;
+  if (!gesture.scrollIntent) {
+    const intentional = gesture.scrollFramePath.some(candidate => {
+      const local = pageToNodeLocal(candidate.frame, world, candidate.ancestors);
+      const deltaX = local.x - candidate.local.x;
+      const deltaY = local.y - candidate.local.y;
+      const behavior = candidate.frame.overflowBehavior;
+      return ((behavior === 'horizontal' || behavior === 'both') && candidate.limits.maxX > 0 && Math.abs(deltaX) >= 8)
+        || ((behavior === 'vertical' || behavior === 'both') && candidate.limits.maxY > 0 && Math.abs(deltaY) >= 8);
+    });
+    if (Math.hypot(screenDeltaX, screenDeltaY) < 8 || !intentional) return false;
+    gesture.scrollIntent = true;
+    gesture.pressInteraction = null;
+    gesture.moved = true;
+  }
+
+  let remaining = { x: world.x - gesture.lastWorld.x, y: world.y - gesture.lastWorld.y };
+  const candidates = gesture.scrollFramePath;
+  let changed = false;
+  for (const candidate of candidates) {
+    const { frame, ancestors, limits } = candidate;
+    const localOrigin = pageToNodeLocal(frame, { x: 0, y: 0 }, ancestors);
+    const localEnd = pageToNodeLocal(frame, remaining, ancestors);
+    const delta = { x: localEnd.x - localOrigin.x, y: localEnd.y - localOrigin.y };
+    const current = getPresentationScrollOffset(presentRenderState, frame);
+    const requested = {
+      x: frame.overflowBehavior === 'horizontal' || frame.overflowBehavior === 'both' ? -delta.x : 0,
+      y: frame.overflowBehavior === 'vertical' || frame.overflowBehavior === 'both' ? -delta.y : 0
+    };
+    const next = {
+      x: Math.max(0, Math.min(limits.maxX, current.x + requested.x)),
+      y: Math.max(0, Math.min(limits.maxY, current.y + requested.y))
+    };
+    const consumedLocal = { x: -(next.x - current.x), y: -(next.y - current.y) };
+    const leftoverLocal = { x: delta.x - consumedLocal.x, y: delta.y - consumedLocal.y };
+    const pageOrigin = nodeLocalToPage(frame, { x: 0, y: 0 }, ancestors);
+    const pageEnd = nodeLocalToPage(frame, leftoverLocal, ancestors);
+    remaining = { x: pageEnd.x - pageOrigin.x, y: pageEnd.y - pageOrigin.y };
+    if (next.x !== current.x || next.y !== current.y) {
+      presentRenderState.presentationScrollOffsets.set(frame.id, next);
+      changed = true;
+    }
+  }
+  gesture.lastWorld = world;
+  gesture.scrolled = true;
+  event.preventDefault?.();
+  if (changed) renderPresentationFrame();
+  return true;
+}
+
 function renderPresentationFrame(interaction = null, previousFrame = null, progress = null) {
   if (!state.presenting || !presentRenderState) return;
   const runtimeDocument = presentRuntimeDocument || state.document;
@@ -3912,6 +4029,9 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   $('#present-dialog').dataset.frameId = state.presenting.frameId;
   $('#present-dialog').dataset.overlayDepth = String(state.presenting.overlays.length);
   $('#present-dialog').dataset.navigationDepth = String(state.presenting.stack.length);
+  const scrollOffset = getPresentationScrollOffset(presentRenderState, displayFrame);
+  $('#present-dialog').dataset.scrollX = String(scrollOffset.x);
+  $('#present-dialog').dataset.scrollY = String(scrollOffset.y);
   if (previousFrame && Number.isFinite(progress)) {
     $('#present-dialog').dataset.smartAnimating = 'true';
     $('#present-dialog').dataset.smartProgress = String(progress);
@@ -4000,7 +4120,7 @@ function startPresentation(selectedId = null) {
   state.presenting = createPrototypeSession(start);
   presentationPointerGesture = null;
   presentRuntimeDocument = cloneDocument(state.document);
-  presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
+  presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], presentationScrollOffsets: new Map(), zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
   $('#present-canvas').style.touchAction = 'none';
   dialog.showModal();
   requestAnimationFrame(() => {
@@ -4034,7 +4154,7 @@ function navigatePresentation(interaction) {
 function presentationHitAtPointer(event) {
   if (!presentRenderState?.document) return null;
   const page = presentRenderState.document.pages[0];
-  return hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document);
+  return hitTestPage(page, screenToWorld(event, $('#present-canvas'), presentRenderState), (node, point, x, y) => presentRenderer?.hitTestBoolean(node, point, x, y) ?? true, presentRenderState.document, presentRenderState.presentationScrollOffsets);
 }
 
 function handlePresentationPointer(event, trigger, hitIdOverride = null) {
@@ -4107,12 +4227,18 @@ function handlePresentationPointerDown(event) {
     || (event.pointerType !== 'touch' && event.button != null && event.button !== 0)
     || (presentationPointerGesture && presentationPointerGesture.pointerId !== event.pointerId)) return;
   const hit = presentationHitAtPointer(event);
+  const world = screenToWorld(event, $('#present-canvas'), presentRenderState);
+  const scrollFramePath = presentationScrollableFramesAt(world);
   const gesture = {
     pointerId: event.pointerId,
     startX: Number(event.clientX) || 0,
     startY: Number(event.clientY) || 0,
     hitId: hit?.id || null,
+    scrollFramePath,
+    lastFramePoint: scrollFramePath[0]?.local || { x: 0, y: 0 },
+    lastWorld: world,
     moved: false,
+    scrolled: false,
     pressTriggered: false,
     dragTriggered: false
   };
@@ -4121,6 +4247,7 @@ function handlePresentationPointerDown(event) {
   if (!gesture.hitId) return;
   const found = findClickableInteraction(presentRuntimeDocument || state.document, state.presenting.pageId, gesture.hitId, 'on-press', state.presenting);
   if (!found) return;
+  if (gesture.scrollFramePath.length) { gesture.pressInteraction = found.interaction; return; }
   gesture.pressTriggered = true;
   event.preventDefault?.();
   navigatePresentation(found.interaction);
@@ -4128,6 +4255,7 @@ function handlePresentationPointerDown(event) {
 
 function handlePresentationPointerMove(event) {
   const gesture = presentationPointerGesture;
+  if (gesture?.pointerId === event.pointerId && scrollPresentationGesture(event, gesture)) return;
   if (gesture?.pointerId === event.pointerId && triggerPresentationDrag(event, gesture)) return;
   if (gesture?.pointerId === event.pointerId && (gesture.pressTriggered || gesture.dragTriggered)) return;
   if (event.pointerType !== 'touch') handlePresentationPointer(event, 'while-hovering');
@@ -4141,7 +4269,8 @@ function handlePresentationPointerUp(event) {
   }
   if (gesture.pointerId !== event.pointerId) return;
   presentationPointerGesture = null;
-  if (triggerPresentationDrag(event, gesture) || gesture.moved || gesture.pressTriggered || gesture.dragTriggered) return;
+  if (scrollPresentationGesture(event, gesture) || triggerPresentationDrag(event, gesture) || gesture.moved || gesture.pressTriggered || gesture.dragTriggered) return;
+  if (gesture.pressInteraction) { navigatePresentation(gesture.pressInteraction); return; }
   handlePresentationPointer(event, 'on-click');
 }
 

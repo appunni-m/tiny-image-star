@@ -1,6 +1,7 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { buildLayerEffectFilter } from './layer-effects.js';
 import { gradientFillToCSS } from './fills.js';
+import { nodeLocalToPage } from './transform-geometry.js';
 
 function number(value) {
   const parsed = Number(value);
@@ -62,6 +63,22 @@ function absolutePosition(document, entry) {
   return { x, y };
 }
 
+function generatedRootPosition(document, entry) {
+  const own = getNodeGeometry(document, entry.node);
+  const ancestors = (entry.parents || []).map(parent => ({ ...parent, ...getNodeGeometry(document, parent) }));
+  const center = nodeLocalToPage(
+    { ...entry.node, ...own },
+    { x: Number(own.width) / 2, y: Number(own.height) / 2 },
+    ancestors
+  );
+  return { x: center.x - Number(own.width) / 2, y: center.y - Number(own.height) / 2 };
+}
+
+function generatedRootRotation(document, entry) {
+  const own = getNodeGeometry(document, entry.node);
+  return (entry.parents || []).reduce((rotation, parent) => rotation + (Number(getNodeGeometry(document, parent).rotation) || 0), Number(own.rotation) || 0);
+}
+
 function autoLayoutDeclarations(layout) {
   if (!layout || typeof layout !== 'object') return [];
   if (layout.axis === 'grid') {
@@ -95,8 +112,13 @@ function strokePatternStyle(node) {
 function cssForEntry(document, entry) {
   const node = entry.node;
   const geometry = getNodeGeometry(document, node);
-  const position = absolutePosition(document, entry);
-  const parentLayout = entry.parents?.at(-1)?.autoLayout || null;
+  const codegenParents = entry.codegenParents || [];
+  const isCodegenRoot = codegenParents.length === 0;
+  const position = isCodegenRoot
+    ? generatedRootPosition(document, entry)
+    : { x: Number(geometry.x) || 0, y: Number(geometry.y) || 0 };
+  const placementParent = codegenParents.at(-1) || entry.parents?.at(-1);
+  const parentLayout = placementParent?.autoLayout || null;
   const selector = `.${cssClass(node)}`;
   const declarations = [
     ...(parentLayout ? ['/* Placement is controlled by the parent auto layout. */', 'position: relative;'] : [
@@ -122,7 +144,7 @@ function cssForEntry(document, entry) {
     else declarations.push('flex: 0 0 auto;');
     if (node.layoutSizingCross === 'fill') declarations.push('align-self: stretch;');
   }
-  const rotation = Number(geometry.rotation) || 0;
+  const rotation = isCodegenRoot && !parentLayout ? generatedRootRotation(document, entry) : Number(geometry.rotation) || 0;
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
   const effectFilter = buildLayerEffectFilter(node.effects);
   if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
@@ -247,11 +269,11 @@ function reactComponent(css, roots, document) {
 
 function treeEntries(root) {
   const entries = [];
-  const visit = (node, parents) => {
-    entries.push({ node, parents });
-    for (const child of node.children || []) visit(child, [...parents, node]);
+  const visit = (node, parents, codegenParents) => {
+    entries.push({ node, parents, codegenParents });
+    for (const child of node.children || []) visit(child, [...parents, node], [...codegenParents, node]);
   };
-  visit(root.node, root.parents || []);
+  visit(root.node, root.parents || [], []);
   return entries;
 }
 

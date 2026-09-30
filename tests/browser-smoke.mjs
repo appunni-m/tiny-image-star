@@ -1,7 +1,8 @@
-import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, getNodeColor, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, canCreateMaskGroup, createColorVariable, createDocument, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, findNode, getNodeColor, getNodeGeometry, getNodePropertyValue, releaseMaskGroup, resolveVariableValue, setColorVariableValue, setVariableValue } from '../src/model.js';
 import { SceneRenderer, screenToWorld, worldToScreen } from '../src/renderer.js';
 import { findFrameAtPoint } from '../src/prototype.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint } from '../src/vector-path.js';
+import { nodeLocalToPage } from '../src/transform-geometry.js';
 import { createImageFill } from '../src/image-fills.js';
 import { createAutoLayout } from '../src/layout-engine.js';
 
@@ -465,6 +466,27 @@ try {
   const sourceRow = app.querySelector(`[data-layer-id="${sourceFrame.id}"]`);
   assert(sourceRow, 'the source frame was not available in the Layers panel');
   dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const sourceDesignTab = app.querySelector('.inspector-tab[data-inspector-tab="design"]');
+  if (!sourceDesignTab.classList.contains('is-active')) dispatchClick(sourceDesignTab);
+  const overflowControl = app.querySelector('[data-prop="overflowBehavior"]');
+  assert(overflowControl, 'frame design properties did not expose overflow behavior');
+  overflowControl.value = 'vertical'; overflowControl.dispatchEvent(new Event('input', { bubbles: true })); overflowControl.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'frame vertical overflow behavior');
+  dispatchClick(app.querySelector('.tool-button[data-tool="rectangle"]'));
+  const frameContentStart = worldToScreen({ x: sourceFrame.x + 100, y: sourceFrame.y + 500 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  const frameContentEnd = worldToScreen({ x: sourceFrame.x + 180, y: sourceFrame.y + 600 }, designCanvas, { zoom: 1, panX: panCenter.x, panY: panCenter.y });
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', frameContentStart.x, frameContentStart.y, 902);
+  dispatchCanvasPointer(app, designCanvas, 'pointermove', frameContentEnd.x, frameContentEnd.y, 902);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', frameContentEnd.x, frameContentEnd.y, 902);
+  const contentY = app.querySelector('#inspector-content [data-prop="y"]');
+  assert(contentY, 'a new shape inside the frame did not expose its local Y position');
+  contentY.value = '900'; contentY.dispatchEvent(new Event('input', { bubbles: true })); contentY.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'offscreen frame content');
+  const persistedOverflowRecords = await readStore('documents'); persistedOverflowRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const persistedOverflowSource = persistedOverflowRecords[0]?.document?.pages[0]?.children.find(node => node.id === sourceFrame.id);
+  assert(persistedOverflowSource?.overflowBehavior === 'vertical' && persistedOverflowSource.children.some(node => node.y >= 900),
+    'the frame overflow axis and offscreen child were not saved to the local document');
+  dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
   dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="prototype"]'));
   const setStart = [...app.querySelectorAll('[data-action="prototype-start"]')].find(Boolean);
   assert(setStart, 'Prototype did not offer a frame starting point');
@@ -491,9 +513,10 @@ try {
   dispatchClick(app.querySelector('.tool-button[data-tool="frame"]'));
   const overlayX = canvasRect.left + panCenter.x - 550;
   const overlayY = canvasRect.top + panCenter.y;
+  const layersBeforeOverlay = app.querySelectorAll('.layer-row').length;
   dispatchCanvasPointer(app, designCanvas, 'pointerdown', overlayX, overlayY, 84);
   dispatchCanvasPointer(app, designCanvas, 'pointerup', overlayX, overlayY, 84);
-  await waitFor(() => app.querySelectorAll('.layer-row').length === 6, 'prototype overlay frame');
+  await waitFor(() => app.querySelectorAll('.layer-row').length === layersBeforeOverlay + 1, 'prototype overlay frame');
   await new Promise(resolve => setTimeout(resolve, 350));
   const overlayRecords = await readStore('documents'); overlayRecords.sort((a, b) => b.savedAt - a.savedAt);
   const overlayDocument = overlayRecords[0]?.document;
@@ -579,6 +602,12 @@ try {
   await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'drag presentation close');
 
   dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="design"]'));
+  const pressOverflow = app.querySelector('[data-prop="overflowBehavior"]');
+  assert(pressOverflow, 'the source frame lost its overflow behavior control');
+  pressOverflow.value = 'none'; pressOverflow.dispatchEvent(new Event('input', { bubbles: true })); pressOverflow.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'non-scrollable On press prototype behavior');
+  dispatchClick(app.querySelector('.inspector-tab[data-inspector-tab="prototype"]'));
   gestureAction = app.querySelector('#prototype-action');
   gestureAction.value = 'navigate'; gestureAction.dispatchEvent(new Event('change', { bubbles: true }));
   gestureTrigger = app.querySelector('#prototype-trigger');
@@ -872,17 +901,56 @@ try {
   await clickDialogCloseAndWait(app.querySelector('#present-dialog'), app.querySelector('#present-exit'), 'hover variant presentation close');
 
   dispatchClick(app.querySelector(`[data-layer-id="${sourceFrame.id}"]`));
+  const finalDesignTab = app.querySelector('.inspector-tab[data-inspector-tab="design"]');
+  if (!finalDesignTab.classList.contains('is-active')) dispatchClick(finalDesignTab);
+  const finalOverflow = app.querySelector('[data-prop="overflowBehavior"]');
+  assert(finalOverflow, 'the source frame did not retain its overflow controls');
+  finalOverflow.value = 'vertical'; finalOverflow.dispatchEvent(new Event('input', { bubbles: true })); finalOverflow.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'restore vertical prototype scrolling');
   const sourcePrototypeTab = app.querySelector('[data-inspector-tab="prototype"]');
   if (!sourcePrototypeTab.classList.contains('is-active')) dispatchClick(sourcePrototypeTab);
   dispatchClick(app.querySelector('[data-action="prototype-start"]'));
   await waitForSaveCycle(app, 'restore original prototype start point');
 
+  const presentationDesktopSize = { width: frame.style.width, height: frame.style.height };
+  frame.style.width = '390px'; frame.style.height = '844px';
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
   dispatchClick(app.querySelector('#present-button'));
   await waitFor(() => app.querySelector('#present-dialog')?.open && app.querySelector('#present-title')?.textContent === sourceFrame.name, 'local prototype presentation');
   const presentCanvas = app.querySelector('#present-canvas');
-  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2, presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2, 84);
+  const presentCenterX = presentCanvas.getBoundingClientRect().left + presentCanvas.clientWidth / 2;
+  const presentCenterY = presentCanvas.getBoundingClientRect().top + presentCanvas.clientHeight / 2;
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', presentCenterX, presentCenterY, 84, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointermove', presentCenterX, presentCenterY - 120, 84, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY - 120, 84, 'touch', -1);
+  await waitFor(() => Number(app.querySelector('#present-dialog')?.dataset.scrollY) > 0, 'vertical prototype frame scrolling');
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id,
+    'a vertical drag on a scrollable frame also fired its tap-to-navigate prototype route');
+  const scrollAtEnd = Number(app.querySelector('#present-dialog').dataset.scrollY);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', presentCenterX, presentCenterY, 85, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointermove', presentCenterX, presentCenterY - 120, 85, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY - 120, 85, 'touch', -1);
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id,
+    'scrolling at the content boundary fell through to On-drag navigation');
+  assert(Number(app.querySelector('#present-dialog').dataset.scrollY) >= scrollAtEnd,
+    'a boundary drag moved the scroll position backwards');
+  const scrollAtBoundary = Number(app.querySelector('#present-dialog').dataset.scrollY);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', presentCenterX, presentCenterY, 86, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointermove', presentCenterX, presentCenterY - 120, 86, 'touch', -1);
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY - 120, 86, 'touch', -1);
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id
+    && Number(app.querySelector('#present-dialog').dataset.scrollY) === scrollAtBoundary,
+  'a consumed boundary gesture must neither move content nor fire another prototype action');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerdown', presentCenterX, presentCenterY, 87, 'touch', -1);
+  assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id,
+    'a scrollable frame must wait for touch movement before firing an On press route');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY, 87, 'touch', -1);
   await waitFor(() => !app.querySelector('#present-back')?.disabled, 'prototype navigation and history');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'prototype destination frame');
+  dispatchClick(app.querySelector('#present-back'));
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === sourceFrame.id, 'scrollable On press returns to source on tap');
+  dispatchCanvasPointer(app, presentCanvas, 'pointerup', presentCenterX, presentCenterY, 89);
+  await waitFor(() => app.querySelector('#present-dialog')?.dataset.frameId === destinationFrame.id, 'tap fires the On click route');
   await waitFor(() => app.querySelector('#present-dialog')?.dataset.smartAnimating === 'true', 'Smart animate interpolation start');
   const smartProgress = Number(app.querySelector('#present-dialog').dataset.smartProgress);
   assert(smartProgress > 0 && smartProgress < 1, `Smart animate should render an intermediate scene, received ${smartProgress}`);
@@ -902,6 +970,8 @@ try {
   assert(app.querySelector('#present-dialog').dataset.frameId === sourceFrame.id, 'prototype back did not restore the start frame');
   dispatchClick(app.querySelector('#present-exit'));
   await waitFor(() => !app.querySelector('#present-dialog').open, 'prototype presentation exit');
+  frame.style.width = presentationDesktopSize.width; frame.style.height = presentationDesktopSize.height;
+  await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
 
   const geometryRecords = await readStore('documents');
   const geometryDocument = geometryRecords.map(record => record.document).find(candidate => {
@@ -1001,10 +1071,37 @@ try {
   let vectorDocument = vectorRecords[0]?.document;
   let vectorNodes = flattenNodes(vectorDocument?.pages.flatMap(page => page.children));
   const selectedVectorRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
-  const vectorNode = vectorNodes.find(node => node.id === selectedVectorRow?.dataset.layerId);
+  let vectorNode = vectorNodes.find(node => node.id === selectedVectorRow?.dataset.layerId);
   assert(vectorNode?.vertices.length === 3 && vectorNode.edges.length === 2 && (vectorNode.edges[0].control2 || vectorNode.edges[1].control1), 'pen tool did not create a graph-backed cubic vector network');
   const newlyAddedNetworks = vectorNodes.filter(node => node.type === 'network' && !vectorIdsBeforePen.has(node.id));
   assert(newlyAddedNetworks.filter(node => !node.componentSourceId).length === 1, 'one pen session must create one authored network; its linked component copies may add mirrored layers');
+  const modeVertex = vectorNode.vertices.find(vertex => vectorNode.edges.filter(edge => edge.from === vertex.id || edge.to === vertex.id).length === 2);
+  assert(modeVertex, 'the authored vector network had no degree-two point for anchor-mode editing');
+  const vectorEntry = findNode(vectorDocument, vectorNode.id);
+  const vectorAncestors = vectorEntry.parents.map(parent => ({ ...parent, ...getNodeGeometry(vectorDocument, parent) }));
+  const vectorGeometry = { ...vectorNode, ...getNodeGeometry(vectorDocument, vectorNode) };
+  const modeVertexWorld = nodeLocalToPage(vectorGeometry, {
+    x: modeVertex.x * vectorGeometry.width,
+    y: modeVertex.y * vectorGeometry.height
+  }, vectorAncestors);
+  const modeVertexScreen = worldToScreen(modeVertexWorld, designCanvas, {
+    zoom: Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100,
+    panX: panCenter.x,
+    panY: panCenter.y
+  });
+  dispatchClick(app.querySelector('.tool-button[data-tool="select"]'));
+  dispatchCanvasPointer(app, designCanvas, 'pointerdown', modeVertexScreen.x, modeVertexScreen.y, 901);
+  dispatchCanvasPointer(app, designCanvas, 'pointerup', modeVertexScreen.x, modeVertexScreen.y, 901);
+  const networkAnchorMode = app.querySelector('[data-vector-anchor-mode]');
+  assert(networkAnchorMode && [...networkAnchorMode.options].some(option => option.value === 'symmetric'),
+    'selecting a Pen-created network anchor did not expose Corner, Smooth, and Symmetric modes');
+  networkAnchorMode.value = 'smooth'; networkAnchorMode.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'vector network smooth anchor mode');
+  vectorRecords = await readStore('documents'); vectorRecords.sort((a, b) => b.savedAt - a.savedAt);
+  vectorDocument = vectorRecords[0]?.document;
+  vectorNode = flattenNodes(vectorDocument?.pages.flatMap(page => page.children)).find(node => node.id === vectorNode.id);
+  assert(vectorNode.vertices.find(vertex => vertex.id === modeVertex.id)?.mode === 'smooth',
+    'the selected network anchor mode did not persist to the local design');
 
   dispatchClick(penButton);
   penDownUp({ x: -130, y: -140 }, 94);
@@ -1828,7 +1925,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, scrollablePrototypeFrames: true, scrollBoundaryGestureConsumed: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, vectorNetworkAnchorModes: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

@@ -320,6 +320,9 @@ export function vectorNetworkGeometryFromAnchors(anchors, { closed = false } = {
   if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out)))) {
     throw new TypeError('Vector network points must contain finite coordinates.');
   }
+  if (anchors.some(point => point.mode != null && !isVectorAnchorMode(point.mode))) {
+    throw new TypeError('Vector network anchor modes must be corner, smooth, or symmetric.');
+  }
   const extents = anchors.flatMap(point => [point, ...(point.in ? [point.in] : []), ...(point.out ? [point.out] : [])]);
   const left = Math.min(...extents.map(point => Number(point.x)));
   const top = Math.min(...extents.map(point => Number(point.y)));
@@ -330,7 +333,8 @@ export function vectorNetworkGeometryFromAnchors(anchors, { closed = false } = {
   const vertices = anchors.map((point, index) => ({
     id: `v${index + 1}`,
     x: (Number(point.x) - left) / width,
-    y: (Number(point.y) - top) / height
+    y: (Number(point.y) - top) / height,
+    ...(point.mode == null ? {} : { mode: point.mode })
   }));
   const control = point => ({ x: (Number(point.x) - left) / width, y: (Number(point.y) - top) / height });
   const edges = [];
@@ -364,6 +368,13 @@ export function vectorNetworkVertexPoint(node, vertexId, origin = { x: node.x, y
   return { x: origin.x + Number(vertex.x) * node.width, y: origin.y + Number(vertex.y) * node.height };
 }
 
+/** Return a network vertex's persisted anchor mode, treating legacy data as a corner. */
+export function getVectorNetworkVertexMode(node, vertexId) {
+  const vertex = node?.vertices?.find(item => item.id === vertexId);
+  if (!vertex) return null;
+  return isVectorAnchorMode(vertex.mode) ? vertex.mode : 'corner';
+}
+
 /** Return one graph edge's cubic control polygon in document coordinates. */
 export function vectorNetworkEdgePoints(node, edgeId, origin = { x: node.x, y: node.y }) {
   const edge = networkEdgeIndex(node?.edges).get(edgeId);
@@ -377,19 +388,130 @@ export function vectorNetworkEdgePoints(node, edgeId, origin = { x: node.x, y: n
 export function setVectorNetworkVertexPoint(node, vertexId, position, origin = { x: node.x, y: node.y }) {
   const vertex = node?.vertices?.find(item => item.id === vertexId);
   if (!vertex || !finitePoint(position)) return false;
+  const mode = vertex.mode;
+  const handles = ['smooth', 'symmetric'].includes(mode) ? networkVertexHandles(node, vertexId) : [];
+  const oldAnchor = handles.length === 2 ? vectorNetworkVertexPoint(node, vertexId, origin) : null;
+  const relativeHandles = oldAnchor ? handles.map(handle => {
+    const control = networkControlPoint(handle.edge, handle.part, node, origin);
+    return control ? {
+      handle,
+      vector: { x: control.x - oldAnchor.x, y: control.y - oldAnchor.y }
+    } : null;
+  }) : [];
   for (const edge of node.edges || []) if (edge.from === vertexId || edge.to === vertexId) invalidateNetworkSplitForEdge(node, edge.id);
   delete vertex.split;
   vertex.x = (Number(position.x) - origin.x) / Math.max(1, Number(node.width) || 1);
   vertex.y = (Number(position.y) - origin.y) / Math.max(1, Number(node.height) || 1);
+  if (relativeHandles.length === 2) {
+    const movedAnchor = vectorNetworkVertexPoint(node, vertexId, origin);
+    for (const entry of relativeHandles) {
+      if (!entry) continue;
+      setNetworkHandle(node, entry.handle, {
+        x: movedAnchor.x + entry.vector.x,
+        y: movedAnchor.y + entry.vector.y
+      }, origin);
+    }
+  }
   return true;
 }
 
-/** Move a control point belonging to one edge, independent of other branches. */
+function networkVertexHandles(node, vertexId) {
+  const incident = [];
+  for (const edge of node?.edges || []) {
+    if (edge.from === vertexId) incident.push({ edge, part: 'control1' });
+    if (edge.to === vertexId) incident.push({ edge, part: 'control2' });
+  }
+  return incident;
+}
+
+function setNetworkHandle(node, handle, position, origin) {
+  invalidateNetworkSplitForEdge(node, handle.edge.id);
+  handle.edge[handle.part] = normalizedNetworkPoint(position, node, origin);
+}
+
+/**
+ * Align the two edge handles meeting at a degree-two vertex. The active handle
+ * determines the tangent. Smooth mode keeps the paired handle's length (or
+ * adopts the active length when that handle is absent); symmetric mode mirrors
+ * the active handle exactly. Branched and endpoint vertices remain independent.
+ */
+function alignNetworkVertexHandles(node, vertexId, active, mode, origin, { adoptActiveWhenMissing = false } = {}) {
+  if (!['smooth', 'symmetric'].includes(mode)) return false;
+  const handles = networkVertexHandles(node, vertexId);
+  if (handles.length !== 2) return false;
+  const activeIndex = handles.findIndex(handle => handle.edge.id === active.edge.id && handle.part === active.part);
+  if (activeIndex < 0) return false;
+  const paired = handles[1 - activeIndex];
+  const anchor = vectorNetworkVertexPoint(node, vertexId, origin);
+  if (!anchor) return false;
+  const activePosition = networkControlPoint(active.edge, active.part, node, origin) || anchor;
+  const activeVector = { x: activePosition.x - anchor.x, y: activePosition.y - anchor.y };
+  const activeLength = Math.hypot(activeVector.x, activeVector.y);
+  const pairedPosition = networkControlPoint(paired.edge, paired.part, node, origin) || anchor;
+  const pairedLength = Math.hypot(pairedPosition.x - anchor.x, pairedPosition.y - anchor.y);
+  if (activeLength === 0 && !(adoptActiveWhenMissing && pairedLength > 0)) {
+    if (pairedLength === 0) return true;
+    // A dragged handle at the anchor has no tangent to follow, so collapse the
+    // paired handle too. When assigning a mode, instead use the existing side.
+    setNetworkHandle(node, paired, anchor, origin);
+    return true;
+  }
+  if (activeLength === 0) {
+    const oppositeVector = { x: pairedPosition.x - anchor.x, y: pairedPosition.y - anchor.y };
+    const oppositeLength = Math.hypot(oppositeVector.x, oppositeVector.y);
+    const length = oppositeLength;
+    setNetworkHandle(node, active, {
+      x: anchor.x - oppositeVector.x / oppositeLength * length,
+      y: anchor.y - oppositeVector.y / oppositeLength * length
+    }, origin);
+    return true;
+  }
+  const pairedTargetLength = mode === 'symmetric' ? activeLength : pairedLength || activeLength;
+  setNetworkHandle(node, paired, {
+    x: anchor.x - activeVector.x / activeLength * pairedTargetLength,
+    y: anchor.y - activeVector.y / activeLength * pairedTargetLength
+  }, origin);
+  return true;
+}
+
+/**
+ * Persist a Corner, Smooth, or Symmetric mode on one network vertex.
+ * Switching to a constrained mode aligns the two handles when the vertex has
+ * exactly two incident edges; endpoints and branches keep their current geometry.
+ */
+export function setVectorNetworkVertexMode(node, vertexId, mode, {
+  preferredEdgeId = null,
+  origin = { x: node?.x || 0, y: node?.y || 0 }
+} = {}) {
+  const vertex = node?.vertices?.find(item => item.id === vertexId);
+  if (!vertex || !isVectorAnchorMode(mode) || !finitePoint(origin) || (vertex.mode != null && !isVectorAnchorMode(vertex.mode))) return false;
+  const handles = networkVertexHandles(node, vertexId);
+  if (preferredEdgeId != null && !handles.some(handle => handle.edge.id === preferredEdgeId)) return false;
+
+  if (mode !== 'corner' && handles.length === 2) {
+    const candidates = preferredEdgeId == null ? handles : handles.filter(handle => handle.edge.id === preferredEdgeId);
+    const active = candidates.find(handle => {
+      const anchor = vectorNetworkVertexPoint(node, vertexId, origin);
+      const point = networkControlPoint(handle.edge, handle.part, node, origin) || anchor;
+      return Math.hypot(point.x - anchor.x, point.y - anchor.y) > 0;
+    }) || candidates[0];
+    if (active) alignNetworkVertexHandles(node, vertexId, active, mode, origin, { adoptActiveWhenMissing: true });
+  }
+  vertex.mode = mode;
+  return true;
+}
+
+/** Move one edge control; a constrained degree-two endpoint moves its paired handle. */
 export function setVectorNetworkEdgeControlPoint(node, edgeId, part, position, origin = { x: node.x, y: node.y }) {
   const edge = node?.edges?.find(item => item.id === edgeId);
-  if (!edge || !['control1', 'control2'].includes(part) || !finitePoint(position)) return false;
+  if (!edge || !['control1', 'control2'].includes(part) || !finitePoint(position) || !finitePoint(origin)) return false;
   invalidateNetworkSplitForEdge(node, edgeId);
   edge[part] = normalizedNetworkPoint(position, node, origin);
+  const vertexId = part === 'control1' ? edge.from : edge.to;
+  const vertex = node.vertices?.find(item => item.id === vertexId);
+  if (vertex && isVectorAnchorMode(vertex.mode) && vertex.mode !== 'corner') {
+    alignNetworkVertexHandles(node, vertexId, { edge, part }, vertex.mode, origin);
+  }
   return true;
 }
 
@@ -426,7 +548,8 @@ export function closestVectorNetworkEdge(node, position, origin = { x: node.x, y
 /** Add a path to an existing graph, reusing supplied vertex IDs to create branches. */
 export function appendVectorNetworkPath(node, anchors, origin = { x: node.x, y: node.y }, { closed = false } = {}) {
   if (!node || !Array.isArray(node.vertices) || !Array.isArray(node.edges) || !Array.isArray(anchors) || anchors.length < 2) return false;
-  if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out)))) return false;
+  if (anchors.some(point => !finitePoint(point) || (point.in && !finitePoint(point.in)) || (point.out && !finitePoint(point.out))
+    || (point.mode != null && !isVectorAnchorMode(point.mode)))) return false;
   const verticesById = new Map(node.vertices.map(vertex => [vertex.id, {
     id: vertex.id, x: origin.x + vertex.x * node.width, y: origin.y + vertex.y * node.height
   }]));
@@ -485,7 +608,8 @@ export function appendVectorNetworkPath(node, anchors, origin = { x: node.x, y: 
     if (existing) { vertexIds.push(existing); delete node.vertices.find(vertex => vertex.id === existing)?.split; }
     else {
       const id = createVertexId();
-      const vertex = normalize(anchor); node.vertices.push({ id, ...vertex });
+      const vertex = normalize(anchor);
+      node.vertices.push({ id, ...vertex, ...(anchor.mode == null ? {} : { mode: anchor.mode }) });
       verticesById.set(id, { id, x: anchor.x, y: anchor.y });
       vertexIds.push(id);
       addedVertices += 1;

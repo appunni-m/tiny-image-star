@@ -12,6 +12,7 @@ import { drawAlignmentGuides } from './smart-guides.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
+const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 
 /** Return the selection outline and all transform handles in page coordinates. */
 export function selectionOverlayGeometry(node, ancestors = [], { zoom = 1, rotateOffset = 24 } = {}) {
@@ -95,6 +96,47 @@ function roundedRect(ctx, x, y, width, height, radius) {
   ctx.quadraticCurveTo(x, y + height, x, y + height - signY * r);
   ctx.lineTo(x, y + signY * r);
   ctx.quadraticCurveTo(x, y, x + signX * r, y);
+}
+
+/** Return a sanitized presentation-only scroll offset for a frame. */
+export function getPresentationScrollOffset(state, frame) {
+  const behavior = frame?.type === 'frame' && frameOverflowBehaviors.has(frame.overflowBehavior)
+    ? frame.overflowBehavior
+    : 'none';
+  const stored = typeof frame?.id === 'string' && state?.presentationScrollOffsets instanceof Map
+    ? state.presentationScrollOffsets.get(frame.id)
+    : null;
+  const x = behavior === 'horizontal' || behavior === 'both' ? stored?.x : 0;
+  const y = behavior === 'vertical' || behavior === 'both' ? stored?.y : 0;
+  return {
+    x: Number.isFinite(x) ? Math.max(0, x) : 0,
+    y: Number.isFinite(y) ? Math.max(0, y) : 0
+  };
+}
+
+/** Translate only a scrollable frame's contents; call after its viewport clip. */
+export function applyPresentationScrollOffset(ctx, state, frame) {
+  const offset = getPresentationScrollOffset(state, frame);
+  if (offset.x || offset.y) ctx.translate(offset.x ? -offset.x : 0, offset.y ? -offset.y : 0);
+  return offset;
+}
+
+function isScrollableFrame(node) {
+  return node?.type === 'frame' && frameOverflowBehaviors.has(node.overflowBehavior)
+    && node.overflowBehavior !== 'none';
+}
+
+function clipsNodeContents(node) {
+  return Boolean(node?.clip) || isScrollableFrame(node);
+}
+
+/** Clip children to their frame viewport when clipping or presentation scrolling is enabled. */
+export function clipNodeContents(ctx, node, x, y, radius = node?.radius ?? 0) {
+  if (!clipsNodeContents(node)) return false;
+  ctx.beginPath();
+  roundedRect(ctx, x, y, node.width, node.height, radius || 0);
+  ctx.clip();
+  return true;
 }
 
 function starPath(ctx, cx, cy, radius, points, innerRatio) {
@@ -525,7 +567,8 @@ export class SceneRenderer {
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
     if (node.children?.length) {
-      if (node.clip) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip(); }
+      clipNodeContents(ctx, node, x, y, radius);
+      applyPresentationScrollOffset(ctx, state, node);
       for (const child of node.children) this.drawNode(ctx, child, x, y, assets, draft, false, renderOptions);
     }
     if (node.type === 'frame' && !node.children.length && !draft) {
@@ -624,9 +667,8 @@ export class SceneRenderer {
 
     if (node.children?.length) {
       ctx.save();
-      if (node.clip) {
-        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.clip();
-      }
+      clipNodeContents(ctx, node, x, y, radius);
+      applyPresentationScrollOffset(ctx, state, node);
       for (const child of node.children) this.drawNode(ctx, child, x, y, assets, false, false, renderOptions);
       ctx.restore();
     }
@@ -1003,7 +1045,9 @@ export function worldToScreen(point, canvas, state) {
 }
 
 function containsPointInClip(node, point, ancestors, document) {
-  const geometry = document ? { ...node, ...getNodeGeometry(document, node) } : node;
+  const geometry = document
+    ? { ...node, ...getNodeGeometry(document, node), x: node.x, y: node.y }
+    : node;
   const local = pageToNodeLocal(geometry, point, ancestors);
   const { width, height } = geometry;
   if (local.x < 0 || local.y < 0 || local.x > width || local.y > height) return false;
@@ -1016,7 +1060,7 @@ function containsPointInClip(node, point, ancestors, document) {
 }
 
 function pointInsideAncestorClips(point, ancestors, document) {
-  return ancestors.every((ancestor, index) => !ancestor.clip
+  return ancestors.every((ancestor, index) => !clipsNodeContents(ancestor)
     || containsPointInClip(ancestor, point, ancestors.slice(0, index), document));
 }
 
@@ -1041,14 +1085,22 @@ export function deepestContainerAtPagePoint(nodes, point, document = null) {
   return result;
 }
 
-export function hitTestPage(page, point, containsBoolean = null, document = null) {
+export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null) {
   const hits = [];
-  const visit = (nodes, ancestors = []) => {
+  const scrollState = { presentationScrollOffsets };
+  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
       if (!pointInsideAncestorClips(point, ancestors, document)) continue;
       const geometry = document ? getNodeGeometry(document, node) : node;
-      const resolvedNode = document ? { ...node, ...geometry } : node;
+      let resolvedNode = document ? { ...node, ...geometry } : node;
+      if (parentScrollOffset.x || parentScrollOffset.y) {
+        resolvedNode = {
+          ...resolvedNode,
+          x: resolvedNode.x - parentScrollOffset.x,
+          y: resolvedNode.y - parentScrollOffset.y
+        };
+      }
       const localPoint = pageToNodeLocal(resolvedNode, point, ancestors);
       const inBounds = localPoint.x >= 0 && localPoint.y >= 0
         && localPoint.x <= geometry.width && localPoint.y <= geometry.height;
@@ -1065,9 +1117,52 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
         }
         if (contained) hits.push(resolvedNode);
       }
-      if (node.type !== 'boolean') visit(node.children || [], [...ancestors, resolvedNode]);
+      if (node.type !== 'boolean') {
+        const childScrollOffset = getPresentationScrollOffset(scrollState, resolvedNode);
+        visit(node.children || [], [...ancestors, resolvedNode], childScrollOffset);
+      }
     }
   };
   visit(page.children || []);
   return hits.at(-1) ?? null;
+}
+
+/** Return the visible scroll-frame ancestry of the topmost hit, innermost first. */
+export function scrollableFramePathAtPagePoint(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null) {
+  const hit = hitTestPage(page, point, containsBoolean, document, presentationScrollOffsets);
+  if (!hit) return [];
+  const scrollState = { presentationScrollOffsets };
+  const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }) => {
+    for (const node of nodes || []) {
+      if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
+      if (!pointInsideAncestorClips(point, ancestors, document)) continue;
+      const geometry = document ? getNodeGeometry(document, node) : node;
+      let frame = document ? { ...node, ...geometry } : node;
+      if (parentScrollOffset.x || parentScrollOffset.y) {
+        frame = {
+          ...frame,
+          x: frame.x - parentScrollOffset.x,
+          y: frame.y - parentScrollOffset.y
+        };
+      }
+
+      let path = null;
+      if (node.id === hit.id) path = [];
+      else if (node.type !== 'boolean') {
+        path = visit(node.children || [], [...ancestors, frame], getPresentationScrollOffset(scrollState, frame));
+      }
+      if (path) {
+        if (isScrollableFrame(frame) && containsPointInClip(frame, point, ancestors, document)) {
+          path.push({
+            frame,
+            ancestors,
+            local: pageToNodeLocal(frame, point, ancestors)
+          });
+        }
+        return path;
+      }
+    }
+    return null;
+  };
+  return visit(page?.children || []) || [];
 }
