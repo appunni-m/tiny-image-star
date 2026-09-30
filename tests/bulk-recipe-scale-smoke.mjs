@@ -89,20 +89,20 @@ function installWorkerGate(app) {
         const worker = this;
         const index = ++gate.workerCount;
         workerIndexes.set(worker, index);
-        worker.addEventListener('message', event => {
+        const handler = worker.onmessage;
+        assert(typeof handler === 'function', 'The local image worker did not install its message handler before initialization.');
+        worker.onmessage = event => {
           const response = event.data;
           gate.events.push({ worker: index, type: response?.type, generation: response?.generation, requestId: response?.requestId });
           if (response?.type === 'init-error' || response?.type === 'cache-config-error' || response?.type === 'error') {
             gate.errors.push({ worker: index, type: response.type, requestId: response.requestId, message: response.message });
           }
-          if (response?.type !== 'rendered') return;
+          if (response?.type !== 'rendered') { handler.call(worker, event); return; }
           gate.rendered.push({ assetId: response.assetId, requestId: response.requestId, worker: index });
-          if (!gate.hold) return;
-          event.stopImmediatePropagation();
-          const handler = worker.onmessage;
+          if (!gate.hold) { handler.call(worker, event); return; }
           gate.held.push({ assetId: response.assetId, requestId: response.requestId, worker: index,
             deliver: () => handler.call(worker, { data: response }) });
-        }, true);
+        };
       }
       if (message?.type === 'render') {
         gate.submissions.push({ assetId: message.assetId, requestId: message.requestId, worker: workerIndexes.get(this) });
@@ -225,8 +225,33 @@ try {
   workerGate.hold = true;
   startFromLayerMenu(app, selectedRows[0], 'Scale recipe');
   const initialConcurrency = Math.min(2, initialWorkerBudget);
-  await waitFor(() => workerGate.held.length >= initialConcurrency && activeWorkers(app) === initialConcurrency,
-    `${initialConcurrency} held workers in the running batch`);
+  try {
+    await waitFor(() => workerGate.held.length >= initialConcurrency && activeWorkers(app) === initialConcurrency,
+      `${initialConcurrency} held workers in the running batch`);
+  } catch (error) {
+    const diagnostics = {
+      heldCount: workerGate.held.length,
+      heldAssets: workerGate.held.map(item => item.assetId),
+      renderedSinceBatchStart: workerGate.rendered.length - batchResultStart,
+      renderedWorkersSinceBatchStart: workerGate.rendered.slice(batchResultStart).map(item => item.worker),
+      submittedSinceBatchStart: workerGate.submissions.length - batchStart,
+      submittedWorkersSinceBatchStart: workerGate.submissions.slice(batchStart).map(item => item.worker),
+      activeWorkers: activeWorkers(app),
+      requestedWorkers: requestedWorkers(app),
+      cpuWorkerBudget: initialWorkerBudget,
+      workerCount: workerGate.workerCount,
+      workerEvents: workerGate.events.slice(-60),
+      workerFailuresSinceBatchStart: workerGate.errors.slice(batchErrorStart),
+      progress: app.querySelector('#bulk-progress-label')?.textContent.trim(),
+      bulkTitle: app.querySelector('#bulk-title')?.textContent.trim(),
+      bulkSubtitle: app.querySelector('#bulk-subtitle')?.textContent.trim(),
+      failureToasts: app.querySelector('#toast-region')?.textContent.trim()
+    };
+    error.stack = `${error.stack || error.message}\nDiagnostics: ${JSON.stringify(diagnostics)}`;
+    throw error;
+  }
+  assert(new Set(workerGate.held.map(item => item.worker)).size >= initialConcurrency,
+    'The initial batch concurrency did not occupy distinct image workers.');
   const initialBounds = assertWorkerAndMemoryBounds(app, 'Initial batch workers');
 
   let concurrencyEvidence = { initialConcurrency, loweredToOne: false, raisedToWorkerTarget: false };
@@ -296,6 +321,8 @@ try {
       error.stack = `${error.stack || error.message}\nDiagnostics: ${JSON.stringify(diagnostics)}`;
       throw error;
     }
+    assert(new Set(workerGate.held.map(item => item.worker)).size >= liveConcurrencyTarget,
+      'The scaled-up batch concurrency did not occupy distinct image workers.');
     concurrencyEvidence.highBounds = assertWorkerAndMemoryBounds(app, 'Raised batch workers');
     concurrencyEvidence.liveConcurrencyTarget = liveConcurrencyTarget;
     concurrencyEvidence.raisedToWorkerTarget = true;
@@ -303,6 +330,12 @@ try {
     concurrencyEvidence.note = 'Single-CPU browser budget exposes no higher worker setting.';
   }
 
+  releaseResults(workerGate, 1);
+  await waitFor(() => {
+    const match = app.querySelector('#bulk-progress-label')?.textContent.match(/^(\d+) \/ (\d+)$/);
+    return match && Number(match[1]) > 0 && Number(match[1]) < Number(match[2]);
+  }, 'live batch progress after a rendered image');
+  const realtimeProgress = app.querySelector('#bulk-progress-label').textContent;
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'batch pause');
   releaseResults(workerGate);
@@ -400,6 +433,7 @@ try {
     cpuWorkerBudget: initialWorkerBudget,
     concurrencyEvidence,
     initialBounds,
+    realtimeProgress,
     pauseDrainedWithoutDispatch: true,
     resumeCompletedAll: true,
     cancelDrainedWithoutDispatch: true,

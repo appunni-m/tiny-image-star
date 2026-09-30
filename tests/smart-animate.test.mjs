@@ -104,6 +104,83 @@ test('smart animation interpolates numeric font weight and snaps categorical tex
   assert.equal(to.children[0].fontWeight, 700, 'interpolation leaves the destination unchanged');
 });
 
+test('smart animation interpolates node-level paragraph spacing and first-line indent with exact endpoints', () => {
+  const from = createNode('frame', { children: [createNode('text', {
+    name: 'Paragraph', text: 'A paragraph', paragraphSpacing: '4', firstLineIndent: 20
+  })] });
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'Paragraph', text: 'A paragraph', paragraphSpacing: 12, firstLineIndent: 0
+  })] });
+
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+  assert.deepEqual(
+    [layerAt(0.25).paragraphSpacing, layerAt(0.25).firstLineIndent],
+    [6, 15]
+  );
+  assert.deepEqual(
+    [layerAt(0.5).paragraphSpacing, layerAt(0.5).firstLineIndent],
+    [8, 10]
+  );
+  assert.deepEqual(
+    [layerAt(0).paragraphSpacing, layerAt(0).firstLineIndent],
+    ['4', 20],
+    'the start endpoint preserves the source values and representations'
+  );
+  assert.deepEqual(
+    [layerAt(1).paragraphSpacing, layerAt(1).firstLineIndent],
+    [12, 0],
+    'the end endpoint preserves the destination values'
+  );
+  assert.deepEqual(
+    [layerAt(-1).paragraphSpacing, layerAt(2).firstLineIndent],
+    ['4', 0],
+    'out-of-range progress clamps to the exact endpoints'
+  );
+});
+
+test('smart animation treats omitted legacy text metrics as zero between frames and preserves endpoint shape', () => {
+  const legacyText = createNode('text', { name: 'Paragraph', text: 'A paragraph' });
+  delete legacyText.paragraphSpacing;
+  delete legacyText.firstLineIndent;
+  const from = createNode('frame', { children: [legacyText] });
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'Paragraph', text: 'A paragraph', paragraphSpacing: 8, firstLineIndent: 12
+  })] });
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+
+  const start = layerAt(0);
+  assert.equal(Object.hasOwn(start, 'paragraphSpacing'), false);
+  assert.equal(Object.hasOwn(start, 'firstLineIndent'), false);
+  assert.deepEqual(
+    [layerAt(0.5).paragraphSpacing, layerAt(0.5).firstLineIndent],
+    [4, 6],
+    'missing legacy metrics contribute zero during interpolation'
+  );
+  assert.deepEqual(
+    [layerAt(1).paragraphSpacing, layerAt(1).firstLineIndent],
+    [8, 12],
+    'the authored target values are exact at the destination endpoint'
+  );
+});
+
+test('smart animation treats explicit null text metrics as zero between frames and preserves exact null endpoints', () => {
+  const from = createNode('frame', { children: [createNode('text', {
+    name: 'Paragraph', text: 'A paragraph', paragraphSpacing: null, firstLineIndent: 12
+  })] });
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'Paragraph', text: 'A paragraph', paragraphSpacing: 8, firstLineIndent: null
+  })] });
+  const layerAt = progress => interpolateSmartFrame(from, to, progress).children[0];
+
+  assert.deepEqual(
+    [layerAt(0.5).paragraphSpacing, layerAt(0.5).firstLineIndent],
+    [4, 6],
+    'explicit null metrics contribute zero during interpolation in either direction'
+  );
+  assert.equal(layerAt(0).paragraphSpacing, null, 'the source endpoint retains explicit null');
+  assert.equal(layerAt(1).firstLineIndent, null, 'the destination endpoint retains explicit null');
+});
+
 test('smart animation snaps vertical text alignment from source to target at the midpoint', () => {
   const from = createNode('frame', { children: [createNode('text', { name: 'Label', text: 'Continue', verticalAlign: 'top' })] });
   const to = createNode('frame', { children: [createNode('text', { name: 'Label', text: 'Continue', verticalAlign: 'bottom' })] });

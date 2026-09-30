@@ -535,7 +535,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .mobile-scrim { display: none; }
 .text-editor-overlay { position: absolute; z-index: 3; display: block; min-width: 40px; min-height: 24px; padding: 0; overflow: hidden; border: 1px solid #0d99ff; outline: 0; background: rgba(255,255,255,.85); color: #1e1e1e; white-space: pre-wrap; user-select: text; -webkit-user-select: text; touch-action: auto; transform-origin: top left; }
 .text-editor-overlay[hidden] { display: none; }
-.text-editor-overlay:empty::before { content: 'Type something'; color: #999; pointer-events: none; }
+.text-editor-paragraph { display: block; min-height: 1em; margin: 0; text-indent: var(--text-first-line-indent, 0px); }
+.text-editor-paragraph-following { margin-block-start: var(--text-paragraph-spacing, 0px); }
+.text-editor-overlay > :is(div, p, li, blockquote) ~ :is(div, p, li, blockquote),
+.text-editor-paragraph > :is(div, p, li, blockquote) ~ :is(div, p, li, blockquote),
+.text-editor-paragraph > span ~ :is(div, p, li, blockquote) { margin-block-start: var(--text-paragraph-spacing, 0px); }
+.text-editor-overlay > :is(div, p, li, blockquote),
+.text-editor-paragraph > :is(div, p, li, blockquote) { text-indent: var(--text-first-line-indent, 0px); }
+.text-editor-paragraph:only-child:empty::before { content: 'Type something'; color: #999; pointer-events: none; }
 .text-format-toolbar { position: absolute; z-index: 4; display: flex; align-items: center; gap: 5px; width: max-content; max-width: calc(100% - 16px); padding: 5px; border: 1px solid #dedede; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 4px 18px rgba(0,0,0,.18); color: #333; touch-action: manipulation; }
 .text-format-toolbar[hidden] { display: none; }
 .text-format-button, .text-format-done { min-width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid #e5e5e5; border-radius: 6px; background: #fff; color: #333; font-size: 13px; }

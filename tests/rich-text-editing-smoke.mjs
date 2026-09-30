@@ -127,6 +127,8 @@ try {
   assert(newDesign, 'the mobile File menu should offer a new local design.');
   tap(app, newDesign);
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');
+  await waitFor(() => !app.querySelector('#document-name')?.closest('.topbar')?.inert
+    && app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'fresh design editing unlock');
 
   // The smoke can run beside other browser checks on the same origin. Give its
   // document a unique identity so another check's newer save cannot look like
@@ -274,9 +276,94 @@ try {
   const plainNode = textNode(saved, 'Ordinary plain text');
   assert(plainNode && !Object.hasOwn(plainNode, 'textRuns'), 'ordinary plain text edits should remain plain when no range style was applied.');
 
+  createTextAtCenter(app, 83);
+  await waitFor(() => !app.querySelector('#text-editor-overlay')?.hidden, 'paragraph text editor');
+  editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
+  const paragraphText = 'Alpha line\nBeta line\n\nGamma line';
+  editor.textContent = paragraphText;
+  editor.dispatchEvent(new app.defaultView.InputEvent('input', { bubbles: true, inputType: 'insertText', data: paragraphText }));
+  selectRange(app, editor, paragraphText.indexOf('Beta'), paragraphText.indexOf('Beta') + 'Beta'.length);
+  tap(app, toolbar.querySelector('[data-text-format="italic"]'));
+  assert(editor.querySelector('[data-run-font-style="italic"]')?.textContent === 'Beta', 'formatting a word in a later paragraph should preserve paragraph content.');
+  tap(app, toolbar.querySelector('[data-text-format-done]'));
+  await waitFor(() => editor.hidden, 'paragraph edit commit');
+  let paragraphDocument;
+  await waitFor(async () => {
+    paragraphDocument = await documentById(app, smokeDocumentId);
+    return Boolean(textNode(paragraphDocument, paragraphText));
+  }, 'formatted later paragraph save');
+  const paragraphNode = textNode(paragraphDocument, paragraphText);
+  assert(paragraphNode?.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic'),
+    `the formatted later-paragraph run did not persist: ${JSON.stringify((paragraphDocument?.pages || []).flatMap(page => page.children || []).map(node => ({ text: node.text, runs: node.textRuns })))}`);
+  tap(app, app.querySelector('#inspector-toggle'));
+  await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'paragraph Inspector panel');
+  const paragraphSpacing = app.querySelector('[data-prop="paragraphSpacing"]');
+  paragraphSpacing.value = '11'; paragraphSpacing.dispatchEvent(new app.defaultView.Event('input', { bubbles: true })); paragraphSpacing.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  const firstLineIndent = app.querySelector('[data-prop="firstLineIndent"]');
+  firstLineIndent.value = '14'; firstLineIndent.dispatchEvent(new app.defaultView.Event('input', { bubbles: true })); firstLineIndent.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  await waitFor(async () => {
+    saved = await documentById(app, smokeDocumentId);
+    const persisted = textNode(saved, paragraphText);
+    return persisted?.paragraphSpacing === 11 && persisted?.firstLineIndent === 14;
+  }, 'paragraph metrics autosave');
+  tap(app, app.querySelector('[data-action="edit-text"]'));
+  await waitFor(() => !app.querySelector('#text-editor-overlay').hidden, 'paragraph editor reopen');
+  editor = app.querySelector('#text-editor-overlay'); toolbar = app.querySelector('#text-format-toolbar');
+  const paragraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(paragraphs.length === 4 && paragraphs.map(paragraph => paragraph.textContent).join('\n') === paragraphText, 'reopening should keep all text paragraphs, including a blank paragraph.');
+  assert(paragraphs.every(paragraph => getComputedStyle(paragraph).textIndent === '14px'), 'the editor paragraphs should use the saved first-line indent.');
+  assert(paragraphs.slice(1).every(paragraph => getComputedStyle(paragraph).marginBlockStart === '11px'), 'later editor paragraphs should use the saved paragraph spacing.');
+  assert(editor.querySelector('[data-run-font-style="italic"]')?.textContent === 'Beta', 'reopening should keep rich formatting inside the paragraph wrappers.');
+
+  const blankParagraph = paragraphs[2];
+  const gammaText = paragraphs[3].querySelector('span')?.firstChild;
+  assert(blankParagraph && !blankParagraph.textContent && gammaText?.nodeType === app.TEXT_NODE, 'the middle blank paragraph should remain an editable block.');
+  const acrossBlank = app.createRange(); acrossBlank.setStart(blankParagraph, 0); acrossBlank.setEnd(gammaText, gammaText.length);
+  const selection = app.getSelection(); selection.removeAllRanges(); selection.addRange(acrossBlank);
+  editor.dispatchEvent(new app.defaultView.MouseEvent('mouseup', { bubbles: true }));
+  tap(app, toolbar.querySelector('[data-text-format="bold"]'));
+  const restoredRange = app.getSelection().getRangeAt(0);
+  const restoredBlankParagraph = [...editor.querySelectorAll(':scope > .text-editor-paragraph')][2];
+  assert(restoredRange.startContainer === restoredBlankParagraph && restoredRange.startOffset === 0,
+    'formatting a range that starts in a blank paragraph should restore the selection to that paragraph.');
+  assert(editor.querySelector('[data-run-font-weight="700"]')?.textContent === 'Gamma line',
+    'formatting across a blank paragraph should apply to the following text.');
+
+  // Insert a paragraph while the overlay is live. The browser may create its
+  // own block node, so the live CSS also covers native contenteditable blocks.
+  const insertionPoint = paragraphText.length;
+  selectRange(app, editor, insertionPoint, insertionPoint);
+  assert(app.execCommand('insertParagraph'), 'the browser should insert a paragraph at the caret.');
+  assert(app.execCommand('insertText', false, 'Delta'), 'the browser should type into the newly inserted paragraph.');
+  editor.dispatchEvent(new app.defaultView.InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Delta' }));
+  const insertedBlock = [...editor.querySelectorAll(':scope > .text-editor-paragraph, :scope > div:not(.text-editor-paragraph), .text-editor-paragraph > div')]
+    .find(block => block.textContent === 'Delta');
+  assert(insertedBlock && getComputedStyle(insertedBlock).textIndent === '14px', 'a newly entered paragraph should inherit the active first-line indent.');
+  assert(getComputedStyle(insertedBlock).marginBlockStart === '11px', 'a newly entered paragraph should inherit the active paragraph spacing.');
+  const editedParagraphText = `${paragraphText}\nDelta`;
+  tap(app, toolbar.querySelector('[data-text-format-done]'));
+  await waitFor(() => editor.hidden, 'paragraph editor close');
+  await waitFor(async () => {
+    saved = await documentById(app, smokeDocumentId);
+    const persisted = textNode(saved, editedParagraphText);
+    return persisted?.paragraphSpacing === 11 && persisted?.firstLineIndent === 14
+      && persisted.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic');
+  }, 'entered paragraph autosave');
+  const beforeParagraphReload = app;
+  frame.contentWindow.location.reload();
+  await waitFor(() => frame.contentDocument !== beforeParagraphReload
+    && frame.contentDocument?.documentElement.dataset.appReady === 'true', 'paragraph text after reload');
+  app = frame.contentDocument;
+  const reloadedParagraph = textNode(await documentById(app, smokeDocumentId), editedParagraphText);
+  assert(reloadedParagraph?.paragraphSpacing === 11 && reloadedParagraph?.firstLineIndent === 14
+    && reloadedParagraph.textRuns?.some(run => run.text === 'Beta' && run.fontStyle === 'italic'),
+  'reload should preserve paragraph metrics and formatted runs together after an in-session Enter.');
+
 result.textContent = `PASS\n${JSON.stringify({ mobileViewport: '390x844', boldRange: true, italicRange: true, selectedFontSize: 36, selectedWeight: 800, selectedDecoration: 'underline', selectedFamily: 'Georgia, serif', selectedLetterSpacing: 1.2,
     selectedLineHeight: 1.6, selectedColor: '#f0123c', savedRuns: true, reloadPreservesRuns: true, reopenedRunRendering: true,
-    editAfterReloadPreservesRuns: true, appendedTextSurvivesReload: true, touchSizedControls: true, plainTextUnchanged: true })}`;
+    editAfterReloadPreservesRuns: true, appendedTextSurvivesReload: true, touchSizedControls: true, plainTextUnchanged: true,
+    paragraphs: 4, blankParagraphSelectionRestored: true, savedParagraphSpacing: 11, savedFirstLineIndent: 14, paragraphRunsSurviveReload: true,
+    liveEnterUsesParagraphMetrics: true, enteredParagraphSaves: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

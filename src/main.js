@@ -2043,28 +2043,45 @@ function readTextEditorContent(root) {
     const style = node.nodeType === Node.ELEMENT_NODE ? textRunStyleForElement(node, inherited) : inherited;
     for (const child of node.childNodes) visit(child, style, false);
   };
-  for (const child of root.childNodes) visit(child, {}, false);
+  const children = [...root.childNodes];
+  if (children.length && children.every(child => child.nodeType === Node.ELEMENT_NODE && child.dataset.editorParagraph === 'true')) {
+    children.forEach((paragraph, index) => {
+      for (const child of paragraph.childNodes) visit(child, {}, false);
+      if (index < children.length - 1) append('\n', {});
+    });
+  } else {
+    for (const child of children) visit(child, {}, false);
+  }
   return { text, runs: normalizeTextRuns(runs) };
 }
 function renderTextEditorRuns(editor, runs) {
   editor.replaceChildren();
-  const text = runs.map(run => run.text).join('');
-  if (!runs.some(run => textRunStyleKeys.some(property => run[property] != null))) {
-    editor.textContent = text;
-    return;
-  }
+  const paragraphs = [[]];
   for (const run of runs) {
-    if (!run.text) continue;
-    const span = document.createElement('span');
-    span.dataset.textRun = 'true';
-    for (const property of textRunStyleKeys) {
-      const value = run[property];
-      if (value == null) continue;
-      span.setAttribute(textRunDataAttribute(property), String(value));
-      span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+    const pieces = String(run.text || '').split('\n');
+    pieces.forEach((piece, index) => {
+      if (piece) paragraphs.at(-1).push({ ...run, text: piece });
+      if (index < pieces.length - 1) paragraphs.push([]);
+    });
+  }
+  for (const [index, paragraphRuns] of paragraphs.entries()) {
+    const paragraph = document.createElement('div');
+    paragraph.dataset.editorParagraph = 'true';
+    paragraph.className = 'text-editor-paragraph';
+    if (index > 0) paragraph.classList.add('text-editor-paragraph-following');
+    for (const run of paragraphRuns) {
+      const span = document.createElement('span');
+      if (textRunStyleKeys.some(property => run[property] != null)) span.dataset.textRun = 'true';
+      for (const property of textRunStyleKeys) {
+        const value = run[property];
+        if (value == null) continue;
+        span.setAttribute(textRunDataAttribute(property), String(value));
+        span.style[property] = property === 'fontSize' || property === 'letterSpacing' ? `${value * state.zoom}px` : String(value);
+      }
+      span.textContent = run.text;
+      paragraph.append(span);
     }
-    span.textContent = run.text;
-    editor.append(span);
+    editor.append(paragraph);
   }
 }
 function trimTextRuns(runs, length) {
@@ -2107,10 +2124,31 @@ function setTextEditorSelection(editor, start, end = start) {
   while (walker.nextNode()) textNodes.push(walker.currentNode);
   if (!textNodes.length) { const empty = document.createTextNode(''); editor.append(empty); textNodes.push(empty); }
   const pointAt = position => {
-    let remaining = Math.max(0, position);
+    const target = Math.max(0, position);
+    const paragraphs = [...editor.children];
+    if (paragraphs.length && paragraphs.every(paragraph => paragraph.dataset.editorParagraph === 'true')) {
+      let paragraphStart = 0;
+      for (const [index, paragraph] of paragraphs.entries()) {
+        const paragraphLength = readTextEditorContent(paragraph).text.length;
+        const paragraphEnd = paragraphStart + paragraphLength;
+        if (target >= paragraphStart && target <= paragraphEnd) {
+          if (!paragraphLength) return { node: paragraph, offset: 0 };
+          for (const node of textNodes) {
+            if (!paragraph.contains(node)) continue;
+            const start = editorPointOffset(editor, node, 0);
+            const end = editorPointOffset(editor, node, node.length);
+            if (start != null && end != null && target >= start && target <= end) return { node, offset: target - start };
+          }
+          return { node: paragraph, offset: 0 };
+        }
+        paragraphStart = paragraphEnd + (index < paragraphs.length - 1 ? 1 : 0);
+      }
+    }
     for (const node of textNodes) {
-      if (remaining <= node.length) return { node, offset: remaining };
-      remaining -= node.length;
+      const start = editorPointOffset(editor, node, 0);
+      const end = editorPointOffset(editor, node, node.length);
+      if (start != null && end != null && target >= start && target <= end) return { node, offset: target - start };
+      if (start != null && target < start) return { node, offset: 0 };
     }
     const last = textNodes.at(-1);
     return { node: last, offset: last.length };
@@ -2275,6 +2313,8 @@ function editTextNode(nodeId) {
   editor.style.fontSize = `${getNodePropertyValue(state.document, entry.node, 'fontSize') * state.zoom}px`;
   editor.style.lineHeight = String(getNodePropertyValue(state.document, entry.node, 'lineHeight'));
   editor.style.letterSpacing = `${getNodePropertyValue(state.document, entry.node, 'letterSpacing') * state.zoom}px`;
+  editor.style.setProperty('--text-first-line-indent', `${Math.max(0, Number(entry.node.firstLineIndent) || 0) * state.zoom}px`);
+  editor.style.setProperty('--text-paragraph-spacing', `${Math.max(0, Number(entry.node.paragraphSpacing) || 0) * state.zoom}px`);
   editor.style.color = getNodeColor(state.document, entry.node, 'text');
   const text = getNodePropertyValue(state.document, entry.node, 'text');
   const existingRuns = Array.isArray(entry.node.textRuns) && entry.node.textRuns.map(run => run.text).join('') === text

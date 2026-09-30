@@ -3,6 +3,7 @@ import { isValidLayerEffects } from './layer-effects.js';
 
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
+const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const midpointProperties = [
   ...colorProperties,
@@ -321,6 +322,20 @@ function interpolateLayer(from, to, progress) {
     copy.opacity = layerOpacity(from) * (1 - progress);
   } else if (from.visible === false && to.visible === false) copy.visible = false;
   if (from.type === 'text' && to.type === 'text') {
+    for (const property of textNodeNumericProperties) {
+      const hasStart = Object.prototype.hasOwnProperty.call(from, property);
+      const hasEnd = Object.prototype.hasOwnProperty.call(to, property);
+      const start = hasStart && from[property] != null ? finiteStyleNumber(from[property]) : 0;
+      const end = hasEnd && to[property] != null ? finiteStyleNumber(to[property]) : 0;
+      if ((hasStart && start === null) || (hasEnd && end === null)) continue;
+      if (progress === 0) {
+        if (hasStart) copy[property] = structuredClone(from[property]);
+        else delete copy[property];
+      } else if (progress === 1) {
+        if (hasEnd) copy[property] = structuredClone(to[property]);
+        else delete copy[property];
+      } else copy[property] = start + (end - start) * progress;
+    }
     const textRuns = interpolateTextRuns(from.textRuns, to.textRuns, progress);
     if (textRuns) copy.textRuns = textRuns;
     else snapProperty(copy, from, to, 'textRuns', progress);
