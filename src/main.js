@@ -2,7 +2,7 @@ import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
   findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, removeNode, reorderNode, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
-  canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
+  canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
@@ -34,7 +34,7 @@ import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js'
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
-import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, isImageRecipeBatchActive, recordImageRecipeBatchTarget } from './bulk-recipe-state.js';
+import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect, shortestAngleDelta } from './transform-geometry.js';
 import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from './group-transform.js';
 import {
@@ -44,6 +44,7 @@ import {
   reverseVectorPathContour, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
+import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
 
@@ -82,6 +83,7 @@ const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
 let pendingRecipeNodeId = null;
+let bulkBarTicker = null;
 let latestPageLayerIds = [];
 let layerRowsById = new Map();
 let currentToastTimer = 0;
@@ -439,7 +441,7 @@ function syncLayerSelectionModeControl() {
   const selectMode = $('#layer-select-mode');
   if (!selectMode) return;
   selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select';
-  selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting images' : 'Select images for recipes');
+  selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting layers' : 'Select multiple layers');
   selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
 }
@@ -1315,14 +1317,14 @@ function renderInspector() {
               : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
     const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Use Image recipes below to apply a look without a keyboard or context menu.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${transformNote}</div>`)}`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${transformNote}</div>`)}`;
     return;
   }
   const node = entries[0].node;
   let body = componentSection(node) + transformSection(node) + blendingSection(node);
   if (node.type === 'boolean') {
     const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
-    body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><div class="image-properties-note">The source shapes stay editable inside this live Boolean group.</div>`);
+    body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><button class="add-fill" data-action="bake-boolean" style="margin-top:8px">Bake to vector path</button><div class="image-properties-note">Baking converts supported straight-edged shapes into editable path points and contours. Curves, ellipses, vector networks, rounded rectangles, transparency, mode-bound geometry, and blended operands are refused with an explanation.</div>`);
   }
   if (node.type === 'group' && node.mask) {
     const maskSource = node.children.find(child => child.id === node.maskSourceId);
@@ -2194,28 +2196,34 @@ function commentPinAt(world) {
   return null;
 }
 function resizeHandleAt(event) {
-  const point = screenToWorld(event, canvas, state);
   const entries = transformEntriesForSelection();
   if (!entries.length) return null;
   const hitRadius = event.pointerType === 'touch' ? 22 : 8;
-  const tolerance = hitRadius / Math.max(.08, state.zoom);
+  const nearestHandle = handles => nearestScreenHandle(
+    { x: event.clientX, y: event.clientY },
+    [
+      ...Object.entries(handles.resize).map(([name, position]) => ({ kind: 'resize', name, point: worldToScreen(position, canvas, state) })),
+      { kind: 'rotate', point: worldToScreen(handles.rotate, canvas, state) }
+    ],
+    hitRadius
+  );
   if (entries.length > 1) {
     if (!canTransformSelectionTogether(entries)) return null;
     const bounds = selectionBounds(entries);
     const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / Math.max(.08, state.zoom) });
-    if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'group-rotate', entries, ids: entries.map(item => item.node.id), bounds, center: bounds.center };
-    for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) {
-      return { kind: 'group-resize', entries, ids: entries.map(item => item.node.id), bounds, handle: name };
-    }
-    return null;
+    const hit = nearestHandle(handles);
+    if (!hit) return null;
+    if (hit.kind === 'rotate') return { kind: 'group-rotate', entries, ids: entries.map(item => item.node.id), bounds, center: bounds.center };
+    return { kind: 'group-resize', entries, ids: entries.map(item => item.node.id), bounds, handle: hit.name };
   }
   const { entry, node: geometry, ancestors } = entries[0];
   const node = entry.node;
   if (geometry.locked || ancestors.some(parent => parent.locked)) return null;
   const handles = getTransformHandles(geometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
-  if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
-  for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) return { kind: 'resize', name, node, entry, geometry, ancestors };
-  return null;
+  const hit = nearestHandle(handles);
+  if (!hit) return null;
+  if (hit.kind === 'rotate') return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
+  return { kind: 'resize', name: hit.name, node, entry, geometry, ancestors };
 }
 function pageBoundsForEntry(entry) {
   const geometry = { ...entry.node, ...resolvedGeometry(entry.node) };
@@ -4161,10 +4169,19 @@ async function restoreImageAssets(generation = state.documentGeneration) {
   if (generation === state.documentGeneration) renderAssetsTab();
 }
 
+function syncBulkBarTicker() {
+  if (state.bulk && !state.bulk.done) {
+    if (!bulkBarTicker) bulkBarTicker = window.setInterval(renderBulkBar, 500);
+    return;
+  }
+  if (bulkBarTicker) window.clearInterval(bulkBarTicker);
+  bulkBarTicker = null;
+}
+
 function renderBulkBar() {
   const bar = $('#bulk-bar'); const bulk = state.bulk;
   bar.hidden = !bulk;
-  if (!bulk) return;
+  if (!bulk) { syncBulkBarTicker(); return; }
   const engineMetrics = imageEngine.metrics();
   const total = bulk.targets.length;
   const skipped = bulk.skipped || 0;
@@ -4181,6 +4198,9 @@ function renderBulkBar() {
         : `Editing original layers · ${bulk.inflight} queued or processing`;
   $('#bulk-progress-fill').style.width = `${total ? Math.min(100, (bulk.completed / total) * 100) : 0}%`;
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
+  $('#bulk-rate').textContent = formatImageRecipeBatchTiming(bulk);
+  const timing = imageRecipeBatchTiming(bulk);
+  $('#bulk-rate').title = `Average batch throughput. Paused time and paused completions are excluded.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
   $('#bulk-speed-value').textContent = `${bulk.concurrency} max worker${bulk.concurrency === 1 ? '' : 's'} · ${engineMetrics.active} active`;
   $('#bulk-speed-value').title = `Estimated WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
@@ -4193,6 +4213,7 @@ function renderBulkBar() {
   $('#bulk-retry').hidden = !dismissible || !bulk.failedTargets?.length;
   $('#bulk-retry').textContent = `Retry failed${bulk.failedTargets?.length ? ` (${bulk.failedTargets.length})` : ''}`;
   $('#bulk-done').hidden = !dismissible;
+  syncBulkBarTicker();
 }
 
 function snapshotRecipeField(object, key) {
@@ -4373,6 +4394,7 @@ function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT), pa
     paused: false, cancelled: false, done: false,
     previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: []
   };
+  startImageRecipeBatchClock(state.bulk);
   imageEngine.setConcurrency(concurrency);
   renderBulkBar(); scheduleBulk();
   return true;
@@ -4708,6 +4730,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null) {
   }
   if (selectedBoolean) {
     items.unshift(
+      { label: 'Bake to vector path', action: () => bakeSelectedBoolean(selectedBoolean.id) },
       { label: 'Separate Boolean', action: () => separateSelectedBoolean(selectedBoolean.id) },
       { label: 'Boolean operation', labelOnly: true },
       ...[['union','Union'],['subtract','Subtract'],['intersect','Intersect'],['exclude','Exclude']].map(([operation, label]) => ({
@@ -4827,6 +4850,17 @@ function separateSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
     setSelection(children.map(child => child.id)); renderUI(); queueSave(); renderer.invalidate();
     showToast('Boolean source shapes separated.');
   } catch (error) { showToast(error.message); }
+}
+
+function bakeSelectedBoolean(nodeId = selectedNodes()[0]?.id) {
+  try {
+    const plan = prepareBooleanBake(state.document, nodeId);
+    checkpoint('Bake Boolean to vector path');
+    const path = applyBooleanBake(state.document, plan);
+    state.selectedVectorPoint = null;
+    setSelection([path.id]); renderUI(); queueSave(); renderer.invalidate();
+    showToast('Boolean baked to an editable vector path. Use the vector tool to edit its contours.');
+  } catch (error) { showToast(error.message || 'This Boolean group cannot be baked exactly.'); }
 }
 
 function openFileMenu(x, y, commentAnchor = null) {
@@ -6940,6 +6974,7 @@ function applyInspectorAction(action, details = {}) {
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'present') startPresentation(node?.id);
   else if (action === 'separate-boolean' && node?.type === 'boolean') separateSelectedBoolean(node.id);
+  else if (action === 'bake-boolean' && node?.type === 'boolean') bakeSelectedBoolean(node.id);
   else if (action === 'release-mask' && node?.type === 'group' && node.mask) releaseSelectedMask(node.id);
   else if (action === 'insert-vector-point' && ['path', 'network'].includes(node?.type)) insertPathPointOnLongestSegment(node.id);
   else if (action === 'delete-vector-point' && ['path', 'network'].includes(node?.type)) deleteSelectedVectorPoint(node.id);
@@ -7176,11 +7211,7 @@ function initEvents() {
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row) renamePage(row.dataset.pageId); });
   $('#layer-select-mode').addEventListener('click', () => {
     state.layerSelectionMode = !state.layerSelectionMode;
-    if (state.layerSelectionMode) {
-      renderLayers();
-      setSelection(selectedNodes().filter(node => node.type === 'image').map(node => node.id), { refreshLayers: false });
-    }
-    else renderLayers();
+    renderLayers();
   });
   $('#layers-list').addEventListener('click', event => {
     const row = event.target.closest('[data-layer-id]'); if (!row) return;
@@ -7210,9 +7241,7 @@ function initEvents() {
     }
     if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); setNodePropertyValue(node, 'visible', !getNodePropertyValue(state.document, node, 'visible')); renderUI(); queueSave(); return; }
     if (state.layerSelectionMode) {
-      if (node.type !== 'image') { showToast('Image selection mode only selects image layers.'); return; }
-      const selectedImages = selectedNodes().filter(item => item.type === 'image').map(item => item.id);
-      setSelection(selectedImages.includes(node.id) ? selectedImages.filter(id => id !== node.id) : [...selectedImages, node.id], { refreshLayers: false });
+      setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
       state.lastLayerSelection = node.id;
       return;
     }
@@ -7572,8 +7601,13 @@ function initEvents() {
   $('#bulk-pause').addEventListener('click', () => {
     if (!isImageRecipeBatchActive(state.bulk) || state.bulk.cancelled) return;
     state.bulk.paused = !state.bulk.paused;
-    if (state.bulk.paused) imageEngine.pauseQueueGroup(state.bulk.queueGroup);
-    else imageEngine.resumeQueueGroup(state.bulk.queueGroup);
+    if (state.bulk.paused) {
+      pauseImageRecipeBatchClock(state.bulk);
+      imageEngine.pauseQueueGroup(state.bulk.queueGroup);
+    } else {
+      resumeImageRecipeBatchClock(state.bulk);
+      imageEngine.resumeQueueGroup(state.bulk.queueGroup);
+    }
     renderBulkBar(); if (!state.bulk.paused) scheduleBulk();
   });
   $('#bulk-cancel').addEventListener('click', cancelBulkRecipe);

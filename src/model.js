@@ -6,6 +6,7 @@ import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
+import { flattenBooleanContours, normalizedPathGeometryFromContours } from './boolean-geometry.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -946,6 +947,59 @@ export function separateBoolean(document, nodeId, pageId = document.activePageId
   group.children = [];
   if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
   return children;
+}
+
+const booleanBakePlans = new WeakMap();
+
+/** Prepare a non-mutating Boolean bake so the editor can checkpoint only after geometry succeeds. */
+export function prepareBooleanBake(document, nodeId, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry || entry.node.type !== 'boolean') throw new Error('Select a Boolean group to bake.');
+  const group = entry.node;
+  if (group.locked) throw new Error('Unlock the Boolean group before baking it.');
+  if (group.isComponent || group.isInstance || entry.parents.some(parent => parent.isComponent || parent.isInstance)) {
+    throw new Error('Boolean baking is not available inside component masters or instances. Detach the component first.');
+  }
+  const slotContext = componentSlotMutationContext(document, entry);
+  requireOverriddenSlotForMutation(slotContext, 'bake');
+  if (slotContext && group === slotContext.target) throw new Error('Cannot replace a component slot target from its instance.');
+  const geometryBindings = ['width', 'height'];
+  if (geometryBindings.some(property => group.variableBindings?.[property])) {
+    throw new Error('This Boolean group has mode-bound dimensions. Remove those bindings before baking it.');
+  }
+  const verifyChildren = node => {
+    if (node.isComponent || node.isInstance) throw new Error('Boolean baking cannot remove a component or instance layer from the source geometry. Detach the component first.');
+    if (['x', 'y', 'width', 'height', 'rotation', 'radius'].some(property => node.variableBindings?.[property])) {
+      throw new Error(`“${node.name || node.type}” has mode-bound geometry. Remove those bindings before baking the group.`);
+    }
+    for (const child of node.children || []) verifyChildren(child);
+  };
+  for (const child of group.children || []) verifyChildren(child);
+  const contours = flattenBooleanContours(group);
+  const geometry = normalizedPathGeometryFromContours(contours, group.width, group.height);
+  const plan = Object.freeze({ nodeId: group.id, pageId });
+  booleanBakePlans.set(plan, { expected: JSON.stringify(group), geometry });
+  return plan;
+}
+
+/** Commit one prepared Boolean result as native, editable path geometry in place. */
+export function applyBooleanBake(document, plan) {
+  const prepared = booleanBakePlans.get(plan);
+  if (!prepared) throw new TypeError('Prepare a Boolean bake before committing it.');
+  const entry = findNode(document, plan.nodeId, plan.pageId);
+  if (!entry || entry.node.type !== 'boolean' || JSON.stringify(entry.node) !== prepared.expected) {
+    throw new Error('The Boolean group changed after the bake was prepared. Prepare it again before committing.');
+  }
+  const node = entry.node;
+  Object.assign(node, { type: 'path', ...prepared.geometry, children: [] });
+  delete node.operation;
+  booleanBakePlans.delete(plan);
+  return node;
+}
+
+/** Bake a supported live Boolean group into one editable vector path. */
+export function bakeBoolean(document, nodeId, pageId = document.activePageId) {
+  return applyBooleanBake(document, prepareBooleanBake(document, nodeId, pageId));
 }
 
 export function renameNode(document, nodeId, name, pageId = document.activePageId) {

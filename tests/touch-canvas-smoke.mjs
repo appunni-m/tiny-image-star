@@ -94,18 +94,46 @@ try {
   design.id = documentId;
   design.name = documentId;
   const rectangle = createNode('rectangle', { name: 'Touch target', x: -50, y: -50, width: 100, height: 100, fill: '#d9d9d9' });
+  const ellipse = createNode('ellipse', { name: 'Touch ellipse', x: 170, y: 120, width: 36, height: 28 });
+  const text = createNode('text', { name: 'Touch text', text: 'Select me too', x: 190, y: -90, width: 150, height: 32 });
   addNode(design, rectangle);
+  addNode(design, ellipse);
+  addNode(design, text);
+  const originalChildCount = design.pages[0].children.length;
   importDesign(app, design);
   await waitFor(() => app.querySelector('#document-name')?.value === documentId, 'isolated phone design import');
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'initial design save');
   const canvas = app.querySelector('#scene-canvas');
-  const row = app.querySelector(`[data-layer-id="${rectangle.id}"]`);
-  assert(row, 'The imported resize target should appear in Layers.');
+  const layerRow = id => app.querySelector(`[data-layer-id="${id}"]`);
+  assert(layerRow(rectangle.id), 'The imported resize target should appear in Layers.');
+  assert(layerRow(ellipse.id) && layerRow(text.id), 'The other shape and text layers should appear in Layers.');
   tap(app, app.querySelector('#sidebar-toggle'), 510);
   await waitFor(() => app.querySelector('#left-panel').classList.contains('is-open'), 'phone Layers panel');
-  tap(app, row, 511);
+  tap(app, layerRow(rectangle.id), 511);
+  tap(app, app.querySelector('#layer-select-mode'), 514);
+  assert(app.querySelector('#layer-select-mode').getAttribute('aria-label') === 'Finish selecting layers', 'The touch selection control should describe general layer selection.');
+  tap(app, layerRow(ellipse.id), 515);
+  tap(app, layerRow(text.id), 516);
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 3, 'Touch multi-select should include shapes and text without keyboard modifiers.');
+  tap(app, layerRow(rectangle.id), 517);
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 2, 'Touch multi-select should toggle an already selected layer off.');
+  tap(app, app.querySelector('#layer-select-mode'), 518);
+  tap(app, layerRow(rectangle.id), 519);
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 1, 'Finishing touch multi-select should restore ordinary single-layer selection.');
   tap(app, app.querySelector('#sidebar-toggle'), 512);
   await waitFor(() => !app.querySelector('#left-panel').classList.contains('is-open'), 'closed phone Layers panel');
+
+  // The touch target sits exactly between the top resize and rotate handles.
+  // The deterministic tie rule gives resize priority so this gesture changes
+  // height without unexpectedly rotating the layer.
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 0, -62), 520);
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 0, -42), 520);
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 0, -42), 520);
+  await waitForSave(app, 'nearest overlapping touch handle');
+  let saved = await readStoredDesign(app);
+  let savedRectangle = findNode(saved?.pages?.[0]?.children, rectangle.id);
+  assert(savedRectangle?.height < 100 && Math.abs(savedRectangle?.rotation || 0) < 1,
+    `The nearest resize handle should win an exact touch-distance tie (height ${savedRectangle?.height}, rotation ${savedRectangle?.rotation}).`);
 
   // The visible east handle is centered at (50, 0). A touch landing 18 CSS px
   // away must still start a resize, then extend the rectangle to x=80.
@@ -113,8 +141,8 @@ try {
   dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, 80, 0), 501);
   dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 80, 0), 501);
   await waitForSave(app, 'touch-sized resize handle');
-  let saved = await readStoredDesign(app);
-  let savedRectangle = findNode(saved?.pages?.[0]?.children, rectangle.id);
+  saved = await readStoredDesign(app);
+  savedRectangle = findNode(saved?.pages?.[0]?.children, rectangle.id);
   assert(savedRectangle?.width > 100, `A touch near the resize handle did not resize the layer (width ${savedRectangle?.width}).`);
 
   const center = { x: savedRectangle.x + savedRectangle.width / 2, y: savedRectangle.y + savedRectangle.height / 2 };
@@ -145,7 +173,7 @@ try {
   dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 100, 170), 502);
   dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 170, 250), 503);
   saved = await readStoredDesign(app);
-  assert(saved?.pages?.[0]?.children.length === 1, 'Pinch takeover committed the unfinished rectangle draft.');
+  assert(saved?.pages?.[0]?.children.length === originalChildCount, 'Pinch takeover committed the unfinished rectangle draft.');
 
   // An active one-finger move is committed through the regular edit finalizer
   // before the second finger takes ownership of the canvas.
@@ -162,7 +190,7 @@ try {
   assert(savedRectangle?.x > -50 && savedRectangle?.y > -50,
     `The active move was not finalized and saved before pinch takeover (x ${savedRectangle?.x}, y ${savedRectangle?.y}).`);
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchResizeHitRegion: true, touchRotateHitRegion: true, interruptedDrawDraftCleared: true, interruptedMoveSaved: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchLayerTypesMultiSelect: true, nearestOverlappingTouchHandle: true, touchResizeHitRegion: true, touchRotateHitRegion: true, interruptedDrawDraftCleared: true, interruptedMoveSaved: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {

@@ -134,6 +134,209 @@ test('layer opacity is applied once after the completed effect surface', () => {
   }
 });
 
+test('Boolean source pixels scale and reposition into the resized group bounds', () => {
+  class RecordingContext {
+    constructor() { this.transforms = []; }
+    setTransform(...matrix) { this.transforms.push(matrix); }
+    save() {} restore() {} clearRect() {} fillRect() {} drawImage() {}
+    beginPath() {} rect() {} fill() {}
+  }
+  class RecordingCanvas {
+    constructor(width, height) { this.width = width; this.height = height; this.context = new RecordingContext(); }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const document = createDocument();
+    const group = createNode('boolean', {
+      width: 80, height: 60,
+      children: [
+        createNode('rectangle', { x: 10, y: 5, width: 40, height: 40 }),
+        createNode('rectangle', { x: 20, y: 15, width: 20, height: 20 })
+      ]
+    });
+    addNode(document, group);
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, assets: new Map(), zoom: 1 });
+    renderer.booleanCache = new Map();
+    renderer.booleanCachePixels = 0;
+    renderer.drawNode = () => {};
+
+    renderer.getBooleanSurface(group, new Map(), true, 1);
+    const transforms = [...renderer.booleanCache.values()][0].surface.context.transforms;
+    assert.deepEqual(transforms[0], [1, 0, 0, 1, 0, 0], 'the raster starts in the group box coordinate system');
+    assert.deepEqual(transforms[1], [2, 0, 0, 1.5, -20, -7.5], 'source visual bounds are translated to the origin and stretched to the current group size');
+    assert.deepEqual(transforms.at(-1), [1, 0, 0, 1, 0, 0], 'the composite paint resets to the destination box after drawing operands');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('Boolean surfaces invalidate cached source geometry when an ancestor variable mode changes', () => {
+  class TestContext {
+    setTransform() {} save() {} restore() {} clearRect() {} fillRect() {} drawImage() {}
+  }
+  class TestCanvas {
+    constructor(width, height) { this.width = width; this.height = height; this.context = new TestContext(); }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = TestCanvas;
+  try {
+    const document = createDocument();
+    const collection = createVariableCollection(document, 'Boolean source geometry');
+    const expandedMode = addVariableMode(document, collection.id, 'Expanded');
+    const variable = createVariable(document, collection.id, 'Source width', 'number', 30);
+    setVariableValue(document, variable.id, 55, expandedMode.id);
+    const frame = createNode('frame', { width: 200, height: 100 });
+    const boolean = createNode('boolean', {
+      operation: 'union', width: 80, height: 40,
+      children: [
+        createNode('rectangle', { width: 30, height: 30 }),
+        createNode('rectangle', { x: 50, width: 20, height: 20 })
+      ]
+    });
+    addNode(document, frame);
+    addNode(document, boolean, { parentId: frame.id });
+    const group = document.pages[0].children[0].children[0];
+    assert.equal(bindVariable(document, group.children[0].id, variable.id, 'width'), true);
+
+    const state = { document, assets: new Map(), zoom: 1 };
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => state;
+    renderer.booleanCache = new Map();
+    renderer.booleanCachePixels = 0;
+    renderer.drawNode = () => {};
+    const defaultSurface = renderer.getBooleanSurface(group, state.assets, true, 1);
+
+    assert.equal(setFrameVariableMode(document, frame.id, collection.id, expandedMode.id), true);
+    const expandedSurface = renderer.getBooleanSurface(group, state.assets, true, 1);
+    assert.notEqual(expandedSurface, defaultSurface, 'resolved child dimensions must participate in Boolean cache identity');
+    assert.equal(renderer.booleanCache.size, 2);
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('Boolean composition uses mode-resolved operand visibility for union and intersection', () => {
+  class TestContext {
+    constructor() { this.clearCalls = []; }
+    setTransform() {} save() {} restore() {} fillRect() {} drawImage() {}
+    clearRect(...args) { this.clearCalls.push(args); }
+  }
+  class TestCanvas {
+    constructor(width, height) { this.width = width; this.height = height; this.context = new TestContext(); }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = TestCanvas;
+  try {
+    const document = createDocument();
+    const collection = createVariableCollection(document, 'Boolean operand visibility');
+    const expandedMode = addVariableMode(document, collection.id, 'Expanded');
+    const showHiddenOperand = createVariable(document, collection.id, 'Show operand', 'boolean', false);
+    const hideIntersectOperand = createVariable(document, collection.id, 'Hide intersection operand', 'boolean', true);
+    setVariableValue(document, showHiddenOperand.id, true, expandedMode.id);
+    setVariableValue(document, hideIntersectOperand.id, false, expandedMode.id);
+
+    const frame = createNode('frame', { width: 200, height: 100 });
+    const union = createNode('boolean', {
+      operation: 'union', width: 40, height: 30,
+      children: [
+        createNode('rectangle', { width: 20, height: 20, visible: false }),
+        createNode('rectangle', { x: 20, width: 20, height: 20 })
+      ]
+    });
+    const intersection = createNode('boolean', {
+      operation: 'intersect', width: 40, height: 30,
+      children: [
+        createNode('rectangle', { width: 30, height: 30 }),
+        createNode('rectangle', { x: 10, width: 20, height: 20, visible: true })
+      ]
+    });
+    addNode(document, frame);
+    addNode(document, union, { parentId: frame.id });
+    addNode(document, intersection, { parentId: frame.id });
+    const [unionGroup, intersectionGroup] = document.pages[0].children[0].children;
+    const [unionHidden, unionVisible] = unionGroup.children;
+    const intersectionHidden = intersectionGroup.children[1];
+    assert.equal(bindVariable(document, unionHidden.id, showHiddenOperand.id, 'visible'), true);
+    assert.equal(bindVariable(document, intersectionHidden.id, hideIntersectOperand.id, 'visible'), true);
+
+    const state = { document, assets: new Map(), zoom: 1 };
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => state;
+    renderer.booleanCache = new Map();
+    renderer.booleanCachePixels = 0;
+    const drawn = [];
+    renderer.drawNode = (_context, child) => drawn.push(child.id);
+
+    const unionDefault = renderer.getBooleanSurface(unionGroup, state.assets, true, 1);
+    assert.equal(drawn.includes(unionHidden.id), false, 'raw-hidden operand resolving hidden is skipped');
+    assert.equal(drawn.includes(unionVisible.id), true);
+    const intersectionDefault = renderer.getBooleanSurface(intersectionGroup, state.assets, true, 1);
+    assert.equal(intersectionDefault.context.clearCalls.length, 0, 'visible intersection operand does not clear the mask');
+
+    assert.equal(setFrameVariableMode(document, frame.id, collection.id, expandedMode.id), true);
+    drawn.length = 0;
+    const unionExpanded = renderer.getBooleanSurface(unionGroup, state.assets, true, 1);
+    assert.notEqual(unionExpanded, unionDefault, 'visibility mode changes invalidate the cached Boolean surface');
+    assert.equal(drawn.includes(unionHidden.id), true, 'raw-hidden operand resolving visible participates in the union');
+
+    drawn.length = 0;
+    const intersectionExpanded = renderer.getBooleanSurface(intersectionGroup, state.assets, true, 1);
+    assert.notEqual(intersectionExpanded, intersectionDefault);
+    assert.equal(drawn.includes(intersectionHidden.id), true, 'intersection operands are rendered before hidden mode clears the mask');
+    assert.equal(intersectionExpanded.context.clearCalls.length, 1, 'raw-visible operand resolving hidden empties the intersection result');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('Boolean paint and white-mask surfaces never share cache entries in either request order', () => {
+  class TestContext {
+    setTransform() {} save() {} restore() {} clearRect() {} fillRect() {} drawImage() {}
+  }
+  class TestCanvas {
+    constructor(width, height) { this.width = width; this.height = height; this.context = new TestContext(); }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = TestCanvas;
+  try {
+    for (const [firstMode, secondMode] of [[false, true], [true, false]]) {
+      const document = createDocument();
+      const group = createNode('boolean', {
+        fill: '#ffffff', width: 40, height: 30,
+        fills: [{ id: 'red-overlay', type: 'solid', color: '#ff0000', visible: true, opacity: 0.5 }],
+        children: [
+          createNode('rectangle', { width: 30, height: 30 }),
+          createNode('rectangle', { x: 10, width: 20, height: 20 })
+        ]
+      });
+      addNode(document, group);
+      const state = { document, assets: new Map(), zoom: 1 };
+      const renderer = Object.create(SceneRenderer.prototype);
+      renderer.getState = () => state;
+      renderer.booleanCache = new Map();
+      renderer.booleanCachePixels = 0;
+      renderer.drawNode = () => {};
+
+      const first = renderer.getBooleanSurface(group, state.assets, firstMode, 1);
+      const second = renderer.getBooleanSurface(group, state.assets, secondMode, 1);
+      assert.notEqual(first, second, `${firstMode ? 'mask' : 'paint'} then ${secondMode ? 'mask' : 'paint'} must render separate pixels`);
+      assert.equal(renderer.booleanCache.size, 2, 'both output modes need independent reusable cache entries');
+    }
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('group selection overlay renders degenerate line and point bounds safely', () => {
   const context = {
     save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},

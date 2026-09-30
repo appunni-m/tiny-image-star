@@ -221,6 +221,7 @@ try {
   assert(!bulkBar.hidden, 'Applying from the canvas menu did not show the in-place progress bar.');
   assert(app.querySelector('#bulk-progress-label').textContent === `0 / ${targetLayerIds.length}`,
     'The progress bar did not start at zero with the correct target count.');
+  assert(app.querySelector('#bulk-rate')?.textContent.trim(), 'The in-place progress bar did not show a speed/ETA status.');
   assert(app.querySelector('#bulk-title').textContent.includes('Desktop context recipe'),
     'The progress bar did not identify the active recipe.');
   assert(app.querySelector('#bulk-speed').min === '1' && Number(app.querySelector('#bulk-speed').max) === workerBudget,
@@ -233,6 +234,7 @@ try {
 
   click(app, app.querySelector('#bulk-pause'));
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Processing paused', 'recipe batch pause');
+  assert(app.querySelector('#bulk-rate')?.textContent.startsWith('Paused ·'), 'The progress rate did not enter its paused state.');
   click(app, app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`));
   await waitFor(() => app.querySelector(`#pages-list [data-page-id="${otherPageId}"]`)?.getAttribute('aria-selected') === 'true', 'page switch during paused recipe batch');
   releaseResults(workerGate);
@@ -254,6 +256,8 @@ try {
   await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied'
     && app.querySelector('#bulk-progress-label')?.textContent === `${targetLayerIds.length} / ${targetLayerIds.length}`,
   'resumed recipe batch completion');
+  assert(/^(Complete · .*average|Complete · no timed renders)$/.test(app.querySelector('#bulk-rate')?.textContent || ''),
+    'The completed recipe bar did not show its final average processing speed.');
   click(app, app.querySelector(`#pages-list [data-page-id="${originPageId}"]`));
   await waitFor(() => app.querySelector(`#pages-list [data-page-id="${originPageId}"]`)?.getAttribute('aria-selected') === 'true'
     && app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === IMAGE_COUNT,

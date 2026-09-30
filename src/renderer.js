@@ -12,7 +12,19 @@ import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
+import { booleanSourceTransform } from './boolean-geometry.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
+
+function booleanNodeCacheState(document, node) {
+  return {
+    ...node,
+    ...getNodeGeometry(document, node),
+    opacity: getNodePropertyValue(document, node, 'opacity'),
+    visible: getNodePropertyValue(document, node, 'visible'),
+    radius: getNodePropertyValue(document, node, 'radius'),
+    children: (node.children || []).map(child => booleanNodeCacheState(document, child))
+  };
+}
 
 const BLUE = '#0d99ff';
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
@@ -970,7 +982,8 @@ export class SceneRenderer {
     const imagePreviewVersion = legacyPreviewKey
       ? [legacyPreviewKey, state.previewVersions?.get(legacyPreviewKey) || 0, state.previewAssetIds?.get(legacyPreviewKey) || null]
       : null;
-    const key = `${JSON.stringify(node)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
+    const resolvedChildren = node.children.map(child => booleanNodeCacheState(state.document, child));
+    const key = `${maskMode ? 'mask' : 'paint'}|${JSON.stringify(node)}|${JSON.stringify(resolvedChildren)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
     let entry = this.booleanCache.get(key);
     if (entry) {
       this.booleanCache.delete(key);
@@ -980,11 +993,20 @@ export class SceneRenderer {
         ? new OffscreenCanvas(width, height)
         : Object.assign(document.createElement('canvas'), { width, height });
       const mask = surface.getContext('2d');
-      mask.setTransform(width / Math.max(1, node.width), 0, 0, height / Math.max(1, node.height), 0, 0);
+      const pixelScaleX = width / Math.max(1, node.width);
+      const pixelScaleY = height / Math.max(1, node.height);
+      mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
+      const sourceTransform = booleanSourceTransform(resolvedChildren, node.width, node.height);
+      mask.setTransform(
+        pixelScaleX * sourceTransform.scaleX, 0, 0, pixelScaleY * sourceTransform.scaleY,
+        -pixelScaleX * sourceTransform.left * sourceTransform.scaleX,
+        -pixelScaleY * sourceTransform.top * sourceTransform.scaleY
+      );
       const operation = node.operation || 'union';
       for (let index = 0; index < node.children.length; index += 1) {
         const child = node.children[index];
-        if (!child.visible && operation !== 'intersect') continue;
+        const visible = Boolean(resolvedChildren[index].visible);
+        if (!visible && operation !== 'intersect') continue;
         mask.save();
         if (index === 0 || operation === 'union') mask.globalCompositeOperation = 'source-over';
         else if (operation === 'subtract') mask.globalCompositeOperation = 'destination-out';
@@ -992,11 +1014,15 @@ export class SceneRenderer {
         else if (operation === 'exclude') mask.globalCompositeOperation = 'xor';
         this.drawNode(mask, child, 0, 0, assets, false, true, renderOptions);
         mask.restore();
-        if (!child.visible && operation === 'intersect') {
+        if (!visible && operation === 'intersect') {
+          mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
           mask.clearRect(0, 0, node.width, node.height);
           break;
         }
       }
+      // Boolean source geometry is scaled into the current group bounds above.
+      // Paint the completed mask and group fills back in the unscaled surface box.
+      mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
       if (!maskMode && Array.isArray(node.fills)) {
         const createSurface = () => typeof OffscreenCanvas === 'function'
           ? new OffscreenCanvas(width, height)
