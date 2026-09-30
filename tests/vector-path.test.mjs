@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { createDocument, createNode, addNode, parseDocument, serializeDocument } from '../src/model.js';
 import {
   closestVectorSegment, insertVectorNodePoint, longestVectorSegment, removeVectorNodePoint,
-  setVectorNetworkVertexMode, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors, vectorGeometryFromContours,
+  reverseVectorPathContour, setVectorNetworkVertexMode, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors, vectorGeometryFromContours,
   vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples,
-  vectorNetworkVertexPoint, vectorNodePoint, vectorSegmentPoint
+  vectorNetworkVertexPoint, vectorNodePoint, vectorSegmentPoint, vectorSegmentPoints
 } from '../src/vector-path.js';
 
 function pointToSegmentDistance(point, start, end) {
@@ -98,6 +98,47 @@ test('compound contours share normalized geometry and remain addressable for seg
   assert.equal(geometry.points.length, 2, 'editing one contour leaves its neighbors unchanged');
   removeVectorNodePoint(geometry, inserted, 1);
   assert.equal(geometry.subpaths[0].points.length, 2);
+});
+
+test('reversing a path contour preserves its exact cubic geometry and swaps tangent handles', () => {
+  const geometry = vectorGeometryFromContours([
+    { closed: true, anchors: [
+      { x: 5, y: 10, in: { x: 3, y: 12 }, out: { x: 18, y: 2 }, mode: 'smooth' },
+      { x: 26, y: 14, in: { x: 19, y: 24 }, out: { x: 31, y: 16 } },
+      { x: 16, y: 35, in: { x: 12, y: 29 }, out: { x: 20, y: 36 } }
+    ] },
+    { closed: false, anchors: [{ x: 60, y: 10 }, { x: 70, y: 30 }, { x: 80, y: 5 }] }
+  ]);
+  const original = structuredClone(geometry);
+  const origin = { x: geometry.x, y: geometry.y };
+  const oldSegments = original.points.map((_, index) => vectorSegmentPoints(original, index, origin, 0));
+
+  assert.equal(reverseVectorPathContour(geometry), true);
+  assert.deepEqual(geometry.points[0].in, original.points.at(-1).out);
+  assert.deepEqual(geometry.points[0].out, original.points.at(-1).in);
+  assert.equal(geometry.points[0].mode, original.points.at(-1).mode);
+  for (let index = 0; index < geometry.points.length; index += 1) {
+    const oldIndex = (original.points.length - 2 - index + original.points.length) % original.points.length;
+    assert.deepEqual(vectorSegmentPoints(geometry, index, origin, 0), oldSegments[oldIndex].slice().reverse(), `reversed cubic segment ${index} changed its geometry`);
+  }
+  assert.deepEqual(geometry.subpaths, original.subpaths, 'reversing the primary contour leaves other contours alone');
+  assert.equal(reverseVectorPathContour(geometry), true);
+  assert.deepEqual(geometry.points, original.points, 'reversing twice restores all anchors and handles');
+});
+
+test('reversing one compound subpath does not change legacy contour data or accept invalid contours', () => {
+  const geometry = vectorGeometryFromContours([
+    { closed: false, anchors: [{ x: 0, y: 0 }, { x: 10, y: 0 }] },
+    { closed: true, anchors: [{ x: 20, y: 10 }, { x: 30, y: 10 }, { x: 25, y: 20 }] }
+  ]);
+  const primary = structuredClone(geometry.points);
+  const second = structuredClone(geometry.subpaths[0].points);
+  assert.equal(reverseVectorPathContour(geometry, 1), true);
+  assert.deepEqual(geometry.points, primary);
+  assert.deepEqual(geometry.subpaths[0].points, second.slice().reverse());
+  assert.equal(reverseVectorPathContour(geometry, -1), false);
+  assert.equal(reverseVectorPathContour(geometry, 2), false);
+  assert.equal(reverseVectorPathContour({ points: [{ x: 0, y: 0 }] }), false);
 });
 
 test('freehand samples become a finite smooth network and straight strokes collapse to one cubic', () => {

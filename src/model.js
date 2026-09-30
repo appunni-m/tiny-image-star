@@ -131,12 +131,13 @@ function isValidTextParagraphStyles(styles, text = undefined) {
   for (let index = 0; index < styles.length; index += 1) {
     const style = styles[index];
     if (!style || typeof style !== 'object' || Array.isArray(style)
-      || Object.keys(style).some(key => !['listStyle', 'listLevel', 'listStart'].includes(key))) return false;
+      || Object.keys(style).some(key => !['listStyle', 'listLevel', 'listStart', 'align'].includes(key))) return false;
     const listStyle = style.listStyle ?? 'none';
     const listLevel = style.listLevel ?? 0;
     if (!paragraphListStyles.has(listStyle) || !Number.isInteger(listLevel) || listLevel < 0 || listLevel > 4) return false;
     if (listStyle === 'none' && listLevel !== 0) return false;
     if (style.listStart != null && (listStyle !== 'numbered' || !Number.isInteger(style.listStart) || style.listStart < 1 || style.listStart > 999_999)) return false;
+    if (style.align != null && !textAlignments.has(style.align)) return false;
   }
   return true;
 }
@@ -952,6 +953,10 @@ export function renameNode(document, nodeId, name, pageId = document.activePageI
 
 export function createImageRecipe(imageNode, name, output = {}) {
   if (!imageNode || imageNode.type !== 'image') throw new TypeError('Recipes can only be created from an image layer.');
+  const fit = imageNode.fit ?? 'cover';
+  const opacity = imageNode.opacity ?? 1;
+  if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
   const format = output.format ?? imageNode.outputFormat ?? 'png';
   const quality = output.quality ?? imageNode.outputQuality ?? 90;
   if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
@@ -961,8 +966,8 @@ export function createImageRecipe(imageNode, name, output = {}) {
     name: String(name).trim() || `${imageNode.name} recipe`,
     adjustments: normalizeImageAdjustments(imageNode.adjustments || {}),
     transforms: createImageTransforms(imageNode.transforms || {}),
-    fit: imageNode.fit ?? 'cover',
-    opacity: imageNode.opacity ?? 1,
+    fit,
+    opacity,
     format,
     quality,
     createdAt: new Date().toISOString()
@@ -972,14 +977,23 @@ export function createImageRecipe(imageNode, name, output = {}) {
 export function applyImageRecipe(document, nodeId, recipe, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry || entry.node.type !== 'image') return false;
+  if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) throw new TypeError('Image recipe must be an object.');
   const format = recipe.format ?? 'png';
   const quality = recipe.quality ?? 90;
   if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
-  entry.node.adjustments = normalizeImageAdjustments(recipe.adjustments || {});
-  entry.node.transforms = createImageTransforms(recipe.transforms || {});
-  entry.node.fit = recipe.fit ?? entry.node.fit;
-  entry.node.opacity = recipe.opacity ?? entry.node.opacity;
+  const fit = recipe.fit ?? entry.node.fit ?? 'cover';
+  const opacity = recipe.opacity ?? entry.node.opacity ?? 1;
+  if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
+  // Normalize every recipe field before mutation so malformed data cannot leave
+  // a partially-applied image look behind.
+  const adjustments = normalizeImageAdjustments(recipe.adjustments || {});
+  const transforms = createImageTransforms(recipe.transforms || {});
+  entry.node.adjustments = adjustments;
+  entry.node.transforms = transforms;
+  entry.node.fit = fit;
+  entry.node.opacity = opacity;
   entry.node.outputFormat = format;
   entry.node.outputQuality = quality;
   return true;
@@ -2653,6 +2667,16 @@ export function validateDocument(document) {
     }
   });
   if (!Array.isArray(document.recipes)) throw new TypeError('Recipes must be a list.');
+  const recipeIds = new Set();
+  for (const recipe of document.recipes) {
+    if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)
+      || typeof recipe.id !== 'string' || !recipe.id.trim()
+      || typeof recipe.name !== 'string' || !recipe.name.trim() || recipe.name.length > 60
+      || recipeIds.has(recipe.id)) {
+      throw new TypeError('Invalid or duplicate image recipe identity.');
+    }
+    recipeIds.add(recipe.id);
+  }
   if (document.recipes.some(recipe => recipe?.adjustments != null && !isValidImageAdjustments(recipe.adjustments))) {
     throw new TypeError('Invalid image adjustments in image recipe.');
   }
@@ -2665,6 +2689,13 @@ export function validateDocument(document) {
   if (document.recipes.some(recipe => recipe?.quality != null
     && (!Number.isInteger(recipe.quality) || recipe.quality < 1 || recipe.quality > 100))) {
     throw new TypeError('Invalid image output quality in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.fit != null && !['cover', 'contain'].includes(recipe.fit))) {
+    throw new TypeError('Invalid image fit mode in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.opacity != null
+    && (!Number.isFinite(recipe.opacity) || recipe.opacity < 0 || recipe.opacity > 1))) {
+    throw new TypeError('Invalid image opacity in image recipe.');
   }
   if (document.colorStyles != null) {
     if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');

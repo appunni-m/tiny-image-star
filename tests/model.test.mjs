@@ -109,9 +109,9 @@ test('bulleted and numbered paragraph metadata round-trips, stays independent of
     text: 'Plan\nBuild\nShip',
     textRuns: [{ text: 'Plan', fontWeight: 700 }, { text: '\nBuild\nShip', fontStyle: 'italic' }],
     paragraphStyles: [
-      { listStyle: 'numbered', listLevel: 0, listStart: 4 },
-      { listStyle: 'bulleted', listLevel: 1 },
-      { listStyle: 'numbered', listLevel: 0 }
+      { listStyle: 'numbered', listLevel: 0, listStart: 4, align: 'center' },
+      { listStyle: 'bulleted', listLevel: 1, align: 'right' },
+      { listStyle: 'numbered', listLevel: 0, align: 'justify' }
     ],
     paragraphSpacing: 12,
     listSpacing: 5
@@ -144,6 +144,7 @@ test('bulleted and numbered paragraph metadata round-trips, stays independent of
     ['fractional depth', node => { node.paragraphStyles[1].listLevel = 1.5; }],
     ['start on a bullet', node => { node.paragraphStyles[1].listStart = 2; }],
     ['zero start', node => { node.paragraphStyles[0].listStart = 0; }],
+    ['unsupported paragraph alignment', node => { node.paragraphStyles[1].align = 'middle'; }],
     ['unknown paragraph property', node => { node.paragraphStyles[1].counterFormat = 'roman'; }]
   ]) {
     const invalid = structuredClone(reopened);
@@ -370,6 +371,41 @@ test('legacy image recipes default to PNG output and reject invalid format or qu
   assert.throws(() => validateDocument(document), /Invalid image output format in image recipe/);
   legacy.format = 'jpeg'; legacy.quality = 0;
   assert.throws(() => validateDocument(document), /Invalid image output quality in image recipe/);
+});
+
+test('image recipes validate complete fill/output settings before changing an image', () => {
+  const document = createDocument();
+  const image = createNode('image', {
+    assetId: 'asset-safe', adjustments: { brightness: 12 },
+    transforms: { crop: { left: 0.1, top: 0.1, right: 0.9, bottom: 0.9 }, rotation: 90 },
+    fit: 'contain', opacity: 0.6, outputFormat: 'webp', outputQuality: 71
+  });
+  addNode(document, image);
+  const before = structuredClone(image);
+  for (const invalid of [
+    { adjustments: { brightness: -20 }, transforms: { rotation: 45 }, format: 'jpeg', quality: 40 },
+    { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, fit: 'stretch' },
+    { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, opacity: 1.1 },
+  ]) {
+    assert.throws(() => applyImageRecipe(document, image.id, invalid));
+    assert.deepEqual(image, before, 'a rejected recipe leaves every layer field unchanged');
+  }
+  const recipe = createImageRecipe(image, 'Complete look');
+  assert.deepEqual([recipe.fit, recipe.opacity, recipe.format, recipe.quality], ['contain', 0.6, 'webp', 71]);
+  document.recipes.push(recipe);
+  assert.equal(validateDocument(document), true);
+  for (const recipes of [[null], [{ id: 'x', name: '' }], [{ id: 'x', name: 'One' }, { id: 'x', name: 'Two' }]]) {
+    const corrupted = structuredClone(document);
+    corrupted.recipes = recipes;
+    assert.throws(() => validateDocument(corrupted), /recipe identity/);
+  }
+  for (const invalid of [{ fit: 'stretch' }, { opacity: -0.1 }, { opacity: Infinity }]) {
+    const corrupted = structuredClone(document);
+    Object.assign(corrupted.recipes[0], invalid);
+    assert.throws(() => validateDocument(corrupted), /Invalid image (fit mode|opacity)/);
+  }
+  image.fit = 'stretch';
+  assert.throws(() => createImageRecipe(image, 'Invalid source'), /fit must be Fill or Fit/);
 });
 
 test('image adjustment validation rejects invalid creative tone settings', () => {

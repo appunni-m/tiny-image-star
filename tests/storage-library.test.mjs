@@ -5,7 +5,7 @@ import { createImageFill } from '../src/image-fills.js';
 import { packLocalPackage } from '../src/storage.js';
 import {
   deleteStoredDocument, duplicateStoredDocument, listSavedDocuments, loadDocumentById,
-  deleteFontAsset, importLocalPackage, listFontAssets, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, renameStoredDocument, saveDocument, saveFontAsset, saveImageAssetBytes
+  deleteFontAsset, importLocalPackage, listDocumentVersions, listFontAssets, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, renameStoredDocument, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes
 } from '../src/storage.js';
 
 function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
@@ -15,7 +15,14 @@ function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
   const database = {
     objectStoreNames: { contains: name => stores.has(name) },
     close() { this.closed = true; },
-    createObjectStore(name, { keyPath }) { stores.set(name, { keyPath, records: new Map() }); },
+    createObjectStore(name, { keyPath }) {
+      const store = { keyPath, records: new Map(), indexes: new Map() };
+      stores.set(name, store);
+      return {
+        createIndex(indexName, indexKeyPath) { store.indexes.set(indexName, indexKeyPath); },
+        indexNames: { contains: indexName => store.indexes.has(indexName) }
+      };
+    },
     transaction(names) {
       const transaction = {};
       let completionScheduled = false;
@@ -52,6 +59,23 @@ function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
               completeSoon();
             });
             return request;
+          },
+          index(indexName) {
+            const keyPath = store.indexes.get(indexName);
+            if (!keyPath) throw new Error(`Unknown index ${indexName}.`);
+            return {
+              getAll(query) {
+                const request = {};
+                queueMicrotask(() => {
+                  request.result = [...store.records.values()]
+                    .filter(record => query === undefined || record[keyPath] === query)
+                    .map(clone);
+                  request.onsuccess?.();
+                  completeSoon();
+                });
+                return request;
+              }
+            };
           },
           openCursor() {
             const request = {};
@@ -190,6 +214,44 @@ test('local library lists, retrieves, renames, duplicates, and deletes documents
     'assets remain intact because the v1 asset store has no document ownership metadata');
 });
 
+test('local document versions deduplicate autosaves, retain named checkpoints, fence owners, and prune old snapshots', async () => {
+  globalThis.indexedDB = createIndexedDbMock();
+  const storage = await import('../src/storage.js?local-document-versions-test');
+  const originalNow = Date.now;
+  let clock = 10_000;
+  Date.now = () => ++clock;
+  try {
+    const document = createDocument();
+    document.name = 'History source';
+    const first = await storage.saveDocumentVersion(document, { name: 'Initial canvas', limit: 2 });
+    assert.ok(first?.id);
+    assert.equal(await storage.saveDocumentVersion(document, { name: 'Autosaved version', limit: 2 }), null,
+      'unchanged autosaves should not create duplicate versions');
+
+    document.name = 'Edited canvas';
+    const second = await storage.saveDocumentVersion(document, { name: 'Move title', limit: 2 });
+    document.name = 'Current canvas';
+    const third = await storage.saveDocumentVersion(document, { name: 'Change colors', limit: 2 });
+    assert.deepEqual(new Set((await storage.listDocumentVersions(document.id)).map(version => version.id)), new Set([second.id, third.id]),
+      'the per-design cap should prune only the oldest snapshot');
+    assert.equal(await storage.loadDocumentVersion(first.id, document.id), null, 'a pruned snapshot should not be loadable');
+    assert.equal(await storage.loadDocumentVersion(third.id, createDocument().id), null, 'version reads must be fenced to their owning document');
+    assert.equal((await storage.loadDocumentVersion(third.id, document.id)).document.name, 'Current canvas');
+
+    const named = await storage.saveDocumentVersion(document, { name: 'Launch review', force: true, limit: 2 });
+    assert.equal(named.name, 'Launch review', 'manual versions may preserve the same canvas under a distinct name');
+    document.name = 'After launch';
+    const newest = await storage.saveDocumentVersion(document, { name: 'Autosaved after launch', limit: 2 });
+    assert.deepEqual(new Set((await storage.listDocumentVersions(document.id)).map(version => version.id)), new Set([named.id, newest.id]));
+
+    await storage.saveDocument(document);
+    assert.equal(await storage.deleteStoredDocument(document.id), true);
+    assert.deepEqual(await storage.listDocumentVersions(document.id), [], 'deleting a local design must remove its snapshots in the same storage operation');
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test('local font library stores validated bytes, lists metadata, and removes one face', async () => {
   globalThis.indexedDB = createIndexedDbMock();
   const font = {
@@ -219,7 +281,7 @@ test('font catalog migration stays metadata-only, writes cannot replace faces, a
 
   const catalog = await storage.listFontAssets();
   assert.deepEqual(catalog.map(font => [font.id, font.byteLength]), [['old-display', 12], ['old-other', 12]]);
-  assert.equal(indexedDb.observations.openVersion, 4, 'the font metadata store is added by a forward-only database upgrade');
+  assert.equal(indexedDb.observations.openVersion, 5, 'the local version history store is added by a forward-only database upgrade');
   assert.equal(indexedDb.observations.fontCursorRecordsRead, 2, 'existing font metadata is backfilled one record at a time');
   assert.equal(indexedDb.observations.fontBinaryGetAllCalls, 0, 'font catalogs never materialize all installed binaries');
   assert.deepEqual(indexedDb.observations.fontBinaryGets, [], 'the migration cursor avoids point reads and duplicate copies');
@@ -412,7 +474,7 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.equal(Object.hasOwn(metadata, 'bytes'), false, 'catalog reads never return source image bytes');
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
-  assert.equal(indexedDb.observations.openVersion, 4, 'opening the store upgrades the legacy database schema for local fonts and their metadata catalog');
+  assert.equal(indexedDb.observations.openVersion, 5, 'opening the store upgrades the legacy database schema for local fonts, metadata, and versions');
 });
 
 test('legacy asset metadata is backfilled once, one source record at a time', async () => {

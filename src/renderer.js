@@ -393,7 +393,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   for (const line of lines) {
     if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle), baseStyle.fillOpacity ?? 1);
     const availableWidth = Math.max(1, width - line.indent);
-    const offsetX = line.indent + (baseStyle.align === 'center' ? (availableWidth - line.width) / 2 : baseStyle.align === 'right' ? availableWidth - line.width : 0);
+    const lineAlign = line.align || baseStyle.align || 'left';
+    const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
     const scaleX = line.naturalWidth > availableWidth && line.naturalWidth > 0 ? availableWidth / line.naturalWidth : 1;
 
     ctx.save();
@@ -685,7 +686,8 @@ export class SceneRenderer {
             letterSpacing: letterSpacing || 0, color: textColor
           }, node.fillOpacity ?? 1);
           const availableWidth = Math.max(1, width - line.indent);
-          const offsetX = line.indent + (node.align === 'center' ? (availableWidth - line.width) / 2 : node.align === 'right' ? availableWidth - line.width : 0);
+          const lineAlign = line.align || node.align || 'left';
+          const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
           if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace);
           else drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
           drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');

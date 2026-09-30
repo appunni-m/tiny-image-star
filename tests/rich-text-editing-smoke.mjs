@@ -412,14 +412,35 @@ try {
     && getComputedStyle(editor).getPropertyValue('--text-list-spacing') === '9px'
     && getComputedStyle(editorParagraphs[0]).textIndent === '14px',
   'reopening did not restore list markers, item spacing, and first-line indent.');
+  const alignmentButtons = [...toolbar.querySelectorAll('[data-paragraph-align]')];
+  assert(alignmentButtons.length === 4, 'the text toolbar must expose left, center, right, and justified paragraph alignment.');
+  for (const control of alignmentButtons) assertTouchReachable(app, control, control.getAttribute('aria-label'));
+  selectRange(app, editor, betaStart, betaStart + 'Beta line'.length);
+  tap(app, toolbar.querySelector('[data-paragraph-align="center"]'));
+  editorParagraphs = [...editor.querySelectorAll(':scope > .text-editor-paragraph')];
+  assert(editorParagraphs[1].dataset.editorParagraphAlign === 'center'
+    && getComputedStyle(editorParagraphs[1]).textAlign === 'center',
+  'centering the selected paragraph should update its live editor alignment.');
   tap(app, toolbar.querySelector('[data-text-format-done]'));
   await waitFor(() => editor.hidden, 'saved list editor close');
+  await waitFor(async () => {
+    saved = await documentById(app, smokeDocumentId);
+    return textNode(saved, editedParagraphText)?.paragraphStyles?.[1]?.align === 'center';
+  }, 'paragraph alignment autosave');
+  const beforeAlignmentReload = app;
+  frame.contentWindow.location.reload();
+  await waitFor(() => frame.contentDocument !== beforeAlignmentReload
+    && frame.contentDocument?.documentElement.dataset.appReady === 'true', 'paragraph alignment after reload');
+  app = frame.contentDocument;
+  const alignedNode = textNode(await documentById(app, smokeDocumentId), editedParagraphText);
+  assert(alignedNode?.paragraphStyles?.[1]?.align === 'center', 'local reload should preserve paragraph-level alignment.');
 
 result.textContent = `PASS\n${JSON.stringify({ mobileViewport: '390x844', boldRange: true, italicRange: true, selectedFontSize: 36, selectedWeight: 800, selectedDecoration: 'underline', selectedFamily: 'Georgia, serif', selectedLetterSpacing: 1.2,
     selectedLineHeight: 1.6, selectedColor: '#f0123c', savedRuns: true, reloadPreservesRuns: true, reopenedRunRendering: true,
     editAfterReloadPreservesRuns: true, appendedTextSurvivesReload: true, touchSizedControls: true, plainTextUnchanged: true,
     paragraphs: 4, blankParagraphSelectionRestored: true, savedParagraphSpacing: 11, savedFirstLineIndent: 14, paragraphRunsSurviveReload: true,
-    liveEnterUsesParagraphMetrics: true, enteredParagraphSaves: true, mobileParagraphLists: true, listIndenting: true, listStylesSurviveReload: true })}`;
+    liveEnterUsesParagraphMetrics: true, enteredParagraphSaves: true, mobileParagraphLists: true, listIndenting: true, listStylesSurviveReload: true,
+    paragraphAlignment: 'center', alignmentControlsTouchSized: true, paragraphAlignmentSurvivesReload: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

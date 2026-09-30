@@ -248,6 +248,9 @@ export function defaultImageCachePixelBudget({
 
 export class LocalImageEngine {
   constructor({ maxWorkers = Math.min(8, Math.max(1, globalThis.navigator?.hardwareConcurrency || 4)), maxCachedPixels = defaultImageCachePixelBudget(), maxActiveRenderBytes = defaultActiveRenderMemoryBudget(), maxSingleRenderBytes = defaultSingleImageRenderMemoryBudget(), onChange = () => {} } = {}) {
+    if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1) {
+      throw new RangeError('The image worker limit must be a positive safe integer.');
+    }
     if (!Number.isSafeInteger(maxCachedPixels) || maxCachedPixels < 0) {
       throw new RangeError('The image cache pixel budget must be a nonnegative safe integer.');
     }
@@ -378,7 +381,12 @@ export class LocalImageEngine {
     this.#configureCachePool();
     if (!this.workers.some(workerSlot => !workerSlot.failed)) {
       const queuedError = new Error('All local image workers stopped unexpectedly.');
-      for (const job of this.queue.splice(0)) job.reject(queuedError);
+      for (const job of this.queue.splice(0)) {
+        if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) {
+          this.queuedByKey.delete(job.replaceKey);
+        }
+        job.reject(queuedError);
+      }
     }
     this.#notify();
   }

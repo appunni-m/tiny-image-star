@@ -27,10 +27,15 @@ export function completeImageRecipeBatchIfDrained(batch) {
 }
 
 /** Count one terminal target result; a canceled queued render is not completed. */
-export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, canceled = false } = {}) {
+export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, canceled = false, targetId = null } = {}) {
   if (canceled) return false;
   batch.completed += 1;
-  if (failed) batch.failed += 1;
+  if (failed) {
+    batch.failed += 1;
+    if (typeof targetId === 'string' && targetId && Array.isArray(batch.failedTargets) && !batch.failedTargets.includes(targetId)) {
+      batch.failedTargets.push(targetId);
+    }
+  }
   if (superseded) batch.superseded = (batch.superseded || 0) + 1;
   return true;
 }

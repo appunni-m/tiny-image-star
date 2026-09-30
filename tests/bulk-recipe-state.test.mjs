@@ -45,3 +45,13 @@ test('recipe progress distinguishes successful, failed, superseded, and canceled
   assert.equal(recordImageRecipeBatchTarget(batch, { canceled: true }), false);
   assert.deepEqual(batch, { completed: 3, failed: 1, superseded: 1 });
 });
+
+test('failed image IDs are retained once for targeted retry after the batch drains', () => {
+  const batch = { completed: 0, failed: 0, superseded: 0, failedTargets: [] };
+  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a' });
+  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-a' });
+  recordImageRecipeBatchTarget(batch, { failed: true, targetId: 'image-b' });
+  recordImageRecipeBatchTarget(batch, { canceled: true, failed: true, targetId: 'image-c' });
+  assert.equal(batch.failed, 3);
+  assert.deepEqual(batch.failedTargets, ['image-a', 'image-b']);
+});

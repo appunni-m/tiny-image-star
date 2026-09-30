@@ -85,6 +85,10 @@
               <button class="text-format-button" type="button" data-paragraph-format="numbered" aria-label="Numbered list" aria-pressed="false" title="Numbered list">1. List</button>
               <button class="text-format-button" type="button" data-paragraph-format="outdent" aria-label="Decrease list level" title="Decrease list level">⇤</button>
               <button class="text-format-button" type="button" data-paragraph-format="indent" aria-label="Increase list level" title="Increase list level">⇥</button>
+              <button class="text-format-button" type="button" data-paragraph-align="left" aria-label="Align paragraph left" aria-pressed="false" title="Align left">≡</button>
+              <button class="text-format-button" type="button" data-paragraph-align="center" aria-label="Center paragraph" aria-pressed="false" title="Align center">≋</button>
+              <button class="text-format-button" type="button" data-paragraph-align="right" aria-label="Align paragraph right" aria-pressed="false" title="Align right">≡</button>
+              <button class="text-format-button" type="button" data-paragraph-align="justify" aria-label="Justify paragraph" aria-pressed="false" title="Justify">☰</button>
               <label class="text-format-family-label" for="text-format-family">Font<input id="text-format-family" type="text" maxlength="160" list="font-family-options" value="Arial, sans-serif" aria-label="Selected text font family"></label>
               <label class="text-format-weight-label" for="text-format-weight">Weight<select id="text-format-weight" aria-label="Selected text font weight"><option value="100">100</option><option value="200">200</option><option value="300">300</option><option value="400">400</option><option value="500">500</option><option value="600">600</option><option value="700">700</option><option value="800">800</option><option value="900">900</option></select></label>
               <label class="text-format-size-label" for="text-format-size">Size<input id="text-format-size" type="number" min="1" max="512" step="1" value="24" aria-label="Selected text font size"></label>
@@ -144,7 +148,7 @@
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
         <label class="speed-control" for="bulk-speed"><span>Speed</span><input id="bulk-speed" type="range" min="1" max="4" value="2" /><output id="bulk-speed-value">2 workers</output></label>
-        <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
+        <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action" id="bulk-retry" hidden>Retry failed</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
       </div>
 
       <div class="context-menu" id="context-menu" role="menu" hidden></div>
@@ -197,6 +201,21 @@
           <p class="modal-copy">Open a saved design or make a separate copy. Your files and images stay in this browser.</p>
           <div class="design-library-list" id="design-library-list" aria-live="polite"></div>
           <div class="dialog-actions"><button class="secondary-button" id="design-library-export" type="button">Save current design as file…</button><button class="primary-button" id="design-library-new" type="button">＋ New design</button></div>
+        </section>
+      </dialog>
+
+      <dialog class="modal version-history-dialog" id="version-history-dialog" aria-labelledby="version-history-title">
+        <section class="version-history-content">
+          <div class="modal-title-row">
+            <div><span class="modal-eyebrow">LOCAL VERSION HISTORY</span><h2 id="version-history-title">Version history</h2></div>
+            <button class="icon-button" id="version-history-close" type="button" aria-label="Close version history">×</button>
+          </div>
+          <p class="modal-copy">Saved versions stay in this browser with the design. Autosaves are kept as a rolling history; name a milestone to keep a clear checkpoint.</p>
+          <form class="version-save-form" id="version-save-form">
+            <label class="field-label" for="version-save-name">Name this version</label>
+            <div class="version-save-controls"><input class="text-field" id="version-save-name" maxlength="120" required placeholder="For example, Ready for review" /><button class="primary-button" type="submit">Save version</button></div>
+          </form>
+          <div class="version-history-list" id="version-history-list" aria-live="polite" aria-busy="false"></div>
         </section>
       </dialog>
 

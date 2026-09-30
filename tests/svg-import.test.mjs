@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, parseDocument, serializeDocument } from '../src/model.js';
 import { importSvgToLayers, SvgImportError } from '../src/svg-import.js';
+import { exportNodeToSvg } from '../src/svg-export.js';
 
 function allNodes(nodes, output = []) {
   for (const node of nodes) {
@@ -82,6 +83,92 @@ test('imports SVG path line, cubic, smooth, quadratic, and arc commands as edita
     .find(node => node.type === 'path');
   assert.equal(compactArc.points.length, 3, 'adjacent arc flags are tokenized as separate SVG flags');
 });
+
+test('Tiny Image Star SVG round-trip preserves network topology, controls, face paint, and wrapper transforms', () => {
+  const source = createNetworkForSvgRoundTrip();
+  const svg = exportNodeToSvg(source);
+  const imported = importSvgToLayers(svg);
+  const network = allNodes(imported.nodes).find(node => node.type === 'network');
+  assert.ok(network, 'the app-marked wrapper is reconstructed as one graph network');
+  assert.equal(network.name, 'Branched badge');
+  assert.equal(network.vertices.length, 4);
+  assert.equal(network.edges.length, 5);
+  assert.equal(network.faces.length, 1);
+  assert.deepEqual(network.edges.map(edge => [edge.id, edge.from, edge.to]), [
+    ['edge-top', 'junction', 'right'], ['edge-right', 'right', 'bottom'],
+    ['edge-bottom', 'bottom', 'left'], ['edge-left', 'left', 'junction'],
+    ['edge-branch', 'junction', 'bottom']
+  ]);
+  const angle = Math.PI / 6;
+  const mapLocal = ({ x, y }) => ({
+    x: Math.cos(angle) * x - Math.sin(angle) * y + 60 - Math.cos(angle) * 60 + Math.sin(angle) * 40,
+    y: Math.sin(angle) * x + Math.cos(angle) * y + 40 - Math.sin(angle) * 60 - Math.cos(angle) * 40
+  });
+  const box = [[0, 0], [120, 0], [120, 80], [0, 80]].map(([x, y]) => mapLocal({ x, y }));
+  const minX = Math.min(...box.map(point => point.x)); const minY = Math.min(...box.map(point => point.y));
+  const maxX = Math.max(...box.map(point => point.x)); const maxY = Math.max(...box.map(point => point.y));
+  const normalizedControl = point => {
+    const transformed = mapLocal(point);
+    return { x: (transformed.x - minX) / (maxX - minX), y: (transformed.y - minY) / (maxY - minY) };
+  };
+  for (const [index, point] of [[0, { x: 36, y: -16 }], [1, { x: 86.4, y: -12 }]]) {
+    const expected = normalizedControl(point);
+    assert.ok(Math.abs(network.edges[0][index === 0 ? 'control1' : 'control2'].x - expected.x) < 1e-10);
+    assert.ok(Math.abs(network.edges[0][index === 0 ? 'control1' : 'control2'].y - expected.y) < 1e-10);
+  }
+  assert.deepEqual(network.faces[0], {
+    id: 'face-main', vertexIds: ['junction', 'right', 'bottom', 'left'], fill: '#fedcba', fillOpacity: 0.37
+  });
+
+  // The exported layer matrix rotates the graph around its box center. Imported
+  // anchors are flattened into the equivalent transformed graph coordinates.
+  const byId = new Map(network.vertices.map(vertex => [vertex.id, vertex]));
+  const dx = (byId.get('right').x - byId.get('junction').x) * network.width;
+  const dy = (byId.get('right').y - byId.get('junction').y) * network.height;
+  assert.ok(Math.abs(dx - Math.cos(Math.PI / 6) * 120) < 1e-8);
+  assert.ok(Math.abs(dy - Math.sin(Math.PI / 6) * 120) < 1e-8);
+  assert.equal(network.rotation, 0);
+});
+
+test('foreign SVG paths stay ordinary editable path layers without app network metadata', () => {
+  const imported = importSvgToLayers('<svg viewBox="0 0 20 20"><g><path d="M0 0 L10 0 L10 10 Z" fill="#123456"/></g></svg>');
+  assert.equal(allNodes(imported.nodes).filter(node => node.type === 'network').length, 0);
+  assert.equal(allNodes(imported.nodes).filter(node => node.type === 'path').length, 1);
+});
+
+test('network payload failures reject the complete SVG import', () => {
+  const valid = exportNodeToSvg(createNetworkForSvgRoundTrip());
+  const malformed = valid.replace(/data-tiny-image-star-network-v1="[^"]*"/, 'data-tiny-image-star-network-v1="{&quot;version&quot;:2}"');
+  const withPriorContent = valid.replace('<g transform=', '<path d="M0 0 L4 0"/><g transform=');
+  assert.throws(() => importSvgToLayers(withPriorContent.replace(/data-tiny-image-star-network-v1="[^"]*"/, 'data-tiny-image-star-network-v1="{&quot;version&quot;:2}"')), error => {
+    assert.ok(error instanceof SvgImportError);
+    assert.equal(error.code, 'invalid-network-metadata');
+    return true;
+  });
+  assert.throws(() => importSvgToLayers(malformed), error => error instanceof SvgImportError && error.code === 'invalid-network-metadata');
+  const invalidJson = valid.replace(/data-tiny-image-star-network-v1="[^"]*"/, 'data-tiny-image-star-network-v1="not-json"');
+  assert.throws(() => importSvgToLayers(invalidJson), error => error instanceof SvgImportError && error.code === 'invalid-network-metadata');
+
+  const oversized = valid.replace(/data-tiny-image-star-network-v1="[^"]*"/, `data-tiny-image-star-network-v1="${'x'.repeat(1024 * 1024 + 1)}"`);
+  assert.throws(() => importSvgToLayers(oversized), error => error instanceof SvgImportError && error.code === 'resource-limit');
+});
+
+function createNetworkForSvgRoundTrip() {
+  return {
+    type: 'network', id: 'round-trip-network', name: 'Branched badge', x: 18, y: 24, width: 120, height: 80, rotation: 30,
+    fill: '#abcdef', fillOpacity: 0.62, stroke: '#123456', strokeWidth: 3,
+    vertices: [
+      { id: 'junction', x: 0, y: 0, mode: 'smooth' }, { id: 'right', x: 1, y: 0 },
+      { id: 'bottom', x: 0.72, y: 1 }, { id: 'left', x: 0, y: 1 }
+    ],
+    edges: [
+      { id: 'edge-top', from: 'junction', to: 'right', control1: { x: 0.3, y: -0.2 }, control2: { x: 0.72, y: -0.15 } },
+      { id: 'edge-right', from: 'right', to: 'bottom' }, { id: 'edge-bottom', from: 'bottom', to: 'left' },
+      { id: 'edge-left', from: 'left', to: 'junction' }, { id: 'edge-branch', from: 'junction', to: 'bottom', control1: { x: 0.15, y: 0.2 }, control2: { x: 0.55, y: 0.75 } }
+    ],
+    faces: [{ id: 'face-main', vertexIds: ['junction', 'right', 'bottom', 'left'], fill: '#fedcba', fillOpacity: 0.37 }]
+  };
+}
 
 test('preserves fill/stroke opacity, element opacity, inherited styles and uniform stroke scaling', () => {
   const result = importSvgToLayers(`<svg width="400" height="200" viewBox="0 0 100 50">

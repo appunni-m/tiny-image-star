@@ -480,6 +480,36 @@ test('justified canvas text distributes extra space between words and keeps fina
   assert.deepEqual(draws.slice(3).map(({ text, x }) => [text, x]), [['cc', 0]]);
 });
 
+test('rich and plain canvas text position each paragraph using its own alignment', () => {
+  const rich = richContext();
+  drawTextRuns(rich, [{ text: 'one\ntwo' }], 3, 4, 50, {
+    ...defaultRunStyle, align: 'left',
+    paragraphStyles: [{ align: 'center' }, { align: 'right' }]
+  });
+  assert.deepEqual(rich.calls.filter(call => call.transform === 'translate').map(({ x, y }) => [x, y]), [
+    [3 + (50 - 15) / 2, 4], [3 + 50 - 15, 16.5]
+  ]);
+
+  const document = createDocument();
+  const draws = [];
+  const context = {
+    font: '', fillStyle: '', textAlign: 'left', textBaseline: 'top', globalAlpha: 1,
+    save() {}, restore() {}, beginPath() {}, rect() {},
+    measureText(value) { return { width: [...String(value)].length * 5 }; },
+    fillText(text, x, y) { draws.push({ text, x, y }); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, createNode('text', {
+    x: 3, y: 4, width: 50, height: 60, text: 'one\ntwo', textFit: 'fixed',
+    fontSize: 10, lineHeight: 1.25, align: 'left',
+    paragraphStyles: [{ align: 'center' }, { align: 'right' }]
+  }), 0, 0, new Map());
+  assert.deepEqual(draws.filter(draw => draw.text).map(({ text, x, y }) => [text, x, y]), [
+    ['one', 3 + (50 - 15) / 2, 4], ['two', 3 + 50 - 15, 16.5]
+  ]);
+});
+
 test('justified canvas text retains letter spacing at token boundaries', () => {
   const context = richContext();
   drawTextRuns(context, [{ text: 'aa bb cc' }], 0, 0, 35, {

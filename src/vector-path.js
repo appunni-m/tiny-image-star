@@ -103,6 +103,26 @@ export function vectorPathContours(node) {
   ];
 }
 
+/** Reverse a contour's direction while keeping every cubic segment unchanged. */
+export function reverseVectorPathContour(node, contourIndex = 0) {
+  if (!node || !Number.isInteger(contourIndex) || contourIndex < 0) return false;
+  const contour = contourIndex === 0 ? node : node.subpaths?.[contourIndex - 1];
+  const points = contourIndex === 0 ? node.points : contour?.points;
+  if (!Array.isArray(points) || points.length < 2
+    || points.some(point => !finitePoint(point) || (point.in != null && !finitePoint(point.in)) || (point.out != null && !finitePoint(point.out)))) return false;
+  const reversed = points.slice().reverse().map(point => {
+    const copy = { ...point };
+    if (Object.hasOwn(point, 'in') || Object.hasOwn(point, 'out')) {
+      copy.in = point.out == null ? point.out : { ...point.out };
+      copy.out = point.in == null ? point.in : { ...point.in };
+    }
+    return copy;
+  });
+  if (contourIndex === 0) node.points = reversed;
+  else contour.points = reversed;
+  return true;
+}
+
 function contourAt(node, contourIndex = 0) {
   if (!Number.isInteger(contourIndex) || contourIndex < 0) return null;
   return contourIndex === 0

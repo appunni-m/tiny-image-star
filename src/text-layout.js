@@ -237,11 +237,11 @@ function normalizedParagraphStyle(style) {
   const listStyle = ['bulleted', 'numbered'].includes(style?.listStyle) ? style.listStyle : 'none';
   const listLevel = Number.isInteger(style?.listLevel) && style.listLevel >= 0 && style.listLevel <= maxTextListLevel
     ? style.listLevel : 0;
-  if (listStyle === 'none') return { listStyle, listLevel: 0 };
-  const normalized = { listStyle, listLevel };
+  const normalized = { listStyle, listLevel: listStyle === 'none' ? 0 : listLevel };
   if (listStyle === 'numbered' && Number.isInteger(style?.listStart) && style.listStart >= 1 && style.listStart <= 999_999) {
     normalized.listStart = style.listStart;
   }
+  if (['left', 'center', 'right', 'justify'].includes(style?.align)) normalized.align = style.align;
   return normalized;
 }
 
@@ -406,10 +406,12 @@ export function layoutPlainText(text, maxWidth, measure, {
       const lineIndent = paragraphLineIndex === 0 ? firstIndent : continuationIndent;
       const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - lineIndent) : Infinity;
       const gaps = justificationGapCount(displayText);
-      const justify = align === 'justify' && Number.isFinite(lineLimit) && paragraphLineIndex < wrapped.length - 1 && gaps > 0 && naturalWidth < lineLimit;
+      const paragraphAlign = plan.align || align;
+      const justify = paragraphAlign === 'justify' && Number.isFinite(lineLimit) && paragraphLineIndex < wrapped.length - 1 && gaps > 0 && naturalWidth < lineLimit;
       const visibleWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
       lines.push({
         displayText,
+        align: paragraphAlign,
         index: lines.length,
         paragraphIndex,
         firstLine: paragraphLineIndex === 0,
@@ -643,7 +645,8 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     const displayText = parts.map(part => part.text).join('');
     const gaps = justificationGapCount(displayText);
     const isLastParagraphLine = index === rawLines.length - 1 || rawLines[index + 1].paragraphIndex !== paragraphIndex;
-    const justify = baseStyle.align === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
+    const paragraphAlign = plan.align || baseStyle.align || 'left';
+    const justify = paragraphAlign === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
     const lineWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
     const lineHeight = parts.length
       ? Math.max(...parts.map(part => part.style.fontSize * part.style.lineHeight))
@@ -662,7 +665,7 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
       width: plan.naturalWidth, columnWidth: plan.markerColumnWidth, style: plan.markerStyle
     } : null;
     const current = {
-      index, paragraphIndex, firstLine, indent, y, parts: positionedParts, naturalWidth, width: lineWidth,
+      index, paragraphIndex, firstLine, indent, y, parts: positionedParts, naturalWidth, width: lineWidth, align: paragraphAlign,
       justify, justificationExtraSpace: justify ? (lineLimit - naturalWidth) / gaps : 0,
       lineHeight: resolvedHeight, displayText, listStyle: plan.listStyle, listLevel: plan.listLevel, marker
     };
@@ -707,6 +710,7 @@ export function calculateTextBox(ctx, node, {
       firstLineIndent: nonNegativeTextMetric(firstLineIndent),
       listSpacing: nonNegativeTextMetric(listSpacing),
       paragraphStyles,
+      align: node.align || 'left',
       color: node.color || '#1e1e1e', textDecoration: node.textDecoration || 'none',
       textCase: node.textCase || 'none'
     };
@@ -731,7 +735,7 @@ export function calculateTextBox(ctx, node, {
   if (mode === 'auto-width') {
     const layout = layoutPlainText(textValue, Infinity,
       line => measureTrackedText(ctx, line, spacing),
-      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, markerStyle: {
+      { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
         fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
         fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
       } });
@@ -743,7 +747,7 @@ export function calculateTextBox(ctx, node, {
 
   const layout = layoutPlainText(textValue, Math.max(1, width),
     line => measureTrackedText(ctx, line, spacing),
-    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, markerStyle: {
+    { lineHeight: lineHeightPx, paragraphSpacing, firstLineIndent, listSpacing, paragraphStyles, align: node.align || 'left', markerStyle: {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size, fontWeight: Number(node.fontWeight) || 400,
       fontStyle: node.fontStyle || 'normal', letterSpacing: spacing, color: node.color || '#1e1e1e'
     } });

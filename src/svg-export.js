@@ -27,6 +27,30 @@ const supportedTypes = new Set(['frame', 'section', 'group', 'rectangle', 'ellip
 const identity = [1, 0, 0, 1, 0, 0];
 const emptyDocument = { variables: [], variableCollections: [], colorStyles: [], pages: [] };
 const safeRasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
+const MAX_NETWORK_METADATA_LENGTH = 1024 * 1024;
+
+function networkRoundTripMetadata(node) {
+  const payload = {
+    version: 1,
+    name: node.name || '',
+    geometry: {
+      width: node.width,
+      height: node.height,
+      vertices: node.vertices,
+      edges: node.edges,
+      faces: node.faces
+    },
+    paint: Object.fromEntries([
+      'fill', 'fillOpacity', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap',
+      'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule'
+    ].filter(key => node[key] !== undefined).map(key => [key, node[key]]))
+  };
+  const serialized = JSON.stringify(payload);
+  if (serialized.length > MAX_NETWORK_METADATA_LENGTH) {
+    throw new TypeError(`SVG export cannot preserve vector network metadata larger than ${MAX_NETWORK_METADATA_LENGTH} characters on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  return ` data-tiny-image-star-network-v1="${escapeXml(serialized)}"`;
+}
 
 function resolveLocalImage(node, assets, assetId, imagePreviews = null, previewKey = node.id) {
   const preview = imagePreviews?.get?.(previewKey) ?? imagePreviews?.[previewKey] ?? null;
@@ -713,16 +737,24 @@ function textLineStartX(node, line) {
   const indent = Math.max(0, Number(line.indent) || 0);
   const availableWidth = Math.max(1, width - indent);
   const lineWidth = Math.max(0, Number(line.width) || 0);
-  if (node.align === 'center') return indent + (availableWidth - lineWidth) / 2;
-  if (node.align === 'right') return indent + availableWidth - lineWidth;
+  const align = line.align || node.align || 'left';
+  if (align === 'center') return indent + (availableWidth - lineWidth) / 2;
+  if (align === 'right') return indent + availableWidth - lineWidth;
   return indent;
 }
 
 function textLineAnchorX(node, line) {
   const start = textLineStartX(node, line);
-  if (node.align === 'center') return start + (Number(line.width) || 0) / 2;
-  if (node.align === 'right') return start + (Number(line.width) || 0);
+  const align = line.align || node.align || 'left';
+  if (align === 'center') return start + (Number(line.width) || 0) / 2;
+  if (align === 'right') return start + (Number(line.width) || 0);
   return start;
+}
+
+function svgTextAnchor(align) {
+  if (align === 'center') return 'middle';
+  if (align === 'right') return 'end';
+  return 'start';
 }
 
 function textListMarkerTspan(line, node, document, verticalOffset) {
@@ -790,6 +822,8 @@ function textMarkup(node, document, measureText) {
       const textLength = line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
       const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
       const lineAnchorX = textLineAnchorX(node, line);
+      const lineTextAnchor = svgTextAnchor(line.align || node.align || 'left');
+      const lineTextAnchorOverride = lineTextAnchor === svgTextAnchor(node.align || 'left') ? '' : ` text-anchor="${lineTextAnchor}"`;
       const justificationOffsets = line.justify ? richLineJustificationOffsets(line) : null;
       const parts = line.parts.map(part => {
         const style = part.style;
@@ -811,7 +845,7 @@ function textMarkup(node, document, measureText) {
         return partMarkup;
       }).join('');
       return textListMarkerTspan(line, node, document, verticalOffset)
-        + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${textLength}${wordSpacing}>${parts}</tspan>`;
+        + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
     const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
     const border = node.stroke && Number(node.strokeWidth) > 0
@@ -822,11 +856,13 @@ function textMarkup(node, document, measureText) {
   const tspans = lines.map(line => {
     const { displayText, width, naturalWidth } = line;
     const lineAnchorX = textLineAnchorX(node, line);
+    const lineTextAnchor = svgTextAnchor(line.align || node.align || 'left');
+    const lineTextAnchorOverride = lineTextAnchor === svgTextAnchor(node.align || 'left') ? '' : ` text-anchor="${lineTextAnchor}"`;
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 && !line.justify ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
     const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
     return textListMarkerTspan(line, node, document, verticalOffset)
-      + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
+      + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
   const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
   const border = node.stroke && Number(node.strokeWidth) > 0
@@ -1042,7 +1078,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     const title = node.name ? `<title>${escapeXml(node.name)}</title>` : '';
-    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}`;
+    const metadata = ` data-tiny-image-star-type="${escapeXml(node.type)}"${node.id ? ` data-tiny-image-star-node-id="${escapeXml(node.id)}"` : ''}${node.type === 'network' ? networkRoundTripMetadata(node) : ''}`;
     const hasFillStack = Array.isArray(node.fills);
     const gradient = node.mask || hasFillStack ? null : gradientDefinition(node, index);
     if (gradient) context.defs.push(gradient.markup);

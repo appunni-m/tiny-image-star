@@ -17,7 +17,7 @@ import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, pre
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
-import { deleteFontAsset, deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
+import { deleteFontAsset, deleteStoredDocument, downloadLocalPackage, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, publishStoredComponent, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, unpackLocalPackage } from './storage.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -40,7 +40,7 @@ import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
   getVectorNetworkVertexMode, setVectorNetworkEdgeControlPoint, setVectorNetworkVertexMode, setVectorNetworkVertexPoint, setVectorNodePoint, setVectorNodePointMode, vectorGeometryFromAnchors,
-  vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
+  reverseVectorPathContour, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
@@ -56,7 +56,7 @@ const state = {
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
-  statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
+  statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
@@ -325,8 +325,16 @@ function setSaveState(kind, text) {
   element.classList.toggle('is-error', kind === 'error');
   element.lastElementChild.textContent = text;
 }
-function enqueueDocumentSave(snapshot) {
-  const next = state.saveChain.catch(() => {}).then(() => saveDocument(snapshot));
+function enqueueDocumentSave(snapshot, versionName = 'Autosaved version', recordVersion = true) {
+  const next = state.saveChain.catch(() => {}).then(async () => {
+    await saveDocument(snapshot);
+    let versionError = null;
+    if (recordVersion) {
+      try { await saveDocumentVersion(snapshot, { name: versionName }); }
+      catch (error) { versionError = error; }
+    }
+    return { versionError };
+  });
   state.saveChain = next.catch(() => {});
   return next;
 }
@@ -349,15 +357,16 @@ function queueSave({ refreshLayerTree = true } = {}) {
     try {
       reconcileImageAssetRuntime();
       const snapshot = JSON.parse(serializeDocument(state.document));
-      await enqueueDocumentSave(snapshot);
-      setSaveState('saved', 'Saved locally');
+      const { versionError } = await enqueueDocumentSave(snapshot, state.versionSaveLabel, !isImageRecipeBatchActive(state.bulk));
+      setSaveState('saved', versionError ? 'Saved · history unavailable' : 'Saved locally');
+      if ($('#version-history-dialog')?.open) void renderDocumentVersionHistory();
     } catch (error) {
       setSaveState('error', 'Could not save');
       showToast(error.message || 'Could not save this design locally.');
     }
   }, 260);
 }
-function checkpoint(label) { history.checkpoint(state.document, label); }
+function checkpoint(label) { history.checkpoint(state.document, label); state.versionSaveLabel = label; }
 function setSelection(ids, { keepInspector = false, refreshLayers = true } = {}) {
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
@@ -1267,7 +1276,7 @@ function renderInspector() {
     const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
-    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div>`);
+    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="insert-vector-point">＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${selectedPoint ? '' : ' disabled'}>− Delete point</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div>`);
     if (hasClosedContour) body += appearanceSection(node);
     else body += section('Stroke', colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100) + variableBindingControl(node, 'stroke') + `<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}`);
   } else if (node.type === 'network') {
@@ -1837,6 +1846,25 @@ function removeSelectedPathContour(nodeId = selectedNodes()[0]?.id) {
   recordNodeComponentOverrides(node, ['subpaths']);
   renderInspector(); renderer.invalidate(); queueSave();
   showToast('Contour removed.');
+  return true;
+}
+
+function reverseSelectedPathContour(nodeId = selectedNodes()[0]?.id) {
+  const entry = nodeId ? findNode(state.document, nodeId) : null;
+  const node = entry?.node;
+  const selected = state.selectedVectorPoint;
+  const contourIndex = selected?.nodeId === node?.id ? selected.contourIndex || 0 : 0;
+  const contour = vectorPathContours(node)[contourIndex];
+  if (node?.type !== 'path' || node.locked || entry.parents.some(parent => parent.locked) || !contour || contour.points.length < 2) return false;
+  const pointCount = contour.points.length;
+  checkpoint('Reverse vector contour');
+  if (!reverseVectorPathContour(node, contourIndex)) return false;
+  if (selected?.nodeId === node.id && (selected.contourIndex || 0) === contourIndex) {
+    state.selectedVectorPoint = { ...selected, index: pointCount - 1 - selected.index };
+  }
+  recordNodeComponentOverrides(node, contourIndex === 0 ? ['points'] : ['subpaths']);
+  renderInspector(); renderer.invalidate(); queueSave();
+  showToast('Contour direction reversed. Its Bézier curves keep the same shape.');
   return true;
 }
 
@@ -2544,7 +2572,9 @@ function readTextEditorContent(root) {
       paragraphStyles.push({
         listStyle,
         listLevel: listStyle !== 'none' && Number.isInteger(listLevel) ? listLevel : 0,
-        ...(listStyle === 'numbered' && Number.isInteger(listStart) ? { listStart } : {})
+        ...(listStyle === 'numbered' && Number.isInteger(listStart) ? { listStart } : {}),
+        ...(['left', 'center', 'right', 'justify'].includes(paragraph.dataset.editorParagraphAlign)
+          ? { align: paragraph.dataset.editorParagraphAlign } : {})
       });
       if (index < children.length - 1) append('\n', {});
     });
@@ -2602,6 +2632,10 @@ function renderTextEditorRuns(editor, runs, paragraphStyles = []) {
     paragraph.className = 'text-editor-paragraph';
     if (index > 0) paragraph.classList.add('text-editor-paragraph-following');
     const paragraphStyle = styles[index];
+    if (paragraphStyle.align) {
+      paragraph.dataset.editorParagraphAlign = paragraphStyle.align;
+      paragraph.style.textAlign = paragraphStyle.align;
+    }
     if (paragraphStyle.listStyle !== 'none') {
       paragraph.dataset.editorListStyle = paragraphStyle.listStyle;
       paragraph.dataset.editorListLevel = String(paragraphStyle.listLevel);
@@ -2756,11 +2790,14 @@ function formatSelectedParagraphs(action) {
   if (!range) return;
   const styles = normalizeTextParagraphStyles(current.text, current.paragraphStyles);
   const indexes = textParagraphIndexesForRange(current.text, range);
-  if (action === 'bulleted' || action === 'numbered') {
+  if (['left', 'center', 'right', 'justify'].includes(action)) {
+    for (const index of indexes) styles[index] = { ...styles[index], align: action };
+  } else if (action === 'bulleted' || action === 'numbered') {
     const alreadyApplied = indexes.every(index => styles[index]?.listStyle === action);
-    for (const index of indexes) styles[index] = alreadyApplied
-      ? { listStyle: 'none', listLevel: 0 }
-      : { listStyle: action, listLevel: styles[index]?.listLevel || 0 };
+    for (const index of indexes) {
+      styles[index] = { ...styles[index], listStyle: alreadyApplied ? 'none' : action, listLevel: alreadyApplied ? 0 : styles[index]?.listLevel || 0 };
+      if (alreadyApplied || action !== 'numbered') delete styles[index].listStart;
+    }
   } else {
     for (const index of indexes) {
       const style = styles[index];
@@ -2802,6 +2839,7 @@ function updateTextFormatToolbar() {
   const paragraphIndexes = textParagraphIndexesForRange(current.text, range || { start: 0, end: 0 });
   const paragraphStyles = normalizeTextParagraphStyles(current.text, current.paragraphStyles);
   const listButtons = [...toolbar.querySelectorAll('[data-paragraph-format]')];
+  const alignButtons = [...toolbar.querySelectorAll('[data-paragraph-align]')];
   const canIndent = paragraphIndexes.some(index => paragraphStyles[index]?.listStyle !== 'none' && paragraphStyles[index].listLevel < 4);
   const canOutdent = paragraphIndexes.some(index => paragraphStyles[index]?.listStyle !== 'none' && paragraphStyles[index].listLevel > 0);
   for (const button of listButtons) {
@@ -2813,6 +2851,11 @@ function updateTextFormatToolbar() {
       button.disabled = action === 'indent' ? !canIndent : !canOutdent;
       continue;
     }
+    button.disabled = false;
+  }
+  for (const button of alignButtons) {
+    const align = button.dataset.paragraphAlign;
+    button.setAttribute('aria-pressed', String(paragraphIndexes.every(index => (paragraphStyles[index]?.align || node.align || 'left') === align)));
     button.disabled = false;
   }
   const size = $('#text-format-size'); const lineHeight = $('#text-format-line-height'); const color = $('#text-format-color');
@@ -2959,8 +3002,8 @@ function commitTextEdit({ restoreFocus = false } = {}) {
     const richRuns = normalizedRuns.some(run => textRunStyleKeys.some(property => run[property] != null)) ? normalizedRuns : null;
     const nextTextFit = node.textFit || 'auto-height';
     const nextRuns = richRuns ? JSON.stringify(richRuns) : null;
-    const normalizedListStyles = normalizedParagraphStyles.some(style => style.listStyle !== 'none') ? normalizedParagraphStyles : null;
-    const nextParagraphStyles = normalizedListStyles ? JSON.stringify(normalizedListStyles) : null;
+    const hasParagraphFormatting = normalizedParagraphStyles.some(style => style.listStyle !== 'none' || style.align != null);
+    const nextParagraphStyles = hasParagraphFormatting ? JSON.stringify(normalizedParagraphStyles) : null;
     const textChanged = oldText !== text || (node.variableBindings?.text && getNodePropertyValue(state.document, node, 'text') !== text);
     const runsChanged = oldRuns !== nextRuns;
     const paragraphStylesChanged = oldParagraphStyles !== nextParagraphStyles;
@@ -2970,7 +3013,7 @@ function commitTextEdit({ restoreFocus = false } = {}) {
     node.text = text;
     if (richRuns) node.textRuns = normalizedRuns;
     else delete node.textRuns;
-    if (normalizedListStyles) node.paragraphStyles = normalizedListStyles;
+    if (hasParagraphFormatting) node.paragraphStyles = normalizedParagraphStyles;
     else delete node.paragraphStyles;
     node.textFit ||= 'auto-height';
     resizeTextNode(node);
@@ -3040,6 +3083,7 @@ function initRichTextEditorEvents() {
     if (button?.dataset.textFormat === 'bold') toggleTextFormat('fontWeight');
     else if (button?.dataset.textFormat === 'italic') toggleTextFormat('fontStyle');
     else if (event.target.closest('[data-paragraph-format]')) formatSelectedParagraphs(event.target.closest('[data-paragraph-format]').dataset.paragraphFormat);
+    else if (event.target.closest('[data-paragraph-align]')) formatSelectedParagraphs(event.target.closest('[data-paragraph-align]').dataset.paragraphAlign);
     else if (event.target.closest('[data-text-format-done]')) commitTextEdit({ restoreFocus: true });
   });
   toolbar.addEventListener('change', event => {
@@ -3888,6 +3932,8 @@ function renderBulkBar() {
   $('#bulk-pause').textContent = bulk.paused ? 'Resume' : 'Pause';
   $('#bulk-cancel').hidden = bulk.done || bulk.cancelled;
   $('#bulk-speed').disabled = bulk.done || bulk.cancelled;
+  $('#bulk-retry').hidden = !dismissible || !bulk.failedTargets?.length;
+  $('#bulk-retry').textContent = `Retry failed${bulk.failedTargets?.length ? ` (${bulk.failedTargets.length})` : ''}`;
   $('#bulk-done').hidden = !dismissible;
 }
 
@@ -3957,7 +4003,10 @@ function scheduleBulk() {
   while (bulk.inflight < bulk.concurrency && bulk.next < bulk.targets.length) {
     const id = bulk.targets[bulk.next++];
     const entry = findNode(state.document, id);
-    if (!entry || entry.node.type !== 'image') { recordImageRecipeBatchTarget(bulk, { failed: true }); continue; }
+    if (!entry || entry.node.type !== 'image') {
+      recordImageRecipeBatchTarget(bulk, { failed: true, targetId: id });
+      continue;
+    }
     if (!isEditableImageRecipeTarget(entry)) {
       bulk.skippedLocked += 1;
       recordImageRecipeBatchTarget(bulk);
@@ -4023,7 +4072,7 @@ function scheduleBulk() {
           state.imageStatus.set(id, error.previewFallbackShown ? 'Recipe failed · showing original' : 'Recipe failed');
           updateSelectedImageStatus(id);
         }
-        recordImageRecipeBatchTarget(bulk, { failed: true });
+        recordImageRecipeBatchTarget(bulk, { failed: true, targetId: id });
         showToast(`${node.name}: ${error.message}`);
       }
     }).finally(() => {
@@ -4039,7 +4088,7 @@ function scheduleBulk() {
   renderBulkBar();
 }
 
-function startRecipe(recipe, targets) {
+function startRecipe(recipe, targets, { concurrency = Math.min(2, CPU_LIMIT) } = {}) {
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('A recipe batch is active. Finish or stop it before starting another.');
     renderBulkBar();
@@ -4052,11 +4101,10 @@ function startRecipe(recipe, targets) {
   if (!unique.length) { showToast('Select one or more unlocked image layers first.'); return false; }
   if (lockedCount) showToast(`${lockedCount} locked image${lockedCount === 1 ? '' : 's'} skipped.`);
   checkpoint(`Apply ${recipe.name} to ${unique.length} image${unique.length === 1 ? '' : 's'}`);
-  const concurrency = Math.min(2, CPU_LIMIT);
   state.bulk = {
     recipe, targets: unique, next: 0, completed: 0, failed: 0, superseded: 0, excludedLocked: lockedCount, skippedLocked: 0, inflight: 0, concurrency,
     paused: false, cancelled: false, done: false,
-    previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set()
+    previousStatuses: new Map(), renderVersions: new Map(), restorePreviews: new Set(), failedTargets: []
   };
   imageEngine.setConcurrency(concurrency);
   renderBulkBar(); scheduleBulk();
@@ -4073,6 +4121,12 @@ function cancelBulkRecipe() {
   }
   renderBulkBar();
   return true;
+}
+
+function retryFailedRecipeTargets() {
+  const previous = state.bulk;
+  if (!canDismissImageRecipeBatch(previous) || !previous.failedTargets?.length) return false;
+  return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency });
 }
 
 function saveRecipeFor(nodeId) {
@@ -4516,6 +4570,7 @@ function openFileMenu(x, y, commentAnchor = null) {
   showMenu([
     ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
     { label: 'Your designs…', action: openDesignLibrary },
+    { label: 'Version history…', action: openVersionHistory },
     { label: 'New design', shortcut: '⌘N', action: newDesign },
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { label: 'Import SVG as editable layers…', action: () => $('#svg-input').click() },
@@ -4957,6 +5012,7 @@ function undo() {
   const previousDocument = state.document;
   const next = history.undo(previousDocument);
   if (!next) return;
+  state.versionSaveLabel = 'Undo';
   state.document = next;
   reconcileImagePreviewRuntime();
   refreshHistoryImagePreviews(previousDocument);
@@ -4968,6 +5024,7 @@ function redo() {
   const previousDocument = state.document;
   const next = history.redo(previousDocument);
   if (!next) return;
+  state.versionSaveLabel = 'Redo';
   state.document = next;
   reconcileImagePreviewRuntime();
   refreshHistoryImagePreviews(previousDocument);
@@ -4975,7 +5032,7 @@ function redo() {
   state.selectedVectorPoint = null; renderUI(); queueSave();
 }
 function newDesign() {
-  return switchToDocument(createDocument(), { message: 'New local design created.' });
+  return switchToDocument(createDocument(), { message: 'New local design created.', versionLabel: 'New design' });
 }
 function addPage() {
   const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
@@ -5497,11 +5554,11 @@ async function persistCurrentDocumentNow() {
     while (true) {
       const revision = state.saveRevision;
       const snapshot = JSON.parse(serializeDocument(state.document));
-      await enqueueDocumentSave(snapshot);
+      const { versionError } = await enqueueDocumentSave(snapshot, state.versionSaveLabel, !isImageRecipeBatchActive(state.bulk));
       if (revision === state.saveRevision) {
         clearTimeout(state.saveTimer);
         state.saveTimer = null;
-        setSaveState('saved', 'Saved locally');
+        setSaveState('saved', versionError ? 'Saved · history unavailable' : 'Saved locally');
         return true;
       }
       clearTimeout(state.saveTimer);
@@ -5531,7 +5588,7 @@ function releaseImageRuntimeForDocumentSwitch() {
   imageMemoryBudget.releaseEntries();
 }
 
-async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null } = {}) {
+async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, versionLabel = 'Opened design' } = {}) {
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('Finish or stop the active image recipe before switching designs.');
     return false;
@@ -5549,6 +5606,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.clipboard = [];
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
+    state.versionSaveLabel = versionLabel;
     state.prototypeConditionVariableId = null;
     state.prototypeConditionOperator = 'equals';
     state.prototypeConditionValue = null;
@@ -5660,6 +5718,74 @@ async function handleDesignLibraryAction(action, id) {
       await renderDesignLibrary();
     }
   } catch (error) { showToast(error.message || 'Could not update the local design library.'); }
+}
+
+async function renderDocumentVersionHistory() {
+  const list = $('#version-history-list');
+  if (!list) return;
+  list.setAttribute('aria-busy', 'true');
+  try {
+    const versions = await listDocumentVersions(state.document.id);
+    if (!versions.length) {
+      list.innerHTML = '<div class="version-history-empty">No saved versions yet. Make an edit or name a checkpoint to start this design’s history.</div>';
+      return;
+    }
+    list.innerHTML = versions.map(version => {
+      let date = 'Saved on this device';
+      if (version.createdAt) {
+        try { date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(version.createdAt)); } catch { /* Keep the local fallback label. */ }
+      }
+      return `<article class="version-record"><div class="version-record-details"><span class="version-record-name">${escapeHtml(version.name)}</span><span class="version-record-date">${escapeHtml(date)} · This device</span></div><button class="secondary-button" type="button" data-version-action="restore" data-version-id="${escapeHtml(version.id)}">Restore</button></article>`;
+    }).join('');
+  } catch (error) {
+    list.innerHTML = `<div class="version-history-empty">Version history is unavailable: ${escapeHtml(error.message || 'local storage could not be read.')}</div>`;
+  } finally {
+    list.setAttribute('aria-busy', 'false');
+  }
+}
+
+async function openVersionHistory() {
+  const dialog = $('#version-history-dialog');
+  if (!dialog.open) dialog.showModal();
+  setDocumentEditingBlocked(true);
+  try {
+    if (!(await persistCurrentDocumentNow())) return;
+    await renderDocumentVersionHistory();
+    $('#version-save-name').focus();
+  } finally {
+    if (!state.documentTransitioning) setDocumentEditingBlocked(false);
+  }
+}
+
+async function saveNamedDocumentVersion(name) {
+  if (isImageRecipeBatchActive(state.bulk)) { showToast('Wait until the image recipe batch finishes before saving a named version.'); return; }
+  const versionName = String(name ?? '').trim();
+  if (!versionName || versionName.length > 120) { showToast('A version name must contain 1–120 characters.'); return; }
+  if (!(await persistCurrentDocumentNow())) return;
+  try {
+    const snapshot = JSON.parse(serializeDocument(state.document));
+    await saveDocumentVersion(snapshot, { name: versionName, force: true });
+    await renderDocumentVersionHistory();
+    $('#version-save-name').value = '';
+    showToast(`Saved “${versionName}” to this device’s version history.`);
+  } catch (error) { showToast(error.message || 'Could not save this local version.'); }
+}
+
+async function restoreDocumentVersion(versionId) {
+  if (isImageRecipeBatchActive(state.bulk)) { showToast('Finish or stop the active image recipe before restoring a version.'); return; }
+  try {
+    const version = await loadDocumentVersion(versionId, state.document.id);
+    if (!version || version.document.id !== state.document.id) {
+      showToast('That local version is no longer available for this design.');
+      await renderDocumentVersionHistory();
+      return;
+    }
+    const restored = await switchToDocument(parseDocument(version.document), {
+      message: `Restored “${version.name}” from local version history.`,
+      versionLabel: `Restored · ${version.name}`
+    });
+    if (restored) $('#version-history-dialog').close();
+  } catch (error) { showToast(error.message || 'Could not restore this local version.'); }
 }
 
 function imageNodesAcrossPages() { const result = []; for (const page of state.document.pages) walkNodes(page.children, ({ node }) => { if (node.type === 'image') result.push(node); }); return result; }
@@ -6348,6 +6474,7 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'release-mask' && node?.type === 'group' && node.mask) releaseSelectedMask(node.id);
   else if (action === 'insert-vector-point' && ['path', 'network'].includes(node?.type)) insertPathPointOnLongestSegment(node.id);
   else if (action === 'delete-vector-point' && ['path', 'network'].includes(node?.type)) deleteSelectedVectorPoint(node.id);
+  else if (action === 'reverse-vector-contour' && node?.type === 'path') reverseSelectedPathContour(node.id);
   else if (action === 'add-vector-contour' && node?.type === 'path') addPathContour(node.id);
   else if (action === 'remove-vector-contour' && node?.type === 'path') removeSelectedPathContour(node.id);
   else if (action === 'create-color-variable') createColorVariableFromSelection(details.kind || null);
@@ -6896,6 +7023,15 @@ function initEvents() {
     const button = event.target.closest('[data-design-action]');
     if (button) void handleDesignLibraryAction(button.dataset.designAction, button.dataset.designId);
   });
+  $('#version-history-close').addEventListener('click', () => $('#version-history-dialog').close());
+  $('#version-save-form').addEventListener('submit', event => {
+    event.preventDefault();
+    void saveNamedDocumentVersion($('#version-save-name').value);
+  });
+  $('#version-history-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-version-action="restore"]');
+    if (button) void restoreDocumentVersion(button.dataset.versionId);
+  });
   $('#share-button').addEventListener('click', () => showToast('This editor stores files locally. Cloud sharing and live collaboration are not enabled.'));
   $('#mode-button').addEventListener('click', () => { state.inspectorTab = state.inspectorTab === 'prototype' ? 'design' : 'prototype'; state.prototypeSourceId = null; $$('.inspector-tab').forEach(tab => { tab.classList.toggle('is-active', tab.dataset.inspectorTab === state.inspectorTab); tab.setAttribute('aria-selected', String(tab.dataset.inspectorTab === state.inspectorTab)); }); renderInspector(); renderer.invalidate(); });
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
@@ -6963,6 +7099,7 @@ function initEvents() {
     state.bulk.paused = !state.bulk.paused; renderBulkBar(); if (!state.bulk.paused) scheduleBulk();
   });
   $('#bulk-cancel').addEventListener('click', cancelBulkRecipe);
+  $('#bulk-retry').addEventListener('click', retryFailedRecipeTargets);
   $('#bulk-done').addEventListener('click', () => { if (!canDismissImageRecipeBatch(state.bulk)) return; state.bulk = null; renderBulkBar(); });
   $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
   $('#outline-mode').addEventListener('click', toggleOutlineMode);

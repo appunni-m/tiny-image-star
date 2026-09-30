@@ -17,6 +17,11 @@ const MAX_DEPTH = 128;
 const MAX_COORDINATE = 100_000_000;
 const MAX_VECTOR_POINTS = 20_000;
 const MAX_VECTOR_TOKENS = 100_000;
+const MAX_NETWORK_METADATA_LENGTH = 1024 * 1024;
+const MAX_NETWORK_VERTICES = 20_000;
+const MAX_NETWORK_EDGES = 40_000;
+const MAX_NETWORK_FACES = 10_000;
+const NETWORK_METADATA_ATTRIBUTE = 'data-tiny-image-star-network-v1';
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
 const MAX_TEXT_LENGTH = 100_000;
@@ -118,7 +123,7 @@ function parseXml(source) {
       const parent = stack.at(-1);
       const context = parent?.tag;
       if (['script', 'foreignObject'].includes(context)) fail('active-content', `SVG element <${context}> contains active or embedded content.`, context);
-      if (context === 'text' || context === 'tspan') {
+      if (context === 'text' || context === 'tspan' || context === 'title') {
         const decoded = decodeXml(textContent, context);
         parent.textContent = (parent.textContent ?? '') + decoded;
         (parent.content ||= []).push(decoded);
@@ -336,6 +341,93 @@ function parseTransform(value, element) {
 
 function mapPoint(matrix, point) {
   return { x: matrix[0] * point.x + matrix[2] * point.y + matrix[4], y: matrix[1] * point.x + matrix[3] * point.y + matrix[5] };
+}
+
+function importedNetwork(node, matrix, style, prefix, counter, metadataText) {
+  if (node.tag !== 'g' || node.attrs['data-tiny-image-star-type'] !== 'network') {
+    fail('invalid-network-metadata', 'Tiny Image Star network metadata must be attached to a marked <g> network wrapper.', node.tag);
+  }
+  if (metadataText.length > MAX_NETWORK_METADATA_LENGTH) {
+    fail('resource-limit', `Tiny Image Star network metadata exceeds the ${MAX_NETWORK_METADATA_LENGTH}-character limit.`, node.tag);
+  }
+  let payload;
+  try { payload = JSON.parse(metadataText); }
+  catch { fail('invalid-network-metadata', 'Tiny Image Star network metadata is not valid JSON.', node.tag); }
+  const geometry = payload?.geometry;
+  if (!payload || Object.keys(payload).some(key => !['version', 'name', 'geometry', 'paint'].includes(key))
+    || !geometry || Object.keys(geometry).some(key => !['width', 'height', 'vertices', 'edges', 'faces'].includes(key))
+    || payload.version !== 1 || typeof payload.name !== 'string' || payload.name.length > 120
+    || !geometry || !Number.isFinite(geometry.width) || geometry.width <= 0 || geometry.width > MAX_COORDINATE
+    || !Number.isFinite(geometry.height) || geometry.height <= 0 || geometry.height > MAX_COORDINATE
+    || !Array.isArray(geometry.vertices) || geometry.vertices.length < 2 || geometry.vertices.length > MAX_NETWORK_VERTICES
+    || !Array.isArray(geometry.edges) || !geometry.edges.length || geometry.edges.length > MAX_NETWORK_EDGES
+    || !Array.isArray(geometry.faces) || geometry.faces.length > MAX_NETWORK_FACES
+    || !payload.paint || typeof payload.paint !== 'object' || Array.isArray(payload.paint)) {
+    fail('invalid-network-metadata', 'Tiny Image Star network metadata has an invalid version or graph structure.', node.tag);
+  }
+  const allowedPaint = new Set(['fill', 'fillOpacity', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'fillGradient', 'fillRule']);
+  if (Object.keys(payload.paint).some(key => !allowedPaint.has(key))) {
+    fail('invalid-network-metadata', 'Tiny Image Star network metadata contains unsupported paint fields.', node.tag);
+  }
+
+  // Validate the untransformed graph first. Transform only after graph identities,
+  // controls, and face boundaries have passed the same document rules as saved data.
+  const source = createNode('network', {
+    width: geometry.width, height: geometry.height,
+    vertices: geometry.vertices, edges: geometry.edges, faces: geometry.faces,
+    ...payload.paint
+  });
+  const sourceDocument = createDocument();
+  sourceDocument.pages[0].children = [source];
+  try { validateDocument(sourceDocument); }
+  catch { fail('invalid-network-metadata', 'Tiny Image Star network metadata contains invalid vector graph data.', node.tag); }
+
+  const corners = [
+    mapPoint(matrix, { x: 0, y: 0 }), mapPoint(matrix, { x: geometry.width, y: 0 }),
+    mapPoint(matrix, { x: geometry.width, y: geometry.height }), mapPoint(matrix, { x: 0, y: geometry.height })
+  ];
+  const x = Math.min(...corners.map(point => point.x));
+  const y = Math.min(...corners.map(point => point.y));
+  const width = Math.max(1, Math.max(...corners.map(point => point.x)) - x);
+  const height = Math.max(1, Math.max(...corners.map(point => point.y)) - y);
+  const convert = point => {
+    const transformed = mapPoint(matrix, { x: Number(point.x) * geometry.width, y: Number(point.y) * geometry.height });
+    return { x: (transformed.x - x) / width, y: (transformed.y - y) / height };
+  };
+  const vertices = geometry.vertices.map(vertex => ({
+    ...vertex,
+    ...convert(vertex),
+    ...(vertex.split ? { split: {
+      ...vertex.split,
+      originalEdge: {
+        ...vertex.split.originalEdge,
+        ...Object.fromEntries(['control1', 'control2'].filter(part => vertex.split.originalEdge[part]).map(part => [part, convert(vertex.split.originalEdge[part])]))
+      }
+    } } : {})
+  }));
+  const edges = geometry.edges.map(edge => ({
+    ...edge,
+    ...Object.fromEntries(['control1', 'control2'].filter(part => edge[part]).map(part => [part, convert(edge[part])]))
+  }));
+  const scale = matrixScale(matrix);
+  if (scale == null && (payload.paint.strokeWidth > 0 || payload.paint.strokes?.some(stroke => stroke.width > 0 && stroke.visible))) {
+    fail('non-uniform-stroke-transform', 'Tiny Image Star vector network metadata uses a non-uniform transform with a visible stroke.', node.tag);
+  }
+  const paint = { ...payload.paint };
+  if (scale != null && scale !== 1) {
+    if (Number.isFinite(paint.strokeWidth)) paint.strokeWidth *= scale;
+    if (Array.isArray(paint.strokes)) paint.strokes = paint.strokes.map(stroke => ({ ...stroke, width: stroke.width * scale }));
+  }
+  const imported = createNode('network', {
+    id: `${prefix}-network-${counter.next++}`, name: cleanLayerName(payload.name || localName(node)),
+    x, y, width, height, rotation: 0, opacity: style.opacity,
+    ...paint, vertices, edges, faces: geometry.faces
+  });
+  const document = createDocument();
+  document.pages[0].children = [imported];
+  try { validateDocument(document); }
+  catch { fail('invalid-network-metadata', 'Transformed Tiny Image Star network metadata is invalid.', node.tag); }
+  return imported;
 }
 
 function matrixScale(matrix) {
@@ -1491,6 +1583,7 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
 function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients) {
   if (node.tag === 'svg' && node !== counter.root) fail('unsupported-nested-svg', 'Nested <svg> viewports are not supported.', 'svg');
   if (node.tag === 'defs') return [];
+  if (node.tag === 'title') return [];
   if (node.tag === 'tspan') fail('unsupported-text-tspan', 'SVG <tspan> runs are not supported; use one plain text run per <text> element.', 'tspan');
   if (unsafeSvgElements.has(node.tag)) {
     const code = ['script', 'foreignObject'].includes(node.tag) ? 'active-content' : ['image', 'use'].includes(node.tag) ? 'external-reference' : 'unsupported-element';
@@ -1502,6 +1595,9 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
   const style = parseStyle(node, parentStyle, gradients);
   if (!style.display || (node.tag !== 'g' && node.tag !== 'svg' && !style.visible)) return [];
   const matrix = matrixMultiply(parentMatrix, parseTransform(node.attrs.transform, node.tag));
+  if (Object.hasOwn(node.attrs, NETWORK_METADATA_ATTRIBUTE)) {
+    return [importedNetwork(node, matrix, style, prefix, counter, node.attrs[NETWORK_METADATA_ATTRIBUTE])];
+  }
   if (node.tag === 'text') {
     const serial = counter.next++;
     const layer = textLayer(node, style, matrix, prefix, serial, gradients);

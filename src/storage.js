@@ -5,15 +5,16 @@ import { validateLocalFontAsset } from './font-assets.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const COMPONENT_LIBRARY_DB_VERSION = 1;
+export const MAX_LOCAL_DOCUMENT_VERSIONS = 30;
 const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
 const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
 const dbPromises = new Map();
 let assetMetadataMigrationPromise = null;
 let fontMetadataMigrationPromise = null;
 
-function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState'], version = DB_VERSION) {
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
@@ -42,7 +43,10 @@ function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'asse
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const storeName of storeNames) {
-        if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(storeName)) {
+          const store = db.createObjectStore(storeName, { keyPath: 'id' });
+          if (storeName === 'versions') store.createIndex('byDocument', 'documentId', { unique: false });
+        }
       }
     };
     request.onsuccess = () => {
@@ -217,6 +221,57 @@ export async function loadLatestDocument() {
   return records[0]?.document ?? null;
 }
 
+function versionOrder(left, right) {
+  return (right.createdAt || 0) - (left.createdAt || 0) || String(right.id).localeCompare(String(left.id));
+}
+
+/** Save one local document snapshot and retain a bounded history per design. */
+export async function saveDocumentVersion(document, { name = 'Autosaved version', force = false, limit = MAX_LOCAL_DOCUMENT_VERSIONS } = {}) {
+  if (!document || typeof document.id !== 'string' || !document.id) throw new TypeError('A local version needs a saved design ID.');
+  const versionName = String(name ?? '').trim().slice(0, 120) || 'Autosaved version';
+  const keep = Math.max(1, Math.min(100, Math.floor(Number(limit) || MAX_LOCAL_DOCUMENT_VERSIONS)));
+  const db = await openDatabase();
+  const tx = db.transaction('versions', 'readwrite');
+  const store = tx.objectStore('versions');
+  const done = transactionDone(tx);
+  const request = store.index('byDocument').getAll(document.id);
+  let saved = null;
+  request.onsuccess = () => {
+    const versions = (Array.isArray(request.result) ? request.result : []).sort(versionOrder);
+    const snapshot = structuredClone(document);
+    const latest = versions[0];
+    if (!force && latest && JSON.stringify(latest.document) === JSON.stringify(snapshot)) return;
+    const record = { id: createId('version'), documentId: document.id, name: versionName, createdAt: Date.now(), document: snapshot };
+    store.put(record);
+    for (const stale of [...versions, record].sort(versionOrder).slice(keep)) store.delete(stale.id);
+    saved = { id: record.id, documentId: record.documentId, name: record.name, createdAt: record.createdAt };
+  };
+  await done;
+  return saved;
+}
+
+/** List local version summaries without returning the saved document trees. */
+export async function listDocumentVersions(documentId) {
+  if (typeof documentId !== 'string' || !documentId) return [];
+  const db = await openDatabase();
+  const records = await requestResult(db.transaction('versions').objectStore('versions').index('byDocument').getAll(documentId));
+  return records.sort(versionOrder).map(({ id, documentId: ownerId, name, createdAt }) => ({
+    id,
+    documentId: ownerId,
+    name: typeof name === 'string' ? name : 'Saved version',
+    createdAt: Number.isFinite(createdAt) ? createdAt : 0
+  }));
+}
+
+/** Read one retained snapshot and optionally fence it to its owning design ID. */
+export async function loadDocumentVersion(versionId, documentId = null) {
+  if (typeof versionId !== 'string' || !versionId) return null;
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('versions').objectStore('versions').get(versionId));
+  if (!record?.document || (documentId != null && record.documentId !== documentId)) return null;
+  return structuredClone(record);
+}
+
 /** Return document-library rows without loading every design tree into the UI. */
 export async function listSavedDocuments() {
   const db = await openDatabase();
@@ -281,12 +336,13 @@ export async function duplicateStoredDocument(id, name = null) {
   return duplicate && structuredClone(duplicate);
 }
 
-/** Delete one saved design atomically. Asset rows are intentionally retained: v1 assets have no document ownership metadata. */
+/** Delete a saved design and its local versions atomically; shared asset rows remain owned by the local library. */
 export async function deleteStoredDocument(id) {
   if (typeof id !== 'string' || !id) return false;
   const db = await openDatabase();
-  const tx = db.transaction('documents', 'readwrite');
+  const tx = db.transaction(['documents', 'versions'], 'readwrite');
   const store = tx.objectStore('documents');
+  const versions = tx.objectStore('versions');
   let found = false;
   const done = transactionDone(tx);
   const request = store.get(id);
@@ -294,6 +350,10 @@ export async function deleteStoredDocument(id) {
     if (!request.result) return;
     found = true;
     store.delete(id);
+    const versionRequest = versions.index('byDocument').getAll(id);
+    versionRequest.onsuccess = () => {
+      for (const version of versionRequest.result || []) versions.delete(version.id);
+    };
   };
   await done;
   return found;

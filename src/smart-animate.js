@@ -10,7 +10,7 @@ const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'lette
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
-  'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
+  'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
 ];
 
@@ -178,7 +178,6 @@ function interpolateEffects(from, to, progress) {
 
 function canMatch(from, to) {
   if (!from || !to || from.type !== to.type) return false;
-  if (from.type === 'text' && from.text !== to.text) return false;
   if (from.type === 'image' && from.assetId !== to.assetId) return false;
   if (from.type === 'boolean' && from.operation !== to.operation) return false;
   if (from.type === 'path' && !canInterpolatePath(from, to)) return false;

@@ -122,6 +122,15 @@ async function withEngine(run, { maxWorkers = 1, maxCachedPixels = PIXEL_BUDGET,
 
 const bytesFor = pixels => new Uint8Array([pixels]);
 
+test('LocalImageEngine rejects invalid worker limits before allocating a pool', () => {
+  for (const maxWorkers of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => new LocalImageEngine({ maxWorkers }), {
+      name: 'RangeError',
+      message: /worker limit must be a positive safe integer/,
+    });
+  }
+});
+
 function pngHeader(width, height) {
   const bytes = new Uint8Array(24);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -612,9 +621,9 @@ test('default active render memory budget scales conservatively with reported de
 test('last worker failure rejects queued work and later requests instead of hanging', async () => {
   await withEngine(async engine => {
     const queued = [
-      engine.render('a', bytesFor(2), {}),
-      engine.render('b', bytesFor(2), {}),
-      engine.render('c', bytesFor(2), {}),
+      engine.render('a', bytesFor(2), {}, {}, { replaceKey: 'preview:a' }),
+      engine.render('b', bytesFor(2), {}, {}, { replaceKey: 'preview:b' }),
+      engine.render('c', bytesFor(2), {}, {}, { replaceKey: 'preview:c' }),
     ];
     for (const slot of engine.workers) slot.worker.crash();
 
@@ -624,6 +633,7 @@ test('last worker failure rejects queued work and later requests instead of hang
     assert.match(results[2].reason.message, /All local image workers stopped unexpectedly/);
     assert.equal(engine.metrics().activeRenderBytes, 0, 'worker failure releases every active memory reservation');
     assert.equal(engine.metrics().queued, 0);
+    assert.equal(engine.queuedByKey.size, 0, 'failure releases canceled preview keys and their retained source buffers');
     await assert.rejects(engine.render('later', bytesFor(2), {}), /All local image workers stopped unexpectedly/);
   }, { maxWorkers: 2, maxCachedPixels: 10 });
 });

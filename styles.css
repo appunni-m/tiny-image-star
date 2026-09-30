@@ -539,6 +539,19 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .slot-picker-empty { padding: 24px 12px; color: #808692; text-align: center; font-size: 11px; }
 .design-library-dialog { width: min(720px, calc(100vw - 24px)); max-height: min(720px, calc(100dvh - 32px)); overflow: auto; }
 .design-library-content { padding: 22px; }
+.version-history-dialog { width: min(720px, calc(100vw - 24px)); max-height: min(720px, calc(100dvh - 32px)); overflow: auto; }
+.version-history-content { display: grid; gap: 12px; padding: 22px; }
+.version-history-content .modal-copy { margin: 0; }
+.version-save-form { padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); }
+.version-save-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.version-save-controls .text-field { min-width: 0; }
+.version-history-list { display: grid; gap: 7px; max-height: min(420px, 48dvh); overflow: auto; overscroll-behavior: contain; }
+.version-history-empty { display: grid; min-height: 112px; place-items: center; padding: 18px; border: 1px dashed var(--border); border-radius: 9px; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.55; }
+.version-record { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+.version-record-details { display: grid; min-width: 0; gap: 5px; }
+.version-record-name { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.version-record-date { color: var(--muted); font-size: 10px; }
+.version-record .secondary-button { min-height: 34px; white-space: nowrap; }
 .design-library-list { display: grid; gap: 8px; max-height: min(440px, 52dvh); overflow: auto; overscroll-behavior: contain; }
 .design-library-empty { display: grid; min-height: 132px; place-items: center; padding: 18px; border: 1px dashed #d7dce3; border-radius: 9px; color: #717986; text-align: center; font-size: 12px; line-height: 1.55; }
 .design-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 72px; padding: 10px 12px; border: 1px solid #e7e9ed; border-radius: 9px; background: #fff; }
@@ -587,6 +600,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .text-format-toolbar { position: absolute; z-index: 4; display: flex; align-items: center; gap: 5px; width: max-content; max-width: calc(100% - 16px); padding: 5px; border: 1px solid #dedede; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 4px 18px rgba(0,0,0,.18); color: #333; touch-action: manipulation; }
 .text-format-toolbar[hidden] { display: none; }
 .text-format-button, .text-format-done { min-width: 32px; height: 32px; display: inline-grid; place-items: center; border: 1px solid #e5e5e5; border-radius: 6px; background: #fff; color: #333; font-size: 13px; }
+.text-format-button[data-paragraph-align] { font-size: 0; }
+.text-format-button[data-paragraph-align]::before { content: ""; width: 16px; height: 16px; background-image: linear-gradient(currentColor 0 0), linear-gradient(currentColor 0 0), linear-gradient(currentColor 0 0); background-repeat: no-repeat; }
+.text-format-button[data-paragraph-align="left"]::before { background-size: 16px 1.5px, 11px 1.5px, 14px 1.5px; background-position: left top, left center, left bottom; }
+.text-format-button[data-paragraph-align="center"]::before { background-size: 16px 1.5px, 11px 1.5px, 14px 1.5px; background-position: center top, center center, center bottom; }
+.text-format-button[data-paragraph-align="right"]::before { background-size: 16px 1.5px, 11px 1.5px, 14px 1.5px; background-position: right top, right center, right bottom; }
+.text-format-button[data-paragraph-align="justify"]::before { background-size: 16px 1.5px, 16px 1.5px, 16px 1.5px; background-position: left top, left center, left bottom; }
 .text-format-button[aria-pressed="true"] { border-color: #9bcfff; background: #eaf5ff; color: #087dcc; }
 .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
 .text-format-size-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
@@ -691,7 +710,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(72px, .8fr) 38px; gap: 8px; }
   .gradient-stop-row label { font-size: 10px; }
   .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
-  .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 5px; overflow-y: auto; max-height: min(230px, 36dvh); }
+  .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; width: min(360px, calc(100% - 16px)); padding: 5px; overflow-y: auto; max-height: min(360px, 50dvh); overscroll-behavior: contain; }
   .text-format-button, .text-format-done { min-width: 40px; height: 44px; font-size: 14px; }
   .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
   .text-format-family-label { grid-column: span 4; }
@@ -941,6 +960,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .layout-guide-heading select, .gradient-stop-row input[type=number] { font-size: 16px; }
   .text-format-size-label input { font-size: 16px; }
   .design-library-content { padding: 16px; }
+  .version-history-content { padding: 16px; }
+  .version-save-controls { grid-template-columns: 1fr; }
+  .version-save-controls .primary-button { width: 100%; min-height: 44px; }
+  .version-record { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .version-record .secondary-button { min-height: 44px; }
   .design-file-row { grid-template-columns: minmax(0, 1fr); gap: 9px; padding: 10px; }
   .design-file-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .design-file-actions button { min-height: 40px; padding: 0 6px; font-size: 11px; }

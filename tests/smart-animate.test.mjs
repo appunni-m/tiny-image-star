@@ -558,14 +558,14 @@ test('smart animation matches by layer name and parent hierarchy and fades unmat
   assert.equal(newBadge.opacity, 0.5);
 });
 
-test('smart animation crossfades incompatible content instead of morphing it', () => {
+test('smart animation keeps changed text matched while incompatible vector content crossfades', () => {
   const from = createNode('frame', { children: [
-    createNode('text', { name: 'Title', text: 'Before', opacity: 0.8 }),
+    createNode('text', { name: 'Title', text: 'Before', x: 10, width: 40, opacity: 0.8 }),
     createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }),
     createNode('network', { name: 'Branch', vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: 1, y: 1 }], edges: [{ id: 'e1', from: 'v1', to: 'v2' }], faces: [] })
   ] });
   const to = createNode('frame', { children: [
-    createNode('text', { name: 'Title', text: 'After' }),
+    createNode('text', { name: 'Title', text: 'After', x: 110, width: 80 }),
     createNode('path', { name: 'Icon', points: [{ x: 0, y: 0 }, { x: 0.5, y: 0.5 }, { x: 20, y: 20 }] }),
     createNode('network', { name: 'Branch', vertices: [{ id: 'v1', x: 0, y: 0 }, { id: 'v2', x: .5, y: 1 }, { id: 'v3', x: 1, y: 0 }], edges: [{ id: 'e1', from: 'v1', to: 'v2' }, { id: 'e2', from: 'v2', to: 'v3' }], faces: [] })
   ] });
@@ -574,9 +574,14 @@ test('smart animation crossfades incompatible content instead of morphing it', (
   const titles = middle.children.filter(node => node.name === 'Title');
   const icons = middle.children.filter(node => node.name === 'Icon');
   const networks = middle.children.filter(node => node.name === 'Branch');
-  assert.equal(titles.length, 2);
-  assert.equal(titles.find(node => node.text === 'Before').opacity, 0.4);
-  assert.equal(titles.find(node => node.text === 'After').opacity, 0.5);
+  assert.equal(titles.length, 1, 'same-name text layers remain matched when their content changes');
+  assert.deepEqual([titles[0].text, titles[0].x, titles[0].width], ['After', 60, 60],
+    'text switches at halfway while layer geometry interpolates');
+  const beforeMidpoint = interpolateSmartFrame(from, to, 0.499).children.find(node => node.name === 'Title');
+  assert.equal(beforeMidpoint.text, 'Before');
+  assert.ok(Math.abs(beforeMidpoint.x - 59.9) < 1e-9);
+  assert.equal(interpolateSmartFrame(from, to, 0).children.find(node => node.name === 'Title').text, 'Before');
+  assert.equal(interpolateSmartFrame(from, to, 1).children.find(node => node.name === 'Title').text, 'After');
   assert.equal(icons.length, 2);
   assert.equal(icons.find(node => node.points.length === 2).opacity, 0.5);
   assert.equal(icons.find(node => node.points.length === 3).opacity, 0.5);

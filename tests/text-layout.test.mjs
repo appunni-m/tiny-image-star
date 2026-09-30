@@ -338,6 +338,35 @@ test('justified plain and rich paragraphs fill only soft-wrapped lines and leave
     'expansion is divided across each preserved whitespace grapheme');
 });
 
+test('paragraph alignment overrides the layer alignment for plain and rich text layout', () => {
+  const measure = value => [...String(value)].length * 5;
+  const paragraphStyles = [
+    { align: 'center' },
+    { align: 'justify' },
+    { align: 'left' }
+  ];
+  const plain = layoutPlainText('aa bb cc\naa bb cc\naa bb', 35, measure, {
+    lineHeight: 10, align: 'right', paragraphStyles
+  });
+  assert.deepEqual(plain.lines.map(({ paragraphIndex, align, justify }) => [paragraphIndex, align, justify]), [
+    [0, 'center', false], [0, 'center', false],
+    [1, 'justify', true], [1, 'justify', false],
+    [2, 'left', false]
+  ]);
+  assert.equal(layoutPlainText('aa bb\ncc', 35, measure, { lineHeight: 10, align: 'center' }).lines[0].align, 'center',
+    'paragraphs without an override inherit the layer alignment');
+
+  const rich = layoutTextRuns([{ text: 'aa bb cc\naa bb cc\naa bb' }], 35, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0, align: 'right', paragraphStyles
+  }, measure);
+  assert.deepEqual(rich.lines.map(({ paragraphIndex, align, justify }) => [paragraphIndex, align, justify]), [
+    [0, 'center', false], [0, 'center', false],
+    [1, 'justify', true], [1, 'justify', false],
+    [2, 'left', false]
+  ]);
+});
+
 test('paragraph spacing contributes to auto height and indentation reduces first-line wrap width', () => {
   const node = createNode('text', {
     text: 'aa bb\ncc dd\nee ff', width: 50, height: 20,

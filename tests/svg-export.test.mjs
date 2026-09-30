@@ -137,6 +137,7 @@ test('exports graph-backed vector networks as editable face and edge paths', () 
     faces: [{ id: 'face-a', vertexIds: ['v1', 'v2', 'v3', 'v4'], fill: '#fedcba', fillOpacity: 0.5 }]
   });
   const svg = exportNodeToSvg(network);
+  assert.match(svg, /data-tiny-image-star-network-v1="\{&quot;version&quot;:1/);
   assert.match(svg, /data-tiny-image-star-face-id="face-a" d="M 0 0 C 25 -8 75 -8 100 0 L 100 80 L 0 80 L 0 0 Z" fill="#fedcba" fill-opacity="0\.2"/);
   assert.match(svg, /data-tiny-image-star-edge-id="e1" data-tiny-image-star-from="v1" data-tiny-image-star-to="v2" d="M 0 0 C 25 -8 75 -8 100 0" fill="none" stroke="#123456" stroke-width="3"/);
   assert.match(svg, /data-tiny-image-star-edge-id="e5" data-tiny-image-star-from="v1" data-tiny-image-star-to="v3" d="M 0 0 C 20 16 80 64 100 80"/);
@@ -156,6 +157,13 @@ test('exports graph-backed vector networks as editable face and edge paths', () 
     faces: [{ id: 'triangle', vertexIds: ['a', 'b', 'c'] }]
   });
   assert.match(exportNodeToSvg(gradientNetwork), /fill="url\(#tis-gradient-0\)"/);
+
+  const oversizedNetwork = createNode('network', {
+    name: 'n'.repeat(1024 * 1024), width: 10, height: 10,
+    vertices: [{ id: 'left', x: 0, y: 0 }, { id: 'right', x: 1, y: 1 }],
+    edges: [{ id: 'edge', from: 'left', to: 'right' }]
+  });
+  assert.throws(() => exportNodeToSvg(oversizedNetwork), /network metadata larger than 1048576 characters/);
 });
 
 test('SVG network strokes paint each complete layer before advancing to the next', () => {
@@ -1034,6 +1042,37 @@ test('SVG exports nested list markers as editable positioned text and preserves 
   assert.match(exportNodeToSvg(emptyItem, { measureText: value => [...String(value)].length * 5 }),
     /data-tiny-image-star-list-marker="bulleted"[^>]*>•<\/tspan>/,
     'an empty list item still exports its marker');
+});
+
+test('SVG exports per-paragraph alignment for plain and rich text', () => {
+  const measureText = (value, node) => [...String(value)].length * Number(node.fontSize) * .5;
+  const plain = createNode('text', {
+    text: 'left\ncentered\nright', width: 100, height: 40, fontSize: 10, lineHeight: 1,
+    paragraphStyles: [
+      { listStyle: 'none', listLevel: 0, align: 'left' },
+      { listStyle: 'none', listLevel: 0, align: 'center' },
+      { listStyle: 'none', listLevel: 0, align: 'right' }
+    ]
+  });
+  const plainSvg = exportNodeToSvg(plain, { measureText });
+  assert.match(plainSvg, /<tspan x="0" y="0"[^>]*>left<\/tspan>/);
+  assert.match(plainSvg, /<tspan x="50" y="10" text-anchor="middle"[^>]*>centered<\/tspan>/);
+  assert.match(plainSvg, /<tspan x="100" y="20" text-anchor="end"[^>]*>right<\/tspan>/);
+
+  const rich = createNode('text', {
+    text: 'First\nCentered\nLast', width: 100, height: 40, fontSize: 10, lineHeight: 1, align: 'right',
+    paragraphStyles: [
+      { listStyle: 'none', listLevel: 0, align: 'left' },
+      { listStyle: 'none', listLevel: 0, align: 'center' },
+      { listStyle: 'none', listLevel: 0 }
+    ],
+    textRuns: [{ text: 'First\nCentered\nLast', fontWeight: 700 }]
+  });
+  const richSvg = exportNodeToSvg(rich, { measureText });
+  assert.match(richSvg, /<tspan x="0" y="0" text-anchor="start"[^>]*><tspan/);
+  assert.match(richSvg, /<tspan x="50" y="10" text-anchor="middle"[^>]*><tspan/);
+  assert.match(richSvg, /<tspan x="100" y="20"[^>]*><tspan/,
+    'an omitted paragraph alignment inherits the layer alignment');
 });
 
 test('polygon and star point generation matches the editor for fractional counts', () => {
