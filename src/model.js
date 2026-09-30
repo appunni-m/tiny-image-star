@@ -5,6 +5,7 @@ import { createImageTransforms, isValidImageTransforms } from './image-transform
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
+import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -253,7 +254,7 @@ const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both'
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -298,7 +299,7 @@ function validVectorPath(node) {
 export function createNode(type, overrides = {}) {
   const preset = defaults[type];
   if (!preset) throw new TypeError(`Unsupported layer type: ${type}`);
-  return {
+  const node = {
     id: createId(type), type,
     name: preset.name,
     x: 0, y: 0, width: preset.width, height: preset.height,
@@ -314,6 +315,7 @@ export function createNode(type, overrides = {}) {
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
     children: overrides.children ? clone(overrides.children) : [],
     ...(Array.isArray(overrides.fills) ? { fills: clone(overrides.fills) } : {}),
+    ...(Array.isArray(overrides.strokes) ? { strokes: clone(overrides.strokes) } : {}),
     ...(overrides.cornerRadii ? { cornerRadii: clone(overrides.cornerRadii) } : {}),
     ...(Array.isArray(overrides.paragraphStyles) ? { paragraphStyles: clone(overrides.paragraphStyles) } : {}),
     ...(type === 'image' ? {
@@ -321,6 +323,8 @@ export function createNode(type, overrides = {}) {
       transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {})
     } : {})
   };
+  if (Array.isArray(node.strokes)) syncLegacyStrokeFields(node);
+  return node;
 }
 
 export function createExportSetting(overrides = {}) {
@@ -2225,7 +2229,9 @@ export function validateDocument(document) {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      if (Object.hasOwn(node, 'strokes') && !isValidStrokeStack(node.strokes, node)) throw new TypeError(`Invalid stroke stack on layer ${node.name || node.id}.`);
       if ((node.strokeWidth != null && (!Number.isFinite(node.strokeWidth) || node.strokeWidth < 0 || node.strokeWidth > 100_000))
+        || (node.strokeOpacity != null && (!Number.isFinite(node.strokeOpacity) || node.strokeOpacity < 0 || node.strokeOpacity > 1))
         || (node.strokeCap != null && !strokeCaps.has(node.strokeCap))
         || (node.strokeJoin != null && !strokeJoins.has(node.strokeJoin))
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
@@ -2419,6 +2425,7 @@ export function validateDocument(document) {
           if (overrides.fillGradient != null && !isValidGradientFill(overrides.fillGradient)) throw new TypeError(`Invalid component gradient override on ${node.name || node.id}.`);
           if (overrides.imageFill != null && (!isImageFillSupported(node) || !isValidImageFill(overrides.imageFill))) throw new TypeError(`Invalid component image fill override on ${node.name || node.id}.`);
           if (overrides.fills != null && !isValidFillStack(overrides.fills, sourceNode || node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid component fill stack override on ${node.name || node.id}.`);
+          if (overrides.strokes != null && !isValidStrokeStack(overrides.strokes, sourceNode || node)) throw new TypeError(`Invalid component stroke stack override on ${node.name || node.id}.`);
           if (overrides.blendMode != null && !isValidLayerBlendMode(overrides.blendMode)) throw new TypeError(`Invalid component blend mode override on ${node.name || node.id}.`);
           if (overrides.fontFamily != null && (node.type !== 'text' || typeof overrides.fontFamily !== 'string' || !overrides.fontFamily.trim() || overrides.fontFamily.length > 160 || /[\x00-\x1f]/.test(overrides.fontFamily))) throw new TypeError(`Invalid component font family override on ${node.name || node.id}.`);
           if (overrides.fontWeight != null && (node.type !== 'text' || !isValidFontWeight(overrides.fontWeight))) throw new TypeError(`Invalid component font weight override on ${node.name || node.id}.`);

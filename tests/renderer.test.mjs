@@ -196,6 +196,32 @@ test('shape rendering applies editable stroke cap, join, and dash patterns', () 
   assert.deepEqual(calls, [['dash', [0, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']], 'dots need a round cap to keep zero-length dash segments visible');
 });
 
+test('shape rendering paints ordered stroke layers with independent opacity and presentation', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { strokes: [
+    { id: 'inner', color: '#123456', width: 2, opacity: .5, visible: true, cap: 'square', join: 'bevel', pattern: 'dashed', miterLimit: 4 },
+    { id: 'hidden', color: '#ffffff', width: 99, opacity: 1, visible: false, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
+    { id: 'outer', color: '#abcdef', width: 8, opacity: .25, visible: true, cap: 'round', join: 'round', pattern: 'dotted', miterLimit: 7 }
+  ] });
+  addNode(document, shape);
+  const calls = [];
+  const stack = [];
+  const context = {
+    globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    save() { stack.push({ globalAlpha: this.globalAlpha, strokeStyle: this.strokeStyle, lineWidth: this.lineWidth, lineCap: this.lineCap, lineJoin: this.lineJoin, miterLimit: this.miterLimit }); },
+    restore() { Object.assign(this, stack.pop()); }, beginPath() {}, rect() {}, fill() {},
+    setLineDash(value) { calls.push(['dash', [...value]]); },
+    stroke() { calls.push(['stroke', this.globalAlpha, this.lineWidth, this.strokeStyle, this.lineCap, this.lineJoin, this.miterLimit]); }
+  };
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, shape, 0, 0, new Map());
+  assert.deepEqual(calls, [
+    ['dash', [8, 4]], ['stroke', .5, 2, '#123456', 'square', 'bevel', 4],
+    ['dash', [0, 16]], ['stroke', .25, 8, '#abcdef', 'round', 'round', 7]
+  ]);
+});
+
 test('compound path rendering keeps separate contours and applies the even-odd fill rule', () => {
   const document = createDocument();
   const path = createNode('path', {

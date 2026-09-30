@@ -134,6 +134,29 @@ test('smart animation interpolates stroke miter limits and switches stroke prese
   assert.deepEqual(styleOf(layerAt(1)), toStroke, 'the destination endpoint preserves the exact authored stroke style');
 });
 
+test('smart animation interpolates compatible ordered stroke items and midpoint-snaps incompatible identities', () => {
+  const makeStroke = (id, color, width, opacity, pattern, cap, join, miterLimit) => ({
+    id, color, width, opacity, visible: true, pattern, cap, join, miterLimit
+  });
+  const fromStack = [makeStroke('inner', '#000000', 2, .2, 'solid', 'butt', 'miter', 10)];
+  const toStack = [makeStroke('inner', '#ffffff', 6, .8, 'dashed', 'round', 'bevel', 4)];
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: fromStack })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: toStack })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].strokes;
+  assert.deepEqual(at(0), fromStack);
+  assert.deepEqual(at(1), toStack);
+  const quarter = at(.25)[0];
+  assert.deepEqual({ ...quarter, opacity: Number(quarter.opacity.toFixed(2)) }, makeStroke('inner', '#404040', 3, .35, 'solid', 'butt', 'miter', 8.5));
+  assert.deepEqual(at(.5), [makeStroke('inner', '#808080', 4, .5, 'dashed', 'round', 'bevel', 7)]);
+
+  const incompatibleTarget = createNode('frame', { children: [createNode('rectangle', {
+    name: 'Card', strokes: [makeStroke('replacement', '#ffffff', 6, .8, 'solid', 'butt', 'miter', 10)]
+  })] });
+  const stackAt = progress => interpolateSmartFrame(from, incompatibleTarget, progress).children[0].strokes;
+  assert.deepEqual(stackAt(.499), fromStack, 'items with different identities stay discrete before halfway');
+  assert.deepEqual(stackAt(.5), incompatibleTarget.children[0].strokes, 'the full stack switches atomically at halfway');
+});
+
 test('smart animation takes the shortest rotation arc and preserves exact frame and layer endpoints', () => {
   const from = createNode('frame', {
     rotation: 350,

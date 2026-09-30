@@ -1,13 +1,14 @@
 import { isValidGradientFill } from './fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
 import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
+import { isValidStrokeStack } from './strokes.js';
 
-const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent', 'listSpacing'];
 const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const midpointProperties = [
-  ...colorProperties, 'fills',
+  ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'blendMode', 'effects', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
@@ -109,6 +110,32 @@ function interpolateFillStack(fromNode, toNode, progress) {
     // Image fills deliberately retain the source reference before halfway and
     // take the destination reference at halfway; their crop/fit semantics are
     // categorical, while the fill's own opacity remains continuous.
+    return result;
+  });
+}
+
+function canInterpolateStrokeStack(fromNode, toNode) {
+  const from = fromNode.strokes;
+  const to = toNode.strokes;
+  return Array.isArray(from) && Array.isArray(to)
+    && from.length === to.length
+    && isValidStrokeStack(from) && isValidStrokeStack(to)
+    && from.every((stroke, index) => stroke.id === to[index].id
+      && interpolateColor(stroke.color, to[index].color, .5) !== null);
+}
+
+function interpolateStrokeStack(fromNode, toNode, progress) {
+  if (progress === 0) return structuredClone(fromNode.strokes);
+  if (progress === 1) return structuredClone(toNode.strokes);
+  if (!canInterpolateStrokeStack(fromNode, toNode)) return null;
+  return toNode.strokes.map((stroke, index) => {
+    const start = fromNode.strokes[index];
+    const categorical = progress < .5 ? start : stroke;
+    const result = structuredClone(categorical);
+    result.color = interpolateColor(start.color, stroke.color, progress) || result.color;
+    for (const property of ['width', 'opacity', 'miterLimit']) {
+      result[property] = start[property] + (stroke[property] - start[property]) * progress;
+    }
     return result;
   });
 }
@@ -417,6 +444,8 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
   }
   const fills = interpolateFillStack(from, to, progress);
   if (fills) copy.fills = fills;
+  const strokes = interpolateStrokeStack(from, to, progress);
+  if (strokes) copy.strokes = strokes;
   if (from.visible === false && to.visible !== false) {
     copy.visible = true;
     copy.opacity = layerOpacity(to) * progress;
@@ -549,6 +578,8 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   }
   const fills = interpolateFillStack(fromFrame, toFrame, amount);
   if (fills) frame.fills = fills;
+  const strokes = interpolateStrokeStack(fromFrame, toFrame, amount);
+  if (strokes) frame.strokes = strokes;
   frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius);
   return frame;
 }

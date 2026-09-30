@@ -19,6 +19,7 @@ class CacheWorkerMock {
     this.pendingRenderMessages = [];
     this.disposed = [];
     this.cacheBudgets = [];
+    this.activeSources = [];
     this.terminated = false;
     queueMicrotask(() => this.#emit({ type: 'ready' }));
   }
@@ -27,6 +28,11 @@ class CacheWorkerMock {
   static deferRenders = false;
 
   postMessage(message) {
+    if (message.type === 'set-active-source') {
+      this.cache.setActive(message.assetId);
+      this.activeSources.push(message.assetId);
+      return;
+    }
     if (message.type === 'configure-cache') {
       const result = this.cache.setBudget(message.pixelBudget);
       this.cacheBudgets.push(message.pixelBudget);
@@ -134,6 +140,26 @@ test('LocalImageEngine resends oversized source bytes for each ephemeral render'
     assert.deepEqual([...retainedSource], [6], 'subsequent edits still start from the same in-memory source bytes');
     const requests = engine.workers[0].worker.renderRequests;
     assert.deepEqual(requests.map(request => request.hasSourceBytes), [true, true]);
+  });
+});
+
+test('LocalImageEngine propagates active-source intent and preserves a fitting decoded source through cache pressure', async () => {
+  await withEngine(async engine => {
+    engine.setActiveSource('active');
+    await engine.render('active', bytesFor(4), {});
+    const worker = engine.workers[0].worker;
+    assert.deepEqual(worker.activeSources, ['active'], 'new workers receive the active selection before their first render');
+    assert.equal(worker.cache.activeAssetId, 'active');
+    assert.equal(worker.cache.has('active'), true);
+
+    engine.setActiveSource('other');
+    await engine.render('other', bytesFor(2), {});
+    assert.equal(worker.cache.activeAssetId, 'other');
+    assert.equal(worker.cache.has('active'), false, 'a normal render may evict the formerly active source after selection changes');
+    assert.equal(worker.cache.has('other'), true);
+
+    engine.setActiveSource(null);
+    assert.equal(worker.cache.activeAssetId, null, 'clearing the selection releases the active-source protection');
   });
 });
 

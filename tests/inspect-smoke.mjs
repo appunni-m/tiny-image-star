@@ -213,6 +213,10 @@ try {
   const jsx = reactCard?.querySelector('code')?.textContent || '';
   assert(jsx.includes("import React from 'react';") && jsx.includes('export default function TinyImageStarHandoff()') && jsx.includes('<style>{styles}</style>'), 'React handoff should provide a component and its generated styles.');
   assert(jsx.includes('data-layer-type={"rectangle"}') && jsx.includes('className={"primary-button-'), 'React JSX should contain the selected editable layer.');
+  const vueCard = [...panel.querySelectorAll('.inspect-code-card')].find(card => card.querySelector('strong')?.textContent === 'Vue 3 component');
+  const vue = vueCard?.querySelector('code')?.textContent || '';
+  assert(vue.startsWith('<template>') && vue.includes('<style>') && vue.includes('data-layer-type="rectangle"'), 'Vue handoff should provide an adaptable SFC scaffold with the selected layer.');
+  assert(vueCard?.textContent.includes('Adaptable single-file component scaffold') && vueCard.textContent.includes('connect local images'), 'Vue handoff should identify the output as a scaffold and explain local asset wiring.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(panel.querySelector('.inspect-copy')).minHeight) >= 40, 'Copy control should remain finger-sized on a phone viewport.');
 
   const copied = [];
@@ -226,9 +230,12 @@ try {
   click(panel.querySelector('[data-inspect-copy="jsx"]'));
   await waitFor(() => copied.length === 3, 'copy React JSX');
   assert(copied[2] === jsx, 'Copy JSX did not copy the visible generated React component.');
+  click(panel.querySelector('[data-inspect-copy="vue"]'));
+  await waitFor(() => copied.length === 4, 'copy Vue SFC');
+  assert(copied[3] === vue, 'Copy SFC did not copy the visible generated Vue component.');
   click(panel.querySelector('[data-inspect-copy="json"]'));
-  await waitFor(() => copied.length === 4, 'copy layer JSON');
-  assert(JSON.parse(copied[3]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
+  await waitFor(() => copied.length === 5, 'copy layer JSON');
+  assert(JSON.parse(copied[4]).id === button.id, 'Copy JSON did not preserve exact selected layer data.');
 
   click(app.querySelector(`[data-layer-id="${screen.id}"]`));
   const handoffCard = kind => [...app.querySelectorAll('.inspect-panel .inspect-code-card')].find(card => card.querySelector('strong')?.textContent === kind);
@@ -237,6 +244,8 @@ try {
   assert(frameHtml.includes('data-layer-type="frame"') && frameHtml.includes('data-layer-type="text"') && frameHtml.includes('Continue'), 'HTML handoff should preserve nested frame and text structure.');
   const frameJsx = handoffCard('React component')?.querySelector('code')?.textContent || '';
   assert(frameJsx.includes('data-layer-type={"frame"}') && frameJsx.includes('data-layer-type={"text"}') && frameJsx.includes('>{"Continue"}</span>'), 'React handoff should preserve nested frames and safely encoded text.');
+  const frameVue = handoffCard('Vue 3 component')?.querySelector('code')?.textContent || '';
+  assert(frameVue.includes('data-layer-type="frame"') && frameVue.includes('data-layer-type="text"') && frameVue.includes('v-text="&quot;Continue&quot;"'), 'Vue handoff should preserve nested frames and safely encoded text.');
 
   click(app.querySelector(`[data-layer-id="${label.id}"]`));
   await waitFor(() => app.querySelector('.inspect-panel')?.textContent.includes('16 px · Arial, sans-serif'), 'text metrics');
@@ -246,7 +255,7 @@ try {
   const handoffLayer = JSON.parse(handoffJson)[0];
   const verticalCss = app.querySelector('.inspect-panel .inspect-code-card code')?.textContent || '';
   assert(verticalCss.includes('justify-content: flex-end;'), `Inspect CSS should hand off bottom-aligned text; control=${selectedVerticalAlign}, layer=${handoffLayer?.verticalAlign}, typography=${handoffLayer?.typography?.verticalAlign}; found: ${verticalCss}`);
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true, afterDelayPhoneControl: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, nestedVueHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true, afterDelayPhoneControl: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

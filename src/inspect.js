@@ -3,6 +3,7 @@ import { buildLayerEffectBoxShadow, buildLayerEffectFilter } from './layer-effec
 import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
 import { vectorPathContours } from './vector-path.js';
+import { strokeStackForNode } from './strokes.js';
 
 function hasFillablePathContour(node) {
   return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
@@ -121,7 +122,21 @@ function autoLayoutDeclarations(layout) {
 }
 
 function strokePatternStyle(node) {
-  return ['dashed', 'dotted'].includes(node.strokePattern) ? node.strokePattern : 'solid';
+  const pattern = node.strokePattern ?? node.pattern;
+  return ['dashed', 'dotted'].includes(pattern) ? pattern : 'solid';
+}
+
+function resolvedStroke(document, node, stroke, index) {
+  return {
+    color: index === 0 && node.strokeVariableId ? getNodeColor(document, node, 'stroke') : stroke.color,
+    width: stroke.width,
+    opacity: stroke.opacity,
+    visible: stroke.visible,
+    cap: stroke.pattern === 'dotted' ? 'round' : stroke.cap,
+    join: stroke.join,
+    miterLimit: stroke.miterLimit,
+    pattern: strokePatternStyle(stroke)
+  };
 }
 
 function cssForEntry(document, entry) {
@@ -227,19 +242,21 @@ function cssForEntry(document, entry) {
     if (node.imageFill && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push('/* Local image fill source and adjustments are retained in layer JSON. */');
     else if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background: ${gradientBackground};`);
     else if (background && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background-color: ${background};`);
+    const strokeLayers = strokeStackForNode(node).map((stroke, index) => resolvedStroke(document, node, stroke, index));
+    const primaryStroke = strokeLayers[0];
     if (node.type === 'line') {
-      const stroke = cssColor(getNodeColor(document, node, 'stroke'));
-      if (stroke && Number(node.strokeWidth) > 0) declarations.push(`border-top: ${number(node.strokeWidth)}px ${strokePatternStyle(node)} ${stroke};`);
+      const stroke = primaryStroke?.visible ? cssColor(primaryStroke.color, primaryStroke.opacity) : null;
+      if (stroke && primaryStroke.width > 0) declarations.push(`border-top: ${number(primaryStroke.width)}px ${primaryStroke.pattern} ${stroke};`);
       declarations.push('/* Exact line geometry is retained in layer JSON. */');
-    } else if (node.stroke && Number(node.strokeWidth) > 0) {
-      const stroke = cssColor(getNodeColor(document, node, 'stroke'));
-      if (stroke) declarations.push(`border: ${number(node.strokeWidth)}px ${strokePatternStyle(node)} ${stroke};`);
+    } else if (primaryStroke?.visible && primaryStroke.width > 0) {
+      const stroke = cssColor(primaryStroke.color, primaryStroke.opacity);
+      if (stroke) declarations.push(`border: ${number(primaryStroke.width)}px ${primaryStroke.pattern} ${stroke};`);
     }
-    if (node.stroke && Number(node.strokeWidth) > 0
-      && ((node.strokeCap && node.strokeCap !== 'butt') || (node.strokeJoin && node.strokeJoin !== 'miter')
-        || (node.strokeMiterLimit != null && node.strokeMiterLimit !== 10))) {
-      declarations.push(`/* Vector stroke cap/join/miter limit (${node.strokePattern === 'dotted' ? 'round' : node.strokeCap || 'butt'}/${node.strokeJoin || 'miter'}/${node.strokeMiterLimit ?? 10}) remain exact in layer JSON. */`);
+    if (primaryStroke?.visible && primaryStroke.width > 0
+      && (primaryStroke.cap !== 'butt' || primaryStroke.join !== 'miter' || primaryStroke.miterLimit !== 10)) {
+      declarations.push(`/* Vector stroke cap/join/miter limit (${primaryStroke.cap}/${primaryStroke.join}/${primaryStroke.miterLimit}) remain exact in layer JSON. */`);
     }
+    if (Array.isArray(node.strokes) && strokeLayers.length > 1) declarations.push(`/* ${strokeLayers.length} ordered strokes are preserved in layer JSON; CSS border reflects only the first. */`);
     const radius = borderRadiusCss(document, node);
     if (radius) declarations.push(`border-radius: ${radius};`);
   }
@@ -370,6 +387,48 @@ function reactComponent(css, roots, document) {
   return `${intro}const styles = ${jsxString(css)};\n\nexport default function TinyImageStarHandoff() {\n  return (\n    <>\n      <style>{styles}</style>\n${content}\n    </>\n  );\n}\n`;
 }
 
+function vueString(value) {
+  return JSON.stringify(String(value ?? '')).replace(/[\u2028\u2029]/g, character => character === '\u2028' ? '\\u2028' : '\\u2029');
+}
+
+function vueForNode(document, node, depth = 0) {
+  const indent = '  '.repeat(depth);
+  const className = escapeMarkup(cssClass(node));
+  const type = escapeMarkup(node.type || 'layer');
+  if (node.type === 'text') {
+    const value = String(getNodePropertyValue(document, node, 'text') ?? '');
+    const styles = normalizedParagraphStyles(value, node.paragraphStyles);
+    const markers = paragraphMarkerLabels(styles);
+    const paragraphs = value.replace(/\r\n?/g, '\n').split('\n')
+      .map((paragraph, index) => {
+        const style = styles[index];
+        const attributes = style.listStyle === 'none' ? ''
+          : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`;
+        // v-text keeps authored text literal even when it contains Vue
+        // interpolation delimiters, markup, or directive-looking content.
+        return `${indent}  <span class="${escapeMarkup(`${cssClass(node)}__paragraph`)}"${attributes} v-text="${escapeMarkup(vueString(paragraph))}"></span>`;
+      }).join('\n');
+    return `${indent}<span class="${className}" data-layer-type="text">\n${paragraphs}\n${indent}</span>`;
+  }
+  if (node.type === 'image') {
+    const label = escapeMarkup(node.fileName || node.name || 'Local image');
+    return `${indent}<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Replace with an app asset or bind an image source. --></div>`;
+  }
+  const children = (node.children || []).map(child => vueForNode(document, child, depth + 1));
+  if (!children.length) return `${indent}<div class="${className}" data-layer-type="${type}" />`;
+  return `${indent}<div class="${className}" data-layer-type="${type}">\n${children.join('\n')}\n${indent}</div>`;
+}
+
+function vueSingleFileComponent(css, roots, document) {
+  const template = roots.length
+    ? roots.map(entry => vueForNode(document, entry.node, roots.length > 1 ? 1 : 0)).join('\n')
+    : '<!-- Select a layer to generate a Vue template. -->';
+  // Vue SFC style blocks are HTML raw-text elements. Escape '<' as a CSS
+  // hexadecimal escape so a user-provided font family cannot close the block.
+  const safeCss = css.replace(/</g, '\\3c ');
+  return `<template>\n${template}\n</template>\n\n<style>\n${safeCss}\n</style>\n`;
+}
+
 function treeEntries(root) {
   const entries = [];
   const visit = (node, parents, codegenParents) => {
@@ -401,11 +460,11 @@ function summaryForEntry(document, entry) {
   const radius = borderRadiusCss(document, node);
   if (radius) summary.borderRadius = radius;
   if (node.blendMode && node.blendMode !== 'normal') summary.blendMode = node.blendMode;
-  if (node.stroke && Number(node.strokeWidth) > 0) summary.stroke = {
-    color: getNodeColor(document, node, 'stroke'), width: node.strokeWidth,
-    cap: node.strokePattern === 'dotted' ? 'round' : node.strokeCap || 'butt',
-    join: node.strokeJoin || 'miter', miterLimit: node.strokeMiterLimit ?? 10, pattern: strokePatternStyle(node)
-  };
+  const strokes = strokeStackForNode(node).map((stroke, index) => resolvedStroke(document, node, stroke, index));
+  if (strokes.length) {
+    summary.stroke = strokes[0];
+    if (Array.isArray(node.strokes)) summary.strokes = strokes;
+  }
   if (node.type === 'text') {
     summary.text = getNodePropertyValue(document, node, 'text');
     summary.typography = {
@@ -444,6 +503,7 @@ export function buildInspectOutput(document, entries) {
     css,
     html: roots.map(entry => markupForNode(document, entry.node)).join('\n'),
     json: JSON.stringify(selected.length === 1 ? selected[0].node : selected.map(entry => entry.node), null, 2),
-    jsx: reactComponent(css, roots, document)
+    jsx: reactComponent(css, roots, document),
+    vue: vueSingleFileComponent(css, roots, document)
   };
 }

@@ -107,6 +107,20 @@ test('SVG export preserves non-default stroke cap, join, and pattern styles', ()
   assert.doesNotMatch(exportNodeToSvg(svgDefault), /stroke-miterlimit=/);
 });
 
+test('SVG export emits ordered stroke stack records with independent presentation and opacity', () => {
+  const node = createNode('rectangle', { width: 40, height: 20, fill: '#ffffff', strokes: [
+    { id: 'inner', color: '#123456', width: 12, opacity: .35, visible: true, cap: 'square', join: 'miter', pattern: 'dashed', miterLimit: 8 },
+    { id: 'hidden', color: '#ffffff', width: 99, opacity: 1, visible: false, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
+    { id: 'outer', color: '#abcdef', width: 3, opacity: .7, visible: true, cap: 'round', join: 'bevel', pattern: 'dotted', miterLimit: 5 }
+  ] });
+  const svg = exportNodeToSvg(node);
+  assert.deepEqual([...svg.matchAll(/data-tiny-image-star-stroke-id="([^"]+)"/g)].map(match => match[1]), ['inner', 'outer']);
+  assert.match(svg, /stroke="#123456" stroke-opacity="0.35" stroke-width="12" stroke-linecap="square" stroke-miterlimit="8" stroke-dasharray="48 24"/);
+  assert.match(svg, /stroke="#abcdef" stroke-opacity="0.7" stroke-width="3" stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="0 6"/);
+  assert.match(svg, /data-tiny-image-star-stroke-order="0"/);
+  assert.match(svg, /data-tiny-image-star-stroke-order="2"/);
+});
+
 test('exports graph-backed vector networks as editable face and edge paths', () => {
   const network = createNode('network', {
     id: 'graph', width: 100, height: 80, fill: '#abcdef', fillOpacity: 0.4,
@@ -142,6 +156,20 @@ test('exports graph-backed vector networks as editable face and edge paths', () 
     faces: [{ id: 'triangle', vertexIds: ['a', 'b', 'c'] }]
   });
   assert.match(exportNodeToSvg(gradientNetwork), /fill="url\(#tis-gradient-0\)"/);
+});
+
+test('SVG network strokes paint each complete layer before advancing to the next', () => {
+  const network = createNode('network', {
+    width: 20, height: 10,
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 1, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }],
+    strokes: [
+      { id: 'under', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
+      { id: 'over', color: '#abcdef', width: 4, opacity: .5, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }
+    ]
+  });
+  const svg = exportNodeToSvg(network);
+  assert.deepEqual([...svg.matchAll(/data-tiny-image-star-stroke-id="([^"]+)"/g)].map(match => match[1]), ['under', 'under', 'over', 'over']);
 });
 
 test('exports simple vector alpha-mask groups with editable mask geometry and source opacity', () => {
@@ -809,9 +837,11 @@ test('viewBox includes stroke bleed, Bézier controls and text overflow but excl
 
   const overflowingText = createNode('text', { width: 20, height: 10, fontSize: 10, text: 'WIDE', textDecoration: 'underline', textFit: 'fixed' });
   const textSvg = exportNodeToSvg(overflowingText, { measureText: text => text.length * 10 });
-  assert.match(textSvg, /viewBox="0 -1\.5 20 14"/);
-  assert.match(textSvg, /textLength="20" lengthAdjust="spacingAndGlyphs"/);
+  assert.match(textSvg, /viewBox="0 -1\.5 20 26\.5"/);
+  assert.match(textSvg, /<tspan x="0" y="0" textLength="20" lengthAdjust="spacingAndGlyphs">WI<\/tspan><tspan x="0" y="12\.5" textLength="20" lengthAdjust="spacingAndGlyphs">DE<\/tspan>/,
+    'long unbroken text wraps at grapheme-safe boundaries instead of compressing to one line');
   assert.match(textSvg, /<path d="M 0 10\.3 L 20 10\.3"/);
+  assert.match(textSvg, /<path d="M 0 22\.8 L 20 22\.8"/);
 
   const clippedFrame = createNode('frame', { width: 100, height: 100, fill: '#ffffff', clip: true, children: [
     createNode('rectangle', { x: 10_000, y: 0, width: 100, height: 100, fill: '#000000' })

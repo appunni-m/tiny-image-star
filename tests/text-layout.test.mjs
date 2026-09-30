@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, textGraphemes, transformTextCase } from '../src/text-layout.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
@@ -202,6 +202,92 @@ test('plain and rich text layout preserve repeated, leading, and trailing spaces
 
   const richWrapped = layoutTextRuns([{ text: 'one   two' }], 30, baseStyle, value => [...String(value)].length * 5);
   assert.deepEqual(richWrapped.lines.map(line => line.displayText), ['one', 'two']);
+});
+
+test('CJK text wraps at grapheme boundaries and observes common kinsoku punctuation rules', () => {
+  const measure = value => textGraphemes(value).length * 10;
+  const plain = layoutPlainText('日本語の文章', 20, measure, { lineHeight: 10 });
+  assert.deepEqual(plain.lines.map(line => line.displayText), ['日本', '語の', '文章']);
+  assert.ok(plain.lines.every(line => line.naturalWidth <= 20));
+
+  const punctuation = layoutPlainText('漢、字。', 20, measure, { lineHeight: 10 });
+  assert.deepEqual(punctuation.lines.map(line => line.displayText), ['漢、', '字。']);
+  assert.ok(punctuation.lines.every(line => !/^[、。，．？！：；）］｝」』】]/u.test(line.displayText)),
+    'a line should not begin with common CJK closing punctuation');
+  assert.ok(punctuation.lines.every(line => !/[（［｛「『【]$/u.test(line.displayText)),
+    'a line should not end with common CJK opening punctuation');
+  assert.deepEqual(layoutPlainText('きゃく', 20, measure, { lineHeight: 10 }).lines.map(line => line.displayText), ['きゃ', 'く'],
+    'Japanese small kana should not begin a new line');
+
+  const baseStyle = { fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal', lineHeight: 1 };
+  const rich = layoutTextRuns([{ text: '日本' }, { text: '語の文章', fontWeight: 700 }], 20, baseStyle,
+    value => textGraphemes(value).length * 10);
+  assert.deepEqual(rich.lines.map(line => line.displayText), ['日本', '語の', '文章']);
+  assert.deepEqual(rich.lines[1].parts.map(part => [part.text, part.style.fontWeight]), [['語の', 700]],
+    'CJK line breaking retains the style of the originating rich-text run');
+});
+
+test('Thai wrapping uses dictionary word boundaries when Intl.Segmenter is available and grapheme fallback otherwise', () => {
+  const text = 'ประเทศไทยมีประชากรมาก';
+  const measure = value => textGraphemes(value).length * 10;
+  const base = { lineHeight: 10 };
+  if (typeof Intl.Segmenter === 'function') {
+    const native = layoutPlainText(text, 90, measure, base);
+    assert.deepEqual(native.lines.map(line => line.displayText), ['ประเทศไทย', 'มีประชากร', 'มาก'],
+      'Thai word boundaries should be preferred over arbitrary grapheme breaks');
+    const rich = layoutTextRuns([{ text }], 90, {
+      fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal', lineHeight: 1
+    }, value => measure(value));
+    assert.deepEqual(rich.lines.map(line => line.displayText), native.lines.map(line => line.displayText),
+      'rich text uses the same Thai word boundaries as plain text');
+  }
+
+  const fallback = layoutPlainText(text, 90, value => textGraphemes(value, null).length * 10, {
+    ...base, wordSegmenter: null, graphemeSegmenter: null
+  });
+  assert.deepEqual(fallback.lines.map(line => line.displayText), ['ประเทศไทย', 'มีประชากรม', 'าก']);
+  assert.equal(fallback.lines.map(line => line.displayText).join(''), text, 'fallback wrapping preserves every original grapheme');
+  assert.ok(fallback.lines.every(line => line.naturalWidth <= 90));
+});
+
+test('grapheme fallback keeps combining marks, emoji ZWJ/modifiers, flags, and Hangul jamo together', () => {
+  const value = `A\u0301👩🏽‍💻🇹🇭\u1100\u1161\u11a8`;
+  assert.deepEqual(textGraphemes(value, null), ['A\u0301', '👩🏽‍💻', '🇹🇭', '\u1100\u1161\u11a8']);
+
+  const wrapped = layoutPlainText(value, 20, text => textGraphemes(text, null).length * 10, {
+    lineHeight: 10, wordSegmenter: null, graphemeSegmenter: null
+  });
+  assert.equal(wrapped.lines.map(line => line.displayText).join(''), value);
+  const knownClusters = new Set(textGraphemes(value, null));
+  assert.ok(wrapped.lines.every(line => textGraphemes(line.displayText, null).every(cluster => knownClusters.has(cluster))),
+    'soft wrapping may move complete graphemes but must not split them');
+
+  const rich = layoutTextRuns([{ text: value }], 20, {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal', lineHeight: 1
+  }, text => textGraphemes(text, null).length * 10, { wordSegmenter: null, graphemeSegmenter: null });
+  assert.equal(rich.lines.map(line => line.displayText).join(''), value);
+  assert.ok(rich.lines.every(line => line.naturalWidth <= 20), 'rich fallback wraps only between complete graphemes');
+});
+
+test('long unbroken tokens use bounded grapheme breaks instead of a compressed single line', () => {
+  const measure = value => textGraphemes(value).length * 10;
+  const plain = layoutPlainText('abcdefghij', 30, measure, { lineHeight: 10 });
+  assert.deepEqual(plain.lines.map(line => line.displayText), ['abc', 'def', 'ghi', 'j']);
+  assert.ok(plain.lines.every(line => line.naturalWidth <= 30));
+
+  const baseStyle = { fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal', lineHeight: 1 };
+  const rich = layoutTextRuns([
+    { text: 'ab' },
+    { text: 'cdefghij', fontWeight: 700 }
+  ], 30, baseStyle, value => textGraphemes(value).length * 10);
+  assert.deepEqual(rich.lines.map(line => line.displayText), ['abc', 'def', 'ghi', 'j']);
+  assert.ok(rich.lines.every(line => line.naturalWidth <= 30));
+  assert.deepEqual(rich.lines[0].parts.map(part => [part.text, part.style.fontWeight]), [['ab', 400], ['c', 700]],
+    'grapheme fallback keeps rich run styling intact across the inserted line break');
+
+  const long = layoutPlainText('a'.repeat(600), 80, value => textGraphemes(value).length * 10, { lineHeight: 10 });
+  assert.equal(long.lines.map(line => line.displayText).join(''), 'a'.repeat(600));
+  assert.ok(long.lines.every(line => line.naturalWidth <= 80), 'long fallback work stays split into bounded-width lines');
 });
 
 test('rich text treats CR, LF, and CRLF as single paragraph breaks across run boundaries', () => {

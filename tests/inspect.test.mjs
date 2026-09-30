@@ -95,6 +95,47 @@ test('Inspect React JSX safely serializes hostile text, image labels, and JavaSc
   assert.match(jsx, /const styles = "[\s\S]*";/, 'CSS is embedded as a quoted JavaScript string');
 });
 
+test('Inspect Vue SFC handoff is deterministic and preserves nested, multi-paragraph content', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { name: 'Card', width: 240, height: 120, fill: '#f0f0f0' });
+  const title = createNode('text', {
+    name: 'Title', text: 'First {{ user }}\nSecond <strong> & keep', x: 12, y: 16, width: 180, height: 42,
+    paragraphStyles: [{ listStyle: 'numbered', listLevel: 1, listStart: 3 }, { listStyle: 'bulleted', listLevel: 0 }]
+  });
+  const image = createNode('image', { name: 'Photo', fileName: 'local " image.png' });
+  addNode(document, frame); addNode(document, title, { parentId: frame.id }); addNode(document, image, { parentId: frame.id });
+
+  const entries = [findNode(document, frame.id), findNode(document, title.id)];
+  const output = buildInspectOutput(document, entries);
+  assert.equal(output.vue, buildInspectOutput(document, entries).vue, 'the SFC output is deterministic');
+  assert.match(output.vue, /^<template>\n[\s\S]*<\/template>\n\n<style>\n[\s\S]*\n<\/style>\n$/);
+  assert.match(output.vue, /class="card-[a-z0-9_-]+" data-layer-type="frame"/);
+  assert.match(output.vue, /data-layer-type="text"/);
+  assert.match(output.vue, /data-list-style="numbered" data-list-level="1" data-list-marker="c\." v-text="&quot;First \{\{ user \}\}&quot;"/);
+  assert.match(output.vue, /v-text="&quot;Second &lt;strong&gt; &amp; keep&quot;"/);
+  assert.match(output.vue, /<div class="photo-[a-z0-9_-]+" data-layer-type="image" role="img" aria-label="local &quot; image\.png"><!-- Replace with an app asset or bind an image source\. --><\/div>/);
+  assert.match(output.vue, /\.card-[a-z0-9_-]+ \{/);
+  assert.equal((output.vue.match(/data-layer-type="text"/g) || []).length, 1, 'selecting a root and its descendant should not duplicate the root tree');
+});
+
+test('Inspect Vue SFC handoff safely contains hostile text and CSS raw-text delimiters', () => {
+  const document = createDocument();
+  const payload = '</span><script>alert("x")</script>{{ value }} \\ \u2028end';
+  const text = createNode('text', { name: 'Untrusted </template>', text: payload, fontFamily: '</style><script>alert("x")</script>' });
+  const sibling = createNode('rectangle', { name: 'Second root' });
+  addNode(document, text); addNode(document, sibling);
+  const entries = [findNode(document, text.id), findNode(document, sibling.id)];
+  const vue = buildInspectOutput(document, entries).vue;
+
+  assert.match(vue, /<template>\n  <span class="untrusted-template-[a-z0-9_-]+"/);
+  assert.equal((vue.match(/data-layer-type="rectangle"/g) || []).length, 1, 'all independently selected roots should be present');
+  assert.match(vue, /v-text="&quot;\\u003c\/span&gt;|v-text="&quot;&lt;\/span&gt;/, 'untrusted text is represented as a bound string, not template markup');
+  assert.match(vue, /v-text="[^"]*\\u2028end&quot;"/, 'JavaScript line separators are escaped inside the expression');
+  assert.ok(vue.includes('font-family: "\\3c /style>\\3c script>'), 'unsafe style delimiters are escaped as CSS code points');
+  assert.equal((vue.match(/<\/style>/g) || []).length, 1, 'user font names cannot terminate the SFC style block');
+  assert.doesNotMatch(vue, /<script>alert\("x"\)<\/script>/);
+});
+
 test('Inspect HTML, JSX, CSS, and typography data preserve paragraph spacing and indentation', () => {
   const document = createDocument();
   const text = createNode('text', {
@@ -180,7 +221,22 @@ test('Inspect handoff describes vector stroke pattern, cap, join, and miter limi
   const output = buildInspectOutput(document, [findNode(document, line.id)]);
   assert.match(output.css, /border-top: 3px dashed #123456;/);
   assert.match(output.css, /Vector stroke cap\/join\/miter limit \(round\/bevel\/4\) remain exact in layer JSON/);
-  assert.deepEqual(output.layers[0].stroke, { color: '#123456', width: 3, cap: 'round', join: 'bevel', miterLimit: 4, pattern: 'dashed' });
+  assert.deepEqual(output.layers[0].stroke, { color: '#123456', width: 3, opacity: 1, visible: true, cap: 'round', join: 'bevel', miterLimit: 4, pattern: 'dashed' });
+});
+
+test('Inspect exposes ordered stroke records while CSS reports the primary stroke only', () => {
+  const document = createDocument();
+  const card = createNode('rectangle', { name: 'Double outline', strokes: [
+    { id: 'inner', color: '#123456', width: 2, opacity: .5, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 },
+    { id: 'outer', color: '#abcdef', width: 8, opacity: .75, visible: false, cap: 'round', join: 'bevel', pattern: 'dashed', miterLimit: 4 }
+  ] });
+  addNode(document, card);
+  const output = buildInspectOutput(document, [findNode(document, card.id)]);
+  assert.deepEqual(output.layers[0].strokes.map(stroke => [stroke.color, stroke.width, stroke.opacity, stroke.visible]), [
+    ['#123456', 2, .5, true], ['#abcdef', 8, .75, false]
+  ]);
+  assert.match(output.css, /border: 2px solid rgba\(18, 52, 86, 0\.5\);/);
+  assert.match(output.css, /2 ordered strokes are preserved in layer JSON/);
 });
 
 test('Inspect output hands off enabled layer effects as CSS filters and structured data', () => {

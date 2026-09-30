@@ -9,6 +9,7 @@ import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
 import { createFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
+import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
 import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
@@ -361,6 +362,7 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
   state.selectedIds = [...new Set(valid)];
+  syncActiveImageSource();
   if (refreshLayers) renderLayers();
   else {
     syncRenderedLayerSelection(previousSelectedIds, state.selectedIds);
@@ -372,6 +374,16 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   updateSelectionStatus();
   renderer?.invalidate();
 }
+function selectedImageAssetId() {
+  const selected = selectedNodes();
+  if (selected.length !== 1) return null;
+  const node = selected[0];
+  if (node.type === 'image') return node.assetId || null;
+  if (node.imageFill?.assetId) return node.imageFill.assetId;
+  const imageFill = node.fills?.find(fill => fill.type === 'image' && fill.visible !== false && (fill.opacity ?? 1) > 0)?.imageFill;
+  return imageFill?.assetId || null;
+}
+function syncActiveImageSource() { imageEngine.setActiveSource(selectedImageAssetId()); }
 function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
@@ -585,13 +597,44 @@ function blendingSection(node) {
   const options = layerBlendModes.map(mode => `<option value="${mode}"${selected === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('');
   return section('Blending', `<select class="prop-input select-field blend-mode-select" data-prop="blendMode" aria-label="Layer blend mode"${node.locked ? ' disabled' : ''}>${options}</select>`);
 }
-function strokeStyleControls(node) {
-  const cap = ['butt', 'round', 'square'].includes(node.strokeCap) ? node.strokeCap : node.strokePattern === 'dotted' ? 'round' : 'butt';
-  const join = ['miter', 'round', 'bevel'].includes(node.strokeJoin) ? node.strokeJoin : 'miter';
-  const pattern = ['solid', 'dashed', 'dotted'].includes(node.strokePattern) ? node.strokePattern : 'solid';
-  const miterLimit = Number.isFinite(node.strokeMiterLimit) ? node.strokeMiterLimit : 10;
-  const select = (property, label, value, options) => `<select class="prop-input select-field stroke-style-select" data-prop="${property}" aria-label="${label}"${node.locked || (property === 'strokeCap' && pattern === 'dotted') ? ' disabled' : ''}>${options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('')}</select>`;
-  return `<div class="property-grid stroke-style-grid">${numberField('W', 'strokeWidth', node.strokeWidth ?? 1, .5, 0, 100_000, node.locked, 'Stroke width')}${select('strokePattern', 'Stroke pattern', pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}${select('strokeCap', 'Stroke cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']])}${select('strokeJoin', 'Stroke join', join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}${numberField('Miter', 'strokeMiterLimit', miterLimit, .5, 1, 1000, node.locked, 'Stroke miter limit')}</div>`;
+function strokeStackControls(node) {
+  const strokes = strokeStackForNode(node);
+  if (!strokes.length) return '';
+  const rows = strokes.map((stroke, index) => {
+    const id = escapeHtml(stroke.id);
+    const name = strokes.length === 1 ? 'Stroke' : `Stroke ${index + 1}`;
+    const color = index === 0 && node.strokeVariableId ? getNodeColor(state.document, node, 'stroke') : stroke.color;
+    const safeColor = /^#[0-9a-f]{6}$/i.test(color || '') ? color : '#1e1e1e';
+    const cap = stroke.pattern === 'dotted' ? 'round' : stroke.cap;
+    const select = (field, label, value, options, disabled = false) => {
+      const choices = options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('');
+      return `<label class="stroke-field"><span>${label}</span><select data-stroke-field="${field}" data-stroke-id="${id}" aria-label="${name} ${label.toLowerCase()}"${node.locked || disabled ? ' disabled' : ''}>${choices}</select></label>`;
+    };
+    const primaryControls = index === 0
+      ? `${variableBindingControl(node, 'stroke')}<button class="add-fill" type="button" data-action="create-color-variable" data-kind="stroke"${node.locked ? ' disabled' : ''}>＋ Create stroke variable</button>`
+      : '';
+    const opacity = Math.round(stroke.opacity * 100);
+    return `<div class="layer-effect-card stroke-stack-card" data-stroke-row="${id}">
+      <div class="layer-effect-heading">
+        <strong>${name}</strong>
+        <label><input type="checkbox" data-stroke-field="visible" data-stroke-id="${id}"${stroke.visible ? ' checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label>
+        <button class="tiny-icon-button" type="button" data-action="move-stroke" data-stroke-id="${id}" data-direction="up" aria-label="Move ${name.toLowerCase()} earlier"${node.locked || index === 0 ? ' disabled' : ''}>↑</button>
+        <button class="tiny-icon-button" type="button" data-action="move-stroke" data-stroke-id="${id}" data-direction="down" aria-label="Move ${name.toLowerCase()} later"${node.locked || index === strokes.length - 1 ? ' disabled' : ''}>↓</button>
+        <button class="tiny-icon-button" type="button" data-action="remove-stroke" data-stroke-id="${id}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button>
+      </div>
+      <div class="stroke-field-grid">
+        <label class="stroke-field"><span>Color</span><input type="color" data-stroke-field="color" data-stroke-id="${id}" value="${escapeHtml(safeColor)}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>
+        <label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.5" value="${Number(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>
+        <div class="slider-row stroke-opacity-row"><label for="stroke-opacity-${id}">Opacity</label><input id="stroke-opacity-${id}" type="range" min="0" max="100" step="1" value="${opacity}" data-stroke-field="opacity" data-stroke-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${opacity}%</output></div>
+        ${select('pattern', 'Pattern', stroke.pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}
+        ${select('cap', 'Cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']], stroke.pattern === 'dotted')}
+        ${select('join', 'Join', stroke.join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}
+        <label class="stroke-field"><span>Miter limit</span><input type="number" data-stroke-field="miterLimit" data-stroke-id="${id}" min="1" max="1000" step="0.5" value="${Number(stroke.miterLimit)}" aria-label="${name} miter limit"${node.locked ? ' disabled' : ''}/></label>
+      </div>
+      ${primaryControls}
+    </div>`;
+  }).join('');
+  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own color, width, opacity, cap, join, and pattern.</div></div>`;
 }
 function cornerRadiusControls(node) {
   if (!['rectangle', 'frame', 'section', 'image'].includes(node.type)) return '';
@@ -630,18 +673,21 @@ function appearanceSection(node) {
   const fills = hasFill ? fillStackControls(node) : '';
   const canBindPrimaryFill = hasFill && fillStackForNode(node)[0]?.type === 'solid';
   const fillBinding = canBindPrimaryFill ? variableBindingControl(node, 'fill') : '';
-  const stroke = node.stroke ? `${colorField('Stroke', 'stroke', getNodeColor(state.document, node, 'stroke'), 100)}${variableBindingControl(node, 'stroke')}<button class="add-fill" data-action="create-color-variable" data-kind="stroke">＋ Create stroke variable</button>${strokeStyleControls(node)}` : '';
+  const stroke = strokeStackControls(node);
   const radius = cornerRadiusControls(node);
   const fillStyleActions = canBindPrimaryFill
     ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
     : '';
+  const canAddStroke = !['text', 'boolean'].includes(node.type);
+  const strokeCount = strokeStackForNode(node).length;
+  const addStrokeAction = canAddStroke ? `<button class="add-fill" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>` : '';
   const styleActions = node.type === 'text'
     ? ''
     : node.type === 'path' || (node.type === 'network' && !hasFill)
-    ? '<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button></div>'
+    ? `<div class="style-actions">${addStrokeAction}</div>`
     : node.type === 'boolean'
       ? fillStyleActions ? `<div class="style-actions">${fillStyleActions}</div>` : ''
-      : `<div class="style-actions"><button class="add-fill" data-action="add-stroke">＋ Add stroke</button>${fillStyleActions}</div>`;
+      : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
   const body = `${fills}${fillBinding}${stroke}${styleActions}${radius}`;
   return section('Appearance', body);
 }
@@ -971,7 +1017,8 @@ function inspectPanel() {
   const html = output.html || '<!-- Select a layer to generate an HTML structure. -->';
   const json = output.json || '[]';
   const jsx = output.jsx || 'export default function TinyImageStarHandoff() { return null; }';
-  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card"><header><div><strong>React component</strong><span>Ready-to-adapt JSX with generated styles</span></div><button class="inspect-copy" type="button" data-inspect-copy="jsx">Copy JSX</button></header><pre><code>${escapeHtml(jsx)}</code></pre><p>Image source files remain local; connect each image layer to an asset in your app.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
+  const vue = output.vue || '<template><!-- Select a layer to generate a Vue scaffold. --></template>\n<style></style>\n';
+  return `<div class="inspect-panel"><div class="inspect-intro"><span>LOCAL HANDOFF</span><strong>${entries.length === 1 ? 'Layer values' : `${entries.length} selected layers`}</strong><small>Resolved from the current local design · positions are relative to the page</small></div><div class="inspect-layer-list">${cards}</div><section class="inspect-code-card"><header><div><strong>CSS</strong><span>Layout and style starting point</span></div><button class="inspect-copy" type="button" data-inspect-copy="css">Copy CSS</button></header><pre><code>${escapeHtml(css)}</code></pre><p>Vector paths, masks, and Boolean geometry remain exact in the layer JSON below.</p></section><section class="inspect-code-card"><header><div><strong>HTML structure</strong><span>Nested layer markup scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="html">Copy HTML</button></header><pre><code>${escapeHtml(html)}</code></pre><p>Local image sources and vector geometry stay in the layer JSON.</p></section><section class="inspect-code-card"><header><div><strong>React component</strong><span>Ready-to-adapt JSX scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="jsx">Copy JSX</button></header><pre><code>${escapeHtml(jsx)}</code></pre><p>Adapt this scaffold to your app; connect local images and vector or mask assets there.</p></section><section class="inspect-code-card"><header><div><strong>Vue 3 component</strong><span>Adaptable single-file component scaffold</span></div><button class="inspect-copy" type="button" data-inspect-copy="vue">Copy SFC</button></header><pre><code>${escapeHtml(vue)}</code></pre><p>Adapt this scaffold to your app; connect local images and vector or mask assets there.</p></section><section class="inspect-code-card inspect-json-card"><header><div><strong>Layer JSON</strong><span>Exact selected layer data</span></div><button class="inspect-copy" type="button" data-inspect-copy="json">Copy JSON</button></header><details><summary>View structured data</summary><pre><code>${escapeHtml(json)}</code></pre></details></section></div>`;
 }
 function buildPrototypeInteractionCondition() {
   const variable = state.document.variables?.find(item => item.id === state.prototypeConditionVariableId);
@@ -1430,6 +1477,7 @@ function renderAssetsTab() {
 }
 
 function renderUI() {
+  syncActiveImageSource();
   $('#document-name').value = state.document.name;
   $('#canvas-file-name').textContent = state.document.name;
   renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
@@ -3126,6 +3174,37 @@ function updateFillInput(input) {
   renderer.invalidate();
 }
 
+function updateStrokeInput(input) {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  if (!node || node.locked) return;
+  const strokes = ensureStrokeStack(node);
+  const stroke = strokes.find(item => item.id === input.dataset.strokeId);
+  if (!stroke) return;
+  const field = input.dataset.strokeField;
+  const index = strokes.indexOf(stroke);
+  if (!state.controlEdit) { checkpoint('Edit stroke'); state.controlEdit = true; }
+  if (field === 'color') {
+    if (!/^#[0-9a-f]{6}$/i.test(input.value)) return;
+    if (index === 0) detachPrimaryStrokeBinding(node, stroke, getNodeColor(state.document, node, 'stroke'));
+    updateStroke(node, stroke.id, { color: input.value });
+  } else if (field === 'visible') updateStroke(node, stroke.id, { visible: input.checked });
+  else if (field === 'opacity' && Number.isFinite(Number(input.value))) {
+    const opacity = Math.max(0, Math.min(1, Number(input.value) / 100));
+    updateStroke(node, stroke.id, { opacity });
+    if (input.nextElementSibling) input.nextElementSibling.value = `${Math.round(opacity * 100)}%`;
+  } else if (field === 'width' && Number.isFinite(Number(input.value))) updateStroke(node, stroke.id, { width: Number(input.value) });
+  else if (field === 'miterLimit' && Number.isFinite(Number(input.value))) updateStroke(node, stroke.id, { miterLimit: Number(input.value) });
+  else if (field === 'cap' && ['butt', 'round', 'square'].includes(input.value)) updateStroke(node, stroke.id, { cap: input.value });
+  else if (field === 'join' && ['miter', 'round', 'bevel'].includes(input.value)) updateStroke(node, stroke.id, { join: input.value });
+  else if (field === 'pattern' && ['solid', 'dashed', 'dotted'].includes(input.value)) {
+    updateStroke(node, stroke.id, input.value === 'dotted' ? { pattern: input.value, cap: 'round' } : { pattern: input.value });
+    renderInspector();
+  } else return;
+  syncLegacyStrokeFields(node);
+  recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+  renderer.invalidate();
+}
+
 function updateLayerEffectInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
   const effect = node?.effects?.find(item => item.id === input.dataset.effectId);
@@ -3497,6 +3576,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
+  if (state.selectedIds.length === 1 && state.selectedIds[0] === nodeId) imageEngine.setActiveSource(assetId);
   const version = ++nextImageRenderVersion;
   state.renderVersion.set(previewKey, version);
   state.imageStatus.set(previewKey, 'Processing locally…');
@@ -6021,7 +6101,7 @@ function updateExportSetting(input) {
 async function copyInspectText(kind) {
   const text = buildInspectOutput(state.document, selectedEntries())[kind];
   if (!text) { showToast('Select a layer before copying handoff data.'); return; }
-  const label = ({ css: 'CSS', html: 'HTML', jsx: 'React JSX', json: 'Layer JSON' })[kind] || 'Handoff data';
+  const label = ({ css: 'CSS', html: 'HTML', jsx: 'React JSX', vue: 'Vue SFC', json: 'Layer JSON' })[kind] || 'Handoff data';
   try {
     await navigator.clipboard.writeText(text);
     showToast(`${label} copied.`);
@@ -6040,6 +6120,33 @@ async function copyInspectText(kind) {
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (['add-stroke', 'remove-stroke', 'move-stroke'].includes(action)) {
+    if (!node || node.locked) return;
+    const strokes = ensureStrokeStack(node);
+    const previousPrimary = strokes[0];
+    const hadPrimaryBinding = Boolean(node.strokeVariableId || node.variableBindings?.stroke);
+    const previousPrimaryColor = hadPrimaryBinding ? getNodeColor(state.document, node, 'stroke') : null;
+    if (action === 'add-stroke') {
+      if (strokes.length >= MAX_STROKES_PER_NODE) { showToast(`A layer can have up to ${MAX_STROKES_PER_NODE} strokes.`); return; }
+      checkpoint('Add stroke');
+      addStroke(node, createStroke());
+    } else {
+      const index = strokes.findIndex(stroke => stroke.id === details.strokeId);
+      if (index < 0) return;
+      if (action === 'remove-stroke') {
+        checkpoint('Remove stroke'); removeStroke(node, details.strokeId);
+      } else {
+        const nextIndex = index + (details.direction === 'up' ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= strokes.length) return;
+        checkpoint('Reorder strokes'); moveStroke(node, details.strokeId, details.direction);
+      }
+    }
+    if (hadPrimaryBinding && strokes[0] !== previousPrimary) detachPrimaryStrokeBinding(node, previousPrimary, previousPrimaryColor);
+    syncLegacyStrokeFields(node);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+    renderInspector(); queueSave(); renderer.invalidate();
+    return;
+  }
   if (action === 'add-fill-layer' || action === 'remove-fill-layer' || action === 'move-fill-layer') {
     if (!node || node.locked) return;
     const fills = ensureFillStack(node);
@@ -6290,9 +6397,7 @@ function applyInspectorAction(action, details = {}) {
     recordNodeComponentOverrides(node, ['radius', 'cornerRadii', 'variableBindings']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
-  else if (action === 'add-stroke') {
-    if (!node) return; checkpoint('Add stroke'); node.stroke ||= '#1e1e1e'; node.strokeWidth ||= 1; renderInspector(); queueSave(); renderer.invalidate();
-  } else if (action === 'auto-layout-toggle') {
+  else if (action === 'auto-layout-toggle') {
     if (!node || node.type !== 'frame') return;
     checkpoint(node.autoLayout ? 'Remove auto layout' : 'Add auto layout');
     if (node.autoLayout) {
@@ -6524,6 +6629,8 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    const strokeField = event.target.closest('[data-stroke-field]');
+    if (strokeField) { updateStrokeInput(strokeField); return; }
     const fillField = event.target.closest('[data-fill-field]');
     if (fillField) { updateFillInput(fillField); return; }
     const imageTransformField = event.target.closest('[data-image-transform-field]');
@@ -6574,6 +6681,7 @@ function initEvents() {
       return;
     }
     if (event.target.matches('[data-image-transform-field]')) { finishInspectorInput(); return; }
+    if (event.target.matches('[data-stroke-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }

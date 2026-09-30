@@ -49,7 +49,7 @@ function fixtureBmp() {
 function installWorkerGate(app) {
   const prototype = app.defaultView.Worker.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, 'postMessage');
-  const gate = { hold: false, workers: new Set(), submissions: [], held: [], rendered: [] };
+  const gate = { hold: false, workers: new Set(), submissions: [], held: [], rendered: [], activeSources: [] };
   const workerIndexes = new Map();
   const requests = new Map();
   Object.defineProperty(prototype, 'postMessage', {
@@ -89,6 +89,7 @@ function installWorkerGate(app) {
         requests.set(message.requestId, submission);
         gate.submissions.push(submission);
       }
+      if (message?.type === 'set-active-source') gate.activeSources.push(message.assetId);
       return descriptor.value.call(this, message, transfer);
     }
   });
@@ -146,6 +147,7 @@ try {
   input.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]').length === 1, 'image import');
   await waitFor(() => gate.rendered.length === 1 && app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'initial local WASM preview');
+  assert(gate.activeSources.includes(gate.rendered[0].assetId), 'the selected image source was not marked active before its first worker render.');
 
   const brightness = app.querySelector('[data-prop="adjustments.brightness"]');
   assert(brightness, 'The selected image did not expose its brightness control.');
@@ -192,6 +194,7 @@ try {
     finalPixel: canvasSample(app),
     expectedFinalPixel,
     staleResultDeliveredAfterFinal: true,
+    activeImageSourcePinned: true,
     finalPreviewWins: true
   });
 } catch (error) {

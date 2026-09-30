@@ -36,6 +36,61 @@ test('replacing a cached asset frees the old WASM image and updates pixel accoun
   assert.equal(replacement.freeCalls, 0);
 });
 
+test('pinned sources survive LRU churn while the oldest unpinned sources are freed first', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 8 });
+  const a = source(3), active = source(3), b = source(2), next = source(5);
+  cache.set('a', a); cache.set('active', active); cache.set('b', b);
+  assert.equal(cache.pin('active'), true);
+  assert.equal(cache.pin('missing'), false);
+  cache.get('a'); // b is now the oldest unpinned entry.
+
+  const inserted = cache.set('next', next);
+  assert.deepEqual(inserted, { retained: true, evictedAssetIds: ['b', 'a'] });
+  assert.equal(cache.has('active'), true);
+  assert.equal(cache.has('next'), true);
+  assert.equal(cache.pixels, 8);
+  assert.deepEqual([a.freeCalls, active.freeCalls, b.freeCalls, next.freeCalls], [1, 0, 1, 0]);
+});
+
+test('an absent active-source intent protects that source when it is decoded later', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 8 });
+  const old = source(4), recent = source(3), active = source(5);
+  cache.set('old', old); cache.set('recent', recent);
+
+  assert.equal(cache.setActive('active'), false, 'the source is not resident yet');
+  assert.equal(cache.activeAssetId, 'active', 'the selection intent survives the cache miss');
+  const rendered = cache.withSource('active', () => active, decoded => decoded.width);
+  assert.deepEqual(rendered, { result: 5, retained: true, evictedAssetIds: ['old'] });
+  assert.equal(cache.has('active'), true);
+  assert.equal(cache.has('recent'), true);
+  assert.equal(cache.pixels, 8);
+
+  const extra = source(4);
+  const refused = cache.set('extra', extra);
+  assert.deepEqual(refused, { retained: false, evictedAssetIds: [] }, 'a new source cannot displace the protected active source when the pair exceeds budget');
+  assert.equal(cache.has('active'), true);
+  assert.equal(cache.has('recent'), true, 'an impossible insertion does not evict useful unpinned entries before refusing');
+  assert.equal(cache.pixels, 8);
+  assert.equal(extra.freeCalls, 0, 'set leaves an unretained source owned by its caller');
+  extra.free();
+});
+
+test('unpin restores ordinary LRU eviction while the active source remains protected', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 8 });
+  const pinned = source(4), active = source(4), next = source(1);
+  cache.set('pinned', pinned); cache.set('active', active);
+  assert.equal(cache.pin('pinned'), true);
+  assert.equal(cache.setActive('active'), true);
+
+  assert.deepEqual(cache.set('next', next), { retained: false, evictedAssetIds: [] }, 'both protected sources leave no room for the incoming source');
+  assert.equal(cache.has('pinned'), true);
+  assert.equal(cache.unpin('pinned'), true);
+  assert.deepEqual(cache.set('next', next), { retained: true, evictedAssetIds: ['pinned'] });
+  assert.equal(cache.has('active'), true);
+  assert.equal(cache.pixels, 5);
+  assert.equal(pinned.freeCalls, 1);
+});
+
 test('oversized source renders successfully but is freed immediately after rendering', () => {
   const cache = new DecodedSourceCache({ pixelBudget: 4 });
   const large = source(3, 2);
@@ -108,6 +163,26 @@ test('shrinking a worker budget frees least-recently-used sources and reports th
   assert.equal(b.freeCalls, 1);
 });
 
+test('budget reductions evict unpinned entries first and release pins if even protected sources cannot fit', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 12 });
+  const pinned = source(4), ordinary = source(4), active = source(3);
+  cache.set('pinned', pinned); cache.set('ordinary', ordinary); cache.set('active', active);
+  cache.pin('pinned');
+  cache.setActive('active');
+
+  assert.deepEqual(cache.setBudget(7), { pixelBudget: 7, evictedAssetIds: ['ordinary'] });
+  assert.equal(cache.has('pinned'), true);
+  assert.equal(cache.has('active'), true);
+  assert.equal(cache.pixels, 7);
+
+  assert.deepEqual(cache.setBudget(2), { pixelBudget: 2, evictedAssetIds: ['pinned', 'active'] });
+  assert.equal(cache.pixels, 0);
+  assert.equal(cache.size, 0);
+  assert.equal(pinned.freeCalls, 1);
+  assert.equal(active.freeCalls, 1);
+  assert.equal(cache.unpin('pinned'), false, 'eviction clears explicit pin state');
+});
+
 test('oversized source is still freed when its render fails', () => {
   const cache = new DecodedSourceCache({ pixelBudget: 4 });
   const large = source(5);
@@ -148,4 +223,26 @@ test('dispose deletes one source and worker-close cleanup frees all remaining so
   assert.equal(b.freeCalls, 1);
   assert.equal(cache.size, 0);
   assert.equal(cache.pixels, 0);
+});
+
+test('delete and clear release pinned sources once and discard active intents', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 10 });
+  const a = source(3), b = source(5);
+  cache.set('a', a); cache.set('b', b);
+  assert.equal(cache.pin('a'), true);
+  assert.equal(cache.setActive('b'), true);
+
+  assert.equal(cache.delete('b'), true);
+  assert.equal(cache.activeAssetId, null);
+  assert.equal(b.freeCalls, 1);
+  assert.equal(cache.has('a'), true);
+
+  assert.equal(cache.setActive('future'), false);
+  cache.clear();
+  cache.clear();
+  assert.equal(cache.activeAssetId, null);
+  assert.equal(cache.unpin('a'), false);
+  assert.equal(a.freeCalls, 1);
+  assert.equal(cache.pixels, 0);
+  assert.equal(cache.size, 0);
 });

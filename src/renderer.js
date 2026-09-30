@@ -6,6 +6,7 @@ import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createGradientPaint, fillStackForNode } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
+import { strokeStackForNode } from './strokes.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
@@ -121,6 +122,26 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
         ctx.restore();
       }
     }
+    ctx.restore();
+  }
+}
+
+function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null) {
+  const strokes = strokeStackForNode(node);
+  for (let index = 0; index < strokes.length; index += 1) {
+    const stroke = strokes[index];
+    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || !stroke.color || stroke.color === 'transparent') continue;
+    ctx.save();
+    ctx.globalAlpha *= stroke.opacity;
+    ctx.lineWidth = stroke.width;
+    const color = index === 0 && node.strokeVariableId
+      ? getNodeColor(document, node, 'stroke')
+      : stroke.color;
+    if (!color || color === 'transparent') { ctx.restore(); continue; }
+    ctx.strokeStyle = color;
+    applyStrokeStyle(ctx, stroke);
+    if (tracePath) { ctx.beginPath(); tracePath(ctx); }
+    ctx.stroke();
     ctx.restore();
   }
 }
@@ -614,7 +635,7 @@ export class SceneRenderer {
         ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('Loading image…', cx, cy);
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius));
     } else if (node.type === 'text') {
       const sourceText = getNodePropertyValue(document, node, 'text');
       if (Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === sourceText) {
@@ -670,7 +691,7 @@ export class SceneRenderer {
           drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
         });
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => pathContext.rect(x, y, width, height));
     } else if (node.type === 'network') {
       const fills = fillStackForNode(node);
       for (const face of node.faces || []) {
@@ -716,10 +737,10 @@ export class SceneRenderer {
           ctx.restore();
         }
       }
-      if (node.stroke && node.strokeWidth) { ctx.beginPath(); traceVectorNetworkEdges(ctx, node, x, y); ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y));
     } else {
       if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height);
-      if (node.stroke && node.strokeWidth) { ctx.strokeStyle = getNodeColor(document, node, 'stroke'); ctx.lineWidth = node.strokeWidth; applyStrokeStyle(ctx, node); ctx.stroke(); }
+      drawStrokeStack(ctx, node, document, x, y, width, height);
     }
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }

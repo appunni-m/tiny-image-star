@@ -274,6 +274,7 @@ export class LocalImageEngine {
     this.cacheGeneration = 0;
     this.cacheConfigurationPending = new Set();
     this.poolConfigured = true;
+    this.activeSourceAssetId = null;
   }
 
   setConcurrency(value) {
@@ -305,9 +306,24 @@ export class LocalImageEngine {
     this.workers.push(slot);
   }
 
+  /** Keep the currently edited source resident when it fits the worker cache budget. */
+  setActiveSource(assetId = null) {
+    if (assetId !== null && (typeof assetId !== 'string' || !assetId)) {
+      throw new TypeError('An active image source needs an asset ID or null.');
+    }
+    if (this.activeSourceAssetId === assetId) return;
+    this.activeSourceAssetId = assetId;
+    for (const slot of this.workers) this.#sendActiveSource(slot);
+  }
+
+  #sendActiveSource(slot) {
+    if (!slot.failed) slot.worker.postMessage({ type: 'set-active-source', assetId: this.activeSourceAssetId });
+  }
+
   #receive(slot, message) {
     if (message.type === 'ready') {
       slot.initialized = true;
+      this.#sendActiveSource(slot);
       this.#sendCacheConfiguration(slot);
       this.#notify();
       return;

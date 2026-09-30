@@ -1,10 +1,176 @@
 const graphemeSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
 const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
+const thaiWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
 
-export function textGraphemes(text) {
+const markPattern = /\p{M}/u;
+const cjkPattern = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const cjkOpeningPunctuation = /[〈《「『【〔〖〘〚〝（［｛｟«‘“]/u;
+const cjkClosingPunctuation = /[〉》」』】〕〗〙〛〞〟）、。，．？！：；»’”]/u;
+const cjkSmallKana = /[ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶヷヸヹヺー]/u;
+const regionalIndicatorPattern = /[\u{1f1e6}-\u{1f1ff}]/u;
+const emojiModifierPattern = /[\u{1f3fb}-\u{1f3ff}]/u;
+const emojiTagPattern = /[\u{e0020}-\u{e007f}]/u;
+const prependPattern = /[\u0600-\u0605\u06dd\u070f\u0890\u0891\u08e2\u0d4e\u110bd\u110cd]/u;
+const viramaPattern = /[\u094d\u09cd\u0a4d\u0acd\u0b4d\u0bcd\u0c4d\u0ccd\u0d4d\u0dca\u1039\u103a\u17d2\ua806\ua8c4\ua953\ua9c0\uaaf6\uabed\u10a3f\u11046\u11070\u11133\u111c0\u11235\u112ea\u1134d\u11442\u114c2\u115bf\u1163f\u116b6\u1172b\u11839\u1193d\u119e0\u11a34\u11a47\u11a99\u11c3f\u11d44\u11d45\u11d97\u11f41\u11f42]/u;
+
+// Cap each measured candidate for pathological tokens while still allowing normal long lines.
+const maxGraphemesPerProbe = 256;
+
+function codePoint(value) { return value.codePointAt(0) || 0; }
+
+function isHangulL(value) {
+  const point = codePoint(value);
+  return point >= 0x1100 && point <= 0x115f || point >= 0xa960 && point <= 0xa97c;
+}
+function isHangulV(value) {
+  const point = codePoint(value);
+  return point >= 0x1160 && point <= 0x11a7 || point >= 0xd7b0 && point <= 0xd7c6;
+}
+function isHangulT(value) {
+  const point = codePoint(value);
+  return point >= 0x11a8 && point <= 0x11ff || point >= 0xd7cb && point <= 0xd7fb;
+}
+function isHangulSyllable(value) {
+  const point = codePoint(value);
+  return point >= 0xac00 && point <= 0xd7a3;
+}
+function isHangulLv(value) {
+  const point = codePoint(value);
+  return isHangulSyllable(value) && (point - 0xac00) % 28 === 0;
+}
+function isHangulLvt(value) { return isHangulSyllable(value) && !isHangulLv(value); }
+
+function fallbackGraphemes(text) {
+  const points = Array.from(String(text ?? ''));
+  const clusters = [];
+  let regionalCount = 0;
+  let previous = '';
+  for (const point of points) {
+    if (!clusters.length) {
+      clusters.push([point]);
+      regionalCount = regionalIndicatorPattern.test(point) ? 1 : 0;
+      previous = point;
+      continue;
+    }
+    const joinsHangul = isHangulL(previous) && (isHangulL(point) || isHangulV(point) || isHangulLv(point) || isHangulLvt(point))
+      || (isHangulLv(previous) || isHangulV(previous)) && (isHangulV(point) || isHangulT(point))
+      || (isHangulLvt(previous) || isHangulT(previous)) && isHangulT(point);
+    const joinsPrevious = markPattern.test(point)
+      || emojiModifierPattern.test(point)
+      || emojiTagPattern.test(point)
+      || point === '\u200d'
+      || previous === '\u200d'
+      || previous === '\r' && point === '\n'
+      || regionalIndicatorPattern.test(point) && regionalCount % 2 === 1
+      || prependPattern.test(previous)
+      || viramaPattern.test(previous)
+      || joinsHangul;
+    if (joinsPrevious) clusters.at(-1).push(point);
+    else clusters.push([point]);
+    if (regionalIndicatorPattern.test(point)) regionalCount = regionalIndicatorPattern.test(previous) ? regionalCount + 1 : 1;
+    else if (point !== '\u200d' && !markPattern.test(point)) regionalCount = 0;
+    previous = point;
+  }
+  return clusters.map(cluster => cluster.join(''));
+}
+
+export function textGraphemes(text, segmenter = graphemeSegmenter) {
   const value = String(text ?? '');
-  if (graphemeSegmenter) return [...graphemeSegmenter.segment(value)].map(part => part.segment);
-  return Array.from(value);
+  if (segmenter?.segment) return [...segmenter.segment(value)].map(part => part.segment);
+  return fallbackGraphemes(value);
+}
+
+function thaiWordBreakOffsets(text, segmenter = thaiWordSegmenter) {
+  const breaks = new Set();
+  if (!segmenter?.segment) return breaks;
+  for (const match of String(text ?? '').matchAll(/\p{Script=Thai}+/gu)) {
+    try {
+      for (const part of segmenter.segment(match[0])) {
+        if (part.isWordLike) breaks.add(match.index + part.index + part.segment.length);
+      }
+    } catch {
+      // Older or partial Segmenter implementations fall back to grapheme wrapping.
+    }
+  }
+  return breaks;
+}
+
+function isCjkLineBreak(left, right) {
+  if (!left || !right || cjkOpeningPunctuation.test(left) || cjkOpeningPunctuation.test(right)
+    || cjkClosingPunctuation.test(right) || cjkSmallKana.test(right)) return false;
+  return cjkPattern.test(left) || cjkPattern.test(right) || cjkClosingPunctuation.test(left);
+}
+
+function isCjkLineBreakCharacter(value) {
+  return cjkPattern.test(value) || cjkOpeningPunctuation.test(value) || cjkClosingPunctuation.test(value) || cjkSmallKana.test(value);
+}
+
+function splitOverwideToken(token, maxWidth, measure, segmenter = graphemeSegmenter) {
+  const value = String(token ?? '');
+  if (!value || !Number.isFinite(maxWidth) || !(maxWidth > 0) || Number(measure(value)) <= maxWidth) return [value];
+  const clusters = textGraphemes(value, segmenter);
+  if (clusters.length < 2) return [value];
+  const cjkAware = clusters.some(isCjkLineBreakCharacter);
+  const chunks = [];
+  let current = '';
+  let currentClusters = 0;
+  let previousCluster = '';
+  for (const cluster of clusters) {
+    const candidate = current + cluster;
+    const legalBreak = !cjkAware || currentClusters >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, cluster);
+    if (current && (currentClusters >= maxGraphemesPerProbe || Number(measure(candidate)) > maxWidth && legalBreak)) {
+      chunks.push(current);
+      current = cluster;
+      currentClusters = 1;
+      previousCluster = cluster;
+    } else {
+      current = candidate;
+      currentClusters += 1;
+      previousCluster = cluster;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function paragraphWrapPieces(text, maxWidth, measure, {
+  graphemeSegmenter: graphemes = graphemeSegmenter,
+  wordSegmenter: thaiWords = thaiWordSegmenter
+} = {}) {
+  const value = String(text ?? '');
+  const clusters = textGraphemes(value, graphemes);
+  const thaiBreaks = thaiWordBreakOffsets(value, thaiWords);
+  const pieces = [];
+  let word = '';
+  let whitespace = '';
+  let previous = '';
+  let offset = 0;
+  const flushWord = () => {
+    if (!word) return;
+    pieces.push(...splitOverwideToken(word, maxWidth, measure, graphemes));
+    word = '';
+  };
+  const flushWhitespace = () => {
+    if (!whitespace) return;
+    pieces.push(whitespace);
+    whitespace = '';
+  };
+
+  for (const cluster of clusters) {
+    if (/^\s+$/u.test(cluster)) {
+      flushWord();
+      whitespace += cluster;
+    } else {
+      flushWhitespace();
+      if (word && (thaiBreaks.has(offset) || isCjkLineBreak(previous, cluster))) flushWord();
+      word += cluster;
+    }
+    previous = cluster;
+    offset += cluster.length;
+  }
+  flushWord();
+  flushWhitespace();
+  return pieces;
 }
 
 export function transformTextCase(text, mode = 'none') {
@@ -32,10 +198,10 @@ export function wrapText(ctx, text, maxWidth, letterSpacing = 0) {
   return wrapTextWithMeasure(text, maxWidth, candidate => measureTrackedText(ctx, candidate, letterSpacing));
 }
 
-export function wrapTextWithMeasure(text, maxWidth, measure) {
+export function wrapTextWithMeasure(text, maxWidth, measure, options = {}) {
   const lines = [];
   for (const paragraph of String(text ?? '').split(/\r\n|\r|\n/u)) {
-    const pieces = paragraph.match(/\s+|[^\s]+/gu) || [];
+    const pieces = paragraphWrapPieces(paragraph, maxWidth, measure, options);
     let line = '';
     let pendingWhitespace = '';
     for (const piece of pieces) {
@@ -155,9 +321,9 @@ function paragraphBreakSpacing(index, plans, paragraphSpacing, listSpacing) {
     ? listSpacing : paragraphSpacing;
 }
 
-function wrapParagraphWithFirstLineWidth(text, firstLineWidth, continuationWidth, measure) {
+function wrapParagraphWithFirstLineWidth(text, firstLineWidth, continuationWidth, measure, options = {}) {
   const lines = [];
-  const pieces = String(text ?? '').match(/\s+|[^\s]+/gu) || [];
+  const pieces = paragraphWrapPieces(text, Math.min(firstLineWidth, continuationWidth), measure, options);
   let line = '';
   let pendingWhitespace = '';
   let lineWidth = firstLineWidth;
@@ -205,7 +371,9 @@ export function layoutPlainText(text, maxWidth, measure, {
   align = 'left',
   listSpacing = 0,
   paragraphStyles = [],
-  markerStyle = null
+  markerStyle = null,
+  wordSegmenter = thaiWordSegmenter,
+  graphemeSegmenter: graphemes = graphemeSegmenter
 } = {}) {
   if (typeof measure !== 'function') throw new TypeError('Text layout requires a measurement function.');
   const limit = Number(maxWidth);
@@ -229,8 +397,10 @@ export function layoutPlainText(text, maxWidth, measure, {
     const continuationIndent = isListItem ? indentWithinWidth(plan.contentIndent, limit) : 0;
     const availableWidth = Number.isFinite(limit) ? Math.max(1, limit - firstIndent) : Infinity;
     const wrapped = isListItem
-      ? wrapParagraphWithFirstLineWidth(paragraph, availableWidth, Number.isFinite(limit) ? Math.max(1, limit - continuationIndent) : Infinity, measure)
-      : wrapTextWithMeasure(paragraph, availableWidth, measure);
+      ? wrapParagraphWithFirstLineWidth(paragraph, availableWidth, Number.isFinite(limit) ? Math.max(1, limit - continuationIndent) : Infinity, measure, {
+        wordSegmenter, graphemeSegmenter: graphemes
+      })
+      : wrapTextWithMeasure(paragraph, availableWidth, measure, { wordSegmenter, graphemeSegmenter: graphemes });
     for (const [paragraphLineIndex, displayText] of wrapped.entries()) {
       const naturalWidth = Number(measure(displayText));
       const lineIndent = paragraphLineIndex === 0 ? firstIndent : continuationIndent;
@@ -333,13 +503,45 @@ function measuredPartsWidth(parts, measure) {
   return parts.reduce((width, part) => width + Number(measure(part.text, part.style)), 0);
 }
 
+function splitRichWordByWidth(word, maxWidth, measure, segmenter) {
+  if (!Number.isFinite(maxWidth) || !(maxWidth > 0) || measuredPartsWidth(word.parts, measure) <= maxWidth) return [word];
+  const units = word.parts.flatMap(part => textGraphemes(part.text, segmenter).map(text => ({ text, style: part.style })));
+  if (units.length < 2) return [word];
+  const chunks = [];
+  let parts = [];
+  let graphemeCount = 0;
+  let previousCluster = '';
+  const cjkAware = units.some(unit => isCjkLineBreakCharacter(unit.text));
+  const flush = () => {
+    if (!parts.length) return;
+    chunks.push({ parts, separatorParts: chunks.length ? [] : word.separatorParts });
+    parts = [];
+    graphemeCount = 0;
+    previousCluster = '';
+  };
+  for (const unit of units) {
+    const candidate = parts.map(part => ({ ...part }));
+    appendRichPart(candidate, unit.text, unit.style);
+    const legalBreak = !cjkAware || graphemeCount >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, unit.text);
+    if (parts.length && (graphemeCount >= maxGraphemesPerProbe || measuredPartsWidth(candidate, measure) > maxWidth && legalBreak)) flush();
+    appendRichPart(parts, unit.text, unit.style);
+    graphemeCount += 1;
+    previousCluster = unit.text;
+  }
+  flush();
+  return chunks;
+}
+
 /**
  * Wrap and measure a rich-text run list using a caller-supplied font measurement function.
  * Each run only needs to specify style overrides; unspecified values inherit from baseStyle.
- * Returned run offsets are uncompressed natural positions. `width` is the visible line width
- * after matching the editor's max-width compression for a single unbreakable word.
+ * Returned run offsets are natural positions. Long unbreakable tokens fall back to grapheme
+ * line breaks so the editor does not compress an entire word to fit its text box.
  */
-export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
+export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
+  wordSegmenter: thaiWords = thaiWordSegmenter,
+  graphemeSegmenter: graphemes = graphemeSegmenter
+} = {}) {
   if (!Array.isArray(runs) || typeof measure !== 'function') throw new TypeError('Rich text layout requires runs and a measurement function.');
   const limit = Number(maxWidth);
   if (!(limit > 0) && limit !== Infinity) throw new TypeError('Rich text layout requires a positive maximum width.');
@@ -355,6 +557,9 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
   };
 
   const characters = transformRichCharacters(runs, baseStyle.textCase || 'none', baseStyle);
+  const thaiBreaks = thaiWordBreakOffsets(characters.map(character => character.text).join(''), thaiWords);
+  let textOffset = 0;
+  let previousCluster = '';
   for (let characterIndex = 0; characterIndex < characters.length; characterIndex += 1) {
     const character = characters[characterIndex];
     const paragraph = paragraphs.at(-1);
@@ -362,12 +567,24 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
       finishWord(paragraph);
       flushTrailingRichWhitespace(paragraph);
       paragraphs.push({ words: [], current: [], pendingSpaceParts: [] });
-      if (character.text === '\r' && characters[characterIndex + 1]?.text === '\n') characterIndex += 1;
+      textOffset += character.text.length;
+      previousCluster = '';
+      if (character.text === '\r' && characters[characterIndex + 1]?.text === '\n') {
+        textOffset += characters[characterIndex + 1].text.length;
+        characterIndex += 1;
+      }
     } else if (/^\s+$/u.test(character.text)) {
       if (paragraph.current.length) finishWord(paragraph);
       if (paragraph.words.length) appendRichPart(paragraph.pendingSpaceParts, character.text, character.style);
       else appendRichPart(paragraph.current, character.text, character.style);
-    } else appendRichPart(paragraph.current, character.text, character.style);
+      textOffset += character.text.length;
+      previousCluster = '';
+    } else {
+      if (paragraph.current.length && (thaiBreaks.has(textOffset) || isCjkLineBreak(previousCluster, character.text))) finishWord(paragraph);
+      appendRichPart(paragraph.current, character.text, character.style);
+      textOffset += character.text.length;
+      previousCluster = character.text;
+    }
   }
   for (const paragraph of paragraphs) {
     finishWord(paragraph);
@@ -391,9 +608,12 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure) {
     const contentIndent = isListItem ? plan.contentIndent : 0;
     const firstIndent = indentWithinWidth(contentIndent + requestedIndent, limit);
     const continuationIndent = indentWithinWidth(contentIndent, limit);
+    const wordWidthLimit = Number.isFinite(limit)
+      ? Math.max(1, limit - Math.max(firstIndent, continuationIndent)) : Infinity;
+    const words = paragraph.words.flatMap(word => splitRichWordByWidth(word, wordWidthLimit, measure, graphemes));
     let line = [];
     let firstLine = true;
-    for (const word of paragraph.words) {
+    for (const word of words) {
       const candidate = line.length
         ? [...line, ...word.separatorParts, ...word.parts]
         : word.parts;

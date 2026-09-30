@@ -8,6 +8,10 @@ const ready = import('../wasm/pillow_rs_js.js').then(async module => { await mod
 
 self.onmessage = async event => {
   const message = event.data;
+  if (message.type === 'set-active-source') {
+    sources.setActive(message.assetId);
+    return;
+  }
   if (message.type === 'configure-cache') {
     try {
       const { pixelBudget, evictedAssetIds } = sources.setBudget(message.pixelBudget);
