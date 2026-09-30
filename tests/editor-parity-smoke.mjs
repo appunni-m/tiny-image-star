@@ -1,6 +1,8 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
 import { deleteImageAsset, deleteStoredDocument, listSavedDocuments, loadDocumentById, saveDocument } from '../src/storage.js';
 import { getTransformHandles, nodeLocalToPage, parentLocalToPageTransform, resizeOrientedRect, transformPoint } from '../src/transform-geometry.js';
+import { resizeSelection, rotateSelection, selectionBounds } from '../src/group-transform.js';
+import { selectionGroupHandles } from '../src/renderer.js';
 import { vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint } from '../src/vector-path.js';
 
 const result = document.querySelector('#result');
@@ -60,11 +62,11 @@ function findSavedNode(savedDocument, id) {
   }
   return null;
 }
-function dispatchCanvasPointer(app, canvas, type, point, pointerId = 83) {
+function dispatchCanvasPointer(app, canvas, type, point, pointerId = 83, modifiers = {}) {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
   const event = new app.defaultView.PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId, pointerType: 'mouse', button: 0,
-    clientX: point.x, clientY: point.y
+    clientX: point.x, clientY: point.y, ...modifiers
   });
   canvas.dispatchEvent(event);
   return event;
@@ -107,7 +109,11 @@ async function run(app) {
       name: 'Nested vector network',
       ...vectorNetworkGeometryFromAnchors([{ x: 100, y: 50 }, { x: 145, y: 55 }])
     });
+    const verticalLineA = createNode('line', { name: 'Degenerate vertical A', x: 260, y: -30, width: 0, height: 30 });
+    const verticalLineB = createNode('line', { name: 'Degenerate vertical B', x: 260, y: 30, width: 0, height: 30 });
     addNode(original, parent);
+    addNode(original, verticalLineA);
+    addNode(original, verticalLineB);
     addNode(original, group, { parentId: parent.id });
     addNode(original, target, { parentId: group.id });
     addNode(original, network, { parentId: group.id });
@@ -168,11 +174,16 @@ async function run(app) {
       dispatchCanvasPointer(app, canvas, 'pointerup', finish, 84);
     }
     assert(resizeDown.defaultPrevented, 'pointer at the rotated southeast handle should begin a resize gesture.');
-    await waitFor(async () => {
-      const doc = await readSaved(app, duplicate.id);
-      const changed = doc?.pages[0].children[0].children[0].children[0];
-      return changed && (Math.abs(changed.width - target.width) > 1 || Math.abs(changed.height - target.height) > 1);
-    }, 'oriented canvas resize persistence');
+    try {
+      await waitFor(async () => {
+        const doc = await readSaved(app, duplicate.id);
+        const changed = findSavedNode(doc, target.id);
+        return changed && (Math.abs(changed.width - target.width) > 1 || Math.abs(changed.height - target.height) > 1);
+      }, 'oriented canvas resize persistence');
+    } catch (error) {
+      const saved = findSavedNode(await readSaved(app, duplicate.id), target.id);
+      throw new Error(`${error.message} (saved=${JSON.stringify(saved && { x: saved.x, y: saved.y, width: saved.width, height: saved.height, rotation: saved.rotation })}, live-status=${app.querySelector('#position-status')?.textContent}, down-default=${resizeDown.defaultPrevented})`);
+    }
     const resizedDoc = await readSaved(app, duplicate.id);
     const resized = resizedDoc.pages[0].children[0].children[0].children[0];
     const expectedResize = resizeOrientedRect(originalRect, 'se', finishWorld, ancestors);
@@ -200,11 +211,128 @@ async function run(app) {
     const rotated = rotatedDoc.pages[0].children[0].children[0].children[0];
     assert(Math.abs(rotated.rotation - (target.rotation + 20)) < 1, `rotation handle should apply angular movement (got ${rotated.rotation}).`);
 
+    result.textContent = 'RUNNING: multi-layer resize and rotate';
+    const beforeGroupTransform = await readSaved(app, duplicate.id);
+    const groupTarget = findSavedNode(beforeGroupTransform, target.id);
+    const groupNetwork = findSavedNode(beforeGroupTransform, network.id);
+    const transformAncestors = [parent.id, group.id].map(id => findSavedNode(beforeGroupTransform, id));
+    const groupEntries = [groupTarget, groupNetwork].map(node => ({ node, ancestors: transformAncestors }));
+    const groupBounds = selectionBounds(groupEntries);
+    click(app, app.querySelector(`[data-layer-id="${CSS.escape(target.id)}"]`));
+    app.querySelector(`[data-layer-id="${CSS.escape(network.id)}"]`).dispatchEvent(new app.defaultView.MouseEvent('click', {
+      bubbles: true, cancelable: true, button: 0, ctrlKey: true
+    }));
+    assert(app.querySelector('#selection-status')?.textContent === '2 layers selected',
+      'the two sibling layers should be selected together before group transform.');
+    const groupCanvas = app.querySelector('#scene-canvas');
+    const groupResizeHandles = selectionGroupHandles(groupBounds);
+    const groupResizeStart = screenPoint(app, groupResizeHandles.resize.se);
+    const groupResizeFinishWorld = { x: groupResizeHandles.resize.se.x + 30, y: groupResizeHandles.resize.se.y + 17 };
+    const groupResizeFinish = screenPoint(app, groupResizeFinishWorld);
+    const groupResizeDown = dispatchCanvasPointer(app, groupCanvas, 'pointerdown', groupResizeStart, 96);
+    dispatchCanvasPointer(app, groupCanvas, 'pointermove', groupResizeFinish, 96);
+    dispatchCanvasPointer(app, groupCanvas, 'pointerup', groupResizeFinish, 96);
+    assert(groupResizeDown.defaultPrevented, 'the shared southeast handle should start a multi-layer resize.');
+    const expectedGroupResize = new Map(resizeSelection(groupEntries, groupBounds, 'se', groupResizeFinishWorld).map(patch => [patch.id, patch]));
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      const savedTarget = findSavedNode(saved, target.id);
+      const savedNetwork = findSavedNode(saved, network.id);
+      return savedTarget && savedNetwork
+        && (Math.abs(savedTarget.width - groupTarget.width) > 1 || Math.abs(savedNetwork.width - groupNetwork.width) > 1);
+    }, 'multi-layer resize persistence');
+    const afterGroupResize = await readSaved(app, duplicate.id);
+    for (const id of [target.id, network.id]) {
+      const actual = findSavedNode(afterGroupResize, id);
+      const expected = expectedGroupResize.get(id);
+      assert(Math.abs(actual.x - expected.x) < 1e-4 && Math.abs(actual.y - expected.y) < 1e-4
+        && Math.abs(actual.width - expected.width) < 1e-4 && Math.abs(actual.height - expected.height) < 1e-4,
+      `group resize should apply the shared page-space scale to ${id} through rotated ancestors.`);
+    }
+
+    const resizedEntries = [target.id, network.id].map(id => ({ node: findSavedNode(afterGroupResize, id), ancestors: transformAncestors }));
+    const resizedBounds = selectionBounds(resizedEntries);
+    const rotateHandles = selectionGroupHandles(resizedBounds);
+    const rotateStartWorld = rotateHandles.rotate;
+    const rotateCenter = resizedBounds.center;
+    const groupStartAngle = Math.atan2(rotateStartWorld.y - rotateCenter.y, rotateStartWorld.x - rotateCenter.x);
+    const groupFinishWorld = {
+      x: rotateCenter.x + 46 * Math.cos(groupStartAngle + Math.PI / 9),
+      y: rotateCenter.y + 46 * Math.sin(groupStartAngle + Math.PI / 9)
+    };
+    const groupRotateStart = screenPoint(app, rotateStartWorld);
+    const groupRotateFinish = screenPoint(app, groupFinishWorld);
+    const groupRotateDown = dispatchCanvasPointer(app, groupCanvas, 'pointerdown', groupRotateStart, 97);
+    dispatchCanvasPointer(app, groupCanvas, 'pointermove', groupRotateFinish, 97);
+    dispatchCanvasPointer(app, groupCanvas, 'pointerup', groupRotateFinish, 97);
+    assert(groupRotateDown.defaultPrevented, 'the shared rotation handle should start a multi-layer rotation.');
+    const expectedGroupRotate = new Map(rotateSelection(resizedEntries, rotateCenter, 20).map(patch => [patch.id, patch]));
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      return Math.abs(findSavedNode(saved, target.id)?.rotation - findSavedNode(afterGroupResize, target.id)?.rotation) > 5;
+    }, 'multi-layer rotation persistence');
+    const afterGroupRotate = await readSaved(app, duplicate.id);
+    for (const id of [target.id, network.id]) {
+      const actual = findSavedNode(afterGroupRotate, id);
+      const expected = expectedGroupRotate.get(id);
+      assert(Math.abs(actual.x - expected.x) < 1e-4 && Math.abs(actual.y - expected.y) < 1e-4
+        && Math.abs(actual.rotation - expected.rotation) < 1e-4,
+      `group rotation should preserve both layers' page-space positions through rotated ancestors (${id}).`);
+    }
+
+    result.textContent = 'RUNNING: Shift-resize vertical degenerate selection';
+    const beforeVerticalResize = await readSaved(app, duplicate.id);
+    const verticalEntries = [verticalLineA.id, verticalLineB.id].map(id => ({
+      node: findSavedNode(beforeVerticalResize, id), ancestors: []
+    }));
+    assert(verticalEntries.every(({ node }) => node?.width === 0),
+      'the vertical test layers should both have zero width before the group resize.');
+    const verticalBounds = selectionBounds(verticalEntries);
+    assert(verticalBounds.width === 0 && verticalBounds.height > 0,
+      'the two vertical test layers should form a selection with zero total width.');
+    click(app, app.querySelector(`[data-layer-id="${CSS.escape(verticalLineA.id)}"]`));
+    app.querySelector(`[data-layer-id="${CSS.escape(verticalLineB.id)}"]`).dispatchEvent(new app.defaultView.MouseEvent('click', {
+      bubbles: true, cancelable: true, button: 0, ctrlKey: true
+    }));
+    assert(app.querySelector('#selection-status')?.textContent === '2 layers selected',
+      'the two vertical layers should be selected together before Shift-resizing.');
+    const verticalResizeHandle = selectionGroupHandles(verticalBounds).resize.n;
+    assert(verticalResizeHandle, 'a zero-width selection should retain its north resize handle.');
+    const verticalResizeStart = screenPoint(app, verticalResizeHandle);
+    const verticalResizeFinishWorld = { x: verticalResizeHandle.x, y: verticalResizeHandle.y - 12 };
+    const verticalResizeFinish = screenPoint(app, verticalResizeFinishWorld);
+    const resizeErrors = [];
+    const onResizeError = event => resizeErrors.push(event.error?.message || event.message || 'unknown window error');
+    app.defaultView.addEventListener('error', onResizeError);
+    let verticalResizeDown;
+    try {
+      verticalResizeDown = dispatchCanvasPointer(app, groupCanvas, 'pointerdown', verticalResizeStart, 98);
+      dispatchCanvasPointer(app, groupCanvas, 'pointermove', verticalResizeFinish, 98, { shiftKey: true });
+      dispatchCanvasPointer(app, groupCanvas, 'pointerup', verticalResizeFinish, 98, { shiftKey: true });
+    } finally {
+      app.defaultView.removeEventListener('error', onResizeError);
+    }
+    assert(verticalResizeDown?.defaultPrevented, 'the north handle should begin a group resize for vertical layers.');
+    assert(resizeErrors.length === 0, `Shift-resizing zero-width layers should not throw (${resizeErrors.join('; ')}).`);
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      const changed = [verticalLineA.id, verticalLineB.id].map(id => findSavedNode(saved, id));
+      return changed.every((node, index) => node && Math.abs(node.height - verticalEntries[index].node.height) > 1);
+    }, 'vertical degenerate group resize persistence');
+    const afterVerticalResize = await readSaved(app, duplicate.id);
+    for (const id of [verticalLineA.id, verticalLineB.id]) {
+      const actual = findSavedNode(afterVerticalResize, id);
+      assert(Number.isFinite(actual.x) && Number.isFinite(actual.y) && actual.width === 0
+        && Number.isFinite(actual.height) && actual.height > 0,
+      `Shift-resize should keep vertical line geometry finite and valid (${id}).`);
+    }
+
     result.textContent = 'RUNNING: Pen branch through rotated ancestors';
     click(app, app.querySelector(`[data-layer-id="${CSS.escape(network.id)}"]`));
     click(app, app.querySelector('[data-tool="pen"]'));
-    const firstNetworkPoint = vectorNetworkVertexPoint(network, 'v1', { x: 0, y: 0 });
-    const firstNetworkPage = nodeLocalToPage(network, firstNetworkPoint, ancestors);
+    const networkAfterGroupTransform = findSavedNode(await readSaved(app, duplicate.id), network.id);
+    const firstNetworkPoint = vectorNetworkVertexPoint(networkAfterGroupTransform, 'v1', { x: 0, y: 0 });
+    const firstNetworkPage = nodeLocalToPage(networkAfterGroupTransform, firstNetworkPoint, ancestors);
     const branchParentPoint = { x: 140, y: 80 };
     const branchPagePoint = transformPoint(parentLocalToPageTransform(ancestors), branchParentPoint);
     const penStart = screenPoint(app, firstNetworkPage);
@@ -220,8 +348,8 @@ async function run(app) {
       'rotated network branch persistence');
     const branchedNetwork = findSavedNode(await readSaved(app, duplicate.id), network.id);
     const appendedVertex = branchedNetwork.vertices.find(vertex => vertex.id === 'v3');
-    const appendedParentPoint = vectorNetworkVertexPoint(branchedNetwork, appendedVertex.id, { x: branchedNetwork.x, y: branchedNetwork.y });
-    const appendedPagePoint = transformPoint(parentLocalToPageTransform(ancestors), appendedParentPoint);
+    const appendedLocalPoint = vectorNetworkVertexPoint(branchedNetwork, appendedVertex.id, { x: 0, y: 0 });
+    const appendedPagePoint = nodeLocalToPage(branchedNetwork, appendedLocalPoint, ancestors);
     assert(Math.hypot(appendedPagePoint.x - branchPagePoint.x, appendedPagePoint.y - branchPagePoint.y) < 1e-5,
       'a Pen branch point should retain its page position through the rotated parent chain.');
 
@@ -305,7 +433,8 @@ async function run(app) {
     await waitFor(() => app.querySelector('.design-file-row.is-current [data-design-action="delete"]'), 'active design delete action');
     app.defaultView.confirm = () => true;
     const beforeDeleteIds = new Set((await listSavedDocuments()).map(item => item.id));
-    const pendingFile = new app.defaultView.File([new Uint8Array([1, 2, 3])], 'pending-import.png', { type: 'image/png' });
+    // Keep the file header valid so import preflight reaches the intentionally held full-file read.
+    const pendingFile = new app.defaultView.File([fixtureBmp()], 'pending-import.bmp', { type: 'image/bmp' });
     let rejectPendingRead;
     Object.defineProperty(pendingFile, 'arrayBuffer', {
       configurable: true,
@@ -323,7 +452,7 @@ async function run(app) {
     assert(await loadDocumentById(duplicate.id), 'a refused active-design switch must leave the current design stored.');
     assert(app.querySelector(`[data-design-action="delete"][data-design-id="${CSS.escape(duplicate.id)}"]`), 'the active design should remain in the local library after a refused delete.');
     rejectPendingRead(new Error('Injected pending image read failure'));
-    await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('pending-import.png: Injected pending image read failure'), 'held image import release');
+    await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('pending-import.bmp: Injected pending image read failure'), 'held image import release');
     click(app, app.querySelector(`[data-design-action="delete"][data-design-id="${CSS.escape(duplicate.id)}"]`));
     await waitFor(() => app.querySelector('#document-name')?.value === 'Untitled', 'active design deletion and safe document switch');
     await waitFor(async () => !(await listSavedDocuments()).some(item => item.id === duplicate.id), 'deleted document removal');
@@ -331,7 +460,7 @@ async function run(app) {
     await waitFor(async () => (await listSavedDocuments()).some(item => !beforeDeleteIds.has(item.id)), 'replacement design save');
     for (const item of await listSavedDocuments()) if (!beforeDeleteIds.has(item.id)) testDocumentIds.add(item.id);
 
-    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement'] };
+    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'multi-layer resize', 'multi-layer rotate', 'degenerate Shift multi-layer resize', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement'] };
   } catch (error) {
     testError = error;
   } finally {

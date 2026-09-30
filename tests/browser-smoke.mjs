@@ -23,7 +23,15 @@ function waitFor(test, label, timeout = 20000) {
 }
 async function waitForSaveCycle(app, label) {
   await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
-  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), `${label} save completion`);
+  await waitFor(() => {
+    const state = app.querySelector('#save-state')?.textContent || '';
+    return state.includes('Saved locally') || state.includes('Could not save');
+  }, `${label} save completion`);
+  const saveState = app.querySelector('#save-state')?.textContent || '';
+  if (saveState.includes('Could not save')) {
+    const detail = app.querySelector('#toast-region')?.textContent?.trim();
+    throw new Error(`${label} failed to persist${detail ? `: ${detail}` : '.'}`);
+  }
 }
 function fixtureBmp() {
   const width = 64; const height = 32; const pixels = width * height * 3; const bytes = new Uint8Array(54 + pixels); const view = new DataView(bytes.buffer);
@@ -214,15 +222,22 @@ try {
   dispatchShortcut(app, 'z', { shift: true });
   await waitFor(() => Math.abs(pixelInLeftHalf(app)[0] - after[0]) < 12, 'redo image preview restoration');
 
+  const sharpness = app.querySelector('[data-prop="adjustments.sharpness"]');
+  assert(sharpness, 'the selected image did not expose the local sharpness adjustment');
+  sharpness.value = '100'; sharpness.dispatchEvent(new Event('input', { bubbles: true })); sharpness.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'Pillow-RS sharpness preview');
+  await waitForSaveCycle(app, 'sharpness adjustment');
+
   let selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   assert(selectedRow, 'the imported image layer was not selected');
-  dispatchImageCanvasContextMenu(app);
+  dispatchImageCanvasContextMenu(app, 48, 48);
   const saveRecipeItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.includes('Save image recipe'));
   assert(saveRecipeItem, 'right-clicking the edited canvas image did not offer recipe saving');
   dispatchClick(saveRecipeItem);
   const dialog = app.querySelector('#recipe-dialog');
   assert(dialog.open, 'the save-recipe dialog did not open');
   app.querySelector('#recipe-name').value = 'Local red recipe';
+  assert(app.querySelector('#recipe-preview-summary').textContent.includes('Sharpness 100'), 'the saved recipe summary omitted the sharpness adjustment.');
   dispatchClick(app.querySelector('#save-recipe-confirm'));
   await waitFor(() => !dialog.open, 'recipe dialog close');
   await waitForSaveCycle(app, 'recipe save');
@@ -253,6 +268,7 @@ try {
   const clipboardImages = flattenNodes(clipboardDocument?.pages?.find(page => page.id === clipboardDocument.activePageId)?.children)
     .filter(node => node.type === 'image');
   assert(clipboardImages.length === 3, 'clipboard browser coverage did not start with the three imported images');
+  assert(clipboardImages.every(node => node.adjustments?.sharpness === 100), 'saved and bulk-applied recipes did not carry sharpness into every existing image layer.');
   const originalClipboardIds = clipboardImages.map(node => node.id);
   const originalAssetIds = new Set(clipboardImages.map(node => node.assetId));
   const assetIdsBeforeClipboard = new Set((await readStore('assets')).map(asset => asset.id));
@@ -370,6 +386,8 @@ try {
   await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'image-fill source controls');
   const fillBrightness = app.querySelector('[data-image-fill-field="adjustments.brightness"]');
   assert(fillBrightness, 'image fills did not expose local WASM adjustments');
+  const fillSharpness = app.querySelector('[data-image-fill-field="adjustments.sharpness"]');
+  assert(fillSharpness, 'image fills did not expose Pillow-RS sharpness');
   const desktopFrameSize = { width: frame.style.width, height: frame.style.height };
   frame.style.width = '390px'; frame.style.height = '844px';
   await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));
@@ -382,6 +400,9 @@ try {
   fillBrightness.value = '-18';
   fillBrightness.dispatchEvent(new Event('input', { bubbles: true }));
   fillBrightness.dispatchEvent(new Event('change', { bubbles: true }));
+  fillSharpness.value = '35';
+  fillSharpness.dispatchEvent(new Event('input', { bubbles: true }));
+  fillSharpness.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'image-fill WASM preview');
   const fillCropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="fill"]');
   assert(fillCropLeft, 'image fills did not expose local crop controls');
@@ -399,6 +420,7 @@ try {
   assert(current?.recipes.some(item => item.name === 'Local red recipe'), 'the saved recipe was not persisted with the design');
   const imageFillNode = current.pages.flatMap(page => flattenNodes(page.children)).find(node => node.imageFill);
   assert(imageFillNode?.imageFill.adjustments.brightness === -18
+    && imageFillNode?.imageFill.adjustments.sharpness === 35
     && imageFillNode?.imageFill.transforms?.crop?.left === 0.2
     && imageFillNode?.imageFill.transforms?.rotation === 90, 'the image fill adjustments, crop, and rotation were not saved with the layer');
   assert(imageFillNode.blendMode === 'multiply', 'the layer blend mode was not saved with the design');
@@ -416,6 +438,7 @@ try {
   dispatchClick(restoredFillRow);
   assert(app.querySelector('[data-prop="blendMode"]')?.value === 'multiply', 'the portable design did not restore the selected blend mode');
   await waitFor(() => app.querySelector('[data-image-fill-field="assetId"]'), 'reopened image-fill controls');
+  assert(app.querySelector('[data-image-fill-field="adjustments.sharpness"]')?.value === '35', 'the portable design did not restore image-fill sharpness');
   await waitFor(() => app.querySelector('#image-fill-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'reopened image-fill preview');
   dispatchContextMenu(app.querySelector(`[data-layer-id="${imageFillNode.id}"]`));
   const deleteFillItem = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.trim().startsWith('Delete'));
@@ -1805,7 +1828,7 @@ try {
   const groupedMultiplyPixel = [...effectContext.getImageData(16, 16, 1, 1).data];
   assert(groupedMultiplyPixel[0] < 5 && groupedMultiplyPixel[1] < 5 && groupedMultiplyPixel[2] < 5, `a group should blend as one isolated layer (${groupedMultiplyPixel.join(',')})`);
 
-  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ importedImages: 3, safeImageImportPreflight: true, pillowWasmPreview: true, sameLayerPixelChanged: true, pixelBefore: before, pixelAfter: after, sharpnessPreview: true, recipeSave: true, multiImageApply: true, livePauseResume: true, speedWorkers: speed.value, inPlaceLayers: 3, layerClipboard: clipboardContract, portableDesignRoundTrip: true, localImageAssets: assetRecords.length, imageFill: true, imageFillClipping: true, imageFillContain: true, imageFillLocalWasmAdjustments: true, imageFillSharpness: true, imageFillMobileTapTargets: true, layerBlendModes: true, multiplyBlend: true, groupBlend: true, prototypeConnection: true, afterDelayPrototype: true, smartAnimate: true, smartAnimateGradients: true, prototypeOverlay: true, prototypeSwapOverlay: true, prototypeBackAction: true, prototypeOpenLink: true, prototypeVariableMode: true, prototypeVariableCondition: true, numericConditionValidation: true, closeOverlay: true, startPoint: true, sharedColorStyles: true, reusableComponents: true, typedComponentProperties: ['BOOLEAN','TEXT','INSTANCE_SWAP','SLOT'], componentPropertyInspector: true, componentSlotPicker: true, componentSlotCancel: true, componentSlotMobileTargets: true, componentSlotReset: true, instancePropagation: true, instanceOverrides: true, instanceDetach: true, componentVariants: true, variantSwitch: true, presentNavigation: true, presentBack: true, bezierPen: true, closedVectorFill: true, vectorRegionPaint: true, vectorRegionPaintRendering: true, vectorRegionPaintMaskOpacity: true, ordinaryGroupUngroup: true, multiSelectionAlignment: true, bezierHandleEditing: true, bezierPreservingPointInsertion: true, mobileVectorPointControl: true, vectorPointDeletion: true, colorVariableModes: true, variableModeCreationUI: true, nestedFrameModeOverride: true, liveColorBinding: true, variableAssetsBinding: true, typedVariableValues: true, variableAliases: true, typedVariableBindings: ['radius','text','visible'], autoLayoutVariableBindings: ['columnGap','padding','grid'], letterSpacingTracking: true, gridAutoLayout: true, liveBooleanOperations: ['union','subtract','intersect','exclude'], booleanTransparentCutout: true, hitTestingThroughBooleanCutout: true, booleanSourceEditing: true, booleanSeparate: true, editableMaskGroups: true, maskAlphaPreview: true, maskRelease: true, dropShadow: true, layerBlur: true, linearGradient: true, radialGradient: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

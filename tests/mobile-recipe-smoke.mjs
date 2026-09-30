@@ -178,6 +178,11 @@ try {
   brightness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updating preview'), 'scheduled source preview');
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'source image preview');
+  const sharpness = app.querySelector('[data-prop="adjustments.sharpness"]');
+  assert(sharpness, 'the selected phone image should expose Pillow-RS sharpness.');
+  setInput(app, sharpness, 40);
+  sharpness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'phone sharpness preview');
   const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="layer"]');
   assert(cropLeft, 'the phone image inspector should expose normalized crop bounds.');
   assertTouchTarget(app, cropLeft, 'Crop left control', 34);
@@ -195,7 +200,8 @@ try {
   tap(app, saveRecipe);
   const dialog = app.querySelector('#recipe-dialog');
   assert(dialog?.open, 'Save recipe should open from the image inspector without a context menu.');
-  assert(app.querySelector('#recipe-preview-summary').textContent.includes('Crop') && app.querySelector('#recipe-preview-summary').textContent.includes('Rotate 90°'), 'the recipe preview should describe crop and rotation.');
+  assert(app.querySelector('#recipe-preview-summary').textContent.includes('Crop') && app.querySelector('#recipe-preview-summary').textContent.includes('Rotate 90°')
+    && app.querySelector('#recipe-preview-summary').textContent.includes('Sharpness 40'), 'the recipe preview should describe sharpness, crop, and rotation.');
   app.querySelector('#recipe-name').value = 'Phone batch look';
   tap(app, app.querySelector('#save-recipe-confirm'));
   await waitFor(() => !dialog.open, 'recipe save dialog');
@@ -256,12 +262,12 @@ try {
   await waitFor(async () => {
     const stored = await readDocuments(app); stored.sort((a, b) => b.savedAt - a.savedAt);
     const images = stored[0]?.document?.pages.flatMap(page => page.children).filter(node => node.type === 'image') || [];
-    return images.length === 3 && images.every(node => node.adjustments?.brightness === -65
+    return images.length === 3 && images.every(node => node.adjustments?.brightness === -65 && node.adjustments?.sharpness === 40
       && node.transforms?.crop?.left === 0.2 && node.transforms?.rotation === 90);
   }, 'all applied recipe settings persisted locally');
   const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
   const savedImages = records[0]?.document?.pages.flatMap(page => page.children).filter(node => node.type === 'image') || [];
-  assert(savedImages.length === 3 && savedImages.every(node => node.adjustments?.brightness === -65
+  assert(savedImages.length === 3 && savedImages.every(node => node.adjustments?.brightness === -65 && node.adjustments?.sharpness === 40
     && node.transforms?.crop?.left === 0.2 && node.transforms?.rotation === 90), 'the image layers should retain recipe adjustments, crop, and rotation in local storage.');
 
   tap(app, app.querySelector('#bulk-done'));
@@ -306,6 +312,7 @@ try {
     const target = stored[0]?.document?.pages.flatMap(page => page.children).find(node => node.id === failureTargetId);
     return target?.adjustments?.brightness === -19
       && target?.adjustments?.contrast === 24
+      && target?.adjustments?.sharpness === 40
       && target?.transforms?.crop?.left === 0.3
       && target?.transforms?.rotation === 180
       && target?.opacity === 0.37
@@ -313,7 +320,7 @@ try {
   }, 'newer edit and unchanged recipe fields to persist after rollback');
   app.defaultView.createImageBitmap = nativeCreateImageBitmap;
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, recipeRenderFailureInjected: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], unchangedRecipeFieldsRestored: ['contrast'], liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchSelection: 3, keyboardModifiers: false, contextMenuUsed: false, recipeSaved: true, pickerAndApply: true, sharpnessPreview: true, cropRotatePreview: true, cropRotateRecipeRoundTrip: true, inPlaceLayers: savedImages.length, recipeOutputChanged: true, overlappingBatchRejected: true, recipeRenderFailureInjected: true, newerEditsPreserved: ['brightness', 'crop', 'rotation', 'opacity', 'fit'], unchangedRecipeFieldsRestored: ['contrast', 'sharpness'], liveSpeedControl: true, bulkProgress: '3/3', fingerSizedControls: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

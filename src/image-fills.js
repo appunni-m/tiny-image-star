@@ -5,6 +5,7 @@ export const imageFillAdjustmentRanges = Object.freeze({
   brightness: [-100, 100],
   contrast: [-100, 100],
   saturation: [-100, 100],
+  sharpness: [-100, 100],
   blur: [0, 24]
 });
 
@@ -20,11 +21,11 @@ export function createImageFill(assetId, overrides = {}) {
     assetId,
     fit: 'cover',
     transforms: createImageTransforms(),
-    adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 },
+    adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 },
     ...overrides,
     transforms: createImageTransforms(overrides.transforms || {}),
     adjustments: {
-      brightness: 0, contrast: 0, saturation: 0, blur: 0,
+      brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0,
       ...(overrides.adjustments || {})
     }
   };
@@ -38,7 +39,9 @@ export function isValidImageFill(fill) {
     || !fill.adjustments || typeof fill.adjustments !== 'object' || Array.isArray(fill.adjustments)
     || Object.keys(fill.adjustments).some(key => !Object.hasOwn(imageFillAdjustmentRanges, key))) return false;
   return Object.entries(imageFillAdjustmentRanges).every(([field, [minimum, maximum]]) => {
-    const value = fill.adjustments[field];
+    // Sharpness was added after image fills were already saved locally; an
+    // omitted value in older documents has the unchanged default of zero.
+    const value = field === 'sharpness' && fill.adjustments[field] === undefined ? 0 : fill.adjustments[field];
     return Number.isFinite(value) && value >= minimum && value <= maximum;
   });
 }

@@ -169,6 +169,13 @@ test('LocalImageEngine snapshots crop and rotation metadata into worker render r
   });
 });
 
+test('LocalImageEngine forwards Pillow sharpness settings to the local worker', async () => {
+  await withEngine(async engine => {
+    await engine.render('asset', bytesFor(2), { sharpness: 73 });
+    assert.deepEqual(engine.workers[0].worker.renderRequests[0].adjustments, { sharpness: 73 });
+  });
+});
+
 test('queued renders with the same replacement key keep only the latest preview', async () => {
   await withEngine(async engine => {
     engine.setConcurrency(1);

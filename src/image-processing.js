@@ -43,6 +43,10 @@ export function renderImage(source, adjustments = {}, transforms = {}) {
   const brightness = clamp(adjustments.brightness, -100, 100);
   const contrast = clamp(adjustments.contrast, -100, 100);
   const saturation = clamp(adjustments.saturation, -100, 100);
+  // Pillow-RS sharpness uses 1 as the unchanged image, 0 as softened, and
+  // values above 1 to strengthen edges. Map the centered editor value onto
+  // that factor range so 0 remains a no-op and ±100 span 0–2.
+  const sharpness = clamp(adjustments.sharpness, -100, 100);
   const blur = clamp(adjustments.blur, 0, 24);
   try {
     if (resolved.cropPixels) {
@@ -58,6 +62,7 @@ export function renderImage(source, adjustments = {}, transforms = {}) {
     if (brightness) image = replaceImage(image, image.enhanceBrightness(1 + brightness / 100));
     if (contrast) image = replaceImage(image, image.enhanceContrast(1 + contrast / 100));
     if (saturation) image = replaceImage(image, image.enhanceColor(1 + saturation / 100));
+    if (sharpness) image = replaceImage(image, image.enhanceSharpness(1 + sharpness / 100));
     if (blur) image = replaceImage(image, image.gaussianBlur(blur));
     const output = image.saveWithInput('PNG', null);
     return {

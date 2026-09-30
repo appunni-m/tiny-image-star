@@ -21,6 +21,23 @@ function fourColorBmp() {
   return new Uint8Array(bytes);
 }
 
+function edgeBandsBmp() {
+  const width = 12; const height = 8;
+  const rowBytes = Math.ceil(width * 3 / 4) * 4;
+  const pixelBytes = rowBytes * height;
+  const bytes = Buffer.alloc(54 + pixelBytes);
+  bytes.write('BM', 0, 'ascii'); bytes.writeUInt32LE(bytes.length, 2); bytes.writeUInt32LE(54, 10); bytes.writeUInt32LE(40, 14);
+  bytes.writeInt32LE(width, 18); bytes.writeInt32LE(height, 22); bytes.writeUInt16LE(1, 26); bytes.writeUInt16LE(24, 28); bytes.writeUInt32LE(pixelBytes, 34);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const value = x < 4 ? 0 : x < 8 ? 128 : 255;
+      const offset = 54 + (height - 1 - y) * rowBytes + x * 3;
+      bytes[offset] = value; bytes[offset + 1] = value; bytes[offset + 2] = value;
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
 function pixel(image, x, y) { return [...image.getpixel(x, y)].slice(0, 3); }
 
 test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG bytes', async () => {
@@ -34,6 +51,28 @@ test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG
     assert.ok(adjusted.bytes.length > 50); assert.notDeepEqual(adjusted.bytes, baseline.bytes);
     const reopened = decodeOriginal(pillow, adjusted.bytes);
     assert.equal(reopened.width, 2); assert.equal(reopened.height, 1); reopened.free();
+  } finally { original.free(); }
+});
+
+test('Pillow-RS sharpness strengthens or softens edges from the unchanged source', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, edgeBandsBmp());
+  try {
+    const baseline = renderImage(original, {});
+    const sharpened = renderImage(original, { sharpness: 100 });
+    const softened = renderImage(original, { sharpness: -100 });
+    const baselineImage = decodeOriginal(pillow, baseline.bytes);
+    const sharpenedImage = decodeOriginal(pillow, sharpened.bytes);
+    const softenedImage = decodeOriginal(pillow, softened.bytes);
+    try {
+      assert.deepEqual([sharpened.width, sharpened.height], [12, 8]);
+      assert.ok(pixel(sharpenedImage, 4, 3)[0] > pixel(baselineImage, 4, 3)[0], 'positive sharpness should strengthen the transition edge');
+      assert.ok(pixel(softenedImage, 4, 3)[0] < pixel(baselineImage, 4, 3)[0], 'negative sharpness should soften the transition edge');
+      assert.equal(pixel(original, 4, 3)[0], 128, 'preview rendering must leave the original WASM image unchanged');
+    } finally {
+      baselineImage.free(); sharpenedImage.free(); softenedImage.free();
+    }
   } finally { original.free(); }
 });
 

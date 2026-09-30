@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
@@ -17,6 +17,59 @@ function textContext({ nativeTracking = false } = {}) {
   if (nativeTracking) context.letterSpacing = '';
   return context;
 }
+
+test('group transform handles follow non-zero selection bounds while keeping rotation available', () => {
+  const regular = selectionGroupHandles({ x: 10, y: 20, width: 30, height: 40 });
+  assert.deepEqual(Object.keys(regular.resize), ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']);
+  assert.deepEqual(regular.rotate, { x: 25, y: -4 });
+
+  const horizontal = selectionGroupHandles({ x: 10, y: 20, width: 30, height: 0 });
+  assert.deepEqual(horizontal.resize, {
+    e: { x: 40, y: 20 },
+    w: { x: 10, y: 20 }
+  });
+  assert.deepEqual(horizontal.rotate, { x: 25, y: -4 });
+
+  const vertical = selectionGroupHandles({ x: 10, y: 20, width: 0, height: 40 });
+  assert.deepEqual(vertical.resize, {
+    n: { x: 10, y: 20 },
+    s: { x: 10, y: 60 }
+  });
+  assert.deepEqual(vertical.rotate, { x: 10, y: -4 });
+
+  const point = selectionGroupHandles({ x: 10, y: 20, width: 0, height: 0 });
+  assert.deepEqual(point.resize, {});
+  assert.deepEqual(point.rotate, { x: 10, y: -4 });
+});
+
+test('group selection overlay renders degenerate line and point bounds safely', () => {
+  const context = {
+    save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    stroke() {}, rect() {}, fill() {}, arc() {}
+  };
+  const cases = [
+    [
+      createNode('line', { x: 0, y: 10, width: 20, height: 0 }),
+      createNode('line', { x: 30, y: 10, width: 20, height: 0 })
+    ],
+    [
+      createNode('line', { x: 10, y: 0, width: 0, height: 20 }),
+      createNode('line', { x: 10, y: 30, width: 0, height: 20 })
+    ],
+    [
+      createNode('line', { x: 10, y: 10, width: 0, height: 0 }),
+      createNode('line', { x: 10, y: 10, width: 0, height: 0 })
+    ]
+  ];
+
+  for (const lines of cases) {
+    const document = createDocument();
+    for (const line of lines) addNode(document, line);
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, selectedIds: lines.map(line => line.id), zoom: 1 });
+    assert.doesNotThrow(() => renderer.drawSelection(context, document.pages[0].children, lines.map(line => line.id), 0, 0));
+  }
+});
 
 test('text tracking affects measured line width and wrapping', () => {
   const context = textContext();

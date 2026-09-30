@@ -56,7 +56,7 @@ test('node edits, duplication and removal preserve independent identities', () =
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
   const source = createNode('image', {
-    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, blur: 2 },
+    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2 },
     transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 }
   });
   const target = createNode('image', { assetId: 'asset-b' });
@@ -66,7 +66,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   source.transforms.crop.left = 0.4;
   target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
   assert.equal(applyImageRecipe(document, target.id, recipe), true);
-  assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, blur: 2 });
+  assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2 });
   assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 });
   assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop and quarter-turn rotation');
   assert.equal(target.assetId, 'asset-b');
@@ -127,12 +127,20 @@ test('serialized design validates after reload and rejects duplicate layer ident
 
 test('image fills validate and survive a portable design round trip', () => {
   const document = createDocument();
-  const fill = createImageFill('asset-local-photo', { fit: 'contain', adjustments: { brightness: -18, contrast: 12, saturation: 8, blur: 2 } });
+  const fill = createImageFill('asset-local-photo', { fit: 'contain', adjustments: { brightness: -18, contrast: 12, saturation: 8, sharpness: 35, blur: 2 } });
   const rectangle = createNode('rectangle', { imageFill: fill });
   addNode(document, rectangle);
   const reopened = parseDocument(serializeDocument(document));
   assert.equal(validateDocument(reopened), true);
   assert.deepEqual(reopened.pages[0].children[0].imageFill, fill);
+
+  const legacyFill = structuredClone(fill);
+  delete legacyFill.adjustments.sharpness;
+  const legacyDocument = structuredClone(reopened);
+  legacyDocument.pages[0].children[0].imageFill = legacyFill;
+  const loadedLegacyDocument = parseDocument(JSON.stringify(legacyDocument));
+  assert.equal(validateDocument(loadedLegacyDocument), true, 'older image fills without sharpness stay loadable with a neutral default.');
+  assert.deepEqual(loadedLegacyDocument.pages[0].children[0].imageFill, legacyFill);
 
   reopened.pages[0].children[0].imageFill.fit = 'stretch';
   assert.throws(() => validateDocument(reopened), /Invalid image fill/);

@@ -7,6 +7,7 @@ import { createGradientPaint } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
+import { selectionBounds } from './group-transform.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const BLUE = '#0d99ff';
@@ -23,6 +24,34 @@ export function selectionOverlayGeometry(node, ancestors = [], { zoom = 1, rotat
   ];
   const handles = getTransformHandles(node, ancestors, { rotateOffset: rotateOffset / zoom });
   return { corners, handles };
+}
+
+/** Return the shared transform handles for an axis-aligned multi-layer box. */
+export function selectionGroupHandles(bounds, { rotateOffset = 24 } = {}) {
+  const { x, y, width, height } = bounds;
+  const middleX = x + width / 2;
+  const middleY = y + height / 2;
+  const resize = {};
+  if (width > 0 && height > 0) {
+    Object.assign(resize, {
+      nw: { x, y }, n: { x: middleX, y }, ne: { x: x + width, y },
+      e: { x: x + width, y: middleY }, se: { x: x + width, y: y + height },
+      s: { x: middleX, y: y + height }, sw: { x, y: y + height }, w: { x, y: middleY }
+    });
+  } else if (width > 0) {
+    // A horizontal selection can be resized along X only. Avoid corner and
+    // vertical handles because they would request scaling its zero-height axis.
+    resize.e = { x: x + width, y: middleY };
+    resize.w = { x, y: middleY };
+  } else if (height > 0) {
+    // A vertical selection can be resized along Y only.
+    resize.n = { x: middleX, y };
+    resize.s = { x: middleX, y: y + height };
+  }
+  return {
+    resize,
+    rotate: { x: middleX, y: y - rotateOffset }
+  };
 }
 
 function rgba(hex, alpha = 1) {
@@ -900,8 +929,26 @@ export class SceneRenderer {
       for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
       ctx.closePath(); ctx.stroke();
     }
-    if (selected.length === 1) {
-      const { node, ancestors } = selected[0];
+    const selectedIdsSet = new Set(selectedIds);
+    const roots = selected.filter(entry => !entry.ancestors.some(parent => selectedIdsSet.has(parent.id)));
+    const groupTransformAllowed = roots.length > 1 && roots.every(({ node, ancestors }) =>
+      !node.locked && !ancestors.some(parent => parent.locked)
+      && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
+      && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
+    if (roots.length > 1 && groupTransformAllowed) {
+      const bounds = selectionBounds(roots);
+      const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / zoom });
+      const north = handles.resize.n;
+      ctx.beginPath(); ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height); ctx.stroke();
+      if (north) {
+        ctx.beginPath(); ctx.moveTo(north.x, north.y); ctx.lineTo(handles.rotate.x, handles.rotate.y); ctx.stroke();
+      }
+      for (const point of Object.values(handles.resize)) {
+        ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.arc(handles.rotate.x, handles.rotate.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    } else if (roots.length === 1) {
+      const { node, ancestors } = roots[0];
       const overlay = selectionOverlayGeometry(node, ancestors, { zoom });
       const resizePoints = Object.values(overlay.handles.resize);
       const north = overlay.handles.resize.n;
@@ -914,7 +961,7 @@ export class SceneRenderer {
 
       const nodeTransform = nodeLocalToPageTransform(node, ancestors);
       const pagePoint = point => transformPoint(nodeTransform, point);
-      if (node.type === 'path') {
+      if (selected.length === 1 && node.type === 'path') {
         const selectedPointIndex = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.index : -1;
         for (const [index] of (node.points || []).entries()) {
           const anchor = pagePoint(vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }));
@@ -928,7 +975,7 @@ export class SceneRenderer {
           ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ffffff';
         }
-      } else if (node.type === 'network') {
+      } else if (selected.length === 1 && node.type === 'network') {
         const selectedVertexId = this.getState().selectedVectorPoint?.nodeId === node.id ? this.getState().selectedVectorPoint.vertexId : null;
         for (const edge of node.edges || []) {
           const points = vectorNetworkEdgePoints(node, edge.id, { x: 0, y: 0 });

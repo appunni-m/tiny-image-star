@@ -9,7 +9,7 @@ import { createImageFill } from './image-fills.js';
 import { createImageTransforms } from './image-transforms.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { History } from './history.js';
-import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, LocalImageEngine } from './image-engine.js';
 import { collectLiveImagePreviewNodeIds, pruneImagePreviewRuntime } from './image-preview-runtime.js';
@@ -26,6 +26,7 @@ import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, ver
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { installLayerReorder, moveLayerOneVisualRow } from './layer-order.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect } from './transform-geometry.js';
+import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason } from './group-transform.js';
 import {
   appendVectorNetworkPathResolved, closestVectorNetworkEdge, closestVectorSegment, insertVectorNetworkPoint, insertVectorNodePoint,
   longestVectorNetworkEdge, longestVectorSegment, removeVectorNetworkVertex, removeVectorNodePoint,
@@ -318,8 +319,8 @@ function imageFillControls(node) {
   if (!imageFill) return '';
   const sources = imageFillSources();
   const options = sources.map(source => `<option value="${escapeHtml(source.assetId)}"${imageFill.assetId === source.assetId ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('');
-  const adjustments = imageFill.adjustments;
-  const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}" aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
+  const adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...imageFill.adjustments };
+  const fields = [['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}" aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
   return `<div class="image-fill-controls"><label class="image-fill-source"><span>Image</span><select class="select-field" data-image-fill-field="assetId" aria-label="Image fill source"${node.locked || sources.length < 2 ? ' disabled' : ''}>${options}</select></label><label class="image-fill-source"><span>Scale</span><select class="select-field" data-image-fill-field="fit" aria-label="Image fill scale"${node.locked ? ' disabled' : ''}><option value="cover"${imageFill.fit === 'cover' ? ' selected' : ''}>Fill</option><option value="contain"${imageFill.fit === 'contain' ? ' selected' : ''}>Fit</option></select></label>${fields}${imageTransformControls(imageFill.transforms, 'fill', node.locked)}<div id="image-fill-engine-status" class="image-engine-status">${escapeHtml(state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly')}</div><div class="image-properties-note">Edits use the original image through Pillow-RS WASM. The source stays on this device.</div></div>`;
 }
 function imageTransformControls(transforms, target, disabled = false) {
@@ -366,10 +367,10 @@ function appearanceSection(node) {
   return section('Appearance', body);
 }
 function imageAdjustmentsSection(node) {
-  const adjustments = node.adjustments || { brightness: 0, contrast: 0, saturation: 0, blur: 0 };
+  const adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...node.adjustments };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness || 0, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast || 0, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation || 0, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur || 0, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const body = `${imageTransformControls(node.transforms, 'layer', node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24)}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
 function imageRecipeOptions(selectedId = '') {
@@ -1331,6 +1332,19 @@ function unrotateForPath(world, node, origin) {
 }
 
 function checkPointDistance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function transformEntriesForSelection() {
+  return orderedRootSelectedEntries().map(entry => ({
+    entry,
+    node: { ...entry.node, ...resolvedGeometry(entry.node) },
+    ancestors: entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }))
+  }));
+}
+function canTransformSelectionTogether(entries) {
+  return entries.length > 1 && entries.every(({ node, ancestors }) =>
+    !node.locked && !ancestors.some(parent => parent.locked)
+    && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
+    && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
+}
 function commentPinAt(world) {
   const comments = [...pageComments()].sort((a, b) => a.createdAt - b.createdAt);
   for (let index = comments.length - 1; index >= 0; index -= 1) {
@@ -1339,35 +1353,55 @@ function commentPinAt(world) {
   return null;
 }
 function resizeHandleAt(event) {
-  const nodes = selectedNodes();
-  if (nodes.length !== 1 || nodes[0].locked) return null;
-  const entry = findNode(state.document, nodes[0].id);
-  if (!entry) return null;
-  const node = nodes[0];
-  const nodeGeometry = { ...node, ...resolvedGeometry(node) };
-  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
-  const handles = getTransformHandles(nodeGeometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
   const point = screenToWorld(event, canvas, state);
-  const tolerance = 8 / state.zoom;
-  if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'rotate', node, entry, geometry: nodeGeometry, ancestors, center: nodeLocalToPage(nodeGeometry, { x: nodeGeometry.width / 2, y: nodeGeometry.height / 2 }, ancestors) };
-  for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) return { kind: 'resize', name, node, entry, geometry: nodeGeometry, ancestors };
+  const entries = transformEntriesForSelection();
+  if (!entries.length) return null;
+  const tolerance = 8 / Math.max(.08, state.zoom);
+  if (entries.length > 1) {
+    if (!canTransformSelectionTogether(entries)) return null;
+    const bounds = selectionBounds(entries);
+    const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / Math.max(.08, state.zoom) });
+    if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'group-rotate', entries, ids: entries.map(item => item.node.id), bounds, center: bounds.center };
+    for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) {
+      return { kind: 'group-resize', entries, ids: entries.map(item => item.node.id), bounds, handle: name };
+    }
+    return null;
+  }
+  const { entry, node: geometry, ancestors } = entries[0];
+  const node = entry.node;
+  if (geometry.locked || ancestors.some(parent => parent.locked)) return null;
+  const handles = getTransformHandles(geometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
+  if (checkPointDistance(point, handles.rotate) <= tolerance) return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
+  for (const [name, handle] of Object.entries(handles.resize)) if (checkPointDistance(point, handle) <= tolerance) return { kind: 'resize', name, node, entry, geometry, ancestors };
   return null;
 }
 function selectedNodeDragStart(node, world, shiftKey) {
   if (!shiftKey && !state.selectedIds.includes(node.id)) setSelection([node.id]);
   const entry = findNode(state.document, node.id);
-  if (!shiftKey && state.selectedIds.length === 1 && entry?.parent?.autoLayout) {
+  const entries = orderedRootSelectedEntries();
+  const moveBlockReason = selectionMoveBlockReason(entries.map(item => ({ node: item.node, ancestors: item.parents })));
+  if (moveBlockReason === 'locked') {
+    showToast('Unlock the selected layers and parent frames before moving them together.');
+    return;
+  }
+  if (state.selectedIds.length === 1 && entry?.parent?.autoLayout && node.layoutPositioning !== 'absolute') {
     checkpoint('Reorder auto layout items');
     state.interaction = { kind: 'reorder', node, parent: entry.parent };
     return;
   }
-  const nodes = selectedNodes();
+  if (moveBlockReason === 'auto-layout') {
+    showToast('Auto layout controls these positions. Select absolute-positioned layers to move them as a group.');
+    return;
+  }
+  if (moveBlockReason === 'shared-position-variable') {
+    showToast('Unlink position variables before moving layers together.');
+    return;
+  }
   checkpoint('Move layers');
-  const originals = new Map(nodes.map(item => {
-    const entry = findNode(state.document, item.id);
-    const geometry = { ...item, ...resolvedGeometry(item) };
-    const ancestors = (entry?.parents || []).map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
-    return [item.id, { x: geometry.x, y: geometry.y, ancestors }];
+  const originals = new Map(entries.map(item => {
+    const geometry = { ...item.node, ...resolvedGeometry(item.node) };
+    const ancestors = item.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+    return [item.node.id, { x: geometry.x, y: geometry.y, ancestors }];
   }));
   state.interaction = { kind: 'move', start: world, originals, shiftKey };
 }
@@ -1440,6 +1474,16 @@ function onCanvasPointerDown(event) {
         checkpoint('Rotate layer');
         const angle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
         state.interaction = { kind: 'rotate', node: handle.node, entry: handle.entry, center: handle.center, startAngle: angle, lastAngle: angle, rotationDelta: 0, rotation: handle.geometry.rotation || 0 };
+      } else if (handle.kind === 'group-rotate') {
+        checkpoint('Rotate layers');
+        const startAngle = Math.atan2(world.y - handle.center.y, world.x - handle.center.x);
+        state.interaction = { ...handle, kind: 'group-rotate', startAngle, delta: 0 };
+      } else if (handle.kind === 'group-resize') {
+        checkpoint('Resize layers');
+        const frameStates = new Map(handle.entries
+          .filter(({ node }) => node.type === 'frame')
+          .map(({ node }) => [node.id, { width: node.width, height: node.height, childGeometry: captureChildGeometry(node) }]));
+        state.interaction = { ...handle, kind: 'group-resize', frameStates };
       } else {
         checkpoint('Resize layer');
         const geometry = handle.geometry;
@@ -1540,6 +1584,40 @@ function onCanvasPointerMove(event) {
     $('#position-status').textContent = `${Math.round(pageDx)}, ${Math.round(pageDy)} moved`;
     renderer.invalidate(); return;
   }
+  if (interaction.kind === 'group-rotate') {
+    const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
+    let delta = angle - interaction.startAngle;
+    if (delta > Math.PI) delta -= Math.PI * 2;
+    else if (delta < -Math.PI) delta += Math.PI * 2;
+    interaction.delta = delta * 180 / Math.PI;
+    const rotationDelta = event.shiftKey ? Math.round(interaction.delta / 15) * 15 : interaction.delta;
+    for (const patch of rotateSelection(interaction.entries, interaction.center, rotationDelta)) {
+      const node = findNode(state.document, patch.id)?.node;
+      if (!node) continue;
+      node.x = patch.x; node.y = patch.y; node.rotation = patch.rotation;
+    }
+    $('#position-status').textContent = `${Math.round(rotationDelta)}° · ${interaction.ids.length} layers`;
+    renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'group-resize') {
+    const aspectRatio = selectionAspectRatio(interaction.bounds);
+    const patches = resizeSelection(interaction.entries, interaction.bounds, interaction.handle, world, {
+      aspectRatio: event.shiftKey ? aspectRatio : undefined
+    });
+    for (const patch of patches) {
+      const node = findNode(state.document, patch.id)?.node;
+      if (!node) continue;
+      for (const property of ['x', 'y', 'width', 'height']) node[property] = patch[property];
+      const frame = interaction.frameStates.get(node.id);
+      if (frame) {
+        const geometry = resolvedGeometry(node);
+        if (node.autoLayout) applyAutoLayout(node);
+        else applyFrameConstraints(node, frame.width, frame.height, geometry.width, geometry.height, frame.childGeometry);
+      }
+    }
+    $('#position-status').textContent = `${interaction.ids.length} layers resized`;
+    renderer.invalidate(); return;
+  }
   if (interaction.kind === 'rotate') {
     const angle = Math.atan2(world.y - interaction.center.y, world.x - interaction.center.x);
     let delta = angle - interaction.lastAngle;
@@ -1613,8 +1691,10 @@ function onCanvasPointerUp(event) {
     recordNodeComponentOverrides(interaction.node, ['vertices', 'edges', 'faces']);
     state.interaction = null; renderInspector(); queueSave(); renderer.invalidate(); return;
   }
-  if (interaction.kind === 'move' || interaction.kind === 'resize' || interaction.kind === 'rotate' || interaction.kind === 'reorder') {
-    const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()] : interaction.node ? [interaction.node.id] : [];
+  if (['move', 'resize', 'rotate', 'group-resize', 'group-rotate', 'reorder'].includes(interaction.kind)) {
+    const editedIds = interaction.kind === 'move' ? [...interaction.originals.keys()]
+      : interaction.kind === 'group-resize' || interaction.kind === 'group-rotate' ? [...interaction.ids]
+        : interaction.node ? [interaction.node.id] : [];
     if (interaction.kind === 'reorder') editedIds.push(interaction.parent?.id);
     for (const id of editedIds.filter(Boolean)) {
       const node = findNode(state.document, id)?.node;
@@ -1627,14 +1707,19 @@ function onCanvasPointerUp(event) {
           instanceRoot.componentOverrides[node.componentSourceId].__childOrder = node.children.map(child => child.componentSourceId);
         }
       } else {
-        const properties = interaction.kind === 'resize' ? ['x', 'y', 'width', 'height'] : interaction.kind === 'rotate' ? ['rotation'] : ['x', 'y'];
+        const properties = interaction.kind === 'resize' || interaction.kind === 'group-resize' ? ['x', 'y', 'width', 'height']
+          : interaction.kind === 'rotate' ? ['rotation']
+            : interaction.kind === 'group-rotate' ? ['x', 'y', 'rotation'] : ['x', 'y'];
         if (properties.some(property => node.variableBindings?.[property])) recordNodeComponentOverrides(node, ['variableBindings']);
         recordNodeComponentOverrides(node, properties.filter(property => !node.variableBindings?.[property]));
       }
     }
-    if (interaction.kind === 'resize' && interaction.node?.type === 'frame') {
-      const instanceRoot = componentInstanceRoot(interaction.node.id);
-      if (instanceRoot) walkNodes(interaction.node.children || [], ({ node }) => recordNodeComponentOverrides(node, ['x', 'y', 'width', 'height']));
+    const resizedFrameIds = interaction.kind === 'resize' && interaction.node?.type === 'frame' ? [interaction.node.id]
+      : interaction.kind === 'group-resize' ? interaction.ids.filter(id => findNode(state.document, id)?.node.type === 'frame') : [];
+    for (const frameId of resizedFrameIds) {
+      const frameNode = findNode(state.document, frameId)?.node;
+      const instanceRoot = componentInstanceRoot(frameId);
+      if (instanceRoot && frameNode) walkNodes(frameNode.children || [], ({ node }) => recordNodeComponentOverrides(node, ['x', 'y', 'width', 'height']));
     }
     state.interaction = null; renderLayers(); renderInspector(); queueSave(); renderer.invalidate(); return;
   }
@@ -2223,6 +2308,7 @@ function updateImageFillInput(input) {
   } else if (field === 'fit') node.imageFill.fit = input.value;
   else if (field.startsWith('adjustments.')) {
     const key = field.slice('adjustments.'.length);
+    node.imageFill.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0, ...node.imageFill.adjustments };
     if (!Object.hasOwn(node.imageFill.adjustments, key)) return;
     node.imageFill.adjustments[key] = Number(input.value);
     if (input.nextElementSibling) input.nextElementSibling.value = input.value;
@@ -2697,7 +2783,7 @@ function saveRecipeFor(nodeId) {
   if (!node || node.type !== 'image') return;
   pendingRecipeNodeId = nodeId;
   const adjustments = node.adjustments || {};
-  const active = ['brightness', 'contrast', 'saturation', 'blur'].filter(key => Number(adjustments[key]) !== 0)
+  const active = ['brightness', 'contrast', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
     .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
   const transforms = createImageTransforms(node.transforms || {});
   if (transforms.crop) active.push(`Crop ${Math.round(transforms.crop.left * 100)}%/${Math.round(transforms.crop.top * 100)}% to ${Math.round(transforms.crop.right * 100)}%/${Math.round(transforms.crop.bottom * 100)}%`);
@@ -4429,7 +4515,7 @@ function applyInspectorAction(action, details = {}) {
   }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
-    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, blur: 0 }; node.transforms = createImageTransforms(); node.fit = 'cover';
+    checkpoint('Reset image'); node.adjustments = { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }; node.transforms = createImageTransforms(); node.fit = 'cover';
     recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit']);
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }

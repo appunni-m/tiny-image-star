@@ -153,7 +153,7 @@ const defaults = {
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
   text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
-  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, blur: 0 }, transforms: { crop: null, rotation: 0 }, fit: 'cover' },
+  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: { brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0 }, transforms: { crop: null, rotation: 0 }, fit: 'cover' },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
