@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createDocument, createFillLayer, createGradientFill, createNode, createVariable, createVariableCollection, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import { moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
@@ -363,6 +363,54 @@ test('exports Boolean unions with editable vector operands and an alpha mask', (
     })]
   });
   assert.match(exportNodeToSvg(nestedSubtract), /tis-boolean-0-operand-1-result-inverse-0-filter/);
+});
+
+test('Boolean SVG masks preserve live text, force white ink, and scale resolved text geometry once', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Boolean text');
+  const alternate = addVariableMode(document, collection.id, 'Alternate');
+  const textVariable = createVariable(document, collection.id, 'Label', 'string', 'Old');
+  const fontSizeVariable = createVariable(document, collection.id, 'Label size', 'number', 24);
+  setVariableValue(document, textVariable.id, 'New', alternate.id);
+  setVariableValue(document, fontSizeVariable.id, 30, alternate.id);
+  const frame = createNode('frame', { width: 180, height: 120 });
+  const label = createNode('text', {
+    width: 100, height: 70, rotation: 12, fontSize: 24, fontWeight: 700,
+    opacity: 0.5, fillOpacity: 0.5, color: 'transparent', textDecoration: 'underline',
+    stroke: '#123456', strokeWidth: 4,
+    textRuns: [{ text: 'O', color: 'transparent', textDecoration: 'underline' }, { text: 'ld', color: '#abcdef', fontWeight: 700 }]
+  });
+  const clip = createNode('rectangle', { width: 100, height: 70 });
+  addNode(document, frame);
+  addNode(document, label, { parentId: frame.id });
+  addNode(document, clip, { parentId: frame.id });
+  const group = combineBoolean(document, [label.id, clip.id], 'intersect');
+  group.width = 150;
+  group.height = 100;
+  assert.equal(bindVariable(document, label.id, textVariable.id, 'text'), true);
+  assert.equal(bindVariable(document, label.id, fontSizeVariable.id, 'fontSize'), true);
+
+  const measureText = (value, node) => [...String(value)].length * Number(node.fontSize || 24) * 0.55;
+  const defaultSvg = exportNodeToSvg(group, { document, measureText });
+  assert.match(defaultSvg, /<text[^>]*fill="#ffffff" fill-opacity="1"/,
+    'Boolean text ink should be opaque white inside the source opacity group');
+  assert.match(defaultSvg, /<tspan[^>]*fill="#ffffff">O<\/tspan>/,
+    'rich text run color and transparency should not change the glyph alpha mask');
+  assert.match(defaultSvg, /<g[^>]*opacity="0\.25"[^>]*><text/,
+    'layer and fill opacity should be applied once by the outer source group');
+  assert.match(defaultSvg, /transform="matrix\(/,
+    'rotated source text should share the Boolean group resize transform');
+  assert.doesNotMatch(defaultSvg, /stroke="#123456"/,
+    'Boolean operands use text glyph fill, not the text-box stroke');
+
+  assert.equal(setFrameVariableMode(document, frame.id, collection.id, alternate.id), true);
+  const alternateSvg = exportNodeToSvg(group, { document, measureText });
+  assert.match(alternateSvg, />New<\/tspan>/,
+    'SVG Boolean text should resolve mode-bound content instead of stale rich-run text');
+  assert.match(alternateSvg, /font-size="30"/,
+    'mode-bound text size should be used while laying out the SVG mask');
+  assert.equal(alternateSvg, exportNodeToSvg(group, { document, measureText }),
+    'mode-bound Boolean text export should remain deterministic');
 });
 
 test('exports Boolean subtract and intersect with editable alpha mask composition', () => {

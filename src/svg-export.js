@@ -10,6 +10,7 @@ import { strokeStackForNode } from './strokes.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorPathContours } from './vector-path.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgPath } from './corner-radii.js';
+import { booleanSourceTransform } from './boolean-geometry.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -341,7 +342,7 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
   if (node.type === 'boolean') {
     if (!['union', 'subtract', 'intersect', 'exclude'].includes(node.operation || 'union')) return `Boolean ${node.operation || 'unknown'} operations`;
     if (!Array.isArray(node.children) || node.children.length < 2) return 'invalid Boolean group structures';
-    const validOperand = child => child && ['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean'].includes(child.type)
+    const validOperand = child => child && ['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean'].includes(child.type)
       && (child.type !== 'path' || hasOnlyClosedPathContours(child))
       && (child.type !== 'network' || (child.faces || []).length > 0);
     if (node.children.some(child => !validOperand(child))) return 'unsupported Boolean operands';
@@ -466,7 +467,7 @@ function shapeMarkup(node, document, measureText, gradientId = null, { fillValue
       // Network faces and edges are emitted individually below so SVG retains their graph topology.
       return '';
     case 'text':
-      return textMarkup(node, document, measureText);
+      return textMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke });
     default:
       return '';
   }
@@ -757,7 +758,7 @@ function svgTextAnchor(align) {
   return 'start';
 }
 
-function textListMarkerTspan(line, node, document, verticalOffset) {
+function textListMarkerTspan(line, node, document, verticalOffset, fillOverride = undefined) {
   const marker = line.marker;
   if (!marker) return '';
   const style = marker.style || {
@@ -768,7 +769,8 @@ function textListMarkerTspan(line, node, document, verticalOffset) {
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
     color: color(document, node, 'text')
   };
-  const markerColor = style.color === 'transparent' ? 'none' : style.color || color(document, node, 'text');
+  const rawMarkerColor = fillOverride === undefined ? style.color || color(document, node, 'text') : fillOverride;
+  const markerColor = rawMarkerColor === 'transparent' ? 'none' : rawMarkerColor;
   if (markerColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(markerColor)) {
     throw new TypeError(`SVG export supports solid hexadecimal list marker colors only on layer ${node.name || node.id || '(unnamed)'}.`);
   }
@@ -800,7 +802,7 @@ function richLineJustificationOffsets(line) {
   return offsets;
 }
 
-function textMarkup(node, document, measureText) {
+function textMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke = true } = {}) {
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
   const letterSpacing = Number(getNodePropertyValue(document, node, 'letterSpacing') ?? 0);
@@ -816,7 +818,7 @@ function textMarkup(node, document, measureText) {
   const verticalOffset = textVerticalOffset(node, lines, lineHeight);
   const richLines = lines.some(line => Array.isArray(line.parts));
   if (richLines) {
-    const textOpacity = node.fillOpacity ?? 1;
+    const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
     const decorations = [];
     const richTspans = lines.map(line => {
       const textLength = line.width > 0 && !line.justify ? ` textLength="${number(line.width)}" lengthAdjust="spacingAndGlyphs"` : '';
@@ -827,7 +829,8 @@ function textMarkup(node, document, measureText) {
       const justificationOffsets = line.justify ? richLineJustificationOffsets(line) : null;
       const parts = line.parts.map(part => {
         const style = part.style;
-        const partColor = style.color === 'transparent' ? 'none' : style.color;
+        const rawPartColor = fillValue === undefined ? style.color : fillValue;
+        const partColor = rawPartColor === 'transparent' ? 'none' : rawPartColor;
         if (partColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(partColor)) {
           throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
         }
@@ -844,11 +847,11 @@ function textMarkup(node, document, measureText) {
         decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + decoratedWidth * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
         return partMarkup;
       }).join('');
-      return textListMarkerTspan(line, node, document, verticalOffset)
+      return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
         + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
-    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
-    const border = node.stroke && Number(node.strokeWidth) > 0
+    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
+    const border = includeStroke && node.stroke && Number(node.strokeWidth) > 0
       ? `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node)}/>`
       : '';
     return element + border + decorations.join('');
@@ -861,16 +864,16 @@ function textMarkup(node, document, measureText) {
     // Constrain SVG's native font metrics to the editor-measured line width.
     const textLength = width > 0 && !line.justify ? ` textLength="${number(width)}" lengthAdjust="spacingAndGlyphs"` : '';
     const wordSpacing = line.justify ? ` word-spacing="${number(line.justificationExtraSpace)}"` : '';
-    return textListMarkerTspan(line, node, document, verticalOffset)
+    return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
       + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
-  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
-  const border = node.stroke && Number(node.strokeWidth) > 0
+  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
+  const border = includeStroke && node.stroke && Number(node.strokeWidth) > 0
     ? `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node)}/>`
     : '';
   const decoration = ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : null;
-  const textColor = color(document, node, 'text');
-  const textOpacity = node.fillOpacity ?? 1;
+  const textColor = fillValue === undefined ? color(document, node, 'text') : fillValue;
+  const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
   const decorationWidth = Math.max(1, fontSize / 16);
   const decorations = decoration ? lines.filter(line => line.width > 0).map(line => {
     const x = textLineStartX(node, line);
@@ -963,7 +966,7 @@ function effectDefinition(node, index, document, measureText) {
 // Boolean operands contribute only their filled alpha silhouette in the editor.
 // Keep each source as vector geometry in its own mask so SVG mask composition
 // can reproduce source-over, destination-out, and destination-in alpha math.
-function booleanOperandMaskDefinition(source, id, bounds, document, measureText) {
+function booleanOperandMaskDefinition(source, id, bounds, document, measureText, parentTransform = identity) {
   const node = { ...source, ...getNodeGeometry(document, source) };
   if (node.type === 'boolean') {
     const nested = booleanMaskDefinition(node, `${id}-result`, document, measureText);
@@ -972,11 +975,11 @@ function booleanOperandMaskDefinition(source, id, bounds, document, measureText)
     if (![opacity, fillOpacity].every(Number.isFinite) || opacity < 0 || opacity > 1 || fillOpacity < 0 || fillOpacity > 1) {
       throw new TypeError(`SVG export requires valid opacity on layer ${node.name || node.id || '(unnamed)'}.`);
     }
-    const transform = nodeMatrix(node);
+    const transform = multiply(parentTransform, nodeMatrix(node));
     const markup = `<mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(bounds.width)}" height="${number(bounds.height)}"><g${matrixAttribute(transform)} opacity="${number(opacity * fillOpacity)}"><rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="#ffffff" mask="url(#${nested.id})"/></g></mask>`;
     return { id, markups: [...nested.markups, markup] };
   }
-  const transform = nodeMatrix(node);
+  const transform = multiply(parentTransform, nodeMatrix(node));
   const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
   const fillOpacity = Number(node.fillOpacity ?? 1);
   if (![opacity, fillOpacity].every(Number.isFinite) || opacity < 0 || opacity > 1 || fillOpacity < 0 || fillOpacity > 1) {
@@ -991,7 +994,10 @@ function booleanOperandMaskDefinition(source, id, bounds, document, measureText)
       return `<path d="${networkFacePath(node, face, edgesByPair)}" fill="#ffffff" fill-opacity="${number(faceOpacity)}"/>`;
     }).join('');
   } else {
-    contents = shapeMarkup(node, emptyDocument, measureText, null, { fillValue: '#ffffff', fillOpacity: 1, includeStroke: false });
+    // Text masks need the real document so mode-bound strings and font metrics
+    // resolve the same way as the canvas. Geometry masks remain color-agnostic.
+    const sourceDocument = node.type === 'text' ? document : emptyDocument;
+    contents = shapeMarkup(node, sourceDocument, measureText, null, { fillValue: '#ffffff', fillOpacity: 1, includeStroke: false });
   }
   const markup = `<mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(bounds.width)}" height="${number(bounds.height)}"><g${matrixAttribute(transform)} opacity="${number(opacity * fillOpacity)}">${contents}</g></mask>`;
   return { id, markups: [markup] };
@@ -1008,10 +1014,13 @@ function booleanMaskDefinition(node, id, document, measureText) {
   }
   const operands = [];
   const markups = [];
-  for (let index = 0; index < node.children.length; index += 1) {
-    const child = node.children[index];
+  const resolvedChildren = node.children.map(child => ({ ...child, ...getNodeGeometry(document, child) }));
+  const source = booleanSourceTransform(resolvedChildren, width, height);
+  const sourceMatrix = [source.scaleX, 0, 0, source.scaleY, -source.left * source.scaleX, -source.top * source.scaleY];
+  for (let index = 0; index < resolvedChildren.length; index += 1) {
+    const child = resolvedChildren[index];
     if (!isNodeVisible(document, child) && operation !== 'intersect') continue;
-    const operand = booleanOperandMaskDefinition(child, `${id}-operand-${index}`, { width, height }, document, measureText);
+    const operand = booleanOperandMaskDefinition(child, `${id}-operand-${index}`, { width, height }, document, measureText, sourceMatrix);
     operands.push(operand);
     markups.push(...operand.markups);
   }

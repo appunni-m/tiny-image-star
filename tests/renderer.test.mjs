@@ -337,6 +337,81 @@ test('Boolean paint and white-mask surfaces never share cache entries in either 
   }
 });
 
+test('Boolean text operands render white glyph masks and resolve text metrics by frame mode', () => {
+  class TestContext {
+    constructor() { this.globalAlpha = 1; this.textDraws = []; this.rects = []; }
+    setTransform() {} save() {} restore() {} clearRect() {} fillRect() {} drawImage() {} stroke() {}
+    beginPath() {} rect(...args) { this.rects.push(args); } fill() {}
+    translate() {} scale() {}
+    measureText(value) { return { width: [...String(value)].length * 10 }; }
+    fillText(value, ...args) { this.textDraws.push({ value: String(value), fillStyle: this.fillStyle, args }); }
+  }
+  class TestCanvas {
+    constructor(width, height) { this.width = width; this.height = height; this.context = new TestContext(); }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = TestCanvas;
+  try {
+    const document = createDocument();
+    const collection = createVariableCollection(document, 'Boolean text');
+    const alternate = addVariableMode(document, collection.id, 'Alternate');
+    const textVariable = createVariable(document, collection.id, 'Label', 'string', 'OLD');
+    const sizeVariable = createVariable(document, collection.id, 'Label size', 'number', 16);
+    setVariableValue(document, textVariable.id, 'NEW', alternate.id);
+    setVariableValue(document, sizeVariable.id, 24, alternate.id);
+    const frame = createNode('frame', { width: 240, height: 100 });
+    const text = createNode('text', {
+      width: 120, height: 40, fontSize: 16, color: '#ff0000',
+      textRuns: [{ text: 'OLD', color: '#ff0000', fontSize: 16 }]
+    });
+    const group = createNode('boolean', {
+      operation: 'union', width: 120, height: 50,
+      children: [text, createNode('rectangle', { x: 130, width: 20, height: 20 })]
+    });
+    addNode(document, frame);
+    addNode(document, group, { parentId: frame.id });
+    const booleanGroup = document.pages[0].children[0].children[0];
+    const textOperand = booleanGroup.children[0];
+    assert.equal(bindVariable(document, textOperand.id, textVariable.id, 'text'), true);
+    assert.equal(bindVariable(document, textOperand.id, sizeVariable.id, 'fontSize'), true);
+
+    const state = { document, assets: new Map(), zoom: 1 };
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => state;
+    renderer.booleanCache = new Map();
+    renderer.booleanCachePixels = 0;
+    const before = renderer.getBooleanSurface(booleanGroup, state.assets, true, 1);
+    assert.equal(before.context.textDraws.map(draw => draw.value).join(''), 'OLD',
+      'Boolean text masks should draw actual glyphs rather than a filled text-layer rectangle');
+    assert.ok(before.context.textDraws.every(draw => draw.fillStyle === 'rgba(255, 255, 255, 1)'),
+      'text color is normalized to opaque white for alpha-mask composition');
+    assert.equal(before.context.rects.length, 1, 'only the rectangle operand should contribute a rectangular mask path');
+
+    assert.equal(setFrameVariableMode(document, frame.id, collection.id, alternate.id), true);
+    const after = renderer.getBooleanSurface(booleanGroup, state.assets, true, 1);
+    assert.notEqual(after, before, 'resolved text content and typography participate in Boolean cache identity');
+    assert.equal(after.context.textDraws.map(draw => draw.value).join(''), 'NEW');
+
+    const plainText = createNode('text', {
+      width: 100, height: 100, fontSize: 10, lineHeight: 2,
+      text: 'hello world this is text'
+    });
+    const normalContext = new TestContext();
+    const maskContext = new TestContext();
+    renderer.drawNode(normalContext, plainText, 0, 0, state.assets, false, false);
+    renderer.drawNode(maskContext, plainText, 0, 0, state.assets, false, true);
+    assert.deepEqual(maskContext.textDraws.map(({ value, args }) => [value, ...args.slice(0, 2)]),
+      normalContext.textDraws.map(({ value, args }) => [value, ...args.slice(0, 2)]),
+      'plain text masks must reuse the editor line wrapping and glyph positions after mode-bound rich runs become stale');
+    assert.ok(maskContext.textDraws.every(draw => draw.fillStyle === 'rgba(255, 255, 255, 1)'),
+      'plain text mask glyphs must stay white regardless of the regular text color');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('group selection overlay renders degenerate line and point bounds safely', () => {
   const context = {
     save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},

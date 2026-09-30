@@ -7,6 +7,7 @@ import {
 import { History } from '../src/history.js';
 import { setVectorNodePoint, vectorNodePoint } from '../src/vector-path.js';
 import { flattenBooleanContours, polygonBoolean } from '../src/boolean-geometry.js';
+import { exportNodeToSvg } from '../src/svg-export.js';
 
 test('Boolean combine keeps editable operands and their stacking order', () => {
   const document = createDocument();
@@ -27,6 +28,23 @@ test('Boolean combine keeps editable operands and their stacking order', () => {
   assert.deepEqual({ x: group.children[0].x, y: group.children[0].y }, { x: 0, y: 10 });
   assert.deepEqual({ x: group.children[1].x, y: group.children[1].y }, { x: 60, y: 0 });
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('Boolean combine accepts text layers and preserves editable text as a live operand', () => {
+  const document = createDocument();
+  const label = createNode('text', {
+    name: 'Label', x: 10, y: 20, width: 100, height: 32,
+    text: 'Local first', fontFamily: 'Arial, sans-serif', fontSize: 24
+  });
+  const cutter = createNode('rectangle', { name: 'Cutter', x: 45, y: 10, width: 50, height: 50 });
+  addNode(document, label); addNode(document, cutter);
+
+  assert.equal(canCombineBoolean(document, [label.id, cutter.id]), true);
+  const group = combineBoolean(document, [label.id, cutter.id], 'intersect');
+  assert.deepEqual(group.children.map(node => node.type), ['text', 'rectangle']);
+  assert.equal(group.children[0].text, 'Local first');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+    'text remains editable and valid inside the non-destructive Boolean group');
 });
 
 test('Boolean combine requires unlocked closed vector siblings in one container', () => {
@@ -119,6 +137,68 @@ function contourArea(contour) {
     const next = contour[(index + 1) % contour.length];
     return sum + point.x * next.y - next.x * point.y;
   }, 0) / 2;
+}
+
+function cubicCirclePath(x, y, radius) {
+  const k = 0.5522847498307936;
+  return createNode('path', {
+    x, y, width: radius * 2, height: radius * 2, closed: true, fillRule: 'nonzero',
+    points: [
+      { x: .5, y: 0, in: { x: -k / 2, y: 0 }, out: { x: k / 2, y: 0 } },
+      { x: 1, y: .5, in: { x: 0, y: -k / 2 }, out: { x: 0, y: k / 2 } },
+      { x: .5, y: 1, in: { x: k / 2, y: 0 }, out: { x: -k / 2, y: 0 } },
+      { x: 0, y: .5, in: { x: 0, y: k / 2 }, out: { x: 0, y: -k / 2 } }
+    ]
+  });
+}
+
+function sampledPathContours(node, steps = 64) {
+  return [
+    { points: node.points || [], closed: node.closed ?? false },
+    ...(node.subpaths || [])
+  ].map(contour => {
+    const result = [];
+    const points = contour.points;
+    const count = contour.closed ? points.length : points.length - 1;
+    for (let index = 0; index < count; index += 1) {
+      const start = points[index]; const end = points[(index + 1) % points.length];
+      const p0 = { x: node.x + start.x * node.width, y: node.y + start.y * node.height };
+      const p3 = { x: node.x + end.x * node.width, y: node.y + end.y * node.height };
+      const hasControls = [start.out, end.in].some(handle => handle && (handle.x !== 0 || handle.y !== 0));
+      const p1 = hasControls ? { x: p0.x + (start.out?.x || 0) * node.width, y: p0.y + (start.out?.y || 0) * node.height }
+        : { x: p0.x + (p3.x - p0.x) / 3, y: p0.y + (p3.y - p0.y) / 3 };
+      const p2 = hasControls ? { x: p3.x + (end.in?.x || 0) * node.width, y: p3.y + (end.in?.y || 0) * node.height }
+        : { x: p0.x + 2 * (p3.x - p0.x) / 3, y: p0.y + 2 * (p3.y - p0.y) / 3 };
+      for (let step = 0; step < steps; step += 1) {
+        const t = step / steps; const u = 1 - t;
+        result.push({
+          x: u ** 3 * p0.x + 3 * u ** 2 * t * p1.x + 3 * u * t ** 2 * p2.x + t ** 3 * p3.x,
+          y: u ** 3 * p0.y + 3 * u ** 2 * t * p1.y + 3 * u * t ** 2 * p2.y + t ** 3 * p3.y
+        });
+      }
+    }
+    return result;
+  });
+}
+
+function insideSampledContours(point, contours) {
+  let inside = false;
+  for (const contour of contours) {
+    for (let index = 0, previous = contour.length - 1; index < contour.length; previous = index, index += 1) {
+      const a = contour[index]; const b = contour[previous];
+      if ((a.y > point.y) !== (b.y > point.y)
+        && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function booleanMembership(operation, first, second, point) {
+  const a = insideSampledContours(point, first); const b = insideSampledContours(point, second);
+  if (operation === 'union') return a || b;
+  if (operation === 'subtract') return a && !b;
+  if (operation === 'intersect') return a && b;
+  return a !== b;
 }
 
 test('polygon Boolean boundaries preserve exact overlaps for all four operations', () => {
@@ -254,6 +334,53 @@ test('baking preserves existing compound path holes and adds disjoint contours',
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
 });
 
+test('cubic Boolean baking preserves editable Bézier geometry and sampled visual parity for every operation', () => {
+  for (const operation of ['union', 'subtract', 'intersect', 'exclude']) {
+    const document = createDocument();
+    const first = cubicCirclePath(0, 0, 40);
+    const second = cubicCirclePath(35, 0, 40);
+    addNode(document, first); addNode(document, second);
+    const group = combineBoolean(document, [first.id, second.id], operation);
+    const sourceContours = group.children.map(child => sampledPathContours(child));
+    const history = new History();
+    history.checkpoint(document, 'Bake curved Boolean');
+
+    const baked = bakeBoolean(document, group.id);
+    assert.equal(baked.type, 'path', `${operation} should become a native path`);
+    assert.ok(baked.points.length >= 4, `${operation} should retain a closed editable contour`);
+    const outputPoints = [baked.points, ...(baked.subpaths || []).map(contour => contour.points)].flat();
+    assert.ok(outputPoints.some(point => [point.in, point.out].some(handle => Math.hypot(handle.x, handle.y) > 1e-5)),
+      `${operation} should preserve cubic handles instead of polygonizing the curves`);
+    const vectorSvg = exportNodeToSvg(baked);
+    assert.match(vectorSvg, / C /, `${operation} SVG export should render the baked Bézier geometry as vector curves`);
+    assert.doesNotMatch(vectorSvg, /<image\b/, `${operation} SVG export must not rasterize the baked path`);
+
+    const bakedSamples = sampledPathContours(baked);
+    for (let y = 3.25; y < 76; y += 5.5) for (let x = 3.25; x < 112; x += 5.5) {
+      const point = { x, y };
+      assert.equal(insideSampledContours(point, bakedSamples),
+        booleanMembership(operation, sourceContours[0], sourceContours[1], point),
+        `${operation} sampled output differs at ${x},${y}`);
+    }
+
+    const savedGeometry = JSON.stringify({ points: baked.points, subpaths: baked.subpaths, fillRule: baked.fillRule });
+    assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+      `${operation} cubic path should serialize as a valid editable design`);
+    const roundTrip = parseDocument(serializeDocument(document));
+    const roundTripPath = findNode(roundTrip, group.id).node;
+    assert.equal(JSON.stringify({ points: roundTripPath.points, subpaths: roundTripPath.subpaths, fillRule: roundTripPath.fillRule }), savedGeometry,
+      `${operation} should preserve all cubic handles through serialization`);
+
+    const undone = history.undo(document);
+    assert.equal(findNode(undone, group.id).node.type, 'boolean', `${operation} undo should restore live operands`);
+    const redone = history.redo(undone);
+    const redonePath = findNode(redone, group.id).node;
+    assert.equal(redonePath.type, 'path', `${operation} redo should restore the baked path`);
+    assert.equal(JSON.stringify({ points: redonePath.points, subpaths: redonePath.subpaths, fillRule: redonePath.fillRule }), savedGeometry,
+      `${operation} redo should keep the same cubic geometry`);
+  }
+});
+
 test('resized nested Booleans bake after scaling their source-local results to the current box', () => {
   const document = createDocument();
   const base = createNode('rectangle', { width: 20, height: 20 });
@@ -290,13 +417,11 @@ test('an empty Boolean intersection bakes to a valid empty editable path', () =>
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
 });
 
-test('unsupported curved, rounded, transparent, and non-polygonal inputs are refused atomically', () => {
+test('unsupported rounded, transparent, and non-polygonal inputs are refused atomically', () => {
   const unsupportedNodes = [
     [createNode('ellipse', { x: 10, y: 0, width: 30, height: 30 }), /Ellipses/],
     [createNode('rectangle', { x: 10, y: 0, width: 30, height: 30, radius: 8 }), /rounded corners/],
-    [createNode('rectangle', { x: 10, y: 0, width: 30, height: 30, opacity: .5 }), /transparency/],
-    [createNode('path', { x: 10, y: 0, width: 30, height: 30, closed: true,
-      points: [{ x: 0, y: 0, out: { x: .2, y: 0 } }, { x: 1, y: 0 }, { x: 1, y: 1 }] }), /Bézier curves/]
+    [createNode('rectangle', { x: 10, y: 0, width: 30, height: 30, opacity: .5 }), /transparency/]
   ];
   for (const [badOperand, reason] of unsupportedNodes) {
     const document = createDocument();
@@ -308,6 +433,36 @@ test('unsupported curved, rounded, transparent, and non-polygonal inputs are ref
     assert.equal(serializeDocument(document), before, 'a refused bake leaves the document untouched');
     assert.equal(group.type, 'boolean');
   }
+});
+
+test('tangent cubic Boolean contacts are refused atomically instead of approximated', () => {
+  const document = createDocument();
+  const first = cubicCirclePath(0, 0, 40);
+  const second = cubicCirclePath(80, 0, 40);
+  addNode(document, first); addNode(document, second);
+  const group = combineBoolean(document, [first.id, second.id], 'union');
+  const before = serializeDocument(document);
+  assert.throws(() => prepareBooleanBake(document, group.id), /tangent|touching|unstable|precision/);
+  assert.equal(serializeDocument(document), before, 'an unstable tangency must leave the live Boolean sources untouched');
+  assert.equal(group.type, 'boolean');
+});
+
+test('overlapping collinear cubics with non-linear parameterization fail closed', () => {
+  const document = createDocument();
+  const curvedLine = createNode('path', {
+    width: 100, height: 100, closed: true,
+    points: [
+      { x: 0, y: .2, out: { x: .1, y: 0 } },
+      { x: 1, y: .2, in: { x: -.4, y: 0 } },
+      { x: 1, y: 1 }, { x: 0, y: 1 }
+    ]
+  });
+  const overlapping = createNode('rectangle', { x: 35, y: 10, width: 40, height: 40 });
+  addNode(document, curvedLine); addNode(document, overlapping);
+  const group = combineBoolean(document, [curvedLine.id, overlapping.id], 'union');
+  const before = serializeDocument(document);
+  assert.throws(() => prepareBooleanBake(document, group.id), /non-linear parameterization/);
+  assert.equal(serializeDocument(document), before, 'refusal must leave both source paths and the live Boolean group intact');
 });
 
 test('mode-bound rectangle radius is refused even when its raw radius is square', () => {

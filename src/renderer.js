@@ -22,8 +22,78 @@ function booleanNodeCacheState(document, node) {
     opacity: getNodePropertyValue(document, node, 'opacity'),
     visible: getNodePropertyValue(document, node, 'visible'),
     radius: getNodePropertyValue(document, node, 'radius'),
+    ...(node.type === 'text' ? {
+      text: getNodePropertyValue(document, node, 'text'),
+      fontSize: getNodePropertyValue(document, node, 'fontSize'),
+      lineHeight: getNodePropertyValue(document, node, 'lineHeight'),
+      letterSpacing: getNodePropertyValue(document, node, 'letterSpacing')
+    } : {}),
     children: (node.children || []).map(child => booleanNodeCacheState(document, child))
   };
+}
+
+function drawTextMask(ctx, node, document, x, y, width, height) {
+  const text = getNodePropertyValue(document, node, 'text');
+  const richTextIsCurrent = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
+  if (!richTextIsCurrent) return drawPlainText(ctx, node, document, x, y, width, height, '#ffffff');
+  const sourceRuns = richTextIsCurrent ? node.textRuns : [{ text }];
+  const maskRuns = sourceRuns.map(run => ({ ...run, color: '#ffffff' }));
+  return drawTextRuns(ctx, maskRuns, x, y, width, {
+    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+    fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
+    fontStyle: node.fontStyle || 'normal',
+    lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+    letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
+    color: '#ffffff',
+    textCase: node.textCase || 'none',
+    textDecoration: node.textDecoration || 'none',
+    paragraphSpacing: node.paragraphSpacing || 0,
+    listSpacing: node.listSpacing || 0,
+    paragraphStyles: node.paragraphStyles || [],
+    firstLineIndent: node.firstLineIndent || 0,
+    align: node.align || 'left',
+    verticalAlign: node.verticalAlign || 'top',
+    height,
+    fillOpacity: node.fillOpacity ?? 1
+  });
+}
+
+function drawPlainText(ctx, node, document, x, y, width, height, colorOverride = undefined) {
+  const sourceText = getNodePropertyValue(document, node, 'text');
+  const textColor = colorOverride ?? getNodeColor(document, node, 'text');
+  ctx.fillStyle = rgba(textColor, node.fillOpacity ?? 1);
+  const text = transformTextCase(sourceText, node.textCase || 'none');
+  const fontSize = getNodePropertyValue(document, node, 'fontSize');
+  const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
+  const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
+  ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
+  const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
+    lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
+    paragraphStyles: node.paragraphStyles, markerStyle: {
+      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
+      fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+      letterSpacing: letterSpacing || 0, color: textColor
+    },
+    firstLineIndent: node.firstLineIndent, align: node.align
+  });
+  const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
+  layout.lines.forEach(line => {
+    if (line.marker) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
+      fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
+      fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+      letterSpacing: letterSpacing || 0, color: textColor
+    }, node.fillOpacity ?? 1);
+    const availableWidth = Math.max(1, width - line.indent);
+    const lineAlign = line.align || node.align || 'left';
+    const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
+    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace);
+    else drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
+    drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
+  });
+  return layout;
 }
 
 const BLUE = '#0d99ff';
@@ -586,6 +656,11 @@ export class SceneRenderer {
       ctx.restore();
       return;
     }
+    if (maskMode && node.type === 'text') {
+      drawTextMask(ctx, node, document, x, y, width, height);
+      ctx.restore();
+      return;
+    }
     ctx.beginPath();
     switch (node.type) {
       case 'frame':
@@ -671,40 +746,7 @@ export class SceneRenderer {
           height,
           fillOpacity: node.fillOpacity ?? 1
         });
-      } else {
-        const textColor = getNodeColor(document, node, 'text');
-        ctx.fillStyle = rgba(textColor, node.fillOpacity ?? 1);
-        const text = transformTextCase(sourceText, node.textCase || 'none');
-        const fontSize = getNodePropertyValue(document, node, 'fontSize');
-        const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
-        const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
-        ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
-        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-        const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
-        const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
-          lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
-          paragraphStyles: node.paragraphStyles, markerStyle: {
-            fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-            fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
-            letterSpacing: letterSpacing || 0, color: textColor
-          },
-          firstLineIndent: node.firstLineIndent, align: node.align
-        });
-        const textY = y + textVerticalOffset(height, layout.height, node.verticalAlign || 'top');
-        layout.lines.forEach(line => {
-          if (line.marker) drawParagraphMarker(ctx, line.marker, x, textY + line.y, {
-            fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
-            fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
-            letterSpacing: letterSpacing || 0, color: textColor
-          }, node.fillOpacity ?? 1);
-          const availableWidth = Math.max(1, width - line.indent);
-          const lineAlign = line.align || node.align || 'left';
-          const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
-          if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace);
-          else drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
-          drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
-        });
-      }
+      } else drawPlainText(ctx, node, document, x, y, width, height);
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => pathContext.rect(x, y, width, height));
     } else if (node.type === 'network') {
       const fills = fillStackForNode(node);

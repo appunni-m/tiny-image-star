@@ -6,7 +6,7 @@ import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
-import { flattenBooleanContours, normalizedPathGeometryFromContours } from './boolean-geometry.js';
+import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
 
 const clone = value => structuredClone(value);
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
@@ -254,7 +254,7 @@ const strokePatterns = new Set(['solid', 'dashed', 'dotted']);
 const vectorAnchorModes = new Set(['corner', 'smooth', 'symmetric']);
 const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
-const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
+const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
@@ -793,10 +793,10 @@ export function canCombineBoolean(document, nodeIds, pageId = document.activePag
   return entries.every(entry => entry.parent === parent);
 }
 
-/** Combine sibling vector shapes without flattening their editable source layers. */
+/** Combine supported sibling shapes and text without flattening their editable source layers. */
 export function combineBoolean(document, nodeIds, operation = 'union', pageId = document.activePageId) {
   if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
-  if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, closed vector shapes in the same container.');
+  if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, supported shape or text layers in the same container.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
@@ -975,8 +975,8 @@ export function prepareBooleanBake(document, nodeId, pageId = document.activePag
     for (const child of node.children || []) verifyChildren(child);
   };
   for (const child of group.children || []) verifyChildren(child);
-  const contours = flattenBooleanContours(group);
-  const geometry = normalizedPathGeometryFromContours(contours, group.width, group.height);
+  const contours = flattenBooleanPathContours(group);
+  const geometry = normalizedPathGeometryFromCurveContours(contours, group.width, group.height);
   const plan = Object.freeze({ nodeId: group.id, pageId });
   booleanBakePlans.set(plan, { expected: JSON.stringify(group), geometry });
   return plan;

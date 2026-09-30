@@ -3,7 +3,9 @@ import { vectorPathContours } from './vector-path.js';
 
 const operations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const MAX_INPUT_SEGMENTS = 512;
+const MAX_INPUT_CURVES = 512;
 const MAX_SPLIT_POINTS = 40_000;
+const MAX_CURVE_INTERSECTION_CELLS = 200_000;
 const TAU = Math.PI * 2;
 
 export class BooleanBakeError extends Error {
@@ -76,9 +78,13 @@ function validateSimpleOperand(node, { root = false } = {}) {
     if (!contours.length || contours.some(contour => contour.closed !== true || !Array.isArray(contour.points) || contour.points.length < 3)) {
       unsupported(`“${node.name || node.type}” must contain only closed contours with at least three points.`);
     }
-    if (contours.some(contour => contour.points.some(point => !finite(point.x) || !finite(point.y)
-      || !isZeroHandle(point.in) || !isZeroHandle(point.out)))) {
-      unsupported(`“${node.name || node.type}” contains Bézier curves; only straight vector segments can be baked exactly.`);
+    const invalidCurveCoordinates = contours.some(contour => contour.points.some(point => {
+      return !finite(point.x) || !finite(point.y)
+        || (point.in != null && (!finite(point.in.x) || !finite(point.in.y)))
+        || (point.out != null && (!finite(point.out.x) || !finite(point.out.y)));
+    }));
+    if (invalidCurveCoordinates) {
+      unsupported(`“${node.name || node.type}” contains non-finite Bézier geometry.`);
     }
     return;
   }
@@ -343,10 +349,461 @@ export function polygonBoolean(shapes, operation) {
   return contours;
 }
 
+function cubic(p0, p1, p2, p3) { return { p0, p1, p2, p3 }; }
+function cubicPoint(curve, t) {
+  const u = 1 - t;
+  return add(add(scale(curve.p0, u ** 3), scale(curve.p1, 3 * u * u * t)),
+    add(scale(curve.p2, 3 * u * t * t), scale(curve.p3, t ** 3)));
+}
+function cubicDerivative(curve, t) {
+  const u = 1 - t;
+  return add(add(scale(subtract(curve.p1, curve.p0), 3 * u * u), scale(subtract(curve.p2, curve.p1), 6 * u * t)),
+    scale(subtract(curve.p3, curve.p2), 3 * t * t));
+}
+function splitCubic(curve, t = .5) {
+  const p01 = add(scale(curve.p0, 1 - t), scale(curve.p1, t));
+  const p12 = add(scale(curve.p1, 1 - t), scale(curve.p2, t));
+  const p23 = add(scale(curve.p2, 1 - t), scale(curve.p3, t));
+  const p012 = add(scale(p01, 1 - t), scale(p12, t));
+  const p123 = add(scale(p12, 1 - t), scale(p23, t));
+  const point = add(scale(p012, 1 - t), scale(p123, t));
+  return [cubic(curve.p0, p01, p012, point), cubic(point, p123, p23, curve.p3)];
+}
+function cubicSubcurve(curve, start, end) {
+  if (start <= 0 && end >= 1) return curve;
+  const left = end >= 1 ? curve : splitCubic(curve, end)[0];
+  if (start <= 0) return left;
+  return splitCubic(left, start / end)[1];
+}
+function cubicBounds(curve) {
+  const points = [curve.p0, curve.p1, curve.p2, curve.p3];
+  return {
+    left: Math.min(...points.map(point => point.x)), right: Math.max(...points.map(point => point.x)),
+    top: Math.min(...points.map(point => point.y)), bottom: Math.max(...points.map(point => point.y))
+  };
+}
+function cubicBoundsOverlap(a, b, epsilon) {
+  return a.left <= b.right + epsilon && b.left <= a.right + epsilon
+    && a.top <= b.bottom + epsilon && b.top <= a.bottom + epsilon;
+}
+function cubicSize(bounds) { return Math.max(bounds.right - bounds.left, bounds.bottom - bounds.top); }
+function cubicFlatEnough(curve, epsilon) {
+  const chord = subtract(curve.p3, curve.p0);
+  const length = Math.hypot(chord.x, chord.y);
+  if (length <= epsilon) return Math.max(distance(curve.p0, curve.p1), distance(curve.p0, curve.p2), distance(curve.p0, curve.p3)) <= epsilon;
+  return Math.max(Math.abs(cross(chord, subtract(curve.p1, curve.p0))), Math.abs(cross(chord, subtract(curve.p2, curve.p0)))) <= epsilon * length;
+}
+function cubicFlatnessDistance(curve) {
+  const chord = subtract(curve.p3, curve.p0);
+  const length = Math.hypot(chord.x, chord.y);
+  if (length <= 1e-20) return Math.max(distance(curve.p0, curve.p1), distance(curve.p0, curve.p2));
+  return Math.max(Math.abs(cross(chord, subtract(curve.p1, curve.p0))), Math.abs(cross(chord, subtract(curve.p2, curve.p0)))) / length;
+}
+function pointSegmentDistance(point, start, end) {
+  const delta = subtract(end, start);
+  const lengthSquared = dot(delta, delta);
+  if (!lengthSquared) return distance(point, start);
+  const amount = Math.max(0, Math.min(1, dot(subtract(point, start), delta) / lengthSquared));
+  return distance(point, add(start, scale(delta, amount)));
+}
+function segmentDistance(first, second) {
+  const a = { a: first.p0, b: first.p3, splits: [] };
+  const b = { a: second.p0, b: second.p3, splits: [] };
+  splitAtIntersection(a, b, 1e-14);
+  if (a.splits.length || b.splits.length) return 0;
+  return Math.min(pointSegmentDistance(first.p0, second.p0, second.p3),
+    pointSegmentDistance(first.p3, second.p0, second.p3),
+    pointSegmentDistance(second.p0, first.p0, first.p3),
+    pointSegmentDistance(second.p3, first.p0, first.p3));
+}
+function curveIsLine(curve, epsilon) {
+  return cubicFlatEnough(curve, epsilon)
+    && Math.abs(cross(subtract(curve.p3, curve.p0), subtract(curve.p1, curve.p0))) <= epsilon
+    && Math.abs(cross(subtract(curve.p3, curve.p0), subtract(curve.p2, curve.p0))) <= epsilon;
+}
+function cubicLinearlyParameterized(curve, epsilon) {
+  const delta = subtract(curve.p3, curve.p0);
+  const expected1 = add(curve.p0, scale(delta, 1 / 3));
+  const expected2 = add(curve.p0, scale(delta, 2 / 3));
+  return distance(curve.p1, expected1) <= epsilon && distance(curve.p2, expected2) <= epsilon;
+}
+function nearlySamePoint(a, b, epsilon) { return distance(a, b) <= epsilon; }
+function cubicTangentAngle(curve, atEnd = false) {
+  const derivative = cubicDerivative(curve, atEnd ? 1 : 0);
+  const usable = Math.hypot(derivative.x, derivative.y) > 1e-14;
+  const fallback = atEnd ? subtract(curve.p3, curve.p0) : subtract(curve.p3, curve.p0);
+  return Math.atan2(usable ? derivative.y : fallback.y, usable ? derivative.x : fallback.x);
+}
+function reverseCubic(curve) { return cubic(curve.p3, curve.p2, curve.p1, curve.p0); }
+
+function rootsOfQuadratic(a, b, c) {
+  if (Math.abs(a) < 1e-18) return Math.abs(b) < 1e-18 ? [] : [-c / b];
+  const discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return [];
+  const root = Math.sqrt(discriminant);
+  const q = -.5 * (b + Math.sign(b || 1) * root);
+  if (q === 0) return [-b / (2 * a)];
+  return [q / a, c / q];
+}
+
+function pointInCurveContours(point, contours, fillRule = 'evenodd') {
+  let crossings = 0;
+  let winding = 0;
+  for (const contour of contours) for (const curve of contour) {
+    const p0 = curve.p0.y; const p1 = curve.p1.y; const p2 = curve.p2.y; const p3 = curve.p3.y;
+    const a = -p0 + 3 * p1 - 3 * p2 + p3;
+    const b = 3 * p0 - 6 * p1 + 3 * p2;
+    const c = -3 * p0 + 3 * p1;
+    const cuts = [0, ...rootsOfQuadratic(3 * a, 2 * b, c).filter(t => t > 1e-12 && t < 1 - 1e-12), 1].sort((x, y) => x - y);
+    for (let index = 1; index < cuts.length; index += 1) {
+      let low = cuts[index - 1]; let high = cuts[index];
+      let lowY = cubicPoint(curve, low).y; let highY = cubicPoint(curve, high).y;
+      const upward = lowY <= point.y && point.y < highY;
+      const downward = highY <= point.y && point.y < lowY;
+      if (!upward && !downward) continue;
+      const increasing = highY > lowY;
+      for (let iteration = 0; iteration < 48; iteration += 1) {
+        const middle = (low + high) / 2;
+        const middleY = cubicPoint(curve, middle).y;
+        if ((middleY < point.y) === increasing) low = middle;
+        else high = middle;
+      }
+      const x = cubicPoint(curve, (low + high) / 2).x;
+      if (x > point.x) {
+        crossings += 1;
+        winding += upward ? 1 : -1;
+      }
+    }
+  }
+  return fillRule === 'nonzero' ? winding !== 0 : crossings % 2 === 1;
+}
+
+function combineCurveMembership(shapes, point, operation) {
+  let result = pointInCurveContours(point, shapes[0].contours, shapes[0].fillRule);
+  for (let index = 1; index < shapes.length; index += 1) {
+    const inside = pointInCurveContours(point, shapes[index].contours, shapes[index].fillRule);
+    if (operation === 'union') result ||= inside;
+    else if (operation === 'subtract') result &&= !inside;
+    else if (operation === 'intersect') result &&= inside;
+    else result = result !== inside;
+  }
+  return result;
+}
+
+function classifyCurveSides(shapes, midpoint, normal, operation, initialOffset, minimumOffset) {
+  let previous = null;
+  let stableSteps = 0;
+  for (let offset = initialOffset; offset >= minimumOffset; offset /= 2) {
+    const pair = [
+      combineCurveMembership(shapes, add(midpoint, scale(normal, offset)), operation),
+      combineCurveMembership(shapes, subtract(midpoint, scale(normal, offset)), operation)
+    ];
+    if (previous && pair[0] === previous[0] && pair[1] === previous[1]) stableSteps += 1;
+    else stableSteps = 0;
+    if (stableSteps >= 2) return pair;
+    previous = pair;
+  }
+  unsupported('a Bézier boundary is too close to another edge to classify its inside and outside reliably.');
+}
+
+function refineCubicIntersection(first, second, firstRange, secondRange, tolerance) {
+  let t = (firstRange[0] + firstRange[1]) / 2;
+  let u = (secondRange[0] + secondRange[1]) / 2;
+  for (let iteration = 0; iteration < 24; iteration += 1) {
+    const p = cubicPoint(first, t); const q = cubicPoint(second, u); const difference = subtract(p, q);
+    if (Math.hypot(difference.x, difference.y) <= tolerance) return { t, u, point: scale(add(p, q), .5) };
+    const dp = cubicDerivative(first, t); const dq = cubicDerivative(second, u);
+    const determinant = cross(dp, dq);
+    const derivativeProduct = Math.hypot(dp.x, dp.y) * Math.hypot(dq.x, dq.y);
+    if (derivativeProduct === 0 || Math.abs(determinant) <= derivativeProduct * 1e-11) return null;
+    const dt = -cross(difference, dq) / determinant;
+    const du = cross(dp, difference) / determinant;
+    const nextT = t + dt; const nextU = u + du;
+    if (nextT < firstRange[0] - 1e-8 || nextT > firstRange[1] + 1e-8
+      || nextU < secondRange[0] - 1e-8 || nextU > secondRange[1] + 1e-8) return null;
+    t = Math.max(firstRange[0], Math.min(firstRange[1], nextT));
+    u = Math.max(secondRange[0], Math.min(secondRange[1], nextU));
+  }
+  const difference = subtract(cubicPoint(first, t), cubicPoint(second, u));
+  return Math.hypot(difference.x, difference.y) <= tolerance ? { t, u, point: scale(add(cubicPoint(first, t), cubicPoint(second, u)), .5) } : null;
+}
+
+function addCurveSplit(segment, value) {
+  if (value >= -1e-10 && value <= 1 + 1e-10) segment.splits.push(Math.max(0, Math.min(1, value)));
+}
+
+function findCubicIntersections(first, second, epsilon, intersectionTolerance, budget) {
+  const firstBounds = cubicBounds(first.curve); const secondBounds = cubicBounds(second.curve);
+  if (!cubicBoundsOverlap(firstBounds, secondBounds, epsilon)) return [];
+  const endpoints = [];
+  for (const [t, p] of [[0, first.curve.p0], [1, first.curve.p3]]) {
+    for (const [u, q] of [[0, second.curve.p0], [1, second.curve.p3]]) {
+      if (nearlySamePoint(p, q, epsilon * 8)) endpoints.push({ t, u, point: scale(add(p, q), .5) });
+    }
+  }
+  const bothLines = curveIsLine(first.curve, epsilon) && curveIsLine(second.curve, epsilon);
+  if (bothLines) {
+    if (!cubicLinearlyParameterized(first.curve, epsilon * 8) || !cubicLinearlyParameterized(second.curve, epsilon * 8)) {
+      unsupported('overlapping collinear Bézier segments with non-linear parameterization cannot be split without changing their geometry.');
+    }
+    const lineA = { a: first.curve.p0, b: first.curve.p3, splits: [] };
+    const lineB = { a: second.curve.p0, b: second.curve.p3, splits: [] };
+    splitAtIntersection(lineA, lineB, epsilon);
+    const intersections = [];
+    for (const t of lineA.splits) for (const u of lineB.splits) {
+      const p = cubicPoint(first.curve, t); const q = cubicPoint(second.curve, u);
+      if (Math.hypot(p.x - q.x, p.y - q.y) <= epsilon * 8) intersections.push({ t, u, point: scale(add(p, q), .5) });
+    }
+    for (const endpoint of endpoints) if (!intersections.some(item => Math.abs(item.t - endpoint.t) < 1e-9 && Math.abs(item.u - endpoint.u) < 1e-9)) intersections.push(endpoint);
+    return intersections;
+  }
+  // Coincident/reversed cubics have infinitely many intersections. The current
+  // arrangement representation cannot preserve that topology, so fail closed.
+  const controlSets = [
+    [first.curve.p0, first.curve.p1, first.curve.p2, first.curve.p3],
+    [second.curve.p0, second.curve.p1, second.curve.p2, second.curve.p3],
+    [second.curve.p3, second.curve.p2, second.curve.p1, second.curve.p0]
+  ];
+  if ([1, 2].some(index => controlSets[0].every((point, pointIndex) => distance(point, controlSets[index][pointIndex]) <= epsilon * 8))) {
+    unsupported('coincident Bézier segments have ambiguous boundary ownership.');
+  }
+
+  const stack = [{ curveA: first.curve, curveB: second.curve, t0: 0, t1: 1, u0: 0, u1: 1, depth: 0 }];
+  const intersections = [...endpoints];
+  while (stack.length) {
+    if (++budget.cells > MAX_CURVE_INTERSECTION_CELLS) unsupported(`the source exceeds the ${MAX_CURVE_INTERSECTION_CELLS}-cell Bézier intersection limit.`);
+    const item = stack.pop();
+    const boundsA = cubicBounds(item.curveA); const boundsB = cubicBounds(item.curveB);
+    if (!cubicBoundsOverlap(boundsA, boundsB, epsilon)) continue;
+    const sizeA = cubicSize(boundsA); const sizeB = cubicSize(boundsB);
+    if (Math.max(sizeA, sizeB) <= intersectionTolerance * 2) {
+      const root = refineCubicIntersection(first.curve, second.curve,
+        [item.t0, item.t1], [item.u0, item.u1], epsilon * .1);
+      if (root) {
+        const isEndpoint = endpoints.some(endpoint => Math.abs(root.t - endpoint.t) <= 1e-7 && Math.abs(root.u - endpoint.u) <= 1e-7);
+        if (!isEndpoint) {
+          const tangentA = cubicDerivative(first.curve, root.t); const tangentB = cubicDerivative(second.curve, root.u);
+          const product = Math.hypot(tangentA.x, tangentA.y) * Math.hypot(tangentB.x, tangentB.y);
+          if (!product || Math.abs(cross(tangentA, tangentB)) <= product * 1e-9) unsupported('a Bézier intersection is tangent or numerically unstable.');
+          if (!intersections.some(other => Math.abs(other.t - root.t) <= 1e-7 && Math.abs(other.u - root.u) <= 1e-7)) intersections.push(root);
+        }
+      } else {
+        const nearSharedEndpoint = endpoints.some(endpoint =>
+          Math.abs((item.t0 + item.t1) / 2 - endpoint.t) <= 1e-5
+          && Math.abs((item.u0 + item.u1) / 2 - endpoint.u) <= 1e-5);
+        if (!nearSharedEndpoint) {
+          const flatA = cubicFlatnessDistance(item.curveA); const flatB = cubicFlatnessDistance(item.curveB);
+          const chordGap = segmentDistance(item.curveA, item.curveB);
+          if (chordGap <= flatA + flatB + epsilon * 2) {
+            unsupported('nearby Bézier boundaries could not be separated from an intersection with sufficient precision.');
+          }
+        }
+      }
+      continue;
+    }
+    if (item.depth >= 96) unsupported('a Bézier intersection could not be isolated within the subdivision limit.');
+    if (sizeA >= sizeB) {
+      const [left, right] = splitCubic(item.curveA);
+      const middle = (item.t0 + item.t1) / 2;
+      stack.push({ ...item, curveA: right, t0: middle, depth: item.depth + 1 });
+      stack.push({ ...item, curveA: left, t1: middle, depth: item.depth + 1 });
+    } else {
+      const [left, right] = splitCubic(item.curveB);
+      const middle = (item.u0 + item.u1) / 2;
+      stack.push({ ...item, curveB: right, u0: middle, depth: item.depth + 1 });
+      stack.push({ ...item, curveB: left, u1: middle, depth: item.depth + 1 });
+    }
+  }
+  return intersections;
+}
+
+function curveBoolean(shapes, operation) {
+  if (!operations.has(operation) || !Array.isArray(shapes) || !shapes.length
+    || shapes.some(shape => !Array.isArray(shape?.contours))) throw new TypeError('Boolean geometry needs one or more cubic contour sets.');
+  const segments = [];
+  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity; let maxCoordinate = 0;
+  for (const [shapeIndex, shape] of shapes.entries()) for (const [contourIndex, contour] of shape.contours.entries()) {
+    if (!Array.isArray(contour) || contour.length < 2) unsupported('a Bézier contour is malformed.');
+    for (const [segmentIndex, curve] of contour.entries()) {
+      const points = [curve.p0, curve.p1, curve.p2, curve.p3];
+      if (points.some(point => !finite(point?.x) || !finite(point?.y))) unsupported('a Bézier segment contains non-finite coordinates.');
+      for (const point of points) {
+        minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
+        maxCoordinate = Math.max(maxCoordinate, Math.abs(point.x), Math.abs(point.y));
+      }
+      if (distance(curve.p0, curve.p3) > 0 || distance(curve.p0, curve.p1) > 0 || distance(curve.p0, curve.p2) > 0) {
+        segments.push({ curve, shapeIndex, contourIndex, segmentIndex, contourLength: contour.length, splits: [0, 1] });
+      }
+    }
+  }
+  if (segments.length > MAX_INPUT_CURVES) unsupported(`the source has more than ${MAX_INPUT_CURVES} Bézier segments.`);
+  if (!segments.length) return [];
+  const extent = Math.max(maxX - minX, maxY - minY, 1);
+  const epsilon = Math.max(extent * 1e-10, maxCoordinate * Number.EPSILON * 64, 1e-10);
+  const intersectionTolerance = Math.max(epsilon * 4, extent * 1e-8);
+  const budget = { cells: 0 };
+  let splitPointCount = segments.length * 2;
+  for (let firstIndex = 0; firstIndex < segments.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < segments.length; secondIndex += 1) {
+      const first = segments[firstIndex]; const second = segments[secondIndex];
+      const boundsA = cubicBounds(first.curve); const boundsB = cubicBounds(second.curve);
+      if (!cubicBoundsOverlap(boundsA, boundsB, epsilon)) continue;
+      const intersections = findCubicIntersections(first, second, epsilon, intersectionTolerance, budget);
+      for (const intersection of intersections) {
+        addCurveSplit(first, intersection.t); addCurveSplit(second, intersection.u);
+      }
+      splitPointCount += intersections.length * 2;
+      if (splitPointCount > MAX_SPLIT_POINTS) unsupported(`the source exceeds the ${MAX_SPLIT_POINTS}-intersection-point complexity limit.`);
+    }
+  }
+
+  const directed = new Map();
+  for (const segment of segments) {
+    segment.splits.sort((a, b) => a - b);
+    const curveLength = Math.max(distance(segment.curve.p0, segment.curve.p3), epsilon);
+    const unique = segment.splits.filter((value, index, list) => !index || Math.abs(value - list[index - 1]) > epsilon / curveLength);
+    for (let index = 1; index < unique.length; index += 1) {
+      const fragment = cubicSubcurve(segment.curve, unique[index - 1], unique[index]);
+      const length = distance(fragment.p0, fragment.p3);
+      if (length <= epsilon * 2) continue;
+      const midpoint = cubicPoint(fragment, .5);
+      let tangent = cubicDerivative(fragment, .5);
+      let tangentLength = Math.hypot(tangent.x, tangent.y);
+      if (!(tangentLength > epsilon)) { tangent = subtract(fragment.p3, fragment.p0); tangentLength = Math.hypot(tangent.x, tangent.y); }
+      if (!(tangentLength > epsilon)) unsupported('a split Bézier fragment has a degenerate tangent.');
+      const minimumOffset = epsilon * 8;
+      const offset = Math.max(minimumOffset * 4, Math.min(length * 1e-7, extent * 1e-8));
+      const normal = vector(-tangent.y / tangentLength * offset, tangent.x / tangentLength * offset);
+      const [onLeft, onRight] = classifyCurveSides(shapes, midpoint,
+        vector(normal.x / offset, normal.y / offset), operation, offset, minimumOffset);
+      if (onLeft === onRight) continue;
+      const oriented = onLeft ? fragment : reverseCubic(fragment);
+      const key = `${pointKey(oriented.p0, epsilon * 8)}>${pointKey(oriented.p3, epsilon * 8)}`;
+      if (!directed.has(key)) directed.set(key, { curve: oriented, key, used: false });
+    }
+  }
+
+  const edges = [...directed.values()];
+  if (!edges.length) return [];
+  const outgoing = new Map();
+  for (const edge of edges) {
+    const key = pointKey(edge.curve.p0, epsilon * 8);
+    if (!outgoing.has(key)) outgoing.set(key, []);
+    outgoing.get(key).push(edge);
+  }
+  const contours = [];
+  for (const initial of edges) {
+    if (initial.used) continue;
+    initial.used = true;
+    const contour = [initial.curve];
+    let current = initial;
+    let closed = false;
+    for (let steps = 0; steps <= edges.length; steps += 1) {
+      const endKey = pointKey(current.curve.p3, epsilon * 8);
+      if (endKey === pointKey(initial.curve.p0, epsilon * 8)) { closed = true; break; }
+      const candidates = (outgoing.get(endKey) || []).filter(edge => !edge.used);
+      if (!candidates.length) break;
+      const reverseAngle = cubicTangentAngle(reverseCubic(current.curve));
+      candidates.sort((left, right) => turnClockwise(reverseAngle, cubicTangentAngle(left.curve)) - turnClockwise(reverseAngle, cubicTangentAngle(right.curve)) || left.key.localeCompare(right.key));
+      current = candidates[0];
+      current.used = true;
+      contour.push(current.curve);
+    }
+    if (!closed) unsupported('the Bézier boundaries contain a touching or degenerate junction that cannot be represented as a closed editable path.');
+    contours.push(contour);
+  }
+  if (edges.some(edge => !edge.used)) unsupported('the Bézier boundaries could not be assembled into closed contours.');
+  if (contours.reduce((count, contour) => count + contour.length, 0) > 20_000) unsupported('the result exceeds the 20,000-anchor editable path limit.');
+  contours.sort((left, right) => left[0].p0.x - right[0].p0.x || left[0].p0.y - right[0].p0.y);
+  return contours;
+}
+
 function transformContours(contours, node) {
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
   return contours.map(contour => contour.map(point => rotate(add(point, vector(node.x, node.y)), cx, cy, node.rotation || 0)));
+}
+
+function transformCurves(contours, node) {
+  const cx = node.x + node.width / 2;
+  const cy = node.y + node.height / 2;
+  const transform = point => rotate(add(point, vector(node.x, node.y)), cx, cy, node.rotation || 0);
+  return contours.map(contour => contour.map(curve => cubic(transform(curve.p0), transform(curve.p1), transform(curve.p2), transform(curve.p3))));
+}
+
+function linearCurvesFromContours(contours) {
+  return contours.map(contour => contour.map((point, index) => {
+    const next = contour[(index + 1) % contour.length];
+    const delta = subtract(next, point);
+    return cubic(point, add(point, scale(delta, 1 / 3)), add(point, scale(delta, 2 / 3)), next);
+  }));
+}
+
+function pathCurves(node) {
+  return vectorPathContours(node).map(contour => {
+    const points = contour.points || [];
+    return points.map((point, index) => {
+      const next = points[(index + 1) % points.length];
+      const start = vector(node.x + Number(point.x) * node.width, node.y + Number(point.y) * node.height);
+      const end = vector(node.x + Number(next.x) * node.width, node.y + Number(next.y) * node.height);
+      const outgoing = point.out || { x: 0, y: 0 };
+      const incoming = next.in || { x: 0, y: 0 };
+      const hasControls = !isZeroHandle(outgoing) || !isZeroHandle(incoming);
+      const control1 = hasControls
+        ? vector(start.x + Number(outgoing.x || 0) * node.width, start.y + Number(outgoing.y || 0) * node.height)
+        : add(start, scale(subtract(end, start), 1 / 3));
+      const control2 = hasControls
+        ? vector(end.x + Number(incoming.x || 0) * node.width, end.y + Number(incoming.y || 0) * node.height)
+        : add(start, scale(subtract(end, start), 2 / 3));
+      const angle = node.rotation || 0;
+      if (!angle) return cubic(start, control1, control2, end);
+      const cx = node.x + node.width / 2; const cy = node.y + node.height / 2;
+      return cubic(rotate(start, cx, cy, angle), rotate(control1, cx, cy, angle), rotate(control2, cx, cy, angle), rotate(end, cx, cy, angle));
+    });
+  });
+}
+
+function primitiveCurves(node) {
+  return node.type === 'path' ? pathCurves(node) : linearCurvesFromContours(primitiveContours(node) || []);
+}
+
+function transformCurveSet(curves, sourceTransform) {
+  return curves.map(contour => contour.map(curve => {
+    const map = point => vector((point.x - sourceTransform.left) * sourceTransform.scaleX,
+      (point.y - sourceTransform.top) * sourceTransform.scaleY);
+    return cubic(map(curve.p0), map(curve.p1), map(curve.p2), map(curve.p3));
+  }));
+}
+
+function booleanContentCurves(node) {
+  const sourceTransform = booleanSourceTransform(node.children, node.width, node.height);
+  const shapes = node.children.map(child => ({
+    contours: transformCurveSet(shapeCurvesInParent(child), sourceTransform),
+    fillRule: child.type === 'path' ? child.fillRule || 'nonzero' : 'nonzero'
+  }));
+  const result = curveBoolean(shapes, node.operation);
+  const epsilon = Math.max(node.width, node.height, 1) * 1e-10;
+  const withinGroupBounds = result.every(contour => contour.every(curve => [curve.p0, curve.p1, curve.p2, curve.p3].every(point =>
+    point.x >= -epsilon && point.y >= -epsilon && point.x <= node.width + epsilon && point.y <= node.height + epsilon)));
+  // Source visual bounds already match the Boolean group's clip in ordinary
+  // cases. Avoid introducing artificial tangent intersections at those exact
+  // bounds; run a second Boolean clip only when a control hull may exceed them.
+  if (withinGroupBounds) return result;
+  const clip = linearCurvesFromContours([[
+    vector(0, 0), vector(node.width, 0), vector(node.width, node.height), vector(0, node.height)
+  ]]);
+  return curveBoolean([{ contours: result }, { contours: clip }], 'intersect');
+}
+
+function shapeCurvesInParent(node) {
+  if (node.type === 'boolean') return transformCurves(booleanContentCurves(node), node);
+  return primitiveCurves(node);
+}
+
+function containsCurvedPath(node) {
+  if (node.type === 'path' && vectorPathContours(node).some(contour => contour.points.some(point =>
+    !isZeroHandle(point.in) || !isZeroHandle(point.out)))) return true;
+  return (node.children || []).some(containsCurvedPath);
 }
 
 function visualBounds(node) {
@@ -404,9 +861,21 @@ function shapeContoursInParent(node) {
 export function flattenBooleanContours(node) {
   if (node?.type !== 'boolean') throw new BooleanBakeError('Select a Boolean group to bake.');
   validateSimpleOperand(node, { root: true });
+  if (containsCurvedPath(node)) unsupported('curved boundaries require the cubic path contour interface.');
   const contours = booleanContentContours(node);
   if (contours.reduce((count, contour) => count + contour.length, 0) > 20_000) unsupported('the result exceeds the 20,000-point editable path limit.');
   return contours.map(contour => contour.map(point => ({ x: Object.is(point.x, -0) ? 0 : point.x, y: Object.is(point.y, -0) ? 0 : point.y })));
+}
+
+/** Return the exact cubic boundary fragments for a Boolean result in local coordinates. */
+export function flattenBooleanPathContours(node) {
+  if (node?.type !== 'boolean') throw new BooleanBakeError('Select a Boolean group to bake.');
+  validateSimpleOperand(node, { root: true });
+  if (!containsCurvedPath(node)) {
+    const contours = booleanContentContours(node);
+    return linearCurvesFromContours(contours);
+  }
+  return booleanContentCurves(node);
 }
 
 /** Convert local polygon contours to the editable normalized points used by a path layer. */
@@ -423,6 +892,43 @@ export function normalizedPathGeometryFromContours(contours, width, height) {
     closed: true,
     points: first.map(normalize),
     ...(contours.length > 1 ? { subpaths: contours.slice(1).map(contour => ({ closed: true, points: contour.map(normalize) })) } : {}),
+    fillRule: 'evenodd'
+  };
+}
+
+/** Convert exact cubic Boolean contours to the editable normalized native path format. */
+export function normalizedPathGeometryFromCurveContours(contours, width, height) {
+  if (!finite(width) || !finite(height) || width <= 0 || height <= 0) throw new BooleanBakeError('The Boolean group needs positive dimensions before it can be baked.');
+  const normalize = (point, anchor) => ({
+    x: Object.is(point.x / width, -0) ? 0 : point.x / width,
+    y: Object.is(point.y / height, -0) ? 0 : point.y / height,
+    in: { x: (point.x - anchor.x) / width, y: (point.y - anchor.y) / height },
+    out: { x: 0, y: 0 }
+  });
+  const convert = contour => {
+    if (!contour.length) return [];
+    return contour.map((curve, index) => {
+      const previous = contour[(index - 1 + contour.length) % contour.length];
+      const anchor = curve.p0;
+      const straightOut = cubicLinearlyParameterized(curve, Math.max(width, height) * 1e-10);
+      const straightIn = cubicLinearlyParameterized(previous, Math.max(width, height) * 1e-10);
+      const point = normalize(anchor, anchor);
+      point.in = straightIn ? { x: 0, y: 0 } : {
+        x: (previous.p2.x - anchor.x) / width,
+        y: (previous.p2.y - anchor.y) / height
+      };
+      point.out = straightOut ? { x: 0, y: 0 } : {
+        x: (curve.p1.x - anchor.x) / width,
+        y: (curve.p1.y - anchor.y) / height
+      };
+      return point;
+    });
+  };
+  const first = convert(contours[0] || []);
+  return {
+    closed: true,
+    points: first,
+    ...(contours.length > 1 ? { subpaths: contours.slice(1).map(contour => ({ closed: true, points: convert(contour) })) } : {}),
     fillRule: 'evenodd'
   };
 }

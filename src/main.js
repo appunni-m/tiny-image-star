@@ -23,6 +23,7 @@ import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapL
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
+import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
 import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
@@ -47,6 +48,7 @@ import { snapToAlignmentGuides } from './smart-guides.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
+import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVariantAxis, renameComponentSet, renameComponentVariantAxis } from './component-set-editor.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -57,6 +59,7 @@ const state = {
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
+  componentSetSelectedVariants: new Map(),
   bulk: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
@@ -813,7 +816,26 @@ function relayoutVariableBoundFrames() {
   for (const { node } of [...affected.values()].sort((left, right) => right.depth - left.depth)) applyAutoLayout(node);
 }
 function autoLayoutSection(node) {
-  if (!node.autoLayout) return section('Layout', `<button class="add-fill" data-action="auto-layout-toggle">＋ Add auto layout</button><div class="image-properties-note">Flow child layers with direction, spacing, alignment, and wrap sizing.</div>`);
+  if (!node.autoLayout) {
+    const suggestion = suggestAutoLayout(node);
+    const pending = state.autoLayoutSuggestion?.frameId === node.id ? state.autoLayoutSuggestion : null;
+    const isCurrent = Boolean(pending && suggestion.supported && pending.signature === suggestion.signature);
+    const paddingText = settings => `T ${settings.padding.top} · R ${settings.padding.right} · B ${settings.padding.bottom} · L ${settings.padding.left}`;
+    const description = suggestion.supported
+      ? `${suggestion.pattern === 'grid' ? `${suggestion.cells.reduce((max, cell) => Math.max(max, cell.row), 0)} × ${suggestion.settings.columns} regular grid · columns ${suggestion.settings.columnGap}px / rows ${suggestion.settings.rowGap}px` : `${suggestion.pattern === 'horizontal' ? 'horizontal row' : 'vertical column'} · ${suggestion.pattern === 'horizontal' ? suggestion.settings.columnGap : suggestion.settings.rowGap}px gap`} · padding ${paddingText(suggestion.settings)}`
+      : suggestion.reason;
+    const preview = isCurrent
+      ? `<div class="auto-layout-suggestion-preview"><strong>Suggested ${suggestion.pattern} layout</strong><span>${escapeHtml(description)}</span><span>${suggestion.flowIds.length} layers will flow${suggestion.absoluteIds.length ? `; ${suggestion.absoluteIds.length} uncertain layer${suggestion.absoluteIds.length === 1 ? '' : 's'} will keep their positions` : ''}.</span></div><div class="auto-layout-suggestion-actions"><button class="primary-button" type="button" data-action="apply-auto-layout-suggestion">Apply suggestion</button><button class="secondary-button" type="button" data-action="cancel-auto-layout-suggestion">Cancel</button></div>`
+      : pending
+        ? '<div class="image-properties-note">The frame changed since this suggestion. Review a fresh suggestion before applying.</div>'
+        : '';
+    const suggestLabel = pending && !isCurrent ? 'Review updated suggestion' : 'Suggest auto layout';
+    const suggest = `<button class="add-fill auto-layout-suggest-button" type="button" data-action="suggest-auto-layout"${suggestion.supported ? '' : ' disabled'}>${suggestLabel}</button>`;
+    const note = suggestion.supported
+      ? 'Review the inferred direction, spacing, and padding before applying. Uncertain layers remain fixed in place.'
+      : suggestion.reason;
+    return section('Layout', `${suggest}${preview}<div class="image-properties-note">${escapeHtml(note)}</div><button class="add-fill" type="button" data-action="auto-layout-toggle">＋ Add auto layout manually</button>`);
+  }
   const layout = resolveAutoLayoutSettings(node);
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${String(value) === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
@@ -1324,7 +1346,7 @@ function renderInspector() {
   let body = componentSection(node) + transformSection(node) + blendingSection(node);
   if (node.type === 'boolean') {
     const operations = [['union', 'Union'], ['subtract', 'Subtract'], ['intersect', 'Intersect'], ['exclude', 'Exclude']];
-    body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><button class="add-fill" data-action="bake-boolean" style="margin-top:8px">Bake to vector path</button><div class="image-properties-note">Baking converts supported straight-edged shapes into editable path points and contours. Curves, ellipses, vector networks, rounded rectangles, transparency, mode-bound geometry, and blended operands are refused with an explanation.</div>`);
+    body += section('Boolean', `<select class="prop-input select-field" data-prop="operation" aria-label="Boolean operation">${operations.map(([value, label]) => `<option value="${value}"${node.operation === value ? ' selected' : ''}>${label}</option>`).join('')}</select><button class="add-fill" data-action="separate-boolean" style="margin-top:8px">Separate Boolean</button><button class="add-fill" data-action="bake-boolean" style="margin-top:8px">Bake to vector path</button><div class="image-properties-note">Baking preserves supported cubic Bézier paths as editable curves. Ellipses, rounded rectangles, vector networks, tangent or ambiguous intersections, transparency, mode-bound geometry, and blended operands are refused with an explanation.</div>`);
   }
   if (node.type === 'group' && node.mask) {
     const maskSource = node.children.find(child => child.id === node.maskSourceId);
@@ -1433,7 +1455,9 @@ function renderLocalComponentLibraries() {
 function renderAssetsTab() {
   const list = $('#assets-list'); list.replaceChildren();
   state.assetThumbnailImages.clear();
-  const components = $('#components-list'); components.replaceChildren();
+  const components = $('#components-list');
+  const expandedComponentSets = new Set([...components.querySelectorAll('[data-component-set-editor][open]')].map(item => item.dataset.componentSetEditor));
+  components.replaceChildren();
   const variableCollections = $('#variable-collections-list'); variableCollections.replaceChildren();
   const collections = state.document.variableCollections || [];
   const exportTokens = $('#export-design-tokens');
@@ -1503,10 +1527,12 @@ function renderAssetsTab() {
     const empty = document.createElement('div'); empty.className = 'components-empty'; empty.textContent = 'Create a component from any layer.'; components.append(empty);
   }
   for (const set of componentSetItems) {
-    const card = document.createElement('button'); card.type = 'button'; card.className = 'component-card'; card.dataset.componentSetId = set.id; card.title = `${set.name} · ${set.componentIds.length} variants`;
-    const mark = document.createElement('span'); mark.className = 'component-card-icon'; mark.textContent = '◇';
-    const name = document.createElement('span'); name.className = 'component-card-name'; name.textContent = `${set.name} · ${set.componentIds.length}`;
-    card.append(mark, name); components.append(card);
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = componentSetAssetMarkup(state.document, set, {
+      open: expandedComponentSets.has(set.id),
+      selectedComponentId: state.componentSetSelectedVariants.get(set.id)
+    });
+    if (wrapper.firstElementChild) components.append(wrapper.firstElementChild);
   }
   for (const component of componentItems.filter(item => !groupedComponentIds.has(item.id))) {
     const card = document.createElement('button'); card.type = 'button'; card.className = 'component-card'; card.dataset.componentId = component.id; card.title = `Create an instance of ${component.name}`;
@@ -4774,7 +4800,7 @@ function combineSelectedBoolean(operation) {
     checkpoint(`Combine as ${operation}`);
     const group = combineBoolean(state.document, ids, operation);
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
-    showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source shapes remain editable.`);
+    showToast(`${operation[0].toUpperCase()}${operation.slice(1)} Boolean group created. Its source layers remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot be combined.'); }
 }
 
@@ -5134,7 +5160,23 @@ function changeMainVariantProperty(componentId, propertyName, value) {
     checkpoint(`Rename ${propertyName} variant`);
     setComponentVariantProperty(state.document, componentId, propertyName, value);
     renderUI(); queueSave(); showToast(`${propertyName} variant updated.`);
-  } catch (error) { showToast(error.message); renderInspector(); }
+  } catch (error) { showToast(error.message); renderUI(); }
+}
+function editComponentSet(label, operation, successMessage = 'Component set updated.') {
+  try {
+    const nextDocument = cloneDocument(state.document);
+    operation(nextDocument);
+    validateDocument(nextDocument);
+    checkpoint(label);
+    state.document = nextDocument;
+    renderUI(); queueSave(); renderer.invalidate();
+    showToast(successMessage);
+    return true;
+  } catch (error) {
+    showToast(error.message || 'Could not update this component set.');
+    renderUI();
+    return false;
+  }
 }
 async function refreshLocalComponentLibraries({ refreshInspector = true } = {}) {
   const summaries = await listComponentLibraries();
@@ -7028,8 +7070,55 @@ function applyInspectorAction(action, details = {}) {
     recordNodeComponentOverrides(node, ['radius', 'cornerRadii', 'variableBindings']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
-  else if (action === 'auto-layout-toggle') {
+  else if (action === 'suggest-auto-layout' && node?.type === 'frame') {
+    const suggestion = suggestAutoLayout(node);
+    if (!suggestion.supported) { showToast(suggestion.reason); return; }
+    state.autoLayoutSuggestion = { frameId: node.id, signature: suggestion.signature };
+    renderInspector();
+  } else if (action === 'apply-auto-layout-suggestion' && node?.type === 'frame') {
+    const pending = state.autoLayoutSuggestion;
+    if (!pending || pending.frameId !== node.id) return;
+    const suggestion = suggestAutoLayout(node);
+    if (!suggestion.supported) {
+      state.autoLayoutSuggestion = null;
+      renderInspector();
+      showToast(suggestion.reason);
+      return;
+    }
+    if (pending.signature !== suggestion.signature) {
+      state.autoLayoutSuggestion = { frameId: node.id, signature: suggestion.signature };
+      renderInspector();
+      showToast('The frame changed. Review the updated suggestion before applying it.');
+      return;
+    }
+    try {
+      applyAutoLayoutSuggestion(structuredClone(node), suggestion);
+      checkpoint('Apply suggested auto layout');
+      const applied = applyAutoLayoutSuggestion(node, suggestion);
+      const childrenById = new Map(node.children.map(item => [item.id, item]));
+      recordNodeComponentOverrides(node, ['autoLayout']);
+      for (const id of applied.movedIds) {
+        const child = childrenById.get(id);
+        if (child) recordNodeComponentOverrides(child, ['x', 'y']);
+      }
+      for (const id of applied.absoluteIds) {
+        const child = childrenById.get(id);
+        if (child) recordNodeComponentOverrides(child, ['layoutPositioning']);
+      }
+      if (suggestion.pattern === 'grid') for (const { id } of suggestion.cells) {
+        const child = childrenById.get(id);
+        if (child) recordNodeComponentOverrides(child, ['gridCell']);
+      }
+      state.autoLayoutSuggestion = null;
+      renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
+      showToast(`Applied ${suggestion.pattern} auto layout to ${suggestion.flowIds.length} layers.`);
+    } catch (error) { showToast(error.message || 'The layout suggestion could not be applied.'); }
+  } else if (action === 'cancel-auto-layout-suggestion') {
+    state.autoLayoutSuggestion = null;
+    renderInspector();
+  } else if (action === 'auto-layout-toggle') {
     if (!node || node.type !== 'frame') return;
+    state.autoLayoutSuggestion = null;
     checkpoint(node.autoLayout ? 'Remove auto layout' : 'Add auto layout');
     if (node.autoLayout) {
       delete node.autoLayout;
@@ -7498,9 +7587,67 @@ function initEvents() {
       .catch(error => showToast(error.message || 'Could not place this local component.'));
   });
   $('#components-list').addEventListener('click', event => {
-    const setCard = event.target.closest('[data-component-set-id]');
-    if (setCard) { const set = state.document.componentSets?.find(item => item.id === setCard.dataset.componentSetId); if (set) createInstanceAt(set.componentIds[0]); return; }
-    const card = event.target.closest('[data-component-id]'); if (card) createInstanceAt(card.dataset.componentId);
+    const action = event.target.closest('[data-action="add-component-variant-axis"], [data-action="remove-component-variant-axis"]');
+    if (action) {
+      const setId = action.dataset.setId;
+      if (action.dataset.action === 'add-component-variant-axis') {
+        const card = action.closest('.component-set-card');
+        const name = card?.querySelector(`[data-component-set-new-axis="${setId}"]`)?.value;
+        const value = card?.querySelector(`[data-component-set-new-value="${setId}"]`)?.value;
+        editComponentSet('Add component variant axis', document => addComponentVariantAxis(document, setId, name, value), 'Variant axis added to every variant.');
+      } else {
+        const axisName = action.dataset.axisName;
+        editComponentSet(`Remove ${axisName} variant axis`, document => removeComponentVariantAxis(document, setId, axisName), `Variant axis “${axisName}” removed.`);
+      }
+      return;
+    }
+    const exactVariant = event.target.closest('[data-place-variant]');
+    if (exactVariant) {
+      const card = exactVariant.closest('.component-set-card');
+      const setId = card?.dataset.componentSetPanel;
+      if (setId) state.componentSetSelectedVariants.set(setId, exactVariant.dataset.placeVariant);
+      createInstanceAt(exactVariant.dataset.placeVariant); return;
+    }
+    const placeSelected = event.target.closest('button[data-component-set-id]');
+    if (placeSelected) {
+      const card = placeSelected.closest('.component-set-card');
+      const selectedId = card?.querySelector('[data-component-set-placement]')?.value;
+      const set = state.document.componentSets?.find(item => item.id === placeSelected.dataset.componentSetId);
+      if (set?.componentIds.includes(selectedId)) {
+        state.componentSetSelectedVariants.set(set.id, selectedId);
+        createInstanceAt(selectedId);
+      }
+      else showToast('Choose a variant from this component set first.');
+      return;
+    }
+    const card = event.target.closest('button[data-component-id]');
+    if (card) createInstanceAt(card.dataset.componentId);
+  });
+  $('#components-list').addEventListener('change', event => {
+    const placement = event.target.closest('[data-component-set-placement]');
+    if (placement) {
+      state.componentSetSelectedVariants.set(placement.dataset.componentSetPlacement, placement.value);
+      return;
+    }
+    const setName = event.target.closest('[data-component-set-name]');
+    if (setName) {
+      const setId = setName.dataset.setId;
+      const set = state.document.componentSets?.find(item => item.id === setId);
+      if (!set || set.name === setName.value.trim()) return;
+      editComponentSet('Rename component set', document => renameComponentSet(document, setId, setName.value), 'Component set renamed.');
+      return;
+    }
+    const axisName = event.target.closest('[data-component-set-axis-name]');
+    if (axisName) {
+      const setId = axisName.dataset.setId;
+      const oldName = axisName.dataset.axisOldName;
+      const value = axisName.value;
+      if (value.trim() === oldName) return;
+      editComponentSet('Rename component variant axis', document => renameComponentVariantAxis(document, setId, oldName, value), 'Variant axis renamed.');
+      return;
+    }
+    const variantValue = event.target.closest('[data-variant-master-property]');
+    if (variantValue) changeMainVariantProperty(variantValue.dataset.componentId, variantValue.dataset.variantMasterProperty, variantValue.value);
   });
   $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
   $('#text-styles-list').addEventListener('click', event => {

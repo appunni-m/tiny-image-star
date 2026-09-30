@@ -161,6 +161,39 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .component-card-icon { width: 21px; height: 21px; flex: 0 0 21px; display: grid; place-items: center; border-radius: 5px; background: #f1ecff; color: #7253c4; font-size: 13px; }
 .component-card-name { overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .components-empty { grid-column: 1 / -1; padding: 4px 2px 8px; color: #999; font-size: 9px; }
+.component-set-card { grid-column: 1 / -1; min-width: 0; display: grid; gap: 8px; padding: 8px; border: 1px solid #e8e5ed; border-radius: 7px; background: #fff; }
+.component-set-heading, .component-set-heading label, .component-set-placement, .component-set-placement label { min-width: 0; display: grid; gap: 5px; }
+.component-set-heading { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.component-set-heading label > span, .component-set-placement label > span,
+.component-set-add-axis label > span, .component-set-axis-name > span,
+.component-set-variant-values label > span { color: #777; font-size: 9px; }
+.component-set-heading input, .component-set-axis-name input,
+.component-set-add-axis input, .component-set-variant-values input,
+.component-set-placement .select-field { width: 100%; min-width: 0; min-height: 44px; padding: 7px; border: 1px solid #e4e2e8; border-radius: 6px; background: #fff; font-size: 11px; }
+.component-set-heading small { padding-bottom: 11px; color: #888; font-size: 9px; white-space: nowrap; }
+.component-set-placement { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.component-set-place-selected, .component-set-place-variant,
+.component-set-add-axis > button, .component-set-remove-axis { min-width: 44px; min-height: 44px; padding: 7px 10px; border: 1px solid #e3dcef; border-radius: 6px; background: #f7f3ff; color: #573c91; font-size: 11px; }
+.component-set-place-selected:hover, .component-set-place-variant:hover,
+.component-set-add-axis > button:hover, .component-set-remove-axis:hover { border-color: #bba9dc; background: #f0eafd; }
+.component-set-editor { min-width: 0; border-top: 1px solid #f0edf3; padding-top: 6px; }
+.component-set-editor > summary { min-height: 44px; display: flex; align-items: center; color: #655585; font-size: 10px; font-weight: 550; cursor: pointer; }
+.component-set-axis-list, .component-set-variants { min-width: 0; display: grid; gap: 6px; }
+.component-set-axis { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: end; gap: 6px; }
+.component-set-axis-name, .component-set-add-axis label, .component-set-variant-values label { min-width: 0; display: grid; gap: 4px; }
+.component-set-remove-axis { font-size: 17px; }
+.component-set-add-axis { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; padding: 8px 0; border-bottom: 1px solid #f0edf3; }
+.component-set-add-axis > button { grid-column: 1 / -1; }
+.component-set-variants { padding-top: 8px; }
+.component-set-variant { min-width: 0; display: grid; gap: 6px; padding: 7px; border: 1px solid #eeeaf2; border-radius: 6px; }
+.component-set-variant-heading { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; color: #555; font-size: 10px; }
+.component-set-variant-heading strong { min-width: 0; overflow-wrap: anywhere; font-weight: 550; }
+.component-set-place-variant { min-height: 44px; }
+.component-set-variant-values { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 6px; }
+.component-set-heading input:focus-visible, .component-set-axis input:focus-visible,
+.component-set-add-axis input:focus-visible, .component-set-variant-values input:focus-visible,
+.component-set-placement .select-field:focus-visible,
+.component-set-card button:focus-visible, .component-set-editor > summary:focus-visible { outline: 2px solid #8b68d0; outline-offset: 2px; }
 .component-link-copy { display: grid; gap: 3px; margin: 0 0 7px; padding: 2px 1px; }
 .component-link-copy strong { overflow: hidden; color: #393242; font-size: 10px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .component-link-copy span { color: #888; font-size: 9px; line-height: 1.4; }
@@ -401,6 +434,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .fill-opacity { width: 40px; height: 27px; padding: 0 4px; border: 1px solid #e8e8e8; border-radius: 5px; text-align: right; font-size: 10px; }
 .add-fill { width: 100%; height: 25px; margin-top: 6px; border-radius: 5px; color: #888; text-align: left; font-size: 10px; }
 .add-fill:hover { background: #f5f5f5; }
+.auto-layout-suggestion-preview { display: grid; gap: 5px; margin-top: 8px; padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--muted); font-size: 10px; line-height: 1.45; }
+.auto-layout-suggestion-preview strong { color: var(--ink); font-size: 11px; font-weight: 600; }
+.auto-layout-suggestion-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .7fr); gap: 7px; margin-top: 8px; }
+.auto-layout-suggestion-actions .primary-button, .auto-layout-suggestion-actions .secondary-button { width: 100%; min-width: 0; min-height: 36px; height: auto; padding: 5px 8px; }
+.auto-layout-suggest-button:disabled { color: #8b929d; cursor: not-allowed; }
 .vector-point-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .vector-point-actions .add-fill { margin: 0; }
 .vector-point-actions .add-fill:disabled { color: #bbb; cursor: default; }
@@ -987,6 +1025,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .local-font-remove { width: 42px; min-width: 42px; min-height: 42px; }
   .local-font-row { grid-template-columns: 36px minmax(0, 1fr) 42px; min-height: 50px; }
   .component-slot-dialog .dialog-actions > button { min-height: 44px; }
+  .auto-layout-suggestion-actions .primary-button, .auto-layout-suggestion-actions .secondary-button { min-height: 44px; }
 }
 @media (max-width: 420px) {
   .topbar { padding-inline: max(5px, env(safe-area-inset-left)) max(5px, env(safe-area-inset-right)); }
@@ -1440,13 +1479,20 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     color: #c2a7ff;
   }
   .local-library-card, .variable-collection-card, .variable-row,
-  .component-card, .color-style-card, .component-property-editor-wrap,
+  .component-card, .component-set-card, .component-set-variant, .color-style-card, .component-property-editor-wrap,
   .component-property-definition, .component-slot-value,
   .typography-style-row, .inspect-layer-card, .inspect-code-card,
   .comment-thread-row, .comment-message {
     border-color: #3e424b;
   }
   .comment-thread-row, .comment-message { background-color: #2a2d34; }
+  .component-set-card, .component-set-variant { background-color: #24262c; }
+  .component-set-heading input, .component-set-axis-name input,
+  .component-set-add-axis input, .component-set-variant-values input,
+  .component-set-placement .select-field { border-color: #41444d; background: #24262c; color: var(--text); }
+  .component-set-place-selected, .component-set-place-variant,
+  .component-set-add-axis > button, .component-set-remove-axis { border-color: #4c435e; background: #302a3a; color: #d7c8f5; }
+  .component-set-editor, .component-set-add-axis { border-color: #3e424b; }
   .comment-new-button, .comment-anchor-hint, .comment-compose-actions .secondary-button,
   .comment-delete-button {
     color: #d6dae2;
