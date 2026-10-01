@@ -1056,7 +1056,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   return group;
 }
 
-const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text']);
+const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text', 'image', 'group', 'frame', 'section']);
 function isMaskSource(node) {
   return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
 }
@@ -1108,7 +1108,7 @@ export function createMaskGroup(document, nodeIds, pageId = document.activePageI
 /** Remove a mask group while restoring every source layer to the page stack. */
 export function releaseMaskGroup(document, groupId, pageId = document.activePageId) {
   const entry = findNode(document, groupId, pageId);
-  if (!entry || entry.node.type !== 'group' || !entry.node.mask || entry.node.children.length < 2) throw new Error('Select a valid mask group to release.');
+  if (!entry || entry.node.type !== 'group' || !entry.node.mask || entry.node.children.length < 1) throw new Error('Select a valid mask group to release.');
   const slotContext = componentSlotMutationContext(document, entry);
   requireOverriddenSlotForMutation(slotContext, 'release');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot replace a component slot target from its instance.');
@@ -3210,7 +3210,7 @@ export function validateDocument(document) {
       if (node.type === 'path' && !validVectorPath(node)) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
       if (node.type === 'network' && !validNetworkGeometry(node)) throw new TypeError(`Invalid vector network on layer ${node.name || node.id}.`);
       if (node.mask != null && typeof node.mask !== 'boolean') throw new TypeError(`Invalid mask setting on layer ${node.name || node.id}.`);
-      if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
+      if (node.mask && (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string' || !isMaskSource(node.children.find(child => child.id === node.maskSourceId)))) throw new TypeError(`Invalid mask group on layer ${node.name || node.id}.`);
       if (node.exportSettings != null) {
         const settingIds = new Set();
         if (!Array.isArray(node.exportSettings) || node.exportSettings.length > 8 || node.exportSettings.some(setting => {

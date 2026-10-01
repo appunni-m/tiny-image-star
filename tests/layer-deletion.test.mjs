@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
+import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
@@ -43,6 +43,31 @@ test('deleting a mask source removes only that layer and keeps the remaining gro
   assert.equal(findNode(result.document, content.id).parent.id, group.id);
   assert.equal(updatedGroup.mask, false);
   assert.equal(Object.hasOwn(updatedGroup, 'maskSourceId'), false);
+  assert.equal(validateDocument(result.document), true);
+});
+
+test('deleting the final masked content succeeds and keeps the empty mask source editable', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Only masked content' });
+  const mask = createNode('ellipse', { name: 'Reusable mask source' });
+  addNode(document, content);
+  addNode(document, mask);
+  const group = createMaskGroup(document, [content.id, mask.id]);
+
+  const result = removeLayersAtomically(document, [content.id]);
+  const remainingGroup = findNode(result.document, group.id).node;
+
+  assert.equal(findNode(result.document, content.id), null);
+  assert.equal(findNode(result.document, mask.id).parent.id, group.id);
+  assert.equal(remainingGroup.mask, true);
+  assert.equal(remainingGroup.maskSourceId, mask.id);
+  assert.deepEqual(remainingGroup.children.map(child => child.id), [mask.id]);
+  assert.equal(validateDocument(parseDocument(serializeDocument(result.document))), true);
+
+  const released = releaseMaskGroup(result.document, group.id);
+  assert.deepEqual(released.map(child => child.id), [mask.id]);
+  assert.equal(findNode(result.document, group.id), null);
+  assert.equal(findNode(result.document, mask.id).parent, null);
   assert.equal(validateDocument(result.document), true);
 });
 

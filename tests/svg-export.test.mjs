@@ -330,7 +330,7 @@ test('exports simple vector alpha-mask groups with editable mask geometry and so
   });
   const svg = exportNodeToSvg(group);
 
-  assert.match(svg, /<mask id="tis-mask-0" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="100" height="80">/);
+  assert.match(svg, /<mask id="tis-mask-0" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="100" height="80">/);
   assert.match(svg, /<g transform="matrix\([^)]*\)"><ellipse cx="30" cy="25" rx="30" ry="25" fill="#ffffff" fill-opacity="0\.2"\/><\/g>/);
   assert.match(svg, /<g opacity="0\.7" mask="url\(#tis-mask-0\)" data-tiny-image-star-type="group" data-tiny-image-star-node-id="alpha-group">/);
   assert.match(svg, /data-tiny-image-star-node-id="masked-content"/);
@@ -359,6 +359,14 @@ test('exports simple vector alpha-mask groups with editable mask geometry and so
   assert.doesNotMatch(unmaskedSvg, /tis-mask-0|mask="url/);
   assert.match(unmaskedSvg, /data-tiny-image-star-node-id="masked-content"/);
   assert.doesNotMatch(unmaskedSvg, /data-tiny-image-star-node-id="alpha-source"/);
+
+  const emptyGroup = createNode('group', {
+    id: 'empty-alpha-group', width: 100, height: 80, mask: true,
+    maskSourceId: source.id, children: [source]
+  });
+  const emptySvg = exportNodeToSvg(emptyGroup);
+  assert.match(emptySvg, /<mask id="tis-mask-0" mask-type="alpha"/);
+  assert.doesNotMatch(emptySvg, /data-tiny-image-star-node-id="masked-content"/);
 });
 
 test('exports editable text glyphs as white alpha-mask content with layer opacity', () => {
@@ -392,6 +400,33 @@ test('exports editable text glyphs as white alpha-mask content with layer opacit
   assert.match(mask, /font-size="48"/, 'text mask layout should honor the active variable-mode font size');
   assert.doesNotMatch(mask, /#ff0000/, 'source text color must not tint mask alpha');
   assert.match(svg, /mask="url\(#tis-mask-0\)"/);
+});
+
+test('exports image and container layers as alpha-mask sources', () => {
+  const assets = new Map([['mask-photo', {
+    id: 'mask-photo', type: 'image/png', width: 20, height: 12,
+    sourceBytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47])
+  }]]);
+  const imageSource = createNode('image', { id: 'image-mask-source', assetId: 'mask-photo', width: 40, height: 30 });
+  const imageGroup = createNode('group', {
+    width: 60, height: 40, mask: true, maskSourceId: imageSource.id,
+    children: [createNode('rectangle', { width: 60, height: 40 }), imageSource]
+  });
+  const imageSvg = exportNodeToSvg(imageGroup, { assets });
+  assert.match(imageSvg, /<mask id="tis-mask-0"[^>]*>[\s\S]*data:image\/png;base64/);
+  assert.match(imageSvg, /data-tiny-image-star-node-id="image-mask-source"/);
+
+  for (const type of ['group', 'frame', 'section']) {
+    const child = createNode('rectangle', { id: `${type}-mask-paint`, width: 24, height: 18, fill: '#123456' });
+    const source = createNode(type, { id: `${type}-mask-source`, width: 32, height: 24, children: [child] });
+    const group = createNode('group', {
+      width: 48, height: 36, mask: true, maskSourceId: source.id,
+      children: [createNode('rectangle', { width: 48, height: 36 }), source]
+    });
+    const svg = exportNodeToSvg(group);
+    assert.match(svg, new RegExp(`data-tiny-image-star-node-id="${type}-mask-paint"`), `${type} contents should be included in its alpha mask`);
+    assert.match(svg, /<mask id="tis-mask-0" mask-type="alpha"/);
+  }
 });
 
 test('reports unsupported alpha-mask source contents precisely', () => {

@@ -472,10 +472,10 @@ function isNodeVisible(document, node) {
   return getNodePropertyValue(document, node, 'visible') !== false;
 }
 
-const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text']);
+const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'image', 'group', 'frame', 'section']);
 
-function validateMaskGroup(node, document) {
-  if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string') {
+function validateMaskGroup(node, document, assets, imagePreviews) {
+  if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 1 || typeof node.maskSourceId !== 'string') {
     throw new SvgExportError('mask groups', node);
   }
   if (!(Number(node.width) > 0) || !(Number(node.height) > 0)) throw new SvgExportError('zero-size mask groups', node);
@@ -483,6 +483,11 @@ function validateMaskGroup(node, document) {
   if (!source) throw new SvgExportError('mask groups with a missing source', node);
   if (!isNodeVisible(document, source)) return source;
   if (!svgMaskSourceTypes.has(source.type)) throw new SvgExportError(`${source.type || 'unknown'} alpha mask contents`, source);
+  if (['image', 'group', 'frame', 'section'].includes(source.type)) {
+    const unsupported = unsupportedFeature(source, assets, imagePreviews, document);
+    if (unsupported) throw new SvgExportError(unsupported, source);
+    if (source.children?.length) validateTree(source.children, document, assets, imagePreviews);
+  }
   if (source.type === 'path' && !hasFillablePathContour(source)) throw new SvgExportError('open path alpha mask contents', source);
   if (source.type === 'network' && !(source.faces || []).length) throw new SvgExportError('open vector network alpha mask contents', source);
   if ((source.blendMode || 'normal') !== 'normal') throw new SvgExportError('blended alpha mask contents', source);
@@ -504,7 +509,7 @@ function validateTree(nodes, document, assets, imagePreviews = null, ignoredNode
     if (node.type === 'slice') continue;
     if (ignoredNodeIds.has(node.id)) continue;
     if (!isNodeVisible(document, node)) continue;
-    const maskSource = node.mask ? validateMaskGroup(node, document) : null;
+    const maskSource = node.mask ? validateMaskGroup(node, document, assets, imagePreviews) : null;
     const unsupported = unsupportedFeature(node, assets, imagePreviews, document);
     if (unsupported) throw new SvgExportError(unsupported, node);
     dimensions({ ...node, ...getNodeGeometry(document, node) });
@@ -1012,12 +1017,15 @@ function clipDefinition(document, id, node) {
   return `<clipPath id="${id}" clipPathUnits="userSpaceOnUse">${roundedRectMarkup(node, document)}</clipPath>`;
 }
 
-function maskSourceMarkup(source, document, measureText) {
+function maskSourceMarkup(source, document, measureText, context) {
   const node = { ...source, ...getNodeGeometry(document, source) };
   const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
   const fillOpacity = Number(node.fillOpacity ?? 1);
   const alpha = opacity * fillOpacity;
   const transform = matrixAttribute(nodeMatrix(node, { includePosition: true }));
+  if (['image', 'group', 'frame', 'section'].includes(node.type)) {
+    return renderTree([node], document, context, false, measureText);
+  }
   if (node.type === 'network') {
     const edgesByPair = networkEdgesByPair(node);
     const faces = (node.faces || []).map((face, index) => {
@@ -1045,13 +1053,13 @@ function maskSourceMarkup(source, document, measureText) {
   })}</g>`;
 }
 
-function maskDefinition(group, source, index, document, measureText) {
+function maskDefinition(group, source, index, document, measureText, context) {
   const id = `tis-mask-${index}`;
   const { width, height } = group;
-  const content = maskSourceMarkup(source, document, measureText);
+  const content = maskSourceMarkup(source, document, measureText, context);
   return {
     id,
-    markup: `<mask id="${id}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(width)}" height="${number(height)}">${content}</mask>`
+    markup: `<mask id="${id}" mask-type="alpha" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="${number(width)}" height="${number(height)}">${content}</mask>`
   };
 }
 
@@ -1235,7 +1243,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
               : shapeMarkup(paintNode, document, measureText, gradient?.id || null);
     const maskSource = node.mask ? node.children.find(child => child?.id === node.maskSourceId) : null;
     const alphaMask = maskSource && isNodeVisible(document, maskSource)
-      ? maskDefinition(node, maskSource, index, document, measureText)
+      ? maskDefinition(node, maskSource, index, document, measureText, context)
       : null;
     if (alphaMask) context.defs.push(alphaMask.markup);
     if (node.type === 'image' || (node.imageFill && !hasFillStack)) {

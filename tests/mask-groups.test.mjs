@@ -46,15 +46,22 @@ test('text layers can be saved and reused as editable alpha-mask sources', () =>
   assert.equal(validateDocument(reloaded), true);
 });
 
-test('mask creation rejects open paths, image layers, locks, and mixed parents', () => {
+test('mask creation accepts image and container sources and rejects open paths, locks, and mixed parents', () => {
   const document = createDocument();
   const frame = createNode('frame');
   const content = createNode('rectangle');
   const openPath = createNode('path', { closed: false, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
   const image = createNode('image');
+  const group = createNode('group');
+  const section = createNode('section');
   addNode(document, frame); addNode(document, content); addNode(document, openPath); addNode(document, image);
+  addNode(document, group); addNode(document, section);
   assert.equal(canCreateMaskGroup(document, [content.id, openPath.id]), false);
-  assert.equal(canCreateMaskGroup(document, [content.id, image.id]), false);
+  for (const source of [image, group, frame, section]) {
+    const sibling = createNode('rectangle', { name: `${source.type} masked content` });
+    addNode(document, sibling);
+    assert.equal(canCreateMaskGroup(document, [sibling.id, source.id]), true, `${source.type} can provide alpha to a mask`);
+  }
 
   const lockedShape = createNode('ellipse', { locked: true });
   const sibling = createNode('rectangle');

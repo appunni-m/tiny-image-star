@@ -935,6 +935,46 @@ export class SceneRenderer {
       ctx.restore();
       return;
     }
+    if (maskMode && node.type === 'image') {
+      const liveTransformSource = node.__smartAnimateLiveImageTransforms ? assets.get(node.assetId)?.bitmap : null;
+      const image = liveTransformSource || imageForNode(node, assets, state);
+      if (image) {
+        ctx.save();
+        ctx.beginPath();
+        roundedRect(ctx, x, y, width, height, radius || 0);
+        ctx.clip();
+        if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
+        else drawFittedImage(ctx, image, x, y, width, height, node.fit);
+        ctx.restore();
+      }
+      ctx.restore();
+      return;
+    }
+    if (maskMode && ['group', 'frame', 'section'].includes(node.type)) {
+      if (width > 0 && height > 0) {
+        const transform = ctx.getTransform?.();
+        const requestedScale = transform ? Math.hypot(transform.a, transform.b)
+          : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+        const { width: pixelWidth, height: pixelHeight } = booleanSurfaceDimensions(width, height, requestedScale);
+        const surface = typeof OffscreenCanvas === 'function'
+          ? new OffscreenCanvas(pixelWidth, pixelHeight)
+          : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+        const surfaceContext = surface.getContext('2d');
+        if (surfaceContext) {
+          surfaceContext.setTransform(pixelWidth / width, 0, 0, pixelHeight / height, 0, 0);
+          const variableBindings = { ...(node.variableBindings || {}) };
+          for (const property of ['x', 'y', 'width', 'height', 'rotation', 'opacity']) delete variableBindings[property];
+          const localNode = { ...node, x: 0, y: 0, rotation: 0, opacity: 1, blendMode: 'normal', variableBindings };
+          this.drawNode(surfaceContext, localNode, 0, 0, assets, false, false, {
+            ...renderOptions, ignoreMotionPreview: true, outlineMode: false,
+            showEmptyFrameHint: false, showLayoutGuides: false, includeSlices: false
+          });
+          ctx.drawImage(surface, x, y, width, height);
+        }
+      }
+      ctx.restore();
+      return;
+    }
     ctx.beginPath();
     switch (node.type) {
       case 'frame':
@@ -1675,7 +1715,10 @@ export class SceneRenderer {
   }
 
   drawMaskGroup(ctx, node, x, y, assets, renderOptions = {}) {
-    if (!Array.isArray(node.children) || node.children.length < 2 || node.width <= 0 || node.height <= 0) return;
+    if (!Array.isArray(node.children) || node.children.length < 1 || node.width <= 0 || node.height <= 0) return;
+    const maskNode = node.children.find(child => child.id === node.maskSourceId) || node.children[0];
+    const contentNodes = node.children.filter(child => child !== maskNode);
+    if (!contentNodes.length) return;
     const transform = ctx.getTransform?.();
     const requestedScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, this.getState().zoom || 1);
     const { width: pixelWidth, height: pixelHeight } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
@@ -1684,8 +1727,7 @@ export class SceneRenderer {
       : Object.assign(document.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
     const maskContext = surface.getContext('2d');
     maskContext.setTransform(pixelWidth / node.width, 0, 0, pixelHeight / node.height, 0, 0);
-    const maskNode = node.children.find(child => child.id === node.maskSourceId) || node.children[0];
-    for (const child of node.children) if (child !== maskNode) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
+    for (const child of contentNodes) this.drawNode(maskContext, child, 0, 0, assets, false, false, renderOptions);
     maskContext.globalCompositeOperation = 'destination-in';
     this.drawNode(maskContext, maskNode, 0, 0, assets, false, true, renderOptions);
     maskContext.globalCompositeOperation = 'source-over';

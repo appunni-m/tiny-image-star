@@ -133,6 +133,56 @@ test('scene renderer bypasses endpoint previews for live smart-animate image lay
   ], 'each draw uses its own current crop rectangle from the source bitmap');
 });
 
+test('image and container layers contribute their alpha when used as mask sources', () => {
+  const document = createDocument();
+  const sourceBitmap = { name: 'source bitmap', width: 200, height: 100 };
+  const editedPreview = { name: 'edited alpha preview', width: 80, height: 60 };
+  const image = createNode('image', { assetId: 'mask-photo', width: 80, height: 60, opacity: 0.7 });
+  addNode(document, image);
+  const state = {
+    document, assets: new Map([['mask-photo', { bitmap: sourceBitmap }]]),
+    previews: new Map([[image.id, editedPreview]]), previewAssetIds: new Map(),
+    zoom: 1, presenting: false, selectedIds: [], imageCropMode: false
+  };
+  const makeContext = (calls, scale = 1) => new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'getTransform') return () => ({ a: scale, b: 0 });
+      return (...args) => calls.push({ method: property, args, alpha: target.globalAlpha, fillStyle: target.fillStyle });
+    },
+    set(target, property, value) { target[property] = value; return true; }
+  });
+  const imageCalls = [];
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+  renderer.drawNode(makeContext(imageCalls), image, 0, 0, state.assets, false, true);
+  assert.ok(imageCalls.some(call => call.method === 'drawImage' && call.args[0] === editedPreview),
+    'image-mask alpha follows the current per-layer preview when one is available');
+
+  const containerCalls = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.calls = [];
+      this.context = makeContext(this.calls);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const child = createNode('rectangle', { width: 24, height: 18, fill: '#123456' });
+    const sourceGroup = createNode('group', { width: 40, height: 30, opacity: 0.6, children: [child] });
+    renderer.drawNode(makeContext(containerCalls), sourceGroup, 0, 0, state.assets, false, true);
+    const surfaceDraw = containerCalls.find(call => call.method === 'drawImage');
+    assert.ok(surfaceDraw?.args[0] instanceof RecordingCanvas, 'container mask is flattened to a bounded alpha surface');
+    assert.ok(surfaceDraw.args[0].calls.some(call => call.method === 'fill' && /18, 52, 86/.test(call.fillStyle || '')),
+      `container children contribute their actual painted alpha: ${JSON.stringify(surfaceDraw.args[0].calls)}`);
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {
   const created = [];
   class RecordingCanvas {
