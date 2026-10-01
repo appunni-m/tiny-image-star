@@ -2294,3 +2294,31 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .image-library-card { grid-template-columns: 56px minmax(0, 1fr); padding: 8px; }
   .image-library-thumb { width: 56px; height: 52px; }
 }
+
+.fig-import-dialog {
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(84dvh, 760px);
+  padding: 0;
+  overflow: auto;
+}
+.fig-import-dialog::backdrop { background: rgb(12 15 20 / 48%); backdrop-filter: blur(3px); }
+.fig-import-content { display: grid; gap: 16px; padding: clamp(18px, 4vw, 28px); }
+.fig-import-content h2 { margin: 2px 0 0; font-size: clamp(20px, 5vw, 26px); }
+.fig-import-private-note { padding: 10px 12px; border-radius: 10px; color: var(--muted); background: var(--surface-muted, #f4f4f6); font-size: 13px; }
+.fig-import-warning-block { display: grid; gap: 8px; padding: 14px; border: 1px solid #ead8ad; border-radius: 12px; background: #fffaf0; color: #493814; }
+.fig-import-warning-block p { margin: 0; font-size: 13px; line-height: 1.45; }
+.fig-import-warning-block ul { display: grid; gap: 8px; max-height: 220px; overflow: auto; margin: 0; padding: 0 0 0 20px; font-size: 13px; line-height: 1.4; }
+.fig-import-warning-block li strong { display: block; overflow-wrap: anywhere; }
+.fig-import-warning-block li span { display: block; color: #6a5734; }
+.fig-import-clean { margin: 0; padding: 12px; border-radius: 10px; color: #145c3b; background: #edf8f1; font-size: 13px; }
+.fig-import-content .dialog-actions { position: sticky; bottom: 0; margin: 0; padding-top: 8px; background: var(--surface, #fff); }
+:root[data-theme="dark"] .fig-import-private-note { background: #30333a; }
+:root[data-theme="dark"] .fig-import-warning-block { border-color: #69552f; background: #352d1e; color: #f1dbab; }
+:root[data-theme="dark"] .fig-import-warning-block li span { color: #c0aa7d; }
+:root[data-theme="dark"] .fig-import-clean { background: #1d382e; color: #a5e5c6; }
+@media (max-width: 560px) {
+  .fig-import-dialog { max-height: 90dvh; }
+  .fig-import-content { gap: 13px; }
+  .fig-import-content .dialog-actions { display: grid; grid-template-columns: 1fr 1.4fr; }
+  .fig-import-content .dialog-actions button { min-height: 44px; }
+}

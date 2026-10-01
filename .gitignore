@@ -3,3 +3,4 @@ _site/
 .DS_Store
 .local-data/
 .coverage-mcp/
+src/workers/fig-import-worker.bundle.js

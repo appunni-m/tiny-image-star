@@ -1,20 +1,27 @@
-# Offline `.fig` import readiness
+# Local `.fig` import
 
-## Decision
+Tiny Image Star can import a local Figma Design `.fig` file. Import runs in a dedicated browser worker, on the user's device. It does not call a service. The existing `.flocal` open path is unchanged. The import review shows an explicit loss summary before switching designs, and the accepted design and extracted image assets are saved through the existing local package flow.
 
-Do not expose `.fig` import in the app yet. Keep the existing `.flocal` decoder unchanged. There are no real Figma-exported `.fig` fixtures in this repository, so node conversion, asset linking, and fidelity cannot be verified against actual files.
+This is an **experimental, best-effort import**, not a guarantee of full Figma fidelity or a promise that every `.fig` release will remain readable. `.fig` is a proprietary format that can change; Figma describes saving local copies in its [help documentation](https://help.figma.com/hc/en-us/articles/8403626871063-Save-a-local-copy-of-files). The importer uses the pinned community parser [`openfig-core@0.4.1`](https://github.com/OpenFig-org/openfig-core), not an official Figma implementation or specification.
 
-Figma documents `.fig` as a proprietary format that may change, and recommends supported APIs for third-party access: [Save a local copy of files](https://help.figma.com/hc/en-us/articles/8403626871063-Save-a-local-copy-of-files). The REST API returns a JSON node tree and image URLs, but requires `file_content:read`; it is not an offline route: [Figma REST file endpoints](https://developers.figma.com/docs/rest-api/file-endpoints/).
+## Current import surface
 
-## Parser probe
+The adapter makes frames, groups, sections, rectangles, ellipses, lines, stars, polygons, text, supported Boolean operations, and vector paths into local editable layers. It maps solid paints, supported embedded raster image fills, basic text settings, page order, visibility, opacity, clipping, constraints, and common stroke settings. Image sources are checked against the local image engine's dimension ceiling before they enter the design library.
 
-`openfig-core@0.4.1` is an MIT-licensed community parser with browser support through bundlers. A scratch build with esbuild bundled its parser and `fflate`, `kiwi-schema`, and `fzstd` dependencies into a self-contained 23.4 KB browser worker module. This establishes packaging feasibility, not real-file compatibility. The parser calls synchronous `unzipSync()` and whole-buffer Zstandard decompression without an exposed resource budget. Worker isolation alone does not prevent a malicious or unusually large file from exhausting browser memory. See the [parser README](https://github.com/OpenFig-org/openfig-core) and [community format notes](https://github.com/OpenFig-org/openfig-core/blob/main/docs/research.md); neither is an official `.fig` specification.
+It flattens component and instance links, auto-layout behavior, unsupported transforms, and some text/image/stroke settings. It omits unsupported visible node types, unsupported paints, unsupported effects, masks, invalid or oversized vector paths, and missing or unsafe raster sources. An unsupported container with children becomes a local group so its child layers remain editable. The review dialog lists examples and totals; when there are more than 40 examples, it states that the list is truncated.
 
-## Gate before implementation
+Import limits are enforced before the synchronous parser runs: 32 MiB archive, 2,048 ZIP entries, 64 MiB expanded data, 32 MiB canvas/message, 1 MiB schema, 250 pages, 25,000 source nodes, and 24 MiB total embedded image data. The worker is terminated after 45 seconds. Unsupported ZIP64/encrypted entries, unsafe names, duplicate paths, integrity failures, malformed frames, and inputs exceeding these limits are rejected. The worker timeout and byte limits bound input work; they are not a strict browser process-memory guarantee.
 
-1. Add small, owned Figma Design exports from more than one file-format version, including text, vectors, nested frames, components, and embedded images. Keep files free of private or licensed user content.
-2. Add a locked, reproducible browser-worker bundle build. Before calling the parser, enforce bounded ZIP entry count, compressed and expanded sizes, `canvas.fig` chunk lengths, and a documented parse-time/memory envelope. Reject files that exceed limits or use structures that cannot be checked safely.
-3. Build a separate adapter from parsed Figma nodes to the existing `figma-local/1` document. Define the supported node/property subset and show a loss report; never silently drop visible content. Import only `.fig` Design files. Reject `.jam`, `.deck`, `.buzz`, `.site`, and `.make`.
-4. Add fixture-based expected-tree, embedded-image, corrupt/truncated archive, resource-limit, unsupported-node, and atomic-import tests. Keep `.fig` import out of the picker until these pass.
+## Evidence and gaps
 
-Do not add `.fig` export or round-trip editing as part of this work. A future authenticated REST API importer should remain a separate online feature with its own consent and asset-expiry handling.
+The checked-in `circle-v101.fig` and `openfigs-v106.fig` samples come from the OpenFig project's test corpus at a pinned commit, and are retained with the package-declared MIT notice. They demonstrate parser/archive compatibility across versions 101 and 106, but are not official format documentation and do not represent broad production designs. Adapter tests also use synthetic decoded nodes to cover editable text, embedded image fills, unsupported layers, loss reporting, corrupt archives, resource bounds, parent cycles, and excessive nesting.
+
+Before calling this production-ready, add permission-cleared Figma Design exports that include real text, raster fills, mixed text styles, effects, masks, auto-layout, components, and rotated/scaled nested frames. Compare the resulting layers and rendered output on supported mobile browsers and desktop browsers, then revise this support table and limits from measured evidence. The current tests do not establish visual parity for those cases.
+
+## Build and verification
+
+`npm run dev` builds the isolated importer worker before starting the local server. `npm run verify:static` rebuilds that worker and checks that the deployable static tree contains it. The Pages workflow installs from `package-lock.json` and builds the worker in both verification and deployment jobs.
+
+Run `node --test tests/fig-import.test.mjs` for focused import checks, `node scripts/ci-test.mjs` for the full Node test suite, and `npm run verify:static` for deployment-input checks. The browser smoke suite is intentionally not part of this importer change's verification yet.
+
+No `.fig` export, live Figma API access, Figma authentication, `.jam`/`.deck`/`.buzz`/`.site` import, or round-trip preservation is implemented.

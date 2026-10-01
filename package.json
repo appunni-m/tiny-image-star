@@ -4,9 +4,20 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run build:fig-import-worker",
     "dev": "node scripts/server.mjs",
     "test": "node --test tests/*.test.mjs",
+    "preverify:static": "npm run build:fig-import-worker",
     "verify:static": "node scripts/static-smoke.mjs",
-    "build:wasm": "node scripts/build-pillow-runtime.mjs"
+    "build:wasm": "node scripts/build-pillow-runtime.mjs",
+    "build:fig-import-worker": "node scripts/build-fig-import-worker.mjs"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "fzstd": "0.1.1",
+    "openfig-core": "0.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

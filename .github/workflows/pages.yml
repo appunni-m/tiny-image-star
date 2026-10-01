@@ -31,6 +31,12 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Install locked build dependencies
+        run: npm ci
+
+      - name: Build the isolated local design importer
+        run: npm run build:fig-import-worker
+
       - name: Run model, storage, and WASM tests
         run: node scripts/ci-test.mjs
 
@@ -52,6 +58,17 @@ jobs:
       - name: Check out the active editor
         uses: actions/checkout@v7
 
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      - name: Install locked build dependencies
+        run: npm ci
+
+      - name: Build the isolated local design importer
+        run: npm run build:fig-import-worker
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
 
@@ -59,6 +76,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html styles.css _site/
+          cp THIRD_PARTY_NOTICES.md _site/
           cp -R src wasm _site/
 
       - name: Upload only the active editor

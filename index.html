@@ -180,8 +180,22 @@
       <input id="image-library-input" type="file" accept="image/*" multiple hidden />
       <input id="font-input" type="file" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf" hidden />
       <datalist id="font-family-options"></datalist>
-      <input id="open-file-input" type="file" accept=".flocal,application/octet-stream" hidden />
+      <input id="open-file-input" type="file" accept=".flocal,.fig,application/octet-stream" hidden />
       <input id="svg-input" type="file" accept=".svg,image/svg+xml" hidden />
+      <dialog class="modal fig-import-dialog" id="fig-import-dialog" aria-labelledby="fig-import-title">
+        <section class="fig-import-content">
+          <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL DESIGN IMPORT</span><h2 id="fig-import-title">Review imported design</h2></div><button class="icon-button" id="fig-import-close" type="button" aria-label="Close import review">×</button></div>
+          <p class="modal-copy" id="fig-import-summary"></p>
+          <div class="fig-import-private-note">The file is decoded on this device. Nothing is uploaded.</div>
+          <div class="fig-import-warning-block" id="fig-import-warning-block" hidden>
+            <strong>Some features may change</strong>
+            <p id="fig-import-loss-summary"></p>
+            <ul id="fig-import-warning-list"></ul>
+          </div>
+          <p class="fig-import-clean" id="fig-import-clean" hidden>All visible layers in this file map to editable local layers.</p>
+          <div class="dialog-actions"><button class="secondary-button" id="fig-import-cancel" type="button">Cancel</button><button class="primary-button" id="fig-import-confirm" type="button">Import design</button></div>
+        </section>
+      </dialog>
       <dialog class="modal" id="font-import-dialog" aria-labelledby="font-import-title">
         <form method="dialog" id="font-import-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">LOCAL FONT</span><h2 id="font-import-title">Add font to this device</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>

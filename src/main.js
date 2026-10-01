@@ -46,6 +46,7 @@ import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
+import { parseLocalFigFile } from './fig-import-worker-client.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
@@ -163,6 +164,7 @@ let presentationPointerGesture = null;
 const presentationDragThreshold = 7;
 let textMeasureContext = null;
 let pendingFontImport = null;
+let pendingFigImport = null;
 let gradientStopDrag = null;
 
 function activePage() { return getActivePage(state.document); }
@@ -9933,6 +9935,68 @@ function releaseImageRuntimeForDocumentSwitch() {
   imageMemoryBudget.releaseEntries();
 }
 
+function figImportLossCount(report = {}) {
+  const count = table => Object.values(table || {}).reduce((total, value) => total + (Number.isSafeInteger(value) ? value : 0), 0);
+  return { unsupported: count(report.unsupportedTypes), flattened: count(report.flattenedTypes) };
+}
+
+function openFigImportReview(result) {
+  const dialog = $('#fig-import-dialog');
+  const report = result.report || {};
+  const losses = figImportLossCount(report);
+  const hasLosses = losses.unsupported > 0 || losses.flattened > 0;
+  const summary = [
+    `${report.source || 'Local .fig file'}`,
+    `format ${Number.isSafeInteger(report.formatVersion) ? report.formatVersion : 'unknown'}`,
+    `${report.pages || 0} page${report.pages === 1 ? '' : 's'}`,
+    `${report.importedNodes || 0} editable layer${report.importedNodes === 1 ? '' : 's'}`
+  ].join(' · ');
+  $('#fig-import-summary').textContent = summary;
+  $('#fig-import-warning-block').hidden = !hasLosses;
+  $('#fig-import-clean').hidden = hasLosses;
+  $('#fig-import-confirm').textContent = hasLosses ? 'Import with changes' : 'Import design';
+  $('#fig-import-loss-summary').textContent = `${losses.unsupported} unsupported item${losses.unsupported === 1 ? '' : 's'} may be omitted or changed; ${losses.flattened} feature${losses.flattened === 1 ? '' : 's'} will be simplified. Review the examples below.`;
+  const list = $('#fig-import-warning-list');
+  list.replaceChildren();
+  for (const warning of report.warnings || []) {
+    const item = document.createElement('li');
+    const title = document.createElement('strong');
+    title.textContent = `${String(warning.type || 'Layer').replace(/_/gu, ' ')} · ${warning.name || 'Unnamed layer'}`;
+    item.append(title);
+    if (warning.detail) {
+      const detail = document.createElement('span');
+      detail.textContent = warning.detail;
+      item.append(detail);
+    }
+    list.append(item);
+  }
+  if (report.warningsTruncated) {
+    const item = document.createElement('li');
+    item.textContent = 'Showing the first 40 examples. The omitted and simplified totals include every affected item.';
+    list.append(item);
+  }
+  pendingFigImport = result;
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+async function confirmFigImport() {
+  const result = pendingFigImport;
+  if (!result) return;
+  const button = $('#fig-import-confirm');
+  button.disabled = true;
+  try {
+    const switched = await switchToDocument(result.document, {
+      message: 'Design imported locally. Review the import report for any simplified features.',
+      beforeSwitch: async nextDocument => Object.assign(nextDocument, (await importLocalPackage(nextDocument, result.assets || [])).document),
+      versionLabel: 'Imported .fig design'
+    });
+    if (switched) $('#fig-import-dialog').close();
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, versionLabel = 'Opened design', expectedStorageRevision = undefined } = {}) {
   if (state.workspacePermissionNeeded) { showToast('Reconnect the saved folder workspace before opening or creating designs.'); return false; }
   if (state.localPackageBuilding) { showToast('Wait for the local design package to finish before switching designs.'); return false; }
@@ -12258,11 +12322,28 @@ function initEvents() {
     if (!button) return;
     void removeLocalFont(button.dataset.fontId).catch(error => showToast(error.message || 'Could not remove this font.'));
   });
+  $('#fig-import-dialog').addEventListener('close', () => { pendingFigImport = null; });
+  $('#fig-import-cancel').addEventListener('click', () => $('#fig-import-dialog').close());
+  $('#fig-import-close').addEventListener('click', () => $('#fig-import-dialog').close());
+  $('#fig-import-confirm').addEventListener('click', () => { void confirmFigImport(); });
   $('#open-file-input').addEventListener('change', async event => {
     const input = event.currentTarget;
     const file = input.files?.[0]; if (!file) return;
     try {
       if (file.size > MAX_LOCAL_PACKAGE_BYTES) throw new RangeError(`This local design file is larger than the ${Math.floor(MAX_LOCAL_PACKAGE_BYTES / (1024 * 1024))} MiB local package limit.`);
+      const prefix = typeof file.slice === 'function' ? new Uint8Array(await file.slice(0, 4).arrayBuffer()) : new Uint8Array();
+      const isFigArchive = /\.fig$/iu.test(file.name || '') || (prefix[0] === 0x50 && prefix[1] === 0x4b);
+      if (isFigArchive) {
+        if (state.pendingImageImports) throw new Error('Wait for the current image import to finish before importing a design.');
+        state.pendingImageImports += 1;
+        try {
+          const imported = await parseLocalFigFile(file);
+          openFigImportReview(imported);
+        } finally {
+          state.pendingImageImports -= 1;
+        }
+        return;
+      }
       const packageData = unpackLocalPackage(new Uint8Array(await file.arrayBuffer()));
       // Keep temporary font decoding serial so imported packages with many
       // local faces cannot multiply font parser memory on a phone.

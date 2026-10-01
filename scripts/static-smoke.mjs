@@ -41,11 +41,16 @@ function assertBalancedCssBlocks(source) {
 const index = await readFile(resolve(root, 'index.html'), 'utf8');
 assert.match(index, /href="\.\/styles\.css"/, 'the deployed page must load its stylesheet with a relative URL');
 assert.match(index, /src="\.\/src\/main\.js"/, 'the deployed page must load its editor module with a relative URL');
+assert.match(index, /accept="\.flocal,\.fig,application\/octet-stream"/, 'the open-file picker must accept local .fig files alongside .flocal packages');
+assert.match(index, /id="fig-import-dialog"/, 'the local importer must present its loss review before switching designs');
+assert.match(index, /id="fig-import-warning-list"/, 'the import review must have a dedicated warning list');
 assert.doesNotMatch(index, /(?:src|href)="\/(?!\/)/, 'the deployed page must not use root-absolute assets');
 assertBalancedCssBlocks(await readFile(resolve(root, 'styles.css'), 'utf8'));
 
 for (const path of [
   'styles.css', 'src/main.js', 'src/design-token-interop.js', 'src/appearance-clipboard.js', 'src/image-fills.js', 'src/image-output.js', 'src/layer-blend.js', 'src/layout-guides.js', 'src/inspect.js', 'src/smart-animate.js', 'src/image-worker.js', 'src/pdf-vector-export.js', 'src/tab-list-keyboard.js', 'src/variable-stroke-geometry.js', 'src/vector-anchor-selection.js', 'src/slice-export-plan.js', 'wasm/pillow_rs_js.js',
+  'src/fig-import-worker-client.js', 'src/fig-import-preflight.js', 'src/fig-import.js', 'src/workers/fig-import.worker.js', 'src/workers/fig-import-worker.bundle.js',
+  'THIRD_PARTY_NOTICES.md',
   'wasm/pillow_rs_js_bg.wasm', 'wasm/runtime.json', 'wasm/PILLOW_RS_LICENSE.txt'
 ]) await access(resolve(root, path));
 
@@ -81,4 +86,7 @@ assert.equal(runtime.integrityAlgorithm, 'sha512 over each sorted filename, NUL,
 assert.equal(runtime.integrity, `sha512-${runtimeIntegrity.digest('base64')}`);
 const pillowRuntime = await readFile(resolve(root, 'wasm/pillow_rs_js.js'), 'utf8');
 assert.match(pillowRuntime, /saveWithQuality\(/, 'the vendored WASM binding must expose local JPEG/WebP quality controls');
-console.log('Static deployment inputs and local WASM runtime: PASS');
+const figWorker = await readFile(resolve(root, 'src/workers/fig-import-worker.bundle.js'), 'utf8');
+assert.match(figWorker, /fig-kiwi/, 'the deployed local import worker must contain the .fig binary decoder');
+assert.doesNotMatch(figWorker, /(?:^|[;\n])\s*import\s+[^;]*from\s+["']https?:\/\//m, 'the local import worker must not load remote code');
+console.log('Static deployment inputs, local WASM runtime, and .fig import worker: PASS');
