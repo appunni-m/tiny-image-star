@@ -2263,14 +2263,33 @@ export function deepestContainerAtPagePoint(nodes, point, document = null) {
   return result;
 }
 
-export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1) {
+export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1, { allowClippedNodeIds = [] } = {}) {
   const hits = [];
   const scrollState = { presentationScrollOffsets };
   const hitTolerance = 4 / Math.max(.08, Number.isFinite(zoom) ? zoom : 1);
+  const clippedPickIds = new Set(allowClippedNodeIds);
+  const clippedPickPathIds = new Set();
+  if (clippedPickIds.size) {
+    const markPickPaths = nodes => {
+      let containsPickTarget = false;
+      for (const node of nodes || []) {
+        const target = clippedPickIds.has(node.id);
+        const descendant = node.type !== 'boolean' && markPickPaths(node.children || []);
+        if (target || descendant) {
+          clippedPickPathIds.add(node.id);
+          containsPickTarget = true;
+        }
+      }
+      return containsPickTarget;
+    };
+    markPickPaths(page?.children || []);
+  }
   const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
-      if (!pointInsideAncestorClips(point, ancestors, document)) continue;
+      const insideAncestorClips = pointInsideAncestorClips(point, ancestors, document);
+      const isClippedPickTarget = clippedPickIds.has(node.id);
+      if (!insideAncestorClips && !clippedPickPathIds.has(node.id)) continue;
       const geometry = document ? getNodeGeometry(document, node) : node;
       let resolvedNode = document ? { ...node, ...geometry } : node;
       if (parentScrollOffset.x || parentScrollOffset.y) {
@@ -2295,7 +2314,7 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
           contained = containsBoolean(booleanNode, point, center.x - geometry.width / 2, center.y - geometry.height / 2);
         }
       } else contained = hitTestVisibleGeometry(resolvedNode, localPoint, { tolerance: hitTolerance, document });
-      if (contained) hits.push(resolvedNode);
+      if (contained && (insideAncestorClips || isClippedPickTarget)) hits.push(resolvedNode);
       if (node.type !== 'boolean') {
         const childScrollOffset = getPresentationScrollOffset(scrollState, resolvedNode);
         visit(node.children || [], [...ancestors, resolvedNode], childScrollOffset);

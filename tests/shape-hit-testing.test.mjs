@@ -120,6 +120,22 @@ test('child hit testing follows the exact rounded clipping path of its frame', (
     'points beyond the rendered rounded viewport cannot hit the clipped child');
 });
 
+test('an already-selected child remains pickable beyond its clipping frame', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 20, y: 20, width: 100, height: 100, clip: true, fill: '#ffffff' });
+  const child = createNode('rectangle', { x: 120, y: 10, width: 40, height: 40, fill: '#ff0000', stroke: null, strokeWidth: 0 });
+  addNode(document, frame);
+  addNode(document, child, { parentId: frame.id });
+  const outsidePoint = { x: 150, y: 40 };
+
+  assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document), null,
+    'ordinary picking must keep respecting the visible frame clip');
+  assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document, null, 1, {
+    allowClippedNodeIds: [child.id]
+  })?.id, child.id,
+  'the editor can re-pick the selected overflow child so the user can move it back');
+});
+
 test('hit testing follows the active frame mode for a bound corner radius', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Responsive radii');

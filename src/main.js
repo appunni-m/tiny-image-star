@@ -4313,7 +4313,12 @@ function onCanvasPointerDown(event) {
       }
       event.preventDefault(); return;
     }
-    const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document, null, state.zoom);
+    const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
+    const page = activePage();
+    const hit = hitTestPage(page, world, hitTester, state.document, null, state.zoom)
+      || (state.selectedIds.length
+        ? hitTestPage(page, world, hitTester, state.document, null, state.zoom, { allowClippedNodeIds: state.selectedIds })
+        : null);
     if (hit) {
       if (event.shiftKey) {
         const ids = state.selectedIds.includes(hit.id) ? state.selectedIds.filter(id => id !== hit.id) : [...state.selectedIds, hit.id];
