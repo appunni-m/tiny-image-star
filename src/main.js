@@ -7765,7 +7765,7 @@ function renderBulkBar() {
   $('#bulk-progress-label').textContent = `${bulk.completed} / ${total}`;
   $('#bulk-rate').textContent = formatImageRecipeBatchTiming(bulk);
   const timing = imageRecipeBatchTiming(bulk);
-  $('#bulk-rate').title = `Average batch throughput. Paused time and paused completions are excluded.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
+  $('#bulk-rate').title = `Historical average and trailing 5-second throughput. Paused time and paused completions are excluded; ETA uses the historical average.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
   const speedValue = $('#bulk-speed-value');
   speedValue.textContent = `${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}`;

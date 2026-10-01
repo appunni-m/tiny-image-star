@@ -20,6 +20,7 @@ export function startImageRecipeBatchClock(batch, now) {
   batch.activeElapsedMs = 0;
   batch.activeSince = monotonicNow(now);
   batch.timingCompletions = 0;
+  batch.timingCompletionTimes = [];
   return true;
 }
 
@@ -40,7 +41,7 @@ export function resumeImageRecipeBatchClock(batch, now) {
 
 /** Return elapsed active time, average target throughput, and remaining work. */
 export function imageRecipeBatchTiming(batch, now) {
-  if (!batch) return { elapsedMs: 0, imagesPerSecond: 0, remaining: 0, etaSeconds: null };
+  if (!batch) return { elapsedMs: 0, imagesPerSecond: 0, recentImagesPerSecond: 0, remaining: 0, etaSeconds: null };
   const elapsedMs = elapsedActiveMilliseconds(batch, now);
   const completed = Math.max(0, Number(batch.completed) || 0);
   const timingCompletions = Number.isFinite(batch.timingCompletions)
@@ -49,8 +50,16 @@ export function imageRecipeBatchTiming(batch, now) {
   const total = Array.isArray(batch.targets) ? batch.targets.length : completed;
   const remaining = Math.max(0, total - completed);
   const imagesPerSecond = elapsedMs > 0 ? timingCompletions / (elapsedMs / 1000) : 0;
+  const completionTimes = Array.isArray(batch.timingCompletionTimes) ? batch.timingCompletionTimes : [];
+  const recentWindowMs = 5000;
+  const recentStart = Math.max(0, elapsedMs - recentWindowMs);
+  const recentCompletions = completionTimes.filter(at => at >= recentStart && at <= elapsedMs);
+  const recentImagesPerSecond = recentCompletions.length
+    && elapsedMs - recentCompletions.at(-1) < recentWindowMs
+    ? recentCompletions.length / (Math.max(1000, Math.min(recentWindowMs, elapsedMs - recentStart)) / 1000)
+    : 0;
   const etaSeconds = !batch.cancelled && imagesPerSecond > 0 && remaining > 0 ? remaining / imagesPerSecond : null;
-  return { elapsedMs, imagesPerSecond, remaining, etaSeconds };
+  return { elapsedMs, imagesPerSecond, recentImagesPerSecond, remaining, etaSeconds };
 }
 
 function formatRate(imagesPerSecond) {
@@ -73,20 +82,22 @@ export function formatImageRecipeBatchTiming(batch, now) {
   if (!batch) return 'Ready';
   const timing = imageRecipeBatchTiming(batch, now);
   const rate = formatRate(timing.imagesPerSecond);
+  const recentRate = formatRate(timing.recentImagesPerSecond) || '0.0 images/s';
+  const liveRate = `now ${recentRate}`;
   if (batch.cancelled) {
     if (!batch.done) return 'Stopping · admitted images are finishing';
-    return rate ? `Stopped · ${rate} average` : 'Stopped · no timed renders';
+    return rate ? `Stopped · ${rate} average · ${liveRate}` : 'Stopped · no timed renders';
   }
-  if (batch.done) return rate ? `Complete · ${rate} average` : 'Complete · no timed renders';
+  if (batch.done) return rate ? `Complete · ${rate} average · ${liveRate}` : 'Complete · no timed renders';
   if (batch.paused) {
-    if (!rate) return 'Paused · waiting for the first result';
+    if (!rate) return `Paused · waiting for the first result · ${liveRate}`;
     return timing.etaSeconds === null
-      ? `Paused · ${rate}`
-      : `Paused · ${rate} · ${formatEta(timing.etaSeconds)} after resume`;
+      ? `Paused · ${rate} average · ${liveRate}`
+      : `Paused · ${rate} average · ${formatEta(timing.etaSeconds)} after resume · ${liveRate}`;
   }
-  if (!rate) return `Starting · ${timing.remaining} image${timing.remaining === 1 ? '' : 's'} left`;
-  if (timing.elapsedMs < 1000 || timing.etaSeconds === null) return `${rate} · estimating ETA`;
-  return `${rate} · ${formatEta(timing.etaSeconds)} left`;
+  if (!rate) return `Starting · ${timing.remaining} image${timing.remaining === 1 ? '' : 's'} left · ${liveRate}`;
+  if (timing.elapsedMs < 1000 || timing.etaSeconds === null) return `${rate} average · ${liveRate} · estimating ETA`;
+  return `${rate} average · ${liveRate} · ${formatEta(timing.etaSeconds)} left`;
 }
 
 /** A batch can only leave the progress bar after all submitted work settles. */
@@ -118,10 +129,16 @@ export function completeImageRecipeBatchIfDrained(batch, now) {
 }
 
 /** Count one terminal target result; canceled work is not completed or skipped. */
-export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, canceled = false, targetId = null } = {}) {
+export function recordImageRecipeBatchTarget(batch, { failed = false, superseded = false, skipped = false, canceled = false, targetId = null, now } = {}) {
   if (canceled) return false;
   batch.completed += 1;
   if (Number.isFinite(batch.activeSince) && !batch.paused) batch.timingCompletions = (Number(batch.timingCompletions) || 0) + 1;
+  if (Number.isFinite(batch.activeSince) && !batch.paused) {
+    const elapsedMs = elapsedActiveMilliseconds(batch, now);
+    batch.timingCompletionTimes ||= [];
+    batch.timingCompletionTimes.push(elapsedMs);
+    batch.timingCompletionTimes = batch.timingCompletionTimes.filter(at => elapsedMs - at < 5000);
+  }
   if (failed) {
     batch.failed += 1;
     if (typeof targetId === 'string' && targetId && Array.isArray(batch.failedTargets) && !batch.failedTargets.includes(targetId)) {
