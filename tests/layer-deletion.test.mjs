@@ -62,6 +62,17 @@ test('the design canvas retries empty-space picks against clipped overflow geome
     'a deselected overflow child should remain selectable when ordinary visible picking finds nothing');
 });
 
+test('canvas context menus can target clipped overflow layers for layer actions', () => {
+  const start = editorSource.indexOf("canvas.addEventListener('contextmenu', event => {");
+  const end = editorSource.indexOf("canvasScroll.addEventListener('dragover'", start);
+  assert.ok(start >= 0 && end > start, 'canvas context-menu handling should have a bounded event handler');
+  const handler = editorSource.slice(start, end);
+  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|\s*hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
+    'canvas right-click should retry clipped overflow geometry after ordinary visible picking');
+  assert.match(handler, /if \(hit\) openNodeMenu\(hit\.id,/,
+    'right-clicking an overflow layer should open that layer’s action menu, including Delete');
+});
+
 test('layer deletion removes selections from a new valid document', () => {
   const document = createDocument();
   const first = createNode('rectangle', { name: 'First' });

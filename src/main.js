@@ -13477,7 +13477,11 @@ function initEvents() {
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
     if (isLiveHostViewOnly()) return;
-    const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document, null, state.zoom);
+    const world = screenToWorld(event, canvas, state);
+    const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
+    const page = activePage();
+    const hit = hitTestPage(page, world, hitTester, state.document, null, state.zoom)
+      || hitTestPage(page, world, hitTester, state.document, null, state.zoom, { allowAnyClippedNodes: true });
     if (hit) openNodeMenu(hit.id, event.clientX, event.clientY, world, canvas);
     else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY, world, canvas);
     else openFileMenu(event.clientX, event.clientY, world, canvas);
