@@ -816,7 +816,7 @@ test('smart animation morphs a compatible vector network without crossfading its
   assert.deepEqual(to, originalTo, 'network interpolation leaves destination frame untouched');
 });
 
-test('smart animation crossfades vector networks with changed identity, incidence, or face traversal order', () => {
+test('smart animation crossfades vector networks with changed edge direction, identity, or face traversal order', () => {
   const base = {
     vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: 0, y: 1 }],
     edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
@@ -824,9 +824,14 @@ test('smart animation crossfades vector networks with changed identity, incidenc
   };
   const incompatible = [
     { ...base, edges: [{ ...base.edges[0], from: 'b', to: 'a' }, ...base.edges.slice(1)] },
-    { ...base, edges: [base.edges[1], base.edges[0], base.edges[2]] },
+    { ...base, edges: [{ ...base.edges[0], id: 'renamed-edge' }, ...base.edges.slice(1)] },
     { ...base, faces: [{ id: 'face', vertexIds: ['a', 'c', 'b'] }] },
-    { ...base, vertices: [{ ...base.vertices[0], id: 'renamed' }, ...base.vertices.slice(1)] }
+    {
+      ...base,
+      vertices: [{ ...base.vertices[0], id: 'renamed' }, ...base.vertices.slice(1)],
+      edges: [{ ...base.edges[0], from: 'renamed' }, base.edges[1], { ...base.edges[2], to: 'renamed' }],
+      faces: [{ id: 'face', vertexIds: ['renamed', 'b', 'c'] }]
+    }
   ];
 
   for (const [index, targetNetwork] of incompatible.entries()) {
@@ -836,6 +841,53 @@ test('smart animation crossfades vector networks with changed identity, incidenc
     assert.equal(copies.length, 2, `network topology variant ${index} crossfades`);
     assert.deepEqual(copies.map(node => node.opacity), [.5, .5]);
   }
+});
+
+test('smart animation matches reordered vector network records by stable ID', () => {
+  const fromNetwork = {
+    vertices: [
+      { id: 'a', x: 0, y: 0 }, { id: 'b', x: 2, y: 0 },
+      { id: 'c', x: 2, y: 2 }, { id: 'd', x: 0, y: 2 }
+    ],
+    edges: [
+      { id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' },
+      { id: 'ca', from: 'c', to: 'a', control1: { x: 2.2, y: 2.4 } },
+      { id: 'cd', from: 'c', to: 'd' }, { id: 'da', from: 'd', to: 'a' }
+    ],
+    faces: [
+      { id: 'f1', vertexIds: ['a', 'b', 'c'], fill: '#000000', fillOpacity: .2 },
+      { id: 'f2', vertexIds: ['a', 'c', 'd'], fill: '#ff0000', fillOpacity: .4 }
+    ]
+  };
+  const targetNetwork = {
+    vertices: [
+      { id: 'c', x: 4, y: 6 }, { id: 'd', x: 2, y: 6 },
+      { id: 'a', x: 2, y: 4 }, { id: 'b', x: 4, y: 4 }
+    ],
+    edges: [
+      { id: 'da', from: 'd', to: 'a' }, { id: 'ca', from: 'c', to: 'a', control1: { x: 5, y: 7 } },
+      { id: 'ab', from: 'a', to: 'b' }, { id: 'cd', from: 'c', to: 'd' },
+      { id: 'bc', from: 'b', to: 'c' }
+    ],
+    faces: [
+      { id: 'f2', vertexIds: ['a', 'c', 'd'], fill: '#ffffff', fillOpacity: .8 },
+      { id: 'f1', vertexIds: ['a', 'b', 'c'], fill: '#00ff00', fillOpacity: .6 }
+    ]
+  };
+  const from = createNode('frame', { children: [createNode('network', { name: 'Reordered', ...fromNetwork })] });
+  const to = createNode('frame', { children: [createNode('network', { name: 'Reordered', ...targetNetwork })] });
+  const middle = interpolateSmartFrame(from, to, .5).children;
+
+  assert.equal(middle.length, 1, 'storage-order changes keep the graph continuously morphing');
+  assert.deepEqual(middle[0].vertices.map(vertex => vertex.id), ['c', 'd', 'a', 'b']);
+  assert.deepEqual(middle[0].vertices.map(({ x, y }) => [x, y]), [[3, 4], [1, 4], [1, 2], [3, 2]]);
+  assert.deepEqual(middle[0].edges.map(edge => edge.id), ['da', 'ca', 'ab', 'cd', 'bc']);
+  const control1 = middle[0].edges.find(edge => edge.id === 'ca').control1;
+  assert.ok(Math.abs(control1.x - 3.6) < 1e-12);
+  assert.ok(Math.abs(control1.y - 4.7) < 1e-12);
+  assert.deepEqual(middle[0].faces.map(face => face.id), ['f2', 'f1']);
+  assert.equal(middle[0].faces[0].fill, '#ff8080', 'faces interpolate their style by identity');
+  assert.ok(Math.abs(middle[0].faces[0].fillOpacity - .6) < 1e-12);
 });
 
 test('smart animation crossfades malformed vector networks instead of propagating invalid geometry', () => {

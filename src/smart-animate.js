@@ -328,24 +328,31 @@ function isValidNetwork(node) {
   return true;
 }
 
+function indexNetworkRecords(records) {
+  return new Map(records.map(record => [record.id, record]));
+}
+
 function canInterpolateNetwork(from, to) {
   if (!isValidNetwork(from) || !isValidNetwork(to)
       || from.vertices.length !== to.vertices.length
       || from.edges.length !== to.edges.length
       || from.faces.length !== to.faces.length) return false;
 
-  // Array order is part of the graph's authored traversal order. IDs keep each
-  // geometric record paired while incidence and ring order preserve topology.
-  if (from.vertices.some((vertex, index) => vertex.id !== to.vertices[index].id)) return false;
-  if (from.edges.some((edge, index) => {
-    const target = to.edges[index];
-    return edge.id !== target.id || edge.from !== target.from || edge.to !== target.to;
-  })) return false;
-  return from.faces.every((face, index) => {
-    const target = to.faces[index];
-    return face.id === target.id && face.vertexIds.length === target.vertexIds.length
-      && face.vertexIds.every((vertexId, vertexIndex) => vertexId === target.vertexIds[vertexIndex]);
-  });
+  // Record storage order is not topology. Match stable identities while
+  // preserving directed edge endpoints and each face's authored ring order.
+  const targetVertices = indexNetworkRecords(to.vertices);
+  const targetEdges = indexNetworkRecords(to.edges);
+  const targetFaces = indexNetworkRecords(to.faces);
+  return from.vertices.every(vertex => targetVertices.has(vertex.id))
+    && from.edges.every(edge => {
+      const target = targetEdges.get(edge.id);
+      return target && edge.from === target.from && edge.to === target.to;
+    })
+    && from.faces.every(face => {
+      const target = targetFaces.get(face.id);
+      return target && face.vertexIds.length === target.vertexIds.length
+        && face.vertexIds.every((vertexId, index) => vertexId === target.vertexIds[index]);
+    });
 }
 
 function interpolateNetworkPoint(from, to, progress) {
@@ -370,16 +377,18 @@ function interpolateNetwork(from, to, progress) {
   if (progress === 1) return structuredClone(to);
 
   const copy = structuredClone(to);
-  copy.vertices = to.vertices.map((target, index) => {
-    const source = from.vertices[index];
+  const sourceVertices = indexNetworkRecords(from.vertices);
+  const targetVertices = indexNetworkRecords(to.vertices);
+  const sourceEdges = indexNetworkRecords(from.edges);
+  const sourceFaces = indexNetworkRecords(from.faces);
+  copy.vertices = to.vertices.map(target => {
+    const source = sourceVertices.get(target.id);
     const vertex = structuredClone(progress < 0.5 ? source : target);
     Object.assign(vertex, interpolateNetworkPoint(source, target, progress));
     return vertex;
   });
-  const sourceVertices = new Map(from.vertices.map(vertex => [vertex.id, vertex]));
-  const targetVertices = new Map(to.vertices.map(vertex => [vertex.id, vertex]));
-  copy.edges = to.edges.map((target, index) => {
-    const source = from.edges[index];
+  copy.edges = to.edges.map(target => {
+    const source = sourceEdges.get(target.id);
     const edge = structuredClone(progress < 0.5 ? source : target);
     const sourceStart = sourceVertices.get(source.from);
     const sourceEnd = sourceVertices.get(source.to);
@@ -397,8 +406,8 @@ function interpolateNetwork(from, to, progress) {
     }
     return edge;
   });
-  copy.faces = to.faces.map((target, index) => {
-    const source = from.faces[index];
+  copy.faces = to.faces.map(target => {
+    const source = sourceFaces.get(target.id);
     // Paint references and other categorical face settings switch together,
     // while direct color and opacity edits remain continuous.
     const face = structuredClone(progress < 0.5 ? source : target);
