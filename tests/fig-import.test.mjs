@@ -8,6 +8,7 @@ import { parseDocument, serializeDocument } from '../src/model.js';
 import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transformPoint } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout } from '../src/layout-engine.js';
+import { gradientFillToCSS } from '../src/fills.js';
 
 const fixture = name => new URL(`./fixtures/fig-import/${name}`, import.meta.url);
 const circlePath = fixture('circle-v101.fig');
@@ -87,6 +88,118 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.equal(frame.children[0].type, 'group');
   assert.ok(frame.children[0].children.length >= 2);
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
+});
+
+test('imports ordered linear, radial, and angular Figma gradient paints with editable geometry and alpha', () => {
+  const page = { sessionID: 79, localID: 1 };
+  const transform = { m00: 1, m01: 0.2, m02: 0, m10: 0, m11: 1, m12: 0 };
+  const gradients = [
+    { type: 'GRADIENT_LINEAR', opacity: 0.6, transform, stops: [
+      { position: 1, color: { r: 0, g: 0, b: 1, a: 0.25 } },
+      { position: 0, color: { r: 1, g: 0, b: 0, a: 0.8 } },
+      { position: 0.5, color: { r: 0, g: 1, b: 0, a: 1 } }
+    ] },
+    { type: 'GRADIENT_RADIAL', opacity: 1, stops: [
+      { position: 0, color: { r: 1, g: 1, b: 1, a: 1 } },
+      { position: 1, color: { r: 0, g: 0, b: 0, a: 0 } }
+    ] },
+    { type: 'GRADIENT_ANGULAR', opacity: 0.75, stops: [
+      { position: 0, color: { r: 1, g: 0, b: 0, a: 1 } },
+      { position: 1, color: { r: 0, g: 0, b: 1, a: 1 } }
+    ] }
+  ];
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('RECTANGLE', 2, page, 'a', { fillPaints: [
+        { type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }, ...gradients
+      ] })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const fills = imported.document.pages[0].children[0].fills;
+  assert.deepEqual(fills.map(fill => fill.type), ['solid', 'linear', 'radial', 'angular']);
+  assert.equal(fills[1].opacity, 0.6);
+  assert.deepEqual(fills[1].gradient.stops.map(stop => [stop.position, stop.color, stop.opacity]), [
+    [0, '#ff0000', 0.8], [0.5, '#00ff00', 1], [1, '#0000ff', 0.25]
+  ]);
+  assert.deepEqual(fills[1].gradient.geometry.handles, [
+    { x: -0.1, y: 0.5 }, { x: 0.9, y: 0.5 }, { x: 0.3, y: 1 }
+  ]);
+  assert.match(gradientFillToCSS(fills[1].gradient, fills[1].opacity), /rgba\(255, 0, 0, 0\.48\)/u,
+    'paint opacity and color-stop alpha both affect the resulting appearance');
+  assert.deepEqual(fills[2].gradient.geometry.handles, [
+    { x: 0.5, y: 0.5 }, { x: 1, y: 0.5 }, { x: 0.5, y: 1 }
+  ]);
+  assert.equal(imported.report.unsupportedTypes.GRADIENT, undefined);
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].fills, fills);
+});
+
+test('omits malformed Figma gradients with import-review warnings without invalidating the document', () => {
+  const page = { sessionID: 80, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('RECTANGLE', 2, page, 'a', { fillPaints: [
+        { type: 'GRADIENT_LINEAR', stops: [
+          { position: 0, color: { r: 1, g: 0, b: 0, a: 1 } },
+          { position: 1, color: { r: 0, g: 0, b: 1, a: 1 } }
+        ], transform: { m00: 1, m01: 0, m02: 0, m10: 0, m11: 0, m12: 0 } },
+        { type: 'GRADIENT_RADIAL', stops: [
+          { position: 0, color: { r: 1, g: 0, b: 0, a: 1 } },
+          { position: 1.2, color: { r: 0, g: 0, b: 1, a: 1 } }
+        ] }
+      ] })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.equal(restored.pages[0].children[0].fills, undefined);
+  assert.equal(imported.report.unsupportedTypes.GRADIENT_GEOMETRY, 1);
+  assert.equal(imported.report.unsupportedTypes.GRADIENT, 1);
+  assert.match(imported.report.warnings.find(item => item.type === 'GRADIENT_GEOMETRY').detail, /degenerate/u);
+  assert.match(imported.report.warnings.find(item => item.type === 'GRADIENT').detail, /invalid stop/u);
+});
+
+test('imports faithful layer blend modes and explicitly reviews unrepresentable layer and paint blends', () => {
+  const page = { sessionID: 81, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('RECTANGLE', 2, page, 'a', { name: 'Multiply', blendMode: 'MULTIPLY' }),
+      node('RECTANGLE', 3, page, 'b', { name: 'Color mode', blendMode: 'COLOR' }),
+      node('RECTANGLE', 4, page, 'c', { name: 'Linear burn', blendMode: 'LINEAR_BURN' }),
+      node('RECTANGLE', 5, page, 'd', { name: 'Future mode', blendMode: 'FUTURE_BLEND' }),
+      node('GROUP', 6, page, 'e', { name: 'Pass through', blendMode: 'PASS_THROUGH' }),
+      node('RECTANGLE', 7, page, 'f', {
+        name: 'Paint blend',
+        fillPaints: [
+          { type: 'SOLID', blendMode: 'SCREEN', color: { r: 1, g: 0, b: 0, a: 1 } },
+          { type: 'SOLID', blendMode: 'FUTURE_PAINT', color: { r: 0, g: 0, b: 1, a: 1 } }
+        ],
+        strokePaints: [{ type: 'SOLID', blendMode: 'MULTIPLY', color: { r: 0, g: 0, b: 0, a: 1 } }]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const layers = imported.document.pages[0].children;
+  assert.equal(layers[0].blendMode, 'multiply');
+  assert.equal(layers[1].blendMode, 'color');
+  assert.equal(layers[2].blendMode, 'normal');
+  assert.equal(layers[3].blendMode, 'normal');
+  assert.equal(layers[4].blendMode, 'normal');
+  assert.equal(layers[5].blendMode, 'normal');
+  assert.equal(imported.report.flattenedTypes.BLEND_MODE, 3,
+    'unsupported known, unknown, and pass-through layer modes are visible in import review');
+  assert.equal(imported.report.flattenedTypes.PAINT_BLEND, 3,
+    'fill and stroke paint blend modes are explicitly reported because paint-level compositing is not modeled');
+  assert.ok(imported.report.warnings.some(item => item.type === 'BLEND_MODE' && /LINEAR_BURN/u.test(item.detail)));
+  assert.ok(imported.report.warnings.some(item => item.type === 'BLEND_MODE' && /FUTURE_BLEND/u.test(item.detail)));
+  assert.ok(imported.report.warnings.some(item => item.type === 'PAINT_BLEND' && /FUTURE_PAINT/u.test(item.detail)));
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.equal(restored.pages[0].children[0].blendMode, 'multiply');
+  assert.equal(restored.pages[0].children[1].blendMode, 'color');
 });
 
 test('imports consecutive Figma alpha-mask stacks as editable, scoped mask groups', () => {

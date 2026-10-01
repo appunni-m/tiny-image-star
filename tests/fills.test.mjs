@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createDocument, createGradientFill, createNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { createGradientPaint, gradientFillToCSS, insertGradientStop, isFillStackSupported, isValidGradientFill, resolveGradientGeometry, sampleGradientColor } from '../src/fills.js';
+import { createGradientPaint, gradientFillToCSS, insertGradientStop, isFillStackSupported, isValidGradientFill, resolveGradientGeometry, sampleGradientColor, setGradientStopOpacity } from '../src/fills.js';
 import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageFill } from '../src/image-fills.js';
 
 test('image fills default to uncropped upright pixels and validate crop, rotation, and flips', () => {
@@ -96,6 +96,31 @@ test('gradient validation rejects invalid types, unsupported layers, and unorder
   addNode(invalid, shape);
   assert.throws(() => validateDocument(invalid), /Invalid gradient fill/);
   assert.throws(() => createGradientFill('conic'), /Unsupported gradient fill/);
+});
+
+test('gradient stop alpha is editable, bounded, and preserved in canvas paint stops', () => {
+  const gradient = createGradientFill('angular', '#ff0000');
+  const [start, end] = gradient.stops;
+  assert.equal(setGradientStopOpacity(gradient, start.id, 0.25), true);
+  assert.equal(setGradientStopOpacity(gradient, end.id, 1.5), true, 'UI percentages are safely clamped to opaque');
+  assert.equal(start.opacity, 0.25);
+  assert.equal(end.opacity, 1);
+  assert.equal(setGradientStopOpacity(gradient, 'missing-stop', 0.5), false);
+  assert.equal(setGradientStopOpacity(gradient, start.id, Number.NaN), false);
+
+  const calls = [];
+  const context = {
+    createConicGradient(...args) {
+      calls.push(['conic', ...args]);
+      return { addColorStop: (...stop) => calls.push(['stop', ...stop]) };
+    }
+  };
+  createGradientPaint(context, gradient, 0, 0, 100, 100);
+  assert.deepEqual(calls.slice(1), [
+    ['stop', 0, 'rgba(255, 0, 0, 0.25)'],
+    ['stop', 1, '#ffffff']
+  ]);
+  assert.equal(gradientFillToCSS(gradient), 'conic-gradient(from 0deg at 50% 50%, rgba(255, 0, 0, 0.25) 0%, rgba(255, 255, 255, 1) 100%)');
 });
 
 test('component gradient overrides validate before they can be synchronized into instances', () => {
@@ -268,6 +293,31 @@ test('canvas renders affine linear and elliptical radial geometry while legacy m
   assert.deepEqual(calls[0], ['linear', 10, 45, 110, 45], 'legacy angle-only rendering uses its original endpoint math');
 });
 
+test('affine gradients interpolate stop alpha when authored stops extend beyond the painted bounds', () => {
+  const calls = [];
+  const context = {
+    createLinearGradient(...args) {
+      calls.push(['linear', ...args]);
+      return { addColorStop: (...stop) => calls.push(['stop', ...stop]) };
+    }
+  };
+  const gradient = {
+    ...createGradientFill('linear', '#ff0000'),
+    geometry: { handles: [
+      { x: -.5, y: .5 }, { x: .5, y: .5 }, { x: -.5, y: 1.5 }
+    ] }
+  };
+  gradient.stops[0].opacity = 0;
+  gradient.stops[1].color = '#0000ff';
+  gradient.stops[1].opacity = 1;
+
+  createGradientPaint(context, gradient, 0, 0, 100, 100);
+
+  assert.deepEqual(calls[0], ['linear', 0, 50, 100, 50]);
+  assert.deepEqual(calls[1], ['stop', 0, 'rgba(128, 0, 128, 0.5)'],
+    'the generated boundary stop samples both color and alpha at its position in the off-canvas gradient');
+});
+
 test('CSS geometry previews map affine linear stops and elliptical radial extents', () => {
   const linear = {
     ...createGradientFill('linear', '#ff0000'),
@@ -313,9 +363,9 @@ test('gradient stop insertion copies and stably orders stops at the requested po
   const gradient = {
     type: 'radial', angle: 0,
     stops: [
-      { id: 'start', color: '#000000', position: 0, metadata: { source: 'first' } },
-      { id: 'middle-a', color: '#ff0000', position: 0.5 },
-      { id: 'middle-b', color: '#0000ff', position: 0.5 },
+      { id: 'start', color: '#000000', position: 0, opacity: 0.2, metadata: { source: 'first' } },
+      { id: 'middle-a', color: '#ff0000', position: 0.5, opacity: 0.4 },
+      { id: 'middle-b', color: '#0000ff', position: 0.5, opacity: 0.8 },
       { id: 'end', color: '#ffffff', position: 1 }
     ],
     metadata: { editable: true }
@@ -325,6 +375,7 @@ test('gradient stop insertion copies and stably orders stops at the requested po
 
   assert.deepEqual(result.stops.map(stop => stop.id), ['start', 'middle-a', 'middle-b', 'inserted', 'end']);
   assert.equal(result.stops[3].color, '#ff0000', 'the new stop samples the first exact-position color');
+  assert.equal(result.stops[3].opacity, 0.4, 'the inserted stop also samples the first exact-position alpha');
   assert.notEqual(result, gradient);
   assert.notEqual(result.stops, gradient.stops);
   assert.notEqual(result.stops[0].metadata, gradient.stops[0].metadata);

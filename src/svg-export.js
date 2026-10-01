@@ -290,7 +290,7 @@ function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis
   // width can legitimately be zero.
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);
-  const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"/>`).join('');
+  const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"${(stop.opacity ?? 1) === 1 ? '' : ` stop-opacity="${number(stop.opacity)}"`}/>`).join('');
   const geometry = normalizedGradientHandles(node, gradient, width, height);
   if (geometry && gradient.type === 'linear') {
     return { id, markup: `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0" gradientTransform="matrix(${geometry.matrix})">${stops}</linearGradient>` };

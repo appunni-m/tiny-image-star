@@ -165,6 +165,7 @@ export function isValidGradientFill(gradient) {
   for (const stop of gradient.stops) {
     if (!stop || typeof stop.id !== 'string' || !stop.id || ids.has(stop.id)
       || !/^#[0-9a-f]{6}$/i.test(stop.color) || !Number.isFinite(stop.position) || stop.position < 0 || stop.position > 1) return false;
+    if (Object.hasOwn(stop, 'opacity') && (!Number.isFinite(stop.opacity) || stop.opacity < 0 || stop.opacity > 1)) return false;
     if (stop.position < previousPosition) return false;
     previousPosition = stop.position;
     ids.add(stop.id);
@@ -271,6 +272,32 @@ export function sampleGradientColor(gradient, position) {
   return `#${channels.join('')}`;
 }
 
+/** Set a gradient stop's normalized alpha without mutating invalid gradients. */
+export function setGradientStopOpacity(gradient, stopId, opacity) {
+  if (!isValidGradientFill(gradient) || typeof stopId !== 'string' || !Number.isFinite(opacity)) return false;
+  const stop = gradient.stops.find(item => item.id === stopId);
+  if (!stop) return false;
+  stop.opacity = Math.max(0, Math.min(1, opacity));
+  return true;
+}
+
+function sampleGradientOpacity(gradient, position) {
+  const stops = gradient.stops;
+  if (position <= stops[0].position) return stops[0].opacity ?? 1;
+  if (position >= stops.at(-1).position) return stops.at(-1).opacity ?? 1;
+  const rightIndex = stops.findIndex(stop => stop.position >= position);
+  const left = stops[rightIndex - 1];
+  const right = stops[rightIndex];
+  if (position === right.position || right.position === left.position) return right.opacity ?? 1;
+  const amount = (position - left.position) / (right.position - left.position);
+  return (left.opacity ?? 1) + ((right.opacity ?? 1) - (left.opacity ?? 1)) * amount;
+}
+
+function sampleGradientPaintColor(gradient, position) {
+  const color = sampleGradientColor(gradient, position);
+  return color ? gradientStopColor({ color, opacity: sampleGradientOpacity(gradient, position) }) : null;
+}
+
 /** Return a copied gradient with a sampled stop inserted in stable position order. */
 export function insertGradientStop(gradient, position, id) {
   if (!gradient || typeof gradient !== 'object' || Array.isArray(gradient) || !isValidGradientFill(gradient)
@@ -282,7 +309,8 @@ export function insertGradientStop(gradient, position, id) {
   const color = sampleGradientColor(gradient, position);
   const copied = clone(gradient);
   const stops = copied.stops;
-  stops.push({ id, color, position });
+  const opacity = sampleGradientOpacity(gradient, position);
+  stops.push({ id, color, ...(opacity === 1 ? {} : { opacity }), position });
   stops.sort((left, right) => left.position - right.position);
   return copied;
 }
@@ -295,7 +323,7 @@ export function createGradientPaint(ctx, gradient, x, y, width, height) {
     height = Math.max(1, height);
     const startAngle = (gradient.angle - 90) * Math.PI / 180;
     const paint = ctx.createConicGradient(startAngle, x + width / 2, y + height / 2);
-    for (const stop of gradient.stops) paint.addColorStop(stop.position, stop.color);
+    for (const stop of gradient.stops) paint.addColorStop(stop.position, gradientStopColor(stop));
     return paint;
   }
   let paint;
@@ -352,15 +380,15 @@ export function createGradientPaint(ctx, gradient, x, y, width, height) {
       paint = ctx.createLinearGradient(startX, startY, endX, endY);
       const colorAtProjection = projection => {
         const distance = projection - originProjection;
-        if (distance <= 0) return gradient.stops[0].color;
-        if (distance >= gradientExtent) return gradient.stops.at(-1).color;
-        return sampleGradientColor(gradient, distance / gradientExtent);
+        if (distance <= 0) return gradientStopColor(gradient.stops[0]);
+        if (distance >= gradientExtent) return gradientStopColor(gradient.stops.at(-1));
+        return sampleGradientPaintColor(gradient, distance / gradientExtent);
       };
       paint.addColorStop(0, colorAtProjection(minimum));
       for (const stop of gradient.stops) {
         const projection = originProjection + stop.position * gradientExtent;
         if (projection <= minimum || projection >= maximum) continue;
-        paint.addColorStop(Math.max(0, Math.min(1, (projection - minimum) / span)), stop.color);
+        paint.addColorStop(Math.max(0, Math.min(1, (projection - minimum) / span)), gradientStopColor(stop));
       }
       paint.addColorStop(1, colorAtProjection(maximum));
       geometryStops = true;
@@ -389,7 +417,7 @@ export function createGradientPaint(ctx, gradient, x, y, width, height) {
     paint = ctx.createRadialGradient(x + width / 2, y + height / 2, 0, x + width / 2, y + height / 2, radius);
   }
   if (!geometryStops) {
-    for (const stop of gradient.stops) paint.addColorStop(stop.position, stop.color);
+    for (const stop of gradient.stops) paint.addColorStop(stop.position, gradientStopColor(stop));
   }
   return paint;
 }
@@ -397,6 +425,10 @@ export function createGradientPaint(ctx, gradient, x, y, width, height) {
 function rgba(color, opacity) {
   const value = Number.parseInt(color.slice(1), 16);
   return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, ${Math.max(0, Math.min(1, opacity))})`;
+}
+
+function gradientStopColor(stop) {
+  return (stop.opacity ?? 1) === 1 ? stop.color : rgba(stop.color, stop.opacity);
 }
 
 function cssNumber(value) {
@@ -407,7 +439,7 @@ function geometryGradientToCSS(gradient, opacity, bounds) {
   const geometry = resolveGradientGeometry(gradient, { x: 0, y: 0, width: bounds.width, height: bounds.height });
   if (!geometry) return null;
   const stops = gradient.stops.map(stop => ({
-    color: rgba(stop.color, opacity),
+    color: rgba(stop.color, opacity * (stop.opacity ?? 1)),
     position: stop.position
   }));
   if (gradient.type === 'linear') {
@@ -461,7 +493,7 @@ function geometryGradientToCSS(gradient, opacity, bounds) {
 export function gradientFillToCSS(gradient, opacity = 1, bounds = { width: 100, height: 100 }) {
   if (!isValidGradientFill(gradient)) return null;
   if (gradient.type === 'angular') {
-    const stops = gradient.stops.map(stop => `${rgba(stop.color, opacity)} ${Number((stop.position * 100).toFixed(3))}%`).join(', ');
+    const stops = gradient.stops.map(stop => `${rgba(stop.color, opacity * (stop.opacity ?? 1))} ${Number((stop.position * 100).toFixed(3))}%`).join(', ');
     return `conic-gradient(from ${cssNumber(gradient.angle)}deg at 50% 50%, ${stops})`;
   }
   if (Object.hasOwn(gradient, 'geometry')) {
@@ -470,7 +502,7 @@ export function gradientFillToCSS(gradient, opacity = 1, bounds = { width: 100, 
       || !Number.isFinite(bounds.height) || bounds.height <= 0) return null;
     return geometryGradientToCSS(gradient, opacity, bounds);
   }
-  const stops = gradient.stops.map(stop => `${rgba(stop.color, opacity)} ${Number((stop.position * 100).toFixed(3))}%`).join(', ');
+  const stops = gradient.stops.map(stop => `${rgba(stop.color, opacity * (stop.opacity ?? 1))} ${Number((stop.position * 100).toFixed(3))}%`).join(', ');
   return gradient.type === 'linear'
     ? `linear-gradient(${(gradient.angle + 90) % 360}deg, ${stops})`
     : `radial-gradient(circle, ${stops})`;

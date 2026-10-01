@@ -514,7 +514,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 }
 .gradient-stop-handle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .gradient-stop-handle:disabled { cursor: not-allowed; }
-.gradient-stop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 30px; align-items: end; gap: 6px; }
+.gradient-stop-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, minmax(56px, .7fr)) 30px; align-items: end; gap: 6px; }
 .gradient-stop-row label { min-width: 0; display: grid; gap: 3px; color: #888; font-size: 9px; }
 .gradient-stop-row input[type=color] { width: 100%; min-width: 0; height: 29px; padding: 2px; border: 1px solid #dedede; border-radius: 5px; background: #fff; }
 .gradient-stop-row input[type=number] { width: 100%; min-width: 0; height: 29px; padding: 0 5px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fff; color: #444; font-size: 11px; }
@@ -1010,7 +1010,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .blend-mode-select { min-height: 40px; font-size: 12px; }
   .image-fill-source { grid-template-columns: 78px minmax(0, 1fr); font-size: 12px; }
   .image-fill-source .select-field { height: 38px; font-size: 12px; }
-  .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(72px, .8fr) 38px; gap: 8px; }
+  .gradient-stop-row { grid-template-columns: minmax(0, 1fr) repeat(2, minmax(64px, .7fr)) 38px; gap: 8px; }
   .gradient-stop-row label { font-size: 10px; }
   .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
   .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; width: min(360px, calc(100% - 16px)); padding: 5px; overflow-y: auto; max-height: min(360px, 50dvh); overscroll-behavior: contain; }
@@ -1979,7 +1979,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .inspector-content .fill-row .color-swatch input { inset: 0; width: 100%; height: 100%; }
   .inspector-content .color-value, .inspector-content .fill-opacity { box-sizing: border-box; height: 44px; min-height: 44px; font-size: 16px; }
   .inspector-content .image-fill-source { min-height: 44px; }
-  .inspector-content .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 44px; }
+  .inspector-content .gradient-stop-row { grid-template-columns: minmax(0, 1fr) repeat(2, minmax(52px, .7fr)) 44px; }
   .inspector-content .gradient-stop-row input[type="color"],
   .inspector-content .gradient-stop-row input[type="number"] { min-height: 44px; height: 44px; font-size: 16px; }
   .inspector-content .gradient-geometry-fields { gap: 4px; }

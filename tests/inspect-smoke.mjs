@@ -155,9 +155,12 @@ try {
   assert(app.querySelector('.gradient-geometry-fields')?.hidden, 'gradient geometry fields should close without changing the gradient');
   const firstStopColor = app.querySelector('[data-gradient-field="color"]');
   const firstStopPosition = app.querySelector('[data-gradient-field="position"]');
-  assert(firstStopColor && firstStopPosition && firstStopPosition.getBoundingClientRect().right <= rightPanel.right, 'gradient stop controls should fit in the phone inspector');
+  const firstStopOpacity = app.querySelector('[data-gradient-field="opacity"]');
+  assert(firstStopColor && firstStopPosition && firstStopOpacity && firstStopPosition.getBoundingClientRect().right <= rightPanel.right
+    && firstStopOpacity.getBoundingClientRect().right <= rightPanel.right, 'gradient color, position, and alpha controls should fit in the phone inspector');
   firstStopColor.value = '#00ff00'; firstStopColor.dispatchEvent(new Event('input', { bubbles: true })); firstStopColor.dispatchEvent(new Event('change', { bubbles: true }));
   firstStopPosition.value = '20'; firstStopPosition.dispatchEvent(new Event('input', { bubbles: true })); firstStopPosition.dispatchEvent(new Event('change', { bubbles: true }));
+  firstStopOpacity.value = '35'; firstStopOpacity.dispatchEvent(new Event('input', { bubbles: true })); firstStopOpacity.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'gradient stop tuning');
   const gradientTrack = app.querySelector('[data-gradient-stop-track]');
   assert(gradientTrack, 'the gradient stop rail should be available for direct stop editing');
@@ -171,6 +174,8 @@ try {
   const insertedRow = [...app.querySelectorAll('[data-gradient-stop-row]')]
     .find(row => row.querySelector('input[type="color"]')?.value === '#80ff80');
   assert(insertedRow, 'clicking the gradient rail should insert a stop with the interpolated color');
+  assert(Math.abs(Number(insertedRow.querySelector('[data-gradient-field="opacity"]')?.value) - 67.5) < 0.1,
+    'a new stop should interpolate alpha between the two neighboring stops');
   const insertedStopId = insertedRow.dataset.gradientStopId;
   const insertedHandle = [...app.querySelectorAll('[data-gradient-stop-handle]')]
     .find(handle => handle.dataset.gradientStopId === insertedStopId);
@@ -210,8 +215,9 @@ try {
     .find(node => node?.fillGradient?.stops.some(stop => stop.id === insertedStopId));
   const savedInsertedStop = savedLinearGradient?.fillGradient.stops.find(stop => stop.id === insertedStopId);
   assert(savedInsertedStop?.color === '#80ff80' && Math.abs(savedInsertedStop.position - 0.65) < 1e-9
+    && Math.abs((savedInsertedStop.opacity ?? 1) - 0.675) < 1e-6
     && savedLinearGradient.x === button.x,
-    'the interpolated stop color and keyboard-updated position should be saved locally');
+    'the interpolated stop color, alpha, and keyboard-updated position should be saved locally');
 
   const previousGradientApp = app;
   app.defaultView.location.reload();
@@ -227,12 +233,15 @@ try {
   await waitFor(() => app.querySelector('[data-gradient-stop-track]'), 'reloaded gradient stop rail');
   const reloadedInsertedRow = [...app.querySelectorAll('[data-gradient-stop-row]')]
     .find(row => row.dataset.gradientStopId === insertedStopId);
+  const reloadedFirstStopOpacity = app.querySelector('[data-gradient-field="opacity"]');
   const reloadedInsertedHandle = [...app.querySelectorAll('[data-gradient-stop-handle]')]
     .find(handle => handle.dataset.gradientStopId === insertedStopId);
   assert(reloadedInsertedRow?.querySelector('input[type="color"]')?.value === '#80ff80'
     && reloadedInsertedRow.querySelector('input[type="number"]')?.value === '65'
+    && Math.abs(Number(reloadedFirstStopOpacity?.value) - 35) < 0.01
+    && Math.abs(Number(reloadedInsertedRow.querySelector('[data-gradient-field="opacity"]')?.value) - 67.5) < 0.1
     && reloadedInsertedHandle?.getAttribute('aria-valuenow') === '65',
-  'the gradient stop color and moved position should remain editable after a local reload');
+  'gradient stop color, alpha, and moved position should remain editable after a local reload');
   click(app.querySelector('[data-action="add-gradient-stop"]'));
   await waitForSaveCycle(app, 'additional gradient stop');
   const radialType = app.querySelector('[data-prop="fillType"]');
@@ -241,8 +250,9 @@ try {
   const gradientRecords = await readDocuments(); gradientRecords.sort((a, b) => b.savedAt - a.savedAt);
   const gradientButton = gradientRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
   assert(gradientButton?.fillGradient?.type === 'radial' && gradientButton.fillGradient.stops.length === 4 && gradientButton.fillGradient.stops[0].color === '#00ff00' && gradientButton.fillGradient.stops[0].position === 0.2
-    && gradientButton.fillGradient.stops.some(stop => stop.id === insertedStopId && stop.color === '#80ff80' && Math.abs(stop.position - 0.65) < 1e-9),
-  'gradient type, existing and inserted stop values, and an additional button-created stop should persist');
+    && Math.abs((gradientButton.fillGradient.stops[0].opacity ?? 1) - 0.35) < 1e-6
+    && gradientButton.fillGradient.stops.some(stop => stop.id === insertedStopId && stop.color === '#80ff80' && Math.abs(stop.position - 0.65) < 1e-9 && Math.abs((stop.opacity ?? 1) - 0.675) < 1e-6),
+  'gradient type, existing and inserted stop color, position, alpha, and an additional button-created stop should persist');
   click(app.querySelector('[data-action="add-stroke"]'));
   await waitForSaveCycle(app, 'add stroke');
   const strokeWidth = app.querySelector('[data-prop="strokeWidth"]');

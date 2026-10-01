@@ -164,6 +164,9 @@ function interpolateGradient(from, to, progress) {
       return {
         ...structuredClone(stop),
         position: start.position + (stop.position - start.position) * progress,
+        ...((start.opacity != null || stop.opacity != null) ? {
+          opacity: (start.opacity ?? 1) + ((stop.opacity ?? 1) - (start.opacity ?? 1)) * progress
+        } : {}),
         color: interpolateColor(start.color, stop.color, progress) || stop.color
       };
     })

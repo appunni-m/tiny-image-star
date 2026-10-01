@@ -9,6 +9,7 @@ import {
   MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER
 } from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 const MAX_WARNINGS = 40;
 const MAX_NAME_LENGTH = 512;
@@ -51,6 +52,105 @@ function hexColor(color) {
 function paintOpacity(paint) {
   const alpha = Number.isFinite(paint?.color?.a) ? paint.color.a : 1;
   return finite(paint?.opacity, 1, 0, 1) * finite(alpha, 1, 0, 1);
+}
+
+const figLayerBlendModes = Object.freeze({
+  NORMAL: 'normal', DARKEN: 'darken', MULTIPLY: 'multiply', COLOR_BURN: 'color-burn',
+  LIGHTEN: 'lighten', SCREEN: 'screen', COLOR_DODGE: 'color-dodge', OVERLAY: 'overlay',
+  SOFT_LIGHT: 'soft-light', HARD_LIGHT: 'hard-light', DIFFERENCE: 'difference',
+  EXCLUSION: 'exclusion', HUE: 'hue', SATURATION: 'saturation', COLOR: 'color',
+  LUMINOSITY: 'luminosity'
+});
+
+function mapLayerBlendMode(source, overrides, report, name) {
+  if (source.blendMode == null || source.blendMode === '') return;
+  const sourceMode = String(source.blendMode).toUpperCase();
+  const mapped = figLayerBlendModes[sourceMode];
+  if (mapped && isValidLayerBlendMode(mapped)) {
+    if (mapped !== 'normal') overrides.blendMode = mapped;
+    return;
+  }
+  const detail = sourceMode === 'PASS_THROUGH'
+    ? 'Pass-through group blending has no equivalent editable layer mode and was reset to normal.'
+    : mapped
+      ? `The Figma layer blend mode “${sourceMode}” is not supported by the local renderer and was reset to normal.`
+      : `The unknown Figma layer blend mode “${sourceMode.slice(0, 80)}” was reset to normal.`;
+  warn(report, 'flattened', 'BLEND_MODE', name, detail);
+}
+
+function warnPaintBlend(paint, report, name, warningType = 'PAINT_BLEND') {
+  if (paint?.blendMode == null || paint.blendMode === '') return;
+  const sourceMode = String(paint.blendMode).toUpperCase();
+  if (sourceMode === 'NORMAL') return;
+  const knownLayerMode = figLayerBlendModes[sourceMode];
+  const detail = knownLayerMode && isValidLayerBlendMode(knownLayerMode)
+    ? `The ${sourceMode} paint blend cannot be represented independently in the local fill stack and was reset to normal.`
+    : `The ${sourceMode === 'PASS_THROUGH' ? 'PASS_THROUGH' : `unknown “${sourceMode.slice(0, 80)}”`} paint blend cannot be represented in the local fill stack and was reset to normal.`;
+  warn(report, 'flattened', warningType, name, detail);
+}
+
+function gradientGeometry(paint, type) {
+  const transform = paint.transform;
+  const identity = { m00: 1, m01: 0, m02: 0, m10: 0, m11: 1, m12: 0 };
+  const matrix = transform == null ? identity : transform;
+  if (!matrix || !['m00', 'm01', 'm02', 'm10', 'm11', 'm12'].every(key => Number.isFinite(matrix[key]))) return null;
+  const determinant = matrix.m00 * matrix.m11 - matrix.m10 * matrix.m01;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+  const point = (x, y) => ({
+    x: (matrix.m11 * x - matrix.m01 * y + matrix.m01 * matrix.m12 - matrix.m11 * matrix.m02) / determinant,
+    y: (-matrix.m10 * x + matrix.m00 * y + matrix.m10 * matrix.m02 - matrix.m00 * matrix.m12) / determinant
+  });
+  const handles = type === 'radial'
+    ? [point(0.5, 0.5), point(1, 0.5), point(0.5, 1)]
+    : [point(0, 0.5), point(1, 0.5), point(0.5, 1)];
+  if (handles.some(handle => !Number.isFinite(handle.x) || !Number.isFinite(handle.y)
+    || Math.abs(handle.x) > 1_000_000 || Math.abs(handle.y) > 1_000_000)) return null;
+  if (type === 'angular') {
+    // Angular paints in the local model rotate around the layer center. Keep
+    // the source transform's orientation while explicitly reporting the one
+    // geometry constraint the local angular paint cannot retain.
+    const center = point(0.5, 0.5);
+    const xAxis = handles[1];
+    const angle = ((Math.atan2(xAxis.y - center.y, xAxis.x - center.x) * 180 / Math.PI + 90) % 360 + 360) % 360;
+    return { angle, centered: Math.hypot(center.x - 0.5, center.y - 0.5) < 1e-5 };
+  }
+  return { geometry: { handles } };
+}
+
+function mapGradientPaint(paint, node, report) {
+  const type = ({ GRADIENT_LINEAR: 'linear', GRADIENT_RADIAL: 'radial', GRADIENT_ANGULAR: 'angular' })[paint.type];
+  const stops = paint.stops;
+  if (!type || !Array.isArray(stops) || stops.length < 2 || stops.length > 8) {
+    warn(report, 'unsupported', 'GRADIENT', node.name, 'This gradient needs 2–8 valid color stops and a supported gradient type.');
+    return null;
+  }
+  const normalizedStops = stops.map((stop, index) => {
+    const color = hexColor(stop?.color);
+    const position = stop?.position;
+    const alpha = stop?.color?.a == null ? 1 : stop.color.a;
+    if (!color || !Number.isFinite(position) || position < 0 || position > 1 || !Number.isFinite(alpha) || alpha < 0 || alpha > 1) return null;
+    return { id: createId('stop'), color, opacity: alpha, position, index };
+  });
+  if (normalizedStops.some(stop => !stop)) {
+    warn(report, 'unsupported', 'GRADIENT', node.name, 'A gradient with invalid stop colors, alpha, or positions was omitted.');
+    return null;
+  }
+  normalizedStops.sort((left, right) => left.position - right.position || left.index - right.index);
+  normalizedStops.forEach(stop => delete stop.index);
+  const mappedGeometry = gradientGeometry(paint, type);
+  if (!mappedGeometry) {
+    warn(report, 'unsupported', 'GRADIENT_GEOMETRY', node.name, 'The gradient transform is malformed or degenerate, so this paint was omitted.');
+    return null;
+  }
+  if (type === 'angular' && !mappedGeometry.centered) {
+    warn(report, 'flattened', 'GRADIENT_GEOMETRY', node.name, 'The angular gradient center was moved to the layer center because the local editor stores angular gradients around the layer center.');
+  }
+  const { centered, ...geometry } = mappedGeometry;
+  return {
+    id: createId('fill'), type, visible: true,
+    opacity: finite(paint.opacity, 1, 0, 1),
+    gradient: { type, angle: type === 'angular' ? geometry.angle : 0, ...('geometry' in geometry ? { geometry: geometry.geometry } : {}), stops: normalizedStops }
+  };
 }
 
 function findImageHash(paint) {
@@ -143,11 +243,11 @@ function mapPaints(paints, node, context, { allowFill = true } = {}) {
   const supported = [];
   for (const paint of paints.slice(0, 32)) {
     if (!paint || paint.visible === false || finite(paint.opacity, 1, 0, 1) === 0) continue;
+    warnPaintBlend(paint, context.report, node.name);
     if (paint.type === 'SOLID') {
       const color = hexColor(paint.color);
       if (!color) { warn(context.report, 'unsupported', 'PAINT', node.name, 'A fill color could not be decoded.'); continue; }
       supported.push({ id: createId('fill'), type: 'solid', visible: true, opacity: paintOpacity(paint), color });
-      if (paint.blendMode && paint.blendMode !== 'NORMAL') warn(context.report, 'flattened', 'PAINT_BLEND', node.name, 'A paint blend mode was reset to normal.');
       continue;
     }
     if (paint.type === 'IMAGE') {
@@ -167,7 +267,12 @@ function mapPaints(paints, node, context, { allowFill = true } = {}) {
       });
       continue;
     }
-    warn(context.report, 'unsupported', paint.type || 'PAINT', node.name, 'This paint type was omitted; solid and image fills are supported.');
+    if (['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR'].includes(paint.type)) {
+      const gradient = mapGradientPaint(paint, node, context.report);
+      if (gradient) supported.push(gradient);
+      continue;
+    }
+    warn(context.report, 'unsupported', paint.type || 'PAINT', node.name, 'This paint type was omitted; solid, gradient, and image fills are supported.');
   }
   if (paints.length > 32) warn(context.report, 'unsupported', 'PAINT_STACK', node.name, 'Only the first 32 paint layers were considered.');
   return supported;
@@ -193,6 +298,7 @@ function mapStrokes(paints, node, report) {
       if (paint?.visible !== false) warn(report, 'unsupported', paint?.type || 'STROKE', node.name, 'Only solid stroke paints are imported.');
       continue;
     }
+    warnPaintBlend(paint, report, node.name);
     const color = hexColor(paint.color);
     if (!color) continue;
     strokes.push({
@@ -574,7 +680,7 @@ function textProperties(source, context) {
     warn(context.report, 'unsupported', 'TEXT_PAINT', source.name, 'Gradient, image, and patterned text paints were reduced to the first solid color or the local default.');
   }
   if (visiblePaints.length > 1) warn(context.report, 'flattened', 'TEXT_PAINT_STACK', source.name, 'Multiple text paints were reduced to the first solid color.');
-  if (visiblePaints.some(item => item.blendMode && item.blendMode !== 'NORMAL')) warn(context.report, 'flattened', 'TEXT_PAINT_BLEND', source.name, 'Text paint blend modes were reset to normal.');
+  visiblePaints.forEach(item => warnPaintBlend(item, context.report, source.name, 'TEXT_PAINT_BLEND'));
   const color = hexColor(paint?.color) || '#1e1e1e';
   if (paint && !hexColor(paint.color)) warn(context.report, 'unsupported', 'TEXT_PAINT', source.name, 'The text color could not be decoded and uses the local default.');
   const namedStyle = String(style.fontName?.style || source.fontName?.style || '');
@@ -998,6 +1104,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
       visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children: vectorChildren(source, paths, context)
     };
+    mapLayerBlendMode(source, overrides, context.report, name);
     const effects = mapLayerEffects(source.effects, source, context.report);
     if (effects.length) overrides.effects = effects;
     mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
@@ -1019,6 +1126,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
         name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
         visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children
       };
+      mapLayerBlendMode(source, overrides, context.report, name);
       const effects = mapLayerEffects(source.effects, source, context.report);
       if (effects.length) overrides.effects = effects;
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
@@ -1039,6 +1147,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     opacity: finite(source.opacity, 1, 0, 1), visible: source.visible !== false,
     children: ['frame', 'group', 'section', 'boolean'].includes(type) ? (children || []) : []
   };
+  mapLayerBlendMode(source, overrides, context.report, name);
   const fills = type === 'text' || type === 'line' ? [] : mapPaints(source.fillPaints, source, context);
   if (type === 'line' && Array.isArray(source.fillPaints) && source.fillPaints.some(paint => paint?.visible !== false)) {
     warn(context.report, 'unsupported', 'LINE_FILL', name, 'Fill paints on lines are not supported by the local editor.');
@@ -1054,9 +1163,6 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   else { overrides.stroke = null; overrides.strokeWidth = 0; }
   const effects = mapLayerEffects(source.effects, source, context.report);
   if (effects.length) overrides.effects = effects;
-  if (source.blendMode && source.blendMode !== 'PASS_THROUGH' && source.blendMode !== 'NORMAL') {
-    warn(context.report, 'flattened', 'BLEND_MODE', name, 'The layer blend mode was reset to normal.');
-  }
   if (source.type === 'FRAME') {
     overrides.clip = typeof source.clipsContent === 'boolean'
       ? source.clipsContent
