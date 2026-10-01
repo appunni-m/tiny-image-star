@@ -1,5 +1,11 @@
 import { cloneDocument, removeNode, validateDocument } from './model.js';
 
+/** Prefer the focused layer when keyboard focus moved away from the current selection. */
+export function layerDeleteTargets(selectedIds, focusedLayerId) {
+  const selected = [...new Set(selectedIds)];
+  return focusedLayerId && !selected.includes(focusedLayerId) ? [focusedLayerId] : selected;
+}
+
 /** Remove a set of top-level selections atomically, without leaving a partial delete. */
 export function removeLayersAtomically(document, nodeIds, pageId = document.activePageId) {
   const ids = [...new Set(nodeIds)];

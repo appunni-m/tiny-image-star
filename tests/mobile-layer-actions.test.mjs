@@ -26,6 +26,11 @@ test('layer rows expose a named, keyboard-focusable action-menu button', () => {
   assert.match(source, /focusFirstContextMenuItem\(menu\)/);
 });
 
+test('keyboard deletion targets the focused layer when focus and selection differ', () => {
+  assert.match(source, /const focusedLayer = event\.target\.closest\?\.\('#layers-list \[data-layer-id\]'\);\s*const targetIds = layerDeleteTargets\(state\.selectedIds, focusedLayer\?\.dataset\.layerId\);\s*event\.preventDefault\(\); deleteSelected\(targetIds\)/,
+    'Delete and Backspace should act on the focused layer instead of a stale selection');
+});
+
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
   const start = source.indexOf('function openNodeMenu(');
   const end = source.indexOf('\nfunction combineSelectedBoolean(', start);

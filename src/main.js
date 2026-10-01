@@ -44,7 +44,7 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
-import { removeLayersAtomically } from './layer-deletion.js';
+import { layerDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -585,9 +585,12 @@ function imageNodes(page = activePage()) {
   if (page) walkNodes(page.children, ({ node }) => { if (node.type === 'image') nodes.push(node); });
   return nodes;
 }
-function rootSelectedIds() {
-  const selected = new Set(state.selectedIds);
-  return selectedEntries().filter(entry => !entry.parents.some(parent => selected.has(parent.id))).map(entry => entry.node.id);
+function rootSelectedIds(selectionIds = state.selectedIds) {
+  const selected = new Set(selectionIds);
+  return [...new Set(selectionIds)]
+    .map(id => findNode(state.document, id))
+    .filter(entry => entry && !entry.parents.some(parent => selected.has(parent.id)))
+    .map(entry => entry.node.id);
 }
 function orderedRootSelectedEntries() {
   const selected = new Set(rootSelectedIds());
@@ -8960,8 +8963,8 @@ function toggleOutlineMode() {
   renderer.invalidate();
 }
 
-function deleteSelected() {
-  const ids = rootSelectedIds(); if (!ids.length) return;
+function deleteSelected(selectionIds = state.selectedIds) {
+  const ids = rootSelectedIds(selectionIds); if (!ids.length) return;
   try {
     const result = removeLayersAtomically(state.document, ids, activePage().id);
     checkpoint('Delete layers');
@@ -13785,7 +13788,11 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
-  if (key === 'delete' || key === 'backspace') { event.preventDefault(); deleteSelected(); return; }
+  if (key === 'delete' || key === 'backspace') {
+    const focusedLayer = event.target.closest?.('#layers-list [data-layer-id]');
+    const targetIds = layerDeleteTargets(state.selectedIds, focusedLayer?.dataset.layerId);
+    event.preventDefault(); deleteSelected(targetIds); return;
+  }
   if (key === 'escape') { closeMenu(); setSelection([]); return; }
   if (event.shiftKey && !mod && key === 's' && !event.altKey) { event.preventDefault(); setTool('section'); return; }
   if (event.shiftKey && mod && key === 'k' && !event.altKey) { event.preventDefault(); chooseImageFiles(); return; }

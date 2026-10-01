@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createNode, findNode, parseDocument, serializeDocument, setComponentSlotContent, syncAllComponentInstances } from '../src/model.js';
-import { removeLayersAtomically } from '../src/layer-deletion.js';
+import { layerDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
+
+test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
+  const selectedIds = ['selected-a', 'selected-b'];
+
+  assert.deepEqual(layerDeleteTargets(selectedIds, 'focused-unselected'), ['focused-unselected']);
+  assert.deepEqual(layerDeleteTargets(selectedIds, 'selected-b'), selectedIds);
+  assert.deepEqual(layerDeleteTargets(selectedIds, null), selectedIds);
+  assert.deepEqual(layerDeleteTargets(['selected-a', 'selected-a'], null), ['selected-a']);
+});
 
 test('layer deletion removes selections from a new valid document', () => {
   const document = createDocument();
