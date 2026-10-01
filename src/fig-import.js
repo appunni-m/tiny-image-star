@@ -304,6 +304,159 @@ function modelType(sourceType) {
   }
 }
 
+function figTextLineHeight(value, fontSize, fallback = 1.25) {
+  if (value == null) return fallback;
+  const metric = value && typeof value === 'object' ? value : { value };
+  const number = Number(metric.value);
+  if (!Number.isFinite(number) || number <= 0) return fallback;
+  const unit = String(metric.unit || '').toUpperCase();
+  if (unit === 'PIXELS' || unit === 'PX') return finite(number / fontSize, fallback, 0.01, 100);
+  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return finite(number / 100, fallback, 0.01, 100);
+  if (unit === 'AUTO') return fallback;
+  return finite(number, fallback, 0.01, 100);
+}
+
+function figTextLetterSpacing(value, fontSize, fallback = 0) {
+  if (value == null) return fallback;
+  const metric = value && typeof value === 'object' ? value : { value };
+  const number = Number(metric.value);
+  if (!Number.isFinite(number)) return fallback;
+  const unit = String(metric.unit || '').toUpperCase();
+  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return finite(number * fontSize / 100, fallback, -10_000, 10_000);
+  if (unit && !['PIXELS', 'PX'].includes(unit)) return fallback;
+  return finite(number, fallback, -10_000, 10_000);
+}
+
+function inferredTextWeight(styleName) {
+  const name = String(styleName || '');
+  return /(?:thin|hairline)/iu.test(name) ? 100
+    : /(?:extra\s*light|ultra\s*light)/iu.test(name) ? 200
+      : /\blight\b/iu.test(name) ? 300
+        : /(?:semi\s*bold|demi\s*bold)/iu.test(name) ? 600
+          : /\bmedium\b/iu.test(name) ? 500
+            : /(?:extra\s*bold|ultra\s*bold)/iu.test(name) ? 800
+              : /\b(?:bold|heavy|black)\b/iu.test(name) ? 700 : 400;
+}
+
+function textRunStyleOverrides(style, base, context, name) {
+  const result = {};
+  const family = style.fontFamily || style.fontName?.family;
+  if (typeof family === 'string' && family.trim()) {
+    const value = safeName(family, base.fontFamily).slice(0, 160);
+    if (value !== base.fontFamily) result.fontFamily = value;
+  }
+  const fontSize = Number(style.fontSize);
+  if (Number.isFinite(fontSize) && fontSize > 0) {
+    const value = finite(fontSize, base.fontSize, 1, 100_000);
+    if (value !== base.fontSize) result.fontSize = value;
+  }
+  const fontNameStyle = style.fontName?.style || style.fontStyleName || '';
+  const fontWeight = Number.isFinite(Number(style.fontWeight))
+    ? finite(style.fontWeight, base.fontWeight, 1, 1000)
+    : fontNameStyle ? inferredTextWeight(fontNameStyle) : null;
+  if (fontWeight != null && fontWeight !== base.fontWeight) result.fontWeight = fontWeight;
+  const italic = style.italic === true || String(style.fontStyle || '').toUpperCase() === 'ITALIC' || /italic/iu.test(String(fontNameStyle));
+  const normalStyle = style.italic === false || ['NORMAL', 'REGULAR'].includes(String(style.fontStyle || '').toUpperCase());
+  if ((italic || normalStyle) && (italic ? 'italic' : 'normal') !== base.fontStyle) result.fontStyle = italic ? 'italic' : 'normal';
+
+  const sizeForMetrics = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : base.fontSize;
+  if (style.lineHeight != null) {
+    const value = figTextLineHeight(style.lineHeight, sizeForMetrics, base.lineHeight);
+    if (value !== base.lineHeight) result.lineHeight = value;
+  }
+  if (style.letterSpacing != null) {
+    const value = figTextLetterSpacing(style.letterSpacing, sizeForMetrics, base.letterSpacing);
+    if (value !== base.letterSpacing) result.letterSpacing = value;
+  }
+  const decoration = String(style.textDecoration || '').toUpperCase();
+  const textDecoration = ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[decoration];
+  if (textDecoration && textDecoration !== base.textDecoration) result.textDecoration = textDecoration;
+
+  if (typeof style.color === 'string' && /^#[0-9a-f]{6}$/iu.test(style.color) && style.color.toLowerCase() !== base.color.toLowerCase()) {
+    result.color = style.color.toLowerCase();
+  }
+  const fills = Array.isArray(style.fills) ? style.fills : Array.isArray(style.fillPaints) ? style.fillPaints : null;
+  if (fills) {
+    const visibleFills = fills.filter(paint => paint && paint.visible !== false && paintOpacity(paint) > 0);
+    const paint = visibleFills.find(item => item.type === 'SOLID');
+    if (paint) {
+      const color = hexColor(paint.color);
+      if (color && color !== base.color.toLowerCase()) result.color = color;
+      if (paintOpacity(paint) < 1) warn(context.report, 'flattened', 'TEXT_STYLE_OPACITY', name, 'Per-range text fill opacity was reset to opaque because editable text runs do not store range opacity.');
+      if (visibleFills.length > 1 || visibleFills.some(item => item.type !== 'SOLID')) {
+        warn(context.report, 'flattened', 'TEXT_STYLE_PAINT', name, 'Per-range text paint stacks were reduced to their first solid color.');
+      }
+    } else if (visibleFills.length) {
+      warn(context.report, 'unsupported', 'TEXT_STYLE_PAINT', name, 'A per-range text paint without a solid color was reduced to the layer text color.');
+    }
+  }
+
+  const supported = new Set([
+    'fontFamily', 'fontName', 'fontSize', 'fontWeight', 'fontStyle', 'fontStyleName', 'italic',
+    'lineHeight', 'letterSpacing', 'textDecoration', 'color', 'fills', 'fillPaints'
+  ]);
+  if (Object.keys(style).some(key => !supported.has(key))) {
+    warn(context.report, 'flattened', 'TEXT_STYLE_PROPERTIES', name, 'Some per-range text properties are not represented by editable local text runs.');
+  }
+  return result;
+}
+
+function textRunsFromFigOverrides(source, characters, base, context) {
+  if (!characters.length) return null;
+  const textData = source.textData || {};
+  const styleIds = Array.isArray(textData.characterStyleOverrides)
+    ? textData.characterStyleOverrides
+    : Array.isArray(textData.characterStyleIDs) ? textData.characterStyleIDs : null;
+  if (!styleIds || !styleIds.some(id => id !== 0)) return null;
+  const name = safeName(source.name, 'Text');
+  const flatten = detail => {
+    warn(context.report, 'flattened', 'TEXT_STYLE', name, detail);
+    return null;
+  };
+  if (styleIds.length > characters.length || styleIds.some(id => !Number.isSafeInteger(id) || id < 0)) {
+    return flatten('Character style references were malformed; the base text style was used.');
+  }
+  const table = textData.styleOverrideTable || source.styleOverrideTable;
+  if (!table || typeof table !== 'object') return flatten('Character style references had no style override table; the base text style was used.');
+  const getStyle = id => table instanceof Map ? table.get(id) ?? table.get(String(id)) : table[String(id)];
+  const warnMissing = () => warn(context.report, 'flattened', 'TEXT_STYLE', name, 'A character style reference was missing or malformed; the affected characters use the base style.');
+  const runs = [];
+  const styleCache = new Map();
+  let warnedMissing = false;
+  let warnedSplitPair = false;
+  for (let index = 0; index < characters.length;) {
+    const codePoint = characters.codePointAt(index);
+    const width = codePoint > 0xffff ? 2 : 1;
+    let styleId = styleIds[index] || 0;
+    if (width === 2 && (styleIds[index + 1] || 0) !== styleId) {
+      if (!warnedSplitPair) {
+        warn(context.report, 'flattened', 'TEXT_STYLE_SURROGATE', name, 'A character style boundary split a Unicode character; that character uses the base style.');
+        warnedSplitPair = true;
+      }
+      styleId = 0;
+    }
+    let overrides = styleCache.get(styleId);
+    if (overrides === undefined) {
+      overrides = {};
+      if (styleId) {
+        const style = getStyle(styleId);
+        if (style && typeof style === 'object' && !Array.isArray(style)) {
+          overrides = textRunStyleOverrides(style, base, context, name);
+        } else if (!warnedMissing) { warnMissing(); warnedMissing = true; }
+      }
+      styleCache.set(styleId, overrides);
+    }
+    const text = characters.slice(index, index + width);
+    const previous = runs.at(-1);
+    if (previous && JSON.stringify(previous.style) === JSON.stringify(overrides)) previous.text += text;
+    else runs.push({ text, style: overrides });
+    if (runs.length > 10_000) return flatten('The text has too many style runs to preserve safely; the base text style was used.');
+    index += width;
+  }
+  if (!runs.some(run => Object.keys(run.style).length)) return null;
+  return runs.map(run => ({ text: run.text, ...run.style }));
+}
+
 function textProperties(source, context) {
   const characters = typeof source.textData?.characters === 'string' ? source.textData.characters : '';
   const style = source.textData?.style || source.style || {};
@@ -319,49 +472,37 @@ function textProperties(source, context) {
   if (visiblePaints.some(item => item.blendMode && item.blendMode !== 'NORMAL')) warn(context.report, 'flattened', 'TEXT_PAINT_BLEND', source.name, 'Text paint blend modes were reset to normal.');
   const color = hexColor(paint?.color) || '#1e1e1e';
   if (paint && !hexColor(paint.color)) warn(context.report, 'unsupported', 'TEXT_PAINT', source.name, 'The text color could not be decoded and uses the local default.');
-  if (source.textData?.characterStyleIDs?.length > 1
-    || (Array.isArray(source.textData?.characterStyleOverrides) && source.textData.characterStyleOverrides.some(Boolean))) {
-    warn(context.report, 'flattened', 'TEXT_STYLE', source.name, 'Mixed per-character text styles were reduced to the primary text style.');
-  }
-  const namedStyle = String(source.fontName?.style || '');
-  const weightFromStyle = /(?:thin|hairline)/iu.test(namedStyle) ? 100
-    : /(?:extra\s*light|ultra\s*light)/iu.test(namedStyle) ? 200
-      : /\blight\b/iu.test(namedStyle) ? 300
-        : /(?:semi\s*bold|demi\s*bold)/iu.test(namedStyle) ? 600
-          : /\bmedium\b/iu.test(namedStyle) ? 500
-            : /(?:extra\s*bold|ultra\s*bold)/iu.test(namedStyle) ? 800
-              : /\b(?:bold|heavy|black)\b/iu.test(namedStyle) ? 700 : 400;
-  const fontFamily = safeName(style.fontFamily || source.fontName?.family || source.fontFamily, 'Arial, sans-serif').slice(0, 160);
+  const namedStyle = String(style.fontName?.style || source.fontName?.style || '');
+  const fontFamily = safeName(style.fontFamily || style.fontName?.family || source.fontName?.family || source.fontFamily, 'Arial, sans-serif').slice(0, 160);
   const fontSize = finite(style.fontSize ?? source.fontSize, 24, 1, 100_000);
-  const fontWeight = finite(style.fontWeight ?? source.fontWeight, weightFromStyle, 1, 1000);
-  const lineHeightValue = style.lineHeight?.value ?? style.lineHeight ?? source.lineHeight?.value ?? source.lineHeight;
-  const lineHeightUnit = style.lineHeight?.unit ?? source.lineHeight?.unit;
-  const lineHeight = lineHeightUnit === 'PIXELS' && Number(lineHeightValue) > 0
-    ? finite(lineHeightValue / fontSize, 1.25, 0.01, 100)
-    : finite(lineHeightValue, 1.25, 0.01, 100);
+  const fontWeight = finite(style.fontWeight ?? source.fontWeight, inferredTextWeight(namedStyle), 1, 1000);
+  const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight, fontSize);
+  const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
   const verticalAlign = ({ TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' })[String(source.textAlignVertical || '').toUpperCase()] || 'top';
   const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[String(source.textAutoResize || '').toUpperCase()] || 'fixed';
   if (source.textAutoResize && !['HEIGHT', 'WIDTH_AND_HEIGHT', 'NONE', 'TRUNCATE'].includes(String(source.textAutoResize).toUpperCase())) {
     warn(context.report, 'flattened', 'TEXT_FIT', source.name, 'This text resizing mode was reduced to a fixed text box.');
   }
-  return {
+  const properties = {
     opacity: finite(source.opacity, 1, 0, 1) * (paint ? paintOpacity(paint) : 1),
     text: characters,
     fontFamily,
     fontSize,
     fontWeight,
-    fontStyle: style.italic === true || source.italic === true || /italic/iu.test(String(style.italic || source.italic || namedStyle)) ? 'italic' : 'normal',
+    fontStyle: style.italic === true || source.italic === true || String(style.fontStyle || '').toUpperCase() === 'ITALIC' || /italic/iu.test(String(style.italic || source.italic || namedStyle)) ? 'italic' : 'normal',
     lineHeight,
-    letterSpacing: finite(style.letterSpacing ?? source.letterSpacing, 0, -10_000, 10_000),
+    letterSpacing,
     color,
     align: ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(source.textAlignHorizontal || '').toUpperCase()] || 'left',
     verticalAlign,
     textFit,
-    textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || '').toUpperCase()] || 'none',
+    textDecoration: ({ UNDERLINE: 'underline', STRIKETHROUGH: 'line-through', NONE: 'none' })[String(source.textDecoration || style.textDecoration || '').toUpperCase()] || 'none',
     paragraphSpacing: finite(source.paragraphSpacing, 0, 0, 10_000),
     firstLineIndent: finite(source.firstLineIndent, 0, 0, 10_000),
     listSpacing: finite(source.listSpacing, 0, 0, 10_000)
   };
+  const textRuns = textRunsFromFigOverrides(source, characters, properties, context);
+  return textRuns ? { ...properties, textRuns } : properties;
 }
 
 function mapConstraints(source, report) {

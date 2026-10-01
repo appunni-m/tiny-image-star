@@ -31,6 +31,14 @@ test('keyboard deletion targets the focused layer when focus and selection diffe
     'Delete and Backspace should act on the focused layer instead of a stale selection');
 });
 
+test('canvas pointer selection takes keyboard focus away from a stale layer row', () => {
+  const start = source.indexOf('function onCanvasPointerDown(event) {');
+  const end = source.indexOf('\nfunction onCanvasPointerMove(event)', start);
+  assert.ok(start >= 0 && end > start, 'canvas pointer handling should have a bounded event handler');
+  assert.match(source.slice(start, end), /canvas\.focus\(\{ preventScroll: true \}\)/,
+    'canvas selection should make the canvas the keyboard target so Delete follows the current selection');
+});
+
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
   const start = source.indexOf('function openNodeMenu(');
   const end = source.indexOf('\nfunction combineSelectedBoolean(', start);

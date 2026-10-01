@@ -15,6 +15,8 @@ test('Motion is a keyboard-accessible inspector tab with a duration, playhead, a
   assert.match(main, /data-motion-action="add-track"/);
   assert.match(main, /data-motion-action="add-keyframe"/);
   assert.match(main, /width: 'Width', height: 'Height'/);
+  assert.match(main, /fillColor: 'Solid fill color', fillOpacity: 'Solid fill opacity'/);
+  assert.match(main, /type="color" value="\$\{escapeHtml\(frame\.value\)\}" data-motion-field="value"/);
   assert.match(main, /data-motion-field="easing"/);
 });
 

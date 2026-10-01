@@ -10,6 +10,7 @@ import {
   orderedMotionKeyframes,
   sampleMotion,
   sampleMotionTrack,
+  supportsMotionSolidFill,
   validateMotion
 } from '../src/motion.js';
 
@@ -52,6 +53,29 @@ test('linear and supported easing curves interpolate numeric design properties',
     assert.equal(sampleMotionTrack(track('x', [key('a', 0, 0, easing), key('b', 100, 1)]), 25), expected, easing);
   }
   assert.equal(sampleMotionTrack(track('x', [key('a', 0, 10, 'ease-in-out'), key('b', 100, 30)]), 50), 20);
+});
+
+test('solid fill colors interpolate per RGB channel and solid fill opacity remains numeric', () => {
+  const motion = { durationMs: 100, tracks: [
+    track('fillColor', [key('color-a', 0, '#000000'), key('color-b', 100, '#ffffff')]),
+    { id: 'opacity-track', nodeId: 'node-a', property: 'fillOpacity', keyframes: [key('opacity-a', 0, 0), key('opacity-b', 100, 1)] }
+  ] };
+  assert.equal(validateMotion(motion), true);
+  assert.deepEqual(createMotionSampler(motion)(50).get('node-a'), { fillColor: '#808080', fillOpacity: 0.5 });
+  assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('fillColor', [key('bad-color', 0, 'red')])] }), /invalid fillColor/);
+});
+
+test('solid fill animation is limited to renderer-supported closed shape geometry', () => {
+  for (const type of ['text', 'image', 'line', 'boolean']) assert.equal(supportsMotionSolidFill({ type }), false, type);
+  assert.equal(supportsMotionSolidFill({ type: 'rectangle' }), true);
+  assert.equal(supportsMotionSolidFill({ type: 'path', points: [{}, {}], closed: false }), false);
+  assert.equal(supportsMotionSolidFill({ type: 'path', points: [{}, {}], closed: true }), true);
+  assert.equal(supportsMotionSolidFill({ type: 'path', points: [{}, {}], closed: true, subpaths: [{ points: [{}, {}], closed: false }] }), false);
+  const solid = { type: 'solid', color: '#000000', opacity: 1 };
+  assert.equal(supportsMotionSolidFill({ type: 'network', fills: [solid], faces: [{ fill: null }] }), true);
+  assert.equal(supportsMotionSolidFill({ type: 'network', fills: [solid], faces: [{ fill: '#ff0000' }] }), false);
+  assert.equal(supportsMotionSolidFill({ type: 'network', fills: [solid], faces: [] }), false);
+  assert.equal(supportsMotionSolidFill({ type: 'network', faces: [{ fill: null }] }), false);
 });
 
 test('keyframe ordering is stable by time then code-point ID without mutating the source', () => {

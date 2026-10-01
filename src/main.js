@@ -19,7 +19,7 @@ import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
-import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
@@ -57,7 +57,7 @@ import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage,
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { applyAppearance, snapshotAppearance } from './appearance-clipboard.js';
-import { createMotionSampler, orderedMotionKeyframes } from './motion.js';
+import { createMotionSampler, orderedMotionKeyframes, supportsMotionSolidFill } from './motion.js';
 import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirection, moveLayerOneVisualRow } from './layer-order.js';
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
@@ -2376,9 +2376,16 @@ function commentPanel() {
   return `<div class="comments-panel"><header class="comments-panel-header"><div><strong>Review notes</strong><span>Stored locally with this design</span></div><button class="comment-new-button" data-comment-action="new">＋ Comment</button></header>${newDraft}${empty}<div class="comment-thread-list">${rows}</div>${overflow}</div>`;
 }
 
-const motionPropertyLabels = { x: 'X position', y: 'Y position', width: 'Width', height: 'Height', rotation: 'Rotation', opacity: 'Opacity' };
+const motionPropertyLabels = { x: 'X position', y: 'Y position', width: 'Width', height: 'Height', rotation: 'Rotation', opacity: 'Opacity', fillColor: 'Solid fill color', fillOpacity: 'Solid fill opacity' };
 const motionEasingOptions = [['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'], ['ease-in-out', 'Ease in and out']];
 function motionDuration() { return state.document.motion?.durationMs || 1000; }
+function motionSolidFillColor(node, fill) {
+  const fills = fillStackForNode(node);
+  const fillIndex = fills.findIndex(candidate => candidate === fill || candidate.id === fill?.id);
+  const color = fillLayerColor(state.document, node, fill, fillIndex);
+  const short = /^#([0-9a-f]{3})$/i.exec(color);
+  return short ? `#${[...short[1]].map(channel => channel + channel).join('')}` : /^#[0-9a-f]{6}$/i.test(color) ? color : null;
+}
 function motionTracksForSelectedNode(nodeId = selectedNodes().length === 1 ? selectedNodes()[0].id : null) {
   return nodeId ? (state.document.motion?.tracks || []).filter(track => track.nodeId === nodeId) : [];
 }
@@ -2492,8 +2499,20 @@ function addMotionTrack() {
     showToast(`A ${motionPropertyLabels[property].toLowerCase()} track already exists for this layer.`);
     return;
   }
-  const rawValue = Number(getNodePropertyValue(state.document, node, property));
-  const value = Number.isFinite(rawValue) ? rawValue : property === 'opacity' ? 1 : 0;
+  const solidFill = fillStackForNode(node).find(fill => fill.type === 'solid');
+  if ((property === 'fillColor' || property === 'fillOpacity') && (!solidFill || !supportsMotionSolidFill(node))) {
+    showToast('Solid fill animation is unavailable for this layer or its fill geometry.');
+    return;
+  }
+  const baseColor = property === 'fillColor' ? motionSolidFillColor(node, solidFill) : null;
+  if (property === 'fillColor' && !baseColor) {
+    showToast('Color animation requires a solid fill with a six-digit color value.');
+    return;
+  }
+  const rawValue = property === 'fillColor' ? baseColor
+    : property === 'fillOpacity' ? solidFill.opacity
+      : Number(getNodePropertyValue(state.document, node, property));
+  const value = property === 'fillColor' ? rawValue : Number.isFinite(rawValue) ? rawValue : property === 'opacity' ? 1 : 0;
   const duration = motionDuration();
   mutateMotion(`Animate ${motionPropertyLabels[property].toLowerCase()}`, motion => {
     motion.tracks.push({
@@ -2510,8 +2529,14 @@ function addMotionKeyframe(trackId) {
   const node = track && findNode(state.document, track.nodeId)?.node;
   if (!track || !node) return;
   const timeMs = Math.max(0, Math.min(motionDuration(), Math.round(state.motionPlayheadMs)));
-  const rawValue = Number(getNodePropertyValue(state.document, node, track.property));
-  const value = Number.isFinite(rawValue) ? rawValue : 0;
+  const solidFill = fillStackForNode(node).find(fill => fill.type === 'solid');
+  if ((track.property === 'fillColor' || track.property === 'fillOpacity') && (!solidFill || !supportsMotionSolidFill(node))) return;
+  const baseColor = track.property === 'fillColor' ? motionSolidFillColor(node, solidFill) : null;
+  if (track.property === 'fillColor' && !baseColor) return;
+  const rawValue = track.property === 'fillColor' ? baseColor
+    : track.property === 'fillOpacity' ? solidFill?.opacity
+      : Number(getNodePropertyValue(state.document, node, track.property));
+  const value = track.property === 'fillColor' ? rawValue : Number.isFinite(rawValue) ? rawValue : 0;
   mutateMotion(`Add ${motionPropertyLabels[track.property]} keyframe`, motion => {
     const target = motion.tracks.find(item => item.id === trackId);
     const existing = target?.keyframes.find(frame => frame.timeMs === timeMs);
@@ -2522,9 +2547,9 @@ function addMotionKeyframe(trackId) {
 function updateMotionKeyframeField(field) {
   const { trackId, keyframeId, motionField, motionProperty } = field.dataset;
   const value = motionField === 'value'
-    ? Number(field.value) / (motionProperty === 'opacity' ? 100 : 1)
+    ? motionProperty === 'fillColor' ? field.value : Number(field.value) / (motionProperty === 'opacity' || motionProperty === 'fillOpacity' ? 100 : 1)
     : motionField === 'timeMs' ? Number(field.value) : field.value;
-  if (motionField !== 'easing' && !Number.isFinite(value)) {
+  if (motionField !== 'easing' && !(motionProperty === 'fillColor' && motionField === 'value') && !Number.isFinite(value)) {
     renderInspector();
     showToast('Enter a finite keyframe value.');
     return;
@@ -2576,8 +2601,11 @@ function motionInspector() {
   const duration = motion.durationMs || 1000;
   const tracks = motionTracksForSelectedNode(node?.id);
   const trackedProperties = new Set(tracks.map(track => track.property));
+  const primarySolidFill = node && fillStackForNode(node).find(fill => fill.type === 'solid');
+  const solidFillAvailable = !!node && supportsMotionSolidFill(node) && !!primarySolidFill;
+  const solidFillColorAvailable = solidFillAvailable && !!motionSolidFillColor(node, primarySolidFill);
   const propertyOptions = Object.entries(motionPropertyLabels).map(([property, label]) =>
-    `<option value="${property}"${trackedProperties.has(property) ? ' disabled' : ''}>${label}${trackedProperties.has(property) ? ' · added' : ''}</option>`).join('');
+    `<option value="${property}"${trackedProperties.has(property) || (property === 'fillColor' && !solidFillColorAvailable) || (property === 'fillOpacity' && !solidFillAvailable) ? ' disabled' : ''}>${label}${trackedProperties.has(property) ? ' · added' : ''}</option>`).join('');
   const trackMarkup = tracks.map(track => {
     const keyframes = orderedMotionKeyframes(track);
     const markers = keyframes.map(frame => {
@@ -2585,18 +2613,21 @@ function motionInspector() {
       return `<button class="motion-keyframe-marker" type="button" style="left:${position}%" data-motion-action="jump-keyframe" data-time-ms="${frame.timeMs}" aria-label="Move playhead to ${motionTimeLabel(frame.timeMs)}"></button>`;
     }).join('');
     const rows = keyframes.map(frame => {
-      const displayValue = track.property === 'opacity' ? Math.round(frame.value * 100) : frame.value;
-      const valueLimits = track.property === 'opacity' ? ' min="0" max="100" step="1"'
+      const displayValue = track.property === 'opacity' || track.property === 'fillOpacity' ? Math.round(frame.value * 100) : frame.value;
+      const valueLimits = track.property === 'opacity' || track.property === 'fillOpacity' ? ' min="0" max="100" step="1"'
         : track.property === 'width' || track.property === 'height' ? ' min="0" max="1000000000"'
           : track.property === 'rotation' ? ' min="-1000000" max="1000000"'
             : ' min="-1000000000" max="1000000000"';
-      const valueStep = track.property === 'opacity' ? '1' : '0.1';
+      const valueStep = track.property === 'opacity' || track.property === 'fillOpacity' ? '1' : '0.1';
       const easingOptions = motionEasingOptions.map(([value, label]) => `<option value="${value}"${(frame.easing || 'linear') === value ? ' selected' : ''}>${label}</option>`).join('');
-      return `<div class="motion-keyframe-row"><label><span>Time</span><input type="number" min="0" max="${duration}" step="10" value="${frame.timeMs}" data-motion-field="timeMs" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} keyframe time in milliseconds" /></label><label><span>${track.property === 'opacity' ? 'Opacity' : 'Value'}</span><input type="number"${valueLimits} step="${valueStep}" value="${displayValue}" data-motion-field="value" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} value at ${motionTimeLabel(frame.timeMs)}" /></label><label class="motion-easing-field"><span>Ease to next</span><select data-motion-field="easing" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Easing after ${motionTimeLabel(frame.timeMs)}">${easingOptions}</select></label><button class="tiny-icon-button motion-remove-keyframe" type="button" data-motion-action="remove-keyframe" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Remove keyframe at ${motionTimeLabel(frame.timeMs)}" title="Remove keyframe">×</button></div>`;
+      const valueInput = track.property === 'fillColor'
+        ? `<input type="color" value="${escapeHtml(frame.value)}" data-motion-field="value" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} at ${motionTimeLabel(frame.timeMs)}" />`
+        : `<input type="number"${valueLimits} step="${valueStep}" value="${displayValue}" data-motion-field="value" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} value at ${motionTimeLabel(frame.timeMs)}" />`;
+      return `<div class="motion-keyframe-row"><label><span>Time</span><input type="number" min="0" max="${duration}" step="10" value="${frame.timeMs}" data-motion-field="timeMs" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} keyframe time in milliseconds" /></label><label><span>${track.property === 'opacity' || track.property === 'fillOpacity' ? 'Opacity' : track.property === 'fillColor' ? 'Color' : 'Value'}</span>${valueInput}</label><label class="motion-easing-field"><span>Ease to next</span><select data-motion-field="easing" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Easing after ${motionTimeLabel(frame.timeMs)}">${easingOptions}</select></label><button class="tiny-icon-button motion-remove-keyframe" type="button" data-motion-action="remove-keyframe" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Remove keyframe at ${motionTimeLabel(frame.timeMs)}" title="Remove keyframe">×</button></div>`;
     }).join('');
     return `<section class="motion-track-card"><header><strong>${escapeHtml(motionPropertyLabels[track.property] || track.property)}</strong><button class="tiny-icon-button" type="button" data-motion-action="remove-track" data-track-id="${escapeHtml(track.id)}" aria-label="Remove ${escapeHtml(motionPropertyLabels[track.property] || track.property)} track" title="Remove track">×</button></header><div class="motion-track-lane" aria-label="${escapeHtml(motionPropertyLabels[track.property] || track.property)} keyframes">${markers}</div><div class="motion-keyframe-list">${rows || '<p class="motion-empty-keyframes">No keyframes yet. Move the playhead, then add one.</p>'}</div><button class="secondary-button motion-add-keyframe" type="button" data-motion-action="add-keyframe" data-track-id="${escapeHtml(track.id)}">＋ Add keyframe at playhead</button></section>`;
   }).join('');
-  const selectionCopy = !node ? '<p class="motion-empty">Select one layer in the Layers panel to animate its position, size, rotation, or opacity.</p>'
+  const selectionCopy = !node ? '<p class="motion-empty">Select one layer in the Layers panel to animate its position, size, rotation, opacity, or solid fill.</p>'
     : node.locked ? '<p class="motion-empty">Unlock this layer before adding motion tracks.</p>'
       : '';
   return `<div class="motion-panel"><section class="motion-section"><div class="motion-panel-heading"><div><span class="motion-eyebrow">TIMELINE</span><strong>${node ? escapeHtml(node.name || 'Selected layer') : 'Design motion'}</strong></div><label class="motion-duration-field"><span>Duration</span><input id="motion-duration" type="number" min="1" max="120000" step="100" value="${duration}" aria-label="Motion duration in milliseconds" /></label></div><div class="motion-playback-controls"><button class="primary-button motion-play-button" id="motion-play" type="button" data-motion-action="play" aria-label="${state.motionPlaying ? 'Pause motion preview' : 'Play motion preview'}" aria-pressed="${state.motionPlaying}">${state.motionPlaying ? 'Pause' : 'Play'}</button><input id="motion-playhead" type="range" min="0" max="${duration}" step="1" value="${Math.min(duration, Math.round(state.motionPlayheadMs))}" aria-label="Motion timeline playhead" /><output id="motion-time-readout" aria-live="off">${motionTimeLabel(state.motionPlayheadMs)} / ${motionTimeLabel(duration)}</output></div><p class="motion-preview-note">Preview is read-only. Select layers from the Layers panel while previewing.</p></section>${selectionCopy}${node && !node.locked ? `<section class="motion-section motion-track-create"><label for="motion-property">Animate</label><div><select id="motion-property" class="select-field" aria-label="Property to animate">${propertyOptions}</select><button class="secondary-button" type="button" data-motion-action="add-track"${Object.keys(motionPropertyLabels).every(property => trackedProperties.has(property)) ? ' disabled' : ''}>＋ Add track</button></div><small>Track values preview on the canvas; the saved layer values stay unchanged.</small></section>` : ''}<div class="motion-track-list">${trackMarkup || (node ? '<p class="motion-empty">No motion tracks on this layer yet.</p>' : '')}</div></div>`;
@@ -4106,6 +4137,10 @@ function finishImageFillCropInteraction(interaction) {
 function onCanvasPointerDown(event) {
   if (state.documentTransitioning) return;
   if (event.button !== 0 && event.button !== 1) return;
+  // Canvas selection may replace a layer-tree selection while the tree row
+  // still owns DOM focus. Move focus with the pointer interaction so Delete
+  // acts on the latest canvas selection rather than that stale focused row.
+  canvas.focus({ preventScroll: true });
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   canvas.setPointerCapture?.(event.pointerId);
   if (isLiveHostViewOnly()) {

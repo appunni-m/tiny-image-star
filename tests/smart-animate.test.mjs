@@ -824,6 +824,31 @@ test('smart animation matches by layer name and parent hierarchy and fades unmat
   assert.equal(newBadge.opacity, 0.5);
 });
 
+test('smart animation keeps outgoing unmatched layers in their authored stack positions', () => {
+  const from = createNode('frame', { children: [
+    createNode('ellipse', { name: 'Leaving bottom', opacity: 0.4 }),
+    createNode('rectangle', { name: 'Back' }),
+    createNode('ellipse', { name: 'Leaving middle', opacity: 0.8 }),
+    createNode('ellipse', { name: 'Leaving adjacent', opacity: 0.6 }),
+    createNode('rectangle', { name: 'Front' }),
+    createNode('ellipse', { name: 'Leaving top', opacity: 0.4 })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Back' }),
+    createNode('rectangle', { name: 'Entering middle' }),
+    createNode('rectangle', { name: 'Front' })
+  ] });
+
+  const middle = interpolateSmartFrame(from, to, 0.5).children;
+  assert.deepEqual(middle.map(node => node.name), [
+    'Leaving bottom', 'Back', 'Entering middle', 'Leaving middle', 'Leaving adjacent', 'Front', 'Leaving top'
+  ], 'outgoing layers stay beside their nearest surviving siblings instead of being appended above the destination stack');
+  assert.equal(middle[0].opacity, 0.2, 'the outgoing bottom layer remains below its next surviving sibling while fading');
+  assert.equal(middle[3].opacity, 0.4, 'the interleaved outgoing layer stays below its next surviving sibling while fading');
+  assert.equal(middle[4].opacity, 0.3, 'adjacent outgoing layers retain their relative stack order');
+  assert.equal(middle[6].opacity, 0.2, 'the outgoing top layer remains above its previous surviving sibling while fading');
+});
+
 test('smart animation keeps changed text matched while incompatible vector content crossfades', () => {
   const from = createNode('frame', { children: [
     createNode('text', { name: 'Title', text: 'Before', x: 10, width: 40, opacity: 0.8 }),

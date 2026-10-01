@@ -282,7 +282,7 @@ function imageForNode(node, assets, state, assetId = node.assetId, previewKey = 
   return assets.get(assetId)?.bitmap ?? null;
 }
 
-function fillLayerColor(document, node, fill, index) {
+export function fillLayerColor(document, node, fill, index) {
   const linkedPrimary = index === 0 && (node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
   return linkedPrimary || (index === 0 && !Array.isArray(node.fills))
     ? getNodeColor(document, node, 'fill')
@@ -294,15 +294,20 @@ function fillCurrentPath(ctx, node) {
   else ctx.fill();
 }
 
-function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null) {
+function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id)) {
   const fills = fillStackForNode(node);
+  const motionFillIndex = fills.findIndex(fill => fill.type === 'solid');
   for (let index = 0; index < fills.length; index += 1) {
     const fill = fills[index];
-    if (!fill.visible || fill.opacity <= 0) continue;
+    const animatedFill = index === motionFillIndex;
+    const fillOpacity = animatedFill && Number.isFinite(motionValues?.fillOpacity) ? motionValues.fillOpacity : fill.opacity;
+    if (!fill.visible || fillOpacity <= 0) continue;
     ctx.save();
-    ctx.globalAlpha *= fill.opacity;
+    ctx.globalAlpha *= fillOpacity;
     if (fill.type === 'solid') {
-      const color = colorOverride != null && index === 0
+      const color = animatedFill && typeof motionValues?.fillColor === 'string'
+        ? motionValues.fillColor
+        : colorOverride != null && index === 0
         ? colorOverride
         : fillLayerColor(state.document, node, fill, index);
       if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); fillCurrentPath(ctx, node); }
@@ -1067,15 +1072,18 @@ export class SceneRenderer {
         }
         for (let index = 0; index < fills.length; index += 1) {
           const fill = fills[index];
-          if (!fill.visible || fill.opacity <= 0) continue;
+          const animatedFill = fill.type === 'solid' && index === fills.findIndex(item => item.type === 'solid');
+          const fillOpacity = animatedFill && Number.isFinite(motionValues?.fillOpacity) ? motionValues.fillOpacity : fill.opacity;
+          if (!fill.visible || fillOpacity <= 0) continue;
           ctx.beginPath();
           if (!traceVectorNetworkFace(ctx, node, face, x, y)) continue;
           ctx.save();
-          ctx.globalAlpha *= fill.opacity * (face.fillOpacity ?? 1);
+          ctx.globalAlpha *= fillOpacity * (face.fillOpacity ?? 1);
           if (face.fill != null && index === 0 && fill.type === 'solid') {
             ctx.fillStyle = rgba(face.fill, 1); ctx.fill();
           } else if (fill.type === 'solid') {
-            const color = fillLayerColor(document, node, fill, index);
+            const color = animatedFill && typeof motionValues?.fillColor === 'string'
+              ? motionValues.fillColor : fillLayerColor(document, node, fill, index);
             if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); ctx.fill(); }
           } else if (gradientTypes.has(fill.type)) {
             const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
@@ -1094,7 +1102,7 @@ export class SceneRenderer {
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y));
     } else {
-      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height);
+      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues);
       drawStrokeStack(ctx, node, document, x, y, width, height);
     }
 

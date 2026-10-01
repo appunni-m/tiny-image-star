@@ -155,6 +155,70 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
 });
 
+test('imports supported mixed character styles as editable rich-text runs', () => {
+  const pageGuid = { sessionID: 21, localID: 1 };
+  const textGuid = { sessionID: 21, localID: 2 };
+  const characters = 'A🚀B';
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, '!', {
+        guid: textGuid,
+        name: 'Styled headline',
+        textData: {
+          characters,
+          style: {
+            fontFamily: 'Inter', fontSize: 24, fontWeight: 400,
+            lineHeight: { unit: 'PIXELS', value: 30 }, letterSpacing: { unit: 'PIXELS', value: 0 }
+          },
+          // The rocket occupies two UTF-16 positions; both reference one style.
+          characterStyleOverrides: [0, 1, 1, 2],
+          styleOverrideTable: {
+            1: {
+              fontName: { family: 'Inter', style: 'Bold Italic' }, fontSize: 32,
+              lineHeight: { unit: 'PIXELS', value: 48 }, letterSpacing: { unit: 'PERCENT', value: 10 },
+              fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 }, visible: true }]
+            },
+            2: { fontWeight: 500, textDecoration: 'UNDERLINE' }
+          }
+        },
+        fillPaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, visible: true }]
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  }, { fileName: 'mixed-text.fig' });
+
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.textRuns.map(run => run.text).join(''), characters);
+  assert.deepEqual(text.textRuns, [
+    { text: 'A' },
+    { text: '🚀', fontSize: 32, fontWeight: 700, fontStyle: 'italic', lineHeight: 1.5, letterSpacing: 3.2, color: '#ff0000' },
+    { text: 'B', fontWeight: 500, textDecoration: 'underline' }
+  ]);
+  assert.equal(imported.report.flattenedTypes.TEXT_STYLE, undefined);
+});
+
+test('short mixed-style maps default trailing text safely and reject a split surrogate boundary', () => {
+  const pageGuid = { sessionID: 22, localID: 1 };
+  const textGuid = { sessionID: 22, localID: 2 };
+  const makeDocument = (characters, characterStyleOverrides) => convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, '!', {
+        guid: textGuid, name: 'Text',
+        textData: { characters, characterStyleOverrides, styleOverrideTable: { 1: { fontWeight: 700 } } }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+
+  const trailingDefault = makeDocument('ABCD', [1]).document.pages[0].children[0];
+  assert.deepEqual(trailingDefault.textRuns, [{ text: 'A', fontWeight: 700 }, { text: 'BCD' }]);
+
+  const splitPair = makeDocument('😀x', [1, 0, 0]);
+  assert.equal(splitPair.document.pages[0].children[0].textRuns, undefined);
+  assert.equal(splitPair.report.flattenedTypes.TEXT_STYLE_SURROGATE, 1);
+});
+
 test('imports horizontal and vertical auto layout as editable local layout instead of fixed positions', () => {
   const pageGuid = { sessionID: 3, localID: 1 };
   const horizontalGuid = { sessionID: 3, localID: 2 };

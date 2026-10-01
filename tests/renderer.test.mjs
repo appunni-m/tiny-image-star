@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, fillLayerColor, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
@@ -649,6 +649,57 @@ test('Boolean paint and white-mask surfaces never share cache entries in either 
     if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
     else globalThis.OffscreenCanvas = previousCanvas;
   }
+});
+
+test('motion preview overrides the first solid fill color and opacity without changing saved fills or exports', () => {
+  const document = createDocument();
+  const node = createNode('rectangle', { id: 'animated-fill', width: 20, height: 20,
+    fills: [{ id: 'primary', type: 'solid', color: '#000000', visible: true, opacity: 1 }] });
+  addNode(document, node);
+  const state = { document, zoom: 1, presenting: true, assets: new Map(), previews: new Map(),
+    selectedIds: [], motionPreview: new Map([[node.id, { fillColor: '#ffffff', fillOpacity: 0.25 }]]) };
+  let liveFillStyle = '';
+  let liveAlpha = 1;
+  const painted = [];
+  const alphaStack = [];
+  const ctx = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      if (property === 'save') return () => alphaStack.push(target.globalAlpha);
+      if (property === 'restore') return () => { target.globalAlpha = alphaStack.pop() ?? 1; };
+      if (property === 'fill') return () => painted.push({ fillStyle: liveFillStyle, alpha: liveAlpha });
+      return () => {};
+    },
+    set(target, property, value) {
+      if (property === 'fillStyle') liveFillStyle = value;
+      if (property === 'globalAlpha') liveAlpha = value;
+      target[property] = value;
+      return true;
+    }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+  renderer.drawNode(ctx, node, 0, 0, state.assets);
+  assert.match(painted.at(-1).fillStyle, /255, 255, 255/);
+  assert.equal(painted.at(-1).alpha, 0.25);
+  assert.equal(node.fills[0].color, '#000000');
+  assert.equal(node.fills[0].opacity, 1);
+  // The shared export renderer option suppresses the transient motion map.
+  state.motionPreview = new Map([[node.id, { fillColor: '#ffffff', fillOpacity: 0.25 }]]);
+  renderer.drawNode(ctx, node, 0, 0, state.assets, false, false, { ignoreMotionPreview: true });
+  assert.match(painted.at(-1).fillStyle, /0, 0, 0/);
+  assert.equal(painted.at(-1).alpha, 1);
+});
+
+test('motion fill keyframe base color resolution matches the renderer for linked and ordinary fills', () => {
+  const document = createDocument();
+  document.colorStyles = [{ id: 'brand-primary', kind: 'fill', name: 'Brand', value: '#123456' }];
+  const linked = createNode('rectangle', { id: 'linked-color', fillStyleId: 'brand-primary',
+    fills: [{ id: 'linked-fill', type: 'solid', color: '#abcdef', visible: true, opacity: 1 }] });
+  const ordinary = createNode('rectangle', { id: 'ordinary-color',
+    fills: [{ id: 'ordinary-fill', type: 'solid', color: '#fedcba', visible: true, opacity: 1 }] });
+  assert.equal(fillLayerColor(document, linked, linked.fills[0], 0), '#123456');
+  assert.equal(fillLayerColor(document, ordinary, ordinary.fills[0], 0), '#fedcba');
 });
 
 test('Boolean text operands render white glyph masks and resolve text metrics by frame mode', () => {

@@ -817,18 +817,87 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null)
   const toKeys = siblingKeys(toChildren);
   const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
   const matchedSourceIndexes = new Set();
-  const result = toChildren.map((node, index) => {
+  const destination = toChildren.map((node, index) => {
     const match = sourceByKey.get(toKeys[index]);
     if (match && canMatch(match.node, node)) {
       matchedSourceIndexes.add(match.index);
-      return interpolateLayer(match.node, node, progress, resolveRadius);
+      return { node: interpolateLayer(match.node, node, progress, resolveRadius), sourceIndex: match.index };
     }
-    return fadeLayer(node, progress, true);
+    return { node: fadeLayer(node, progress, true), sourceIndex: null };
   });
-  for (let index = 0; index < fromChildren.length; index += 1) {
-    if (!matchedSourceIndexes.has(index)) result.push(fadeLayer(fromChildren[index], progress, false));
+  const nextMatched = new Array(fromChildren.length);
+  const previousMatched = new Array(fromChildren.length);
+  let nearest = -1;
+  for (let index = fromChildren.length - 1; index >= 0; index -= 1) {
+    nextMatched[index] = nearest;
+    if (matchedSourceIndexes.has(index)) nearest = index;
   }
-  return result;
+  nearest = -1;
+  for (let index = 0; index < fromChildren.length; index += 1) {
+    previousMatched[index] = nearest;
+    if (matchedSourceIndexes.has(index)) nearest = index;
+  }
+  const beforeMatched = new Map();
+  const afterMatched = new Map();
+  const unanchored = [];
+  for (let index = 0; index < fromChildren.length; index += 1) {
+    if (matchedSourceIndexes.has(index)) continue;
+
+    // Exiting layers should keep their source stack position relative to the
+    // nearest surviving sibling. Destination order remains authoritative for
+    // matched and entering layers, so prefer the next surviving source sibling
+    // as the insertion point; trailing exits follow their previous survivor.
+    const exiting = { node: fadeLayer(fromChildren[index], progress, false), sourceIndex: index };
+    const nextMatch = nextMatched[index];
+    if (nextMatch >= 0) {
+      if (!beforeMatched.has(nextMatch)) beforeMatched.set(nextMatch, []);
+      beforeMatched.get(nextMatch).push(exiting);
+      continue;
+    }
+
+    const previousMatch = previousMatched[index];
+    if (previousMatch >= 0) {
+      if (!afterMatched.has(previousMatch)) afterMatched.set(previousMatch, []);
+      afterMatched.get(previousMatch).push(exiting);
+      continue;
+    }
+
+    unanchored.push(exiting);
+  }
+
+  const result = [];
+  for (const entry of destination) {
+    if (entry.sourceIndex !== null) {
+      for (const exiting of beforeMatched.get(entry.sourceIndex) || []) result.push(exiting);
+    }
+    result.push(entry);
+    if (entry.sourceIndex !== null) {
+      for (const exiting of afterMatched.get(entry.sourceIndex) || []) result.push(exiting);
+    }
+  }
+
+  if (unanchored.length) {
+    // With no matched sibling there is no semantic anchor. Retain each source
+    // ordinal as the best available stack-position hint while the two stacks
+    // crossfade independently. The ordered slot pass avoids repeated splices
+    // when an entire layer stack is replaced.
+    const outgoingAt = new Map();
+    let finalLength = result.length;
+    for (const entry of unanchored) {
+      const slot = Math.min(entry.sourceIndex, finalLength);
+      outgoingAt.set(slot, entry);
+      finalLength += 1;
+    }
+    const ordered = [];
+    let destinationIndex = 0;
+    for (let slot = 0; slot < finalLength; slot += 1) {
+      const outgoing = outgoingAt.get(slot);
+      ordered.push(outgoing || result[destinationIndex++]);
+    }
+    return ordered.map(entry => entry.node);
+  }
+
+  return result.map(entry => entry.node);
 }
 
 export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {

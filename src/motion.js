@@ -1,15 +1,33 @@
+import { vectorPathContours } from './vector-path.js';
+
 export const DEFAULT_MOTION_DURATION_MS = 1_000;
 export const MAX_MOTION_DURATION_MS = 120_000;
 export const MAX_MOTION_TRACKS = 100;
 export const MAX_MOTION_KEYFRAMES_PER_TRACK = 500;
 export const MAX_MOTION_KEYFRAMES = 10_000;
 
-const properties = new Set(['x', 'y', 'width', 'height', 'rotation', 'opacity']);
+const properties = new Set(['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillColor', 'fillOpacity']);
 const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const allowedMotionKeys = new Set(['durationMs', 'tracks']);
 const allowedTrackKeys = new Set(['id', 'nodeId', 'property', 'keyframes']);
 const allowedKeyframeKeys = new Set(['id', 'timeMs', 'value', 'easing']);
+
+/** Whether this layer has a solid fill the motion renderer can override safely. */
+export function supportsMotionSolidFill(node) {
+  if (!node || ['text', 'image', 'line', 'boolean'].includes(node.type)) return false;
+  if (node.type === 'path') {
+    const contours = vectorPathContours(node);
+    return contours.length > 0 && contours.every(contour => contour.closed === true
+      && Array.isArray(contour.points) && contour.points.length >= 2);
+  }
+  if (node.type === 'network') {
+    return Array.isArray(node.fills) && node.fills.some(fill => fill.type === 'solid')
+      && Array.isArray(node.faces) && node.faces.length > 0
+      && node.faces.every(face => face.fill == null);
+  }
+  return true;
+}
 
 function fail(message) {
   throw new TypeError(`Invalid motion document: ${message}`);
@@ -24,8 +42,9 @@ function validId(value) {
 }
 
 function valueInRange(property, value) {
+  if (property === 'fillColor') return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
   if (typeof value !== 'number' || !Number.isFinite(value)) return false;
-  if (property === 'opacity') return value >= 0 && value <= 1;
+  if (property === 'opacity' || property === 'fillOpacity') return value >= 0 && value <= 1;
   if (property === 'width' || property === 'height') return value >= 0 && value <= 1_000_000_000;
   if (property === 'rotation') return Math.abs(value) <= 1_000_000;
   return Math.abs(value) <= 1_000_000_000;
@@ -139,9 +158,19 @@ function sampleOrderedMotionKeyframes(keyframes, timeMs) {
     if (timeMs > to.timeMs) continue;
     const progress = (timeMs - from.timeMs) / (to.timeMs - from.timeMs);
     const eased = easedProgress(from.easing ?? 'linear', progress);
+    if (typeof from.value === 'string' && typeof to.value === 'string') return interpolateHexColor(from.value, to.value, eased);
     return from.value + (to.value - from.value) * eased;
   }
   return last.value;
+}
+
+function interpolateHexColor(from, to, progress) {
+  const channels = [1, 3, 5].map(offset => {
+    const start = Number.parseInt(from.slice(offset, offset + 2), 16);
+    const end = Number.parseInt(to.slice(offset, offset + 2), 16);
+    return Math.round(start + (end - start) * progress).toString(16).padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
 }
 
 /** Build a reusable sampler so render loops sort authored keyframes only once. */
