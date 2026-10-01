@@ -31,6 +31,30 @@ test('source and displayed crop rectangles round-trip in all quarter-turn orient
   }
 });
 
+test('flipped crop rectangles and pointer drags map back to their original source axes', () => {
+  for (const rotation of [0, 90, 180, 270]) {
+    for (const flips of [{}, { flipHorizontal: true }, { flipVertical: true }, { flipHorizontal: true, flipVertical: true }]) {
+      const displayed = imageCropToDisplayRect(sourceCrop, rotation, flips);
+      assertRectClose(imageCropFromDisplayRect(displayed, rotation, flips), sourceCrop,
+        `${rotation}° ${JSON.stringify(flips)} displayed crop round-trip`);
+    }
+  }
+
+  const mirroredDrag = imageCropFromDisplayDrag({
+    start: { x: 120, y: 60 }, end: { x: 240, y: 90 }, bounds,
+    sourceWidth: 400, sourceHeight: 200, flipHorizontal: true,
+  });
+  assertRectClose(mirroredDrag, { left: 0.3, top: 0.1, right: 0.9, bottom: 0.4 },
+    'a visible left-to-right drag on a mirrored image maps to the matching source rectangle');
+
+  const mirroredHandle = moveImageCropHandle({
+    crop: sourceCrop, handle: 'e', point: { x: 240, y: 70 }, bounds,
+    sourceWidth: 400, sourceHeight: 200, flipHorizontal: true,
+  });
+  assertRectClose(mirroredHandle, { left: 0.3, top: 0.1, right: 0.8, bottom: 0.9 },
+    'a visible right-edge drag on a mirrored image edits the correct original source edge');
+});
+
 test('display drag maps to source-normalized crop and clamps pointer positions to displayed bounds', () => {
   const crop = imageCropFromDisplayDrag({
     start: { x: 120, y: 60 }, end: { x: 240, y: 90 }, bounds,
@@ -128,6 +152,17 @@ test('full-source fit bounds use the renderer max/min scale and centered placeme
   const contain = calculateImageCropDisplayBounds({ ...input, fit: 'contain' });
   assert.deepEqual(contain.drawBounds, { left: 0, top: 25, width: 100, height: 50 });
   assert.deepEqual(contain.virtualBounds, contain.drawBounds);
+});
+
+test('flipped crop pixels anchor to the same mirrored full-source context as the overlay', () => {
+  const result = calculateImageCropDisplayBounds({
+    frameWidth: 100, frameHeight: 100, sourceWidth: 400, sourceHeight: 200,
+    crop: { left: 0.1, top: 0.2, right: 0.6, bottom: 0.8 },
+    flipHorizontal: true, fit: 'contain',
+  });
+  assert.deepEqual(result.cropInDisplayPixels, { left: 160, top: 40, right: 360, bottom: 160 });
+  assert.deepEqual(result.drawBounds, { left: 0, top: 20, width: 100, height: 60 });
+  assert.deepEqual(result.virtualBounds, { left: -80, top: 0, width: 200, height: 100 });
 });
 
 test('fitted bounds reject invalid layer dimensions, image dimensions, and fit values', () => {

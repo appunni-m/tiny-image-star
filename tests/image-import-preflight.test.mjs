@@ -49,6 +49,35 @@ function webpHeader(width, height) {
   return bytes;
 }
 
+function tiffHeader(width, height, orientation = 1) {
+  const bytes = new Uint8Array(50);
+  bytes.set([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]);
+  const view = new DataView(bytes.buffer);
+  view.setUint16(8, 3, true);
+  view.setUint16(10, 256, true); view.setUint16(12, 4, true); view.setUint32(14, 1, true); view.setUint32(18, width, true);
+  view.setUint16(22, 257, true); view.setUint16(24, 4, true); view.setUint32(26, 1, true); view.setUint32(30, height, true);
+  view.setUint16(34, 274, true); view.setUint16(36, 3, true); view.setUint32(38, 1, true); view.setUint16(42, orientation, true);
+  view.setUint32(46, 0, true);
+  return bytes;
+}
+
+function jpegExifHeader(width, height, orientation) {
+  const exif = Buffer.alloc(32);
+  exif.write('Exif\0\0II', 0, 'binary'); exif.writeUInt16LE(42, 8); exif.writeUInt32LE(8, 10); exif.writeUInt16LE(1, 14);
+  exif.writeUInt16LE(0x0112, 16); exif.writeUInt16LE(3, 18); exif.writeUInt32LE(1, 20); exif.writeUInt16LE(orientation, 24);
+  const app1 = Buffer.alloc(4); app1[0] = 0xff; app1[1] = 0xe1; app1.writeUInt16BE(exif.length + 2, 2);
+  const frame = Buffer.from([0xff, 0xc0, 0, 8, 8, (height >> 8) & 0xff, height & 0xff, (width >> 8) & 0xff, width & 0xff, 1]);
+  return new Uint8Array(Buffer.concat([Buffer.from([0xff, 0xd8]), app1, exif, frame]));
+}
+
+function bmffHeader(brand) {
+  const bytes = new Uint8Array(24); const view = new DataView(bytes.buffer);
+  view.setUint32(0, 24); bytes.set([0x66, 0x74, 0x79, 0x70], 4);
+  bytes.set(new TextEncoder().encode(brand), 8); bytes.set([0x00, 0x00, 0x00, 0x00], 12);
+  bytes.set(new TextEncoder().encode('mif1'), 16);
+  return bytes;
+}
+
 test('image import preflight accepts recognized sources within the Pillow pixel ceiling', () => {
   assert.equal(IMAGE_HEADER_SCAN_BYTES, 1024 * 1024);
   assert.deepEqual(assertSafeRasterDimensions(pngHeader(1920, 1080)), {
@@ -69,9 +98,37 @@ test('image import preflight extracts bounded dimensions from every advertised r
     ['GIF', gifHeader(320, 240), { width: 320, height: 240, pixels: 76_800 }],
     ['BMP', bmpHeader(320, 240), { width: 320, height: 240, pixels: 76_800 }],
     ['WebP', webpHeader(320, 240), { width: 320, height: 240, pixels: 76_800 }],
+    ['TIFF', tiffHeader(320, 240), { width: 320, height: 240, pixels: 76_800 }],
+    ['JPEG with EXIF orientation', jpegExifHeader(320, 240, 6), { width: 240, height: 320, pixels: 76_800 }],
     ['PNM', new TextEncoder().encode('P6\n320 240\n'), { width: 320, height: 240, pixels: 76_800 }],
   ]) {
     assert.deepEqual(assertSafeRasterDimensions(source), expected, `${format} dimensions should be parsed before decoding`);
+  }
+});
+
+test('image import preflight applies all eight EXIF orientations to visible JPEG dimensions', () => {
+  for (let orientation = 1; orientation <= 8; orientation += 1) {
+    const dimensions = assertSafeRasterDimensions(jpegExifHeader(3, 2, orientation));
+    assert.deepEqual([dimensions.width, dimensions.height], orientation >= 5 ? [2, 3] : [3, 2]);
+    assert.equal(dimensions.pixels, 6);
+  }
+});
+
+test('image import preflight applies TIFF Orientation to visible dimensions', () => {
+  for (let orientation = 1; orientation <= 8; orientation += 1) {
+    const dimensions = assertSafeRasterDimensions(tiffHeader(3, 2, orientation));
+    assert.deepEqual([dimensions.width, dimensions.height], orientation >= 5 ? [2, 3] : [3, 2]);
+    assert.equal(dimensions.pixels, 6);
+  }
+});
+
+test('image import preflight gives explicit local-decoder limits for HEIC and AVIF', () => {
+  for (const [brand, message] of [['heic', /HEIC\/HEIF.*not supported.*Pillow-RS/i], ['avif', /AVIF.*not supported.*Pillow-RS/i]]) {
+    assert.throws(() => assertSafeRasterDimensions(bmffHeader(brand)), error => {
+      assert.match(error.message, message);
+      assert.match(error.message, /JPEG or PNG/);
+      return true;
+    });
   }
 });
 
@@ -105,7 +162,7 @@ test('image import preflight fails closed with a user-facing message for unknown
   assert.throws(() => assertSafeRasterDimensions(source), error => {
     assert.equal(error.name, 'Error');
     assert.match(error.message, /could not verify this image size before decoding/i);
-    assert.match(error.message, /PNG, JPEG, GIF, BMP, WebP, or PNM/);
+    assert.match(error.message, /PNG, JPEG, GIF, BMP, WebP, TIFF, or PNM/);
     return true;
   });
 });

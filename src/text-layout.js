@@ -3,6 +3,10 @@ const wordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter(undefined,
 const thaiWordSegmenter = globalThis.Intl?.Segmenter ? new Intl.Segmenter('th', { granularity: 'word' }) : null;
 
 const markPattern = /\p{M}/u;
+// Unicode GL/WJ characters prohibit a line break on either side. In particular,
+// treating NBSP as ordinary JavaScript whitespace splits values such as "10 MB"
+// and can even drop the space when a soft wrap happens at that point.
+const noBreakPattern = /[\u00a0\u2007\u202f\u2060\ufeff\u2011]/u;
 const cjkPattern = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const cjkOpeningPunctuation = /[〈《「『【〔〖〘〚〝（［｛｟«‘“]/u;
 const cjkClosingPunctuation = /[〉》」』】〕〗〙〛〞〟）、。，．？！：；»’”]/u;
@@ -105,8 +109,93 @@ function isCjkLineBreakCharacter(value) {
   return cjkPattern.test(value) || cjkOpeningPunctuation.test(value) || cjkClosingPunctuation.test(value) || cjkSmallKana.test(value);
 }
 
-function splitOverwideToken(token, maxWidth, measure, segmenter = graphemeSegmenter) {
-  const value = String(token ?? '');
+function isBreakableWhitespace(value) {
+  return /^\s+$/u.test(value) && !noBreakPattern.test(value);
+}
+
+function canBreakBetweenGraphemes(left, right) {
+  return !noBreakPattern.test(left) && !noBreakPattern.test(right);
+}
+
+function discretionaryBreakKind(cluster) {
+  if (cluster === '\u00ad') return 'soft-hyphen';
+  if (cluster === '\u200b') return 'zero-width-space';
+  return null;
+}
+
+function visibleTextWithoutDiscretionaryBreaks(text) {
+  return String(text ?? '').replace(/[\u00ad\u200b]/gu, '');
+}
+
+function plainDiscretionaryUnits(clusters) {
+  const units = [];
+  for (const cluster of clusters) {
+    const kind = discretionaryBreakKind(cluster);
+    if (kind) {
+      const previous = units.at(-1);
+      if (previous && (kind === 'soft-hyphen' || !previous.breakAfter)) previous.breakAfter = kind;
+    } else units.push({ text: cluster, breakAfter: null });
+  }
+  return units;
+}
+
+function plainUnitsText(units) { return units.map(unit => unit.text).join(''); }
+
+function plainUnitsRawText(units) {
+  return units.map(unit => unit.text + (unit.breakAfter === 'soft-hyphen' ? '\u00ad' : unit.breakAfter ? '\u200b' : '')).join('');
+}
+
+function findPlainDiscretionaryBreak(token, linePrefix, maxWidth, measure, segmenter = graphemeSegmenter) {
+  const clusters = textGraphemes(token, segmenter);
+  let visiblePrefix = '';
+  let previousVisibleCluster = '';
+  let selected = null;
+  for (let index = 0; index < clusters.length; index += 1) {
+    const firstKind = discretionaryBreakKind(clusters[index]);
+    if (!firstKind) {
+      visiblePrefix += clusters[index];
+      previousVisibleCluster = clusters[index];
+      continue;
+    }
+    let kind = firstKind;
+    let end = index + 1;
+    while (end < clusters.length && discretionaryBreakKind(clusters[end])) {
+      if (discretionaryBreakKind(clusters[end]) === 'soft-hyphen') kind = 'soft-hyphen';
+      end += 1;
+    }
+    const suffix = clusters.slice(end).join('');
+    const nextVisibleCluster = clusters[end];
+    if (visiblePrefix && nextVisibleCluster && canBreakBetweenGraphemes(previousVisibleCluster, nextVisibleCluster)) {
+      const prefix = visiblePrefix + (kind === 'soft-hyphen' ? '-' : '');
+      if (Number(measure(visibleTextWithoutDiscretionaryBreaks(`${linePrefix}${prefix}`))) <= maxWidth) {
+        selected = { prefix, suffix };
+      }
+    }
+    index = end - 1;
+  }
+  return selected;
+}
+
+function plainLineWithTrailingSoftHyphen(line, nextPiece, hasPendingWhitespace, maxWidth, measure, segmenter = graphemeSegmenter) {
+  if (hasPendingWhitespace) return null;
+  const lineClusters = textGraphemes(line, segmenter);
+  let markerStart = lineClusters.length;
+  let kind = null;
+  while (markerStart > 0 && discretionaryBreakKind(lineClusters[markerStart - 1])) {
+    const markerKind = discretionaryBreakKind(lineClusters[markerStart - 1]);
+    if (markerKind === 'soft-hyphen') kind = markerKind;
+    else kind ||= markerKind;
+    markerStart -= 1;
+  }
+  if (kind !== 'soft-hyphen' || markerStart < 1) return null;
+  const nextVisible = textGraphemes(nextPiece, segmenter).find(cluster => !discretionaryBreakKind(cluster));
+  const previousVisible = lineClusters[markerStart - 1];
+  if (!nextVisible || !canBreakBetweenGraphemes(previousVisible, nextVisible)) return null;
+  const rendered = visibleTextWithoutDiscretionaryBreaks(line) + '-';
+  return Number(measure(rendered)) <= maxWidth ? rendered : null;
+}
+
+function splitOverwideTokenByGrapheme(value, maxWidth, measure, segmenter) {
   if (!value || !Number.isFinite(maxWidth) || !(maxWidth > 0) || Number(measure(value)) <= maxWidth) return [value];
   const clusters = textGraphemes(value, segmenter);
   if (clusters.length < 2) return [value];
@@ -117,8 +206,9 @@ function splitOverwideToken(token, maxWidth, measure, segmenter = graphemeSegmen
   let previousCluster = '';
   for (const cluster of clusters) {
     const candidate = current + cluster;
-    const legalBreak = !cjkAware || currentClusters >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, cluster);
-    if (current && (currentClusters >= maxGraphemesPerProbe || Number(measure(candidate)) > maxWidth && legalBreak)) {
+    const legalBreak = canBreakBetweenGraphemes(previousCluster, cluster)
+      && (!cjkAware || currentClusters >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, cluster));
+    if (current && legalBreak && (currentClusters >= maxGraphemesPerProbe || Number(measure(candidate)) > maxWidth)) {
       chunks.push(current);
       current = cluster;
       currentClusters = 1;
@@ -131,6 +221,43 @@ function splitOverwideToken(token, maxWidth, measure, segmenter = graphemeSegmen
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+function splitOverwideToken(token, maxWidth, measure, segmenter = graphemeSegmenter) {
+  const value = String(token ?? '');
+  if (!value) return [value];
+  const clusters = textGraphemes(value, segmenter);
+  const hasDiscretionaryBreak = clusters.some(cluster => discretionaryBreakKind(cluster));
+  if (!hasDiscretionaryBreak) return splitOverwideTokenByGrapheme(value, maxWidth, measure, segmenter);
+
+  const units = plainDiscretionaryUnits(clusters);
+  const visible = plainUnitsText(units);
+  if (!Number.isFinite(maxWidth) || !(maxWidth > 0) || Number(measure(visible)) <= maxWidth) return [value];
+
+  const chunks = [];
+  let remaining = units;
+  while (remaining.length && Number(measure(plainUnitsText(remaining))) > maxWidth) {
+    let selected = null;
+    for (let index = 0; index < remaining.length - 1; index += 1) {
+      const kind = remaining[index].breakAfter;
+      if (!kind || !canBreakBetweenGraphemes(remaining[index].text, remaining[index + 1].text)) continue;
+      const prefix = plainUnitsText(remaining.slice(0, index + 1)) + (kind === 'soft-hyphen' ? '-' : '');
+      if (Number(measure(prefix)) <= maxWidth) selected = { index, prefix };
+    }
+    if (!selected) break;
+    chunks.push(selected.prefix);
+    remaining = remaining.slice(selected.index + 1);
+  }
+  if (chunks.length) {
+    if (Number(measure(plainUnitsText(remaining))) > maxWidth) {
+      chunks.push(...splitOverwideTokenByGrapheme(plainUnitsText(remaining), maxWidth, measure, segmenter));
+    } else {
+      const tail = plainUnitsRawText(remaining);
+      if (tail) chunks.push(tail);
+    }
+    return chunks;
+  }
+  return splitOverwideTokenByGrapheme(visible, maxWidth, measure, segmenter);
 }
 
 function paragraphWrapPieces(text, maxWidth, measure, {
@@ -157,12 +284,14 @@ function paragraphWrapPieces(text, maxWidth, measure, {
   };
 
   for (const cluster of clusters) {
-    if (/^\s+$/u.test(cluster)) {
+    if (isBreakableWhitespace(cluster)) {
       flushWord();
       whitespace += cluster;
     } else {
       flushWhitespace();
-      if (word && (thaiBreaks.has(offset) || isCjkLineBreak(previous, cluster))) flushWord();
+      const thaiBoundary = !discretionaryBreakKind(previous) && !discretionaryBreakKind(cluster) && thaiBreaks.has(offset);
+      const cjkBoundary = !discretionaryBreakKind(cluster) && isCjkLineBreak(previous, cluster);
+      if (word && (thaiBoundary || cjkBoundary)) flushWord();
       word += cluster;
     }
     previous = cluster;
@@ -212,13 +341,23 @@ export function wrapTextWithMeasure(text, maxWidth, measure, options = {}) {
       }
       const candidate = `${line}${pendingWhitespace}${piece}`;
       const lineHasContent = line && !/^\s+$/u.test(line);
-      if (lineHasContent && measure(candidate) > maxWidth) {
-        lines.push(line);
-        line = piece;
+      if (lineHasContent && measure(visibleTextWithoutDiscretionaryBreaks(candidate)) > maxWidth) {
+        const linePrefix = `${line}${pendingWhitespace}`;
+        const discretionary = findPlainDiscretionaryBreak(piece, linePrefix, maxWidth, measure, options.graphemeSegmenter);
+        if (discretionary) {
+          lines.push(visibleTextWithoutDiscretionaryBreaks(`${linePrefix}${discretionary.prefix}`));
+          line = discretionary.suffix;
+        } else {
+          const trailingHyphenLine = plainLineWithTrailingSoftHyphen(
+            line, piece, Boolean(pendingWhitespace), maxWidth, measure, options.graphemeSegmenter
+          );
+          lines.push(trailingHyphenLine || visibleTextWithoutDiscretionaryBreaks(line));
+          line = piece;
+        }
       } else line = candidate;
       pendingWhitespace = '';
     }
-    lines.push(`${line}${pendingWhitespace}`);
+    lines.push(visibleTextWithoutDiscretionaryBreaks(`${line}${pendingWhitespace}`));
   }
   return lines;
 }
@@ -328,21 +467,31 @@ function wrapParagraphWithFirstLineWidth(text, firstLineWidth, continuationWidth
   let pendingWhitespace = '';
   let lineWidth = firstLineWidth;
   for (const piece of pieces) {
-    if (/^\s+$/u.test(piece)) {
+    if (isBreakableWhitespace(piece)) {
       if (line) pendingWhitespace += piece;
       else line += piece;
       continue;
     }
     const candidate = `${line}${pendingWhitespace}${piece}`;
     const lineHasContent = line && !/^\s+$/u.test(line);
-    if (lineHasContent && measure(candidate) > lineWidth) {
-      lines.push(line);
-      line = piece;
+    if (lineHasContent && measure(visibleTextWithoutDiscretionaryBreaks(candidate)) > lineWidth) {
+      const linePrefix = `${line}${pendingWhitespace}`;
+      const discretionary = findPlainDiscretionaryBreak(piece, linePrefix, lineWidth, measure, options.graphemeSegmenter);
+      if (discretionary) {
+        lines.push(visibleTextWithoutDiscretionaryBreaks(`${linePrefix}${discretionary.prefix}`));
+        line = discretionary.suffix;
+      } else {
+        const trailingHyphenLine = plainLineWithTrailingSoftHyphen(
+          line, piece, Boolean(pendingWhitespace), lineWidth, measure, options.graphemeSegmenter
+        );
+        lines.push(trailingHyphenLine || visibleTextWithoutDiscretionaryBreaks(line));
+        line = piece;
+      }
       lineWidth = continuationWidth;
     } else line = candidate;
     pendingWhitespace = '';
   }
-  lines.push(`${line}${pendingWhitespace}`);
+  lines.push(visibleTextWithoutDiscretionaryBreaks(`${line}${pendingWhitespace}`));
   return lines;
 }
 
@@ -437,7 +586,7 @@ export function layoutPlainText(text, maxWidth, measure, {
   return { lines, width, height: y };
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration'];
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -450,6 +599,7 @@ function richTextStyle(base, run) {
   style.letterSpacing = Number(style.letterSpacing) || 0;
   style.color ||= '#1e1e1e';
   style.textDecoration ||= 'none';
+  style.baselineShift = Number(style.baselineShift) || 0;
   return style;
 }
 
@@ -494,6 +644,23 @@ function appendRichPart(parts, text, style) {
   else parts.push({ text, style });
 }
 
+function richUnitsRawParts(units) {
+  const parts = [];
+  for (const unit of units) {
+    appendRichPart(parts, unit.text, unit.style);
+    if (unit.breakAfter) {
+      appendRichPart(parts, unit.breakAfter.kind === 'soft-hyphen' ? '\u00ad' : '\u200b', unit.breakAfter.style || unit.style);
+    }
+  }
+  return parts;
+}
+
+function visibleRichParts(parts) {
+  const visible = [];
+  for (const part of parts) appendRichPart(visible, visibleTextWithoutDiscretionaryBreaks(part.text), part.style);
+  return visible;
+}
+
 function flushTrailingRichWhitespace(paragraph) {
   if (!paragraph.words.length || !paragraph.pendingSpaceParts.length) return;
   const lastWord = paragraph.words.at(-1);
@@ -502,12 +669,112 @@ function flushTrailingRichWhitespace(paragraph) {
 }
 
 function measuredPartsWidth(parts, measure) {
-  return parts.reduce((width, part) => width + Number(measure(part.text, part.style)), 0);
+  return visibleRichParts(parts).reduce((width, part) => width + Number(measure(part.text, part.style)), 0);
+}
+
+function richDiscretionaryUnits(parts, segmenter) {
+  const units = [];
+  for (const part of parts) {
+    for (const text of textGraphemes(part.text, segmenter)) {
+      const kind = discretionaryBreakKind(text);
+      if (kind) {
+        const previous = units.at(-1);
+        if (previous && (kind === 'soft-hyphen' || !previous.breakAfter)) {
+          previous.breakAfter = { kind, style: part.style };
+        }
+      } else units.push({ text, style: part.style, breakAfter: null });
+    }
+  }
+  return units;
+}
+
+function richUnitsParts(units, breakAfter = null) {
+  const parts = [];
+  for (const unit of units) appendRichPart(parts, unit.text, unit.style);
+  if (breakAfter?.kind === 'soft-hyphen') {
+    appendRichPart(parts, '-', breakAfter.style || units.at(-1)?.style);
+  }
+  return parts;
+}
+
+function findRichDiscretionaryBreak(parts, linePrefixParts, maxWidth, measure, segmenter) {
+  const units = richDiscretionaryUnits(parts, segmenter);
+  if (!units.some(unit => unit.breakAfter)) return null;
+  let selected = null;
+  for (let index = 0; index < units.length - 1; index += 1) {
+    const opportunity = units[index].breakAfter;
+    if (!opportunity) continue;
+    const prefixParts = [];
+    for (const part of [...linePrefixParts, ...richUnitsParts(units.slice(0, index + 1), opportunity)]) {
+      appendRichPart(prefixParts, part.text, part.style);
+    }
+    const suffixParts = richUnitsRawParts(units.slice(index + 1));
+    if (suffixParts.length && canBreakBetweenGraphemes(units[index].text, units[index + 1].text)
+      && measuredPartsWidth(prefixParts, measure) <= maxWidth) {
+      selected = { prefixParts, suffixParts };
+    }
+  }
+  return selected;
+}
+
+function richLineWithTrailingSoftHyphen(lineParts, nextParts, hasSeparator, maxWidth, measure, segmenter) {
+  if (hasSeparator) return null;
+  const clusters = lineParts.flatMap(part => textGraphemes(part.text, segmenter).map(text => ({ text, style: part.style })));
+  let markerStart = clusters.length;
+  let hyphenStyle = null;
+  while (markerStart > 0 && discretionaryBreakKind(clusters[markerStart - 1].text)) {
+    const marker = clusters[markerStart - 1];
+    if (discretionaryBreakKind(marker.text) === 'soft-hyphen') hyphenStyle = marker.style;
+    markerStart -= 1;
+  }
+  if (!hyphenStyle || markerStart < 1) return null;
+  const nextVisible = nextParts
+    .flatMap(part => textGraphemes(part.text, segmenter).map(text => ({ text, style: part.style })))
+    .find(unit => !discretionaryBreakKind(unit.text));
+  const previousVisible = clusters[markerStart - 1].text;
+  if (!nextVisible || !canBreakBetweenGraphemes(previousVisible, nextVisible.text)) return null;
+  const rendered = visibleRichParts(lineParts);
+  appendRichPart(rendered, '-', hyphenStyle);
+  return measuredPartsWidth(rendered, measure) <= maxWidth ? rendered : null;
 }
 
 function splitRichWordByWidth(word, maxWidth, measure, segmenter) {
-  if (!Number.isFinite(maxWidth) || !(maxWidth > 0) || measuredPartsWidth(word.parts, measure) <= maxWidth) return [word];
-  const units = word.parts.flatMap(part => textGraphemes(part.text, segmenter).map(text => ({ text, style: part.style })));
+  const units = richDiscretionaryUnits(word.parts, segmenter);
+  const hasDiscretionaryBreak = units.some(unit => unit.breakAfter);
+  if (!hasDiscretionaryBreak) {
+    if (!Number.isFinite(maxWidth) || !(maxWidth > 0) || measuredPartsWidth(word.parts, measure) <= maxWidth) return [word];
+  } else {
+    const visibleParts = richUnitsParts(units);
+    if (!Number.isFinite(maxWidth) || !(maxWidth > 0) || measuredPartsWidth(visibleParts, measure) <= maxWidth) {
+      return [word];
+    }
+
+    const discretionaryChunks = [];
+    let remaining = units;
+    while (remaining.length && measuredPartsWidth(richUnitsParts(remaining), measure) > maxWidth) {
+      let selected = null;
+      for (let index = 0; index < remaining.length - 1; index += 1) {
+        const opportunity = remaining[index].breakAfter;
+        if (!opportunity || !canBreakBetweenGraphemes(remaining[index].text, remaining[index + 1].text)) continue;
+        const candidate = richUnitsParts(remaining.slice(0, index + 1), opportunity);
+        if (measuredPartsWidth(candidate, measure) <= maxWidth) selected = { index, parts: candidate };
+      }
+      if (!selected) break;
+      discretionaryChunks.push({
+        parts: selected.parts,
+        separatorParts: discretionaryChunks.length ? [] : word.separatorParts
+      });
+      remaining = remaining.slice(selected.index + 1);
+    }
+    if (discretionaryChunks.length) {
+      const tail = richUnitsRawParts(remaining);
+      if (measuredPartsWidth(tail, measure) > maxWidth) {
+        discretionaryChunks.push(...splitRichWordByWidth({ parts: tail, separatorParts: [] }, maxWidth, measure, segmenter));
+      } else if (tail.length) discretionaryChunks.push({ parts: tail, separatorParts: [] });
+      return discretionaryChunks;
+    }
+  }
+
   if (units.length < 2) return [word];
   const chunks = [];
   let parts = [];
@@ -524,8 +791,9 @@ function splitRichWordByWidth(word, maxWidth, measure, segmenter) {
   for (const unit of units) {
     const candidate = parts.map(part => ({ ...part }));
     appendRichPart(candidate, unit.text, unit.style);
-    const legalBreak = !cjkAware || graphemeCount >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, unit.text);
-    if (parts.length && (graphemeCount >= maxGraphemesPerProbe || measuredPartsWidth(candidate, measure) > maxWidth && legalBreak)) flush();
+    const legalBreak = canBreakBetweenGraphemes(previousCluster, unit.text)
+      && (!cjkAware || graphemeCount >= maxGraphemesPerProbe || isCjkLineBreak(previousCluster, unit.text));
+    if (parts.length && legalBreak && (graphemeCount >= maxGraphemesPerProbe || measuredPartsWidth(candidate, measure) > maxWidth)) flush();
     appendRichPart(parts, unit.text, unit.style);
     graphemeCount += 1;
     previousCluster = unit.text;
@@ -575,14 +843,17 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
         textOffset += characters[characterIndex + 1].text.length;
         characterIndex += 1;
       }
-    } else if (/^\s+$/u.test(character.text)) {
+    } else if (isBreakableWhitespace(character.text)) {
       if (paragraph.current.length) finishWord(paragraph);
       if (paragraph.words.length) appendRichPart(paragraph.pendingSpaceParts, character.text, character.style);
       else appendRichPart(paragraph.current, character.text, character.style);
       textOffset += character.text.length;
       previousCluster = '';
     } else {
-      if (paragraph.current.length && (thaiBreaks.has(textOffset) || isCjkLineBreak(previousCluster, character.text))) finishWord(paragraph);
+      const thaiBoundary = !discretionaryBreakKind(previousCluster) && !discretionaryBreakKind(character.text)
+        && thaiBreaks.has(textOffset);
+      const cjkBoundary = !discretionaryBreakKind(character.text) && isCjkLineBreak(previousCluster, character.text);
+      if (paragraph.current.length && (thaiBoundary || cjkBoundary)) finishWord(paragraph);
       appendRichPart(paragraph.current, character.text, character.style);
       textOffset += character.text.length;
       previousCluster = character.text;
@@ -624,8 +895,19 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
       const indent = firstLine ? firstIndent : continuationIndent;
       const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
       if (line.length && measuredPartsWidth(mergedCandidate, measure) > lineLimit) {
-        rawLines.push({ parts: line, paragraphIndex, firstLine, plan });
-        line = word.parts;
+        const discretionary = findRichDiscretionaryBreak(
+          word.parts, [...line, ...word.separatorParts], lineLimit, measure, graphemes
+        );
+        if (discretionary) {
+          rawLines.push({ parts: discretionary.prefixParts, paragraphIndex, firstLine, plan });
+          line = discretionary.suffixParts;
+        } else {
+          const trailingHyphenParts = richLineWithTrailingSoftHyphen(
+            line, word.parts, word.separatorParts.length > 0, lineLimit, measure, graphemes
+          );
+          rawLines.push({ parts: trailingHyphenParts || line, paragraphIndex, firstLine, plan });
+          line = word.parts;
+        }
         firstLine = false;
       } else line = mergedCandidate;
     }
@@ -641,19 +923,20 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
       ? indentWithinWidth(contentIndent + (firstLine ? requestedIndent : 0), limit)
       : parts.length && firstLine ? indentWithinWidth(requestedIndent, limit) : 0;
     const lineLimit = Number.isFinite(limit) ? Math.max(1, limit - indent) : Infinity;
-    const naturalWidth = measuredPartsWidth(parts, measure);
-    const displayText = parts.map(part => part.text).join('');
+    const visibleParts = visibleRichParts(parts);
+    const naturalWidth = measuredPartsWidth(visibleParts, measure);
+    const displayText = visibleParts.map(part => part.text).join('');
     const gaps = justificationGapCount(displayText);
     const isLastParagraphLine = index === rawLines.length - 1 || rawLines[index + 1].paragraphIndex !== paragraphIndex;
     const paragraphAlign = plan.align || baseStyle.align || 'left';
     const justify = paragraphAlign === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
     const lineWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
-    const lineHeight = parts.length
-      ? Math.max(...parts.map(part => part.style.fontSize * part.style.lineHeight))
+    const lineHeight = visibleParts.length
+      ? Math.max(...visibleParts.map(part => part.style.fontSize * part.style.lineHeight))
       : fallback.fontSize * fallback.lineHeight;
     let offsetX = 0;
     const resolvedHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : fallback.fontSize * fallback.lineHeight;
-    const positionedParts = parts.map(part => {
+    const positionedParts = visibleParts.map(part => {
       const width = Number(measure(part.text, part.style));
       const positioned = { ...part, offsetX, width };
       offsetX += width;

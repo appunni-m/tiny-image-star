@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const stylesheet = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 const document = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
 function ruleBlock(startIndex) {
   const open = stylesheet.indexOf('{', startIndex);
@@ -41,31 +42,52 @@ function contrast(first, second) {
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
-test('theme metadata and CSS advertise matching light and dark browser chrome', () => {
-  assert.match(document, /<meta name="theme-color" content="#ffffff" media="\(prefers-color-scheme: light\)"\s*\/>/);
-  assert.match(document, /<meta name="theme-color" content="#1b1d22" media="\(prefers-color-scheme: dark\)"\s*\/>/);
-  assert.match(stylesheet, /:root\s*\{[^}]*color-scheme:\s*light dark/);
-  assert.match(mediaBlock('(prefers-color-scheme: dark)'), /color-scheme:\s*dark/);
-  assert.match(mediaBlock('(prefers-color-scheme: dark)'), /background:\s*#1b1d22/);
+test('appearance can be selected in the app menu and updates browser chrome', () => {
+  assert.match(document, /<meta name="theme-color" content="#ffffff"\s*\/>/);
+  assert.doesNotMatch(document, /name="theme-color"[^>]*media=/);
+  assert.ok(document.indexOf('src="./src/theme-bootstrap.js"') < document.indexOf('href="./styles.css"'),
+    'the initial preference should be applied before the theme stylesheet paints');
+  assert.match(stylesheet, /:root\s*\{[^}]*color-scheme:\s*light/);
+  const darkRoot = ruleBlock(stylesheet.indexOf(':root[data-theme="dark"] {'));
+  assert.match(darkRoot, /color-scheme:\s*dark/);
+  assert.match(darkRoot, /background:\s*#1b1d22/);
+  assert.match(main, /\['system', 'System'\]/);
+  assert.match(main, /\['light', 'Light'\]/);
+  assert.match(main, /\['dark', 'Dark'\]/);
+  assert.match(main, /role: 'menuitemradio', checked: themePreferences\.getPreference\(\) === value/);
+  assert.match(main, /createThemePreferenceController/);
+  assert.match(stylesheet, /\.context-menu button\[role="menuitemradio"\]\[aria-checked="true"\]::before/);
+  assert.match(mediaBlock('(max-width: 820px)'), /\.context-menu button\s*\{[^}]*min-height:\s*44px/);
 });
 
 test('dark theme keeps mobile scroll affordance and selected layer controls on dark surfaces', () => {
-  const darkMobile = mediaBlock('(prefers-color-scheme: dark) and (max-width: 820px)');
-  assert.match(darkMobile, /\.bottom-toolbar::after\s*\{[^}]*linear-gradient\([^}]*rgba\(39,42,49/);
-  assert.match(darkMobile, /\.left-panel, \.right-panel\s*\{[^}]*background:\s*var\(--panel\)/);
-  assert.match(darkMobile, /\.layer-row\.is-selected \.layer-order-control:not\(:disabled\)[\s\S]*background:\s*#303b47/);
+  assert.match(stylesheet, /@media \(max-width: 820px\) \{[\s\S]*?:root\[data-theme="dark"\] \.bottom-toolbar::after\s*\{[^}]*linear-gradient\([^}]*rgba\(39,42,49/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.left-panel,[\s\S]*?:root\[data-theme="dark"\] \.right-panel\s*\{[^}]*background:\s*var\(--panel\)/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.layer-row\.is-selected \.layer-order-control:not\(:disabled\)[\s\S]*background:\s*#303b47/);
+});
+
+test('image adjustment sliders have accessible names and locked layers reject edits', () => {
+  const slider = main.match(/function sliderField\([\s\S]*?\n\}/)?.[0] || '';
+  assert.match(slider, /aria-label="\$\{escapeHtml\(label\)\}"/, 'the shared inspector range helper names each slider');
+  assert.match(slider, /disabled \? ' disabled' : ''/, 'the shared inspector range helper can disable locked images');
+  const imageSection = main.match(/function imageAdjustmentsSection\(node\) \{[\s\S]*?return section\('Image adjustments', body\);\n\}/)?.[0] || '';
+  assert.match(imageSection, /sliderField\('Exposure',[\s\S]*?node\.locked\)/);
+  assert.match(imageSection, /sliderField\('Temperature',[\s\S]*?node\.locked\)/);
+  assert.match(imageSection, /sliderField\('Tint',[\s\S]*?node\.locked\)/);
+  const handler = main.match(/function updateInspectorInput\(event\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(handler, /prop\.startsWith\('adjustments\.'\) && selected\.some\(node => node\.type === 'image' && node\.locked\)/,
+    'the delegated property handler also blocks scripted edits to locked images');
 });
 
 test('dark theme gives individually colored editor labels readable foregrounds', () => {
-  const darkLabels = mediaBlock('(prefers-color-scheme: dark)', 1);
   for (const selector of [
     '.comment-message p', '.component-card-name', '.variable-binding-row',
     '.property-field label', '.typography-style-copy small', '.asset-card-name',
   ]) {
-    assert.ok(darkLabels.includes(selector), `dark theme should cover ${selector}`);
+    assert.ok(stylesheet.includes(`:root[data-theme="dark"] ${selector}`), `dark theme should cover ${selector}`);
   }
-  assert.match(darkLabels, /color:\s*#a6acb6/);
-  assert.match(darkLabels, /color:\s*#e0e4eb/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.comment-message p[\s\S]*color:\s*#a6acb6/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.comment-row-copy strong[\s\S]*color:\s*#e0e4eb/);
 });
 
 test('independent corner controls keep readable labels and phone-sized touch targets', () => {
@@ -77,10 +99,17 @@ test('independent corner controls keep readable labels and phone-sized touch tar
   assert.match(coarsePhone, /\.corner-radius-controls \.property-field input\s*\{[^}]*min-height:\s*42px[^}]*font-size:\s*16px/);
 });
 
+test('coarse-pointer inspector actions retain their 44px target size', () => {
+  const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)');
+  assert.match(coarsePhone, /\.property-section :where\(button:not\(\.tiny-icon-button\)\)\s*\{[^}]*min-height:\s*44px/,
+    'all inspector buttons should meet the 44px target with a low-specificity rule');
+  assert.match(coarsePhone, /\.property-section \.add-fill,\s*\.property-section \.primary-button,\s*\.property-section \.secondary-button\s*\{[^}]*min-height:\s*44px/,
+    'primary, secondary, and add-fill actions must override the generic target size');
+});
+
 test('primary action colors meet text contrast in both themes', () => {
   const lightVariables = ruleBlock(stylesheet.indexOf(':root'));
-  const darkVariables = mediaBlock('(prefers-color-scheme: dark)').match(/:root\s*\{([^}]*)\}/)?.[1];
-  assert.ok(darkVariables, 'dark theme should declare its browser and action colors');
+  const darkVariables = ruleBlock(stylesheet.indexOf(':root[data-theme="dark"] {'));
   const readVariable = (source, name) => source.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`, 'i'))?.[1];
   for (const [themeName, variables] of [['light', lightVariables], ['dark', darkVariables]]) {
     const primary = readVariable(variables, '--primary-action-bg') ?? readVariable(lightVariables, '--primary-action-bg');

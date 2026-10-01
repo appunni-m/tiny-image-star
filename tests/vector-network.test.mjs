@@ -233,6 +233,14 @@ test('deleting a moved split point preserves graph connectivity without restorin
   assert.deepEqual(new Set([network.edges[0].from, network.edges[0].to]), new Set(['v1', 'v2']));
 });
 
+test('refusing to delete the last usable network junction leaves the graph untouched', () => {
+  const network = vectorNetworkGeometryFromAnchors([{ x: 10, y: 20 }, { x: 90, y: 20 }]);
+  const before = structuredClone(network);
+
+  assert.equal(removeVectorNetworkVertex(network, network.vertices[0].id), false);
+  assert.deepEqual(network, before);
+});
+
 test('network validation rejects dangling edges, malformed faces, and duplicate graph identities', () => {
   const document = createDocument();
   const network = createNode('network', vectorNetworkGeometryFromAnchors([{ x: 0, y: 0 }, { x: 80, y: 0 }, { x: 40, y: 70 }], { closed: true }));

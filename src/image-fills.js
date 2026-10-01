@@ -3,6 +3,9 @@ import { vectorPathContours } from './vector-path.js';
 
 export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
 export const imageFillAdjustmentRanges = Object.freeze({
+  exposure: [-100, 100],
+  temperature: [-100, 100],
+  tint: [-100, 100],
   brightness: [-100, 100],
   contrast: [-100, 100],
   saturation: [-100, 100],
@@ -12,6 +15,7 @@ export const imageFillAdjustmentRanges = Object.freeze({
   solarizeThreshold: [0, 255]
 });
 export const defaultImageAdjustments = Object.freeze({
+  exposure: 0, temperature: 0, tint: 0,
   brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0,
   autoContrast: false, posterizeBits: 0, solarize: false, solarizeThreshold: 0, invert: false
 });

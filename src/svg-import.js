@@ -1,4 +1,5 @@
 import { createDocument, createNode, validateDocument } from './model.js';
+import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -24,14 +25,20 @@ const MAX_NETWORK_FACES = 10_000;
 const NETWORK_METADATA_ATTRIBUTE = 'data-tiny-image-star-network-v1';
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
+const MAX_CLIP_PATHS = 1_000;
+const MAX_MASKS = 1_000;
+const MAX_FILTERS = 1_000;
+const MAX_FILTER_EFFECTS = 8;
+// One editable inner shadow is represented by six SVG filter primitives.
+const MAX_FILTER_PRIMITIVES = MAX_FILTER_EFFECTS * 6;
 const MAX_TEXT_LENGTH = 100_000;
 const unsafeSvgElements = new Set(['script', 'foreignObject', 'iframe', 'object', 'embed', 'audio', 'video', 'style', 'image', 'use', 'a']);
 const initialStyle = {
   fill: '#000000', fillAlpha: 1, fillColorAlpha: 1, fillOpacityValue: 1,
   stroke: null, strokeAlpha: 1, strokeColorAlpha: 1, strokeOpacityValue: 1, strokeWidth: 1,
   strokeCap: 'butt', strokeJoin: 'miter', strokePattern: 'solid', strokeMiterLimit: 4, strokeDashArray: null, fillGradient: null,
-  fillRule: 'nonzero', opacity: 1,
-  fontFamily: 'sans-serif', fontSize: 16, fontWeight: 400, fontStyle: 'normal', textAnchor: 'start',
+  fillRule: 'nonzero', clipRule: null, opacity: 1,
+  fontFamily: 'sans-serif', fontSize: 16, fontWeight: 400, fontStyle: 'normal', textAnchor: 'start', baselineShift: 0,
   dominantBaseline: 'alphabetic', letterSpacing: 0, lineHeight: 1.25, textDecoration: 'none', textCase: 'none', xmlSpace: 'default',
   display: true, visibility: 'visible', visible: true
 };
@@ -578,37 +585,314 @@ function parseGradient(node, ids) {
   return { id, type: 'radial', units, transform, cx, cy, r, stops, alpha };
 }
 
-function collectGradients(root) {
+function filterNumber(value, label, element, { min = -MAX_COORDINATE, max = MAX_COORDINATE } = {}) {
+  if (typeof value !== 'string' || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())) {
+    fail('unsupported-filter', `SVG filter ${label} must be a unitless finite number.`, element);
+  }
+  return finiteNumber(value, `filter ${label}`, element, { min, max });
+}
+
+function filterDeviation(value, element, primitive, fallback = '0') {
+  const values = numberList(value ?? fallback, 'filter stdDeviation', primitive, 2);
+  if (!values.length || values.length > 2 || values.some(item => item < 0)
+    || values.length === 2 && Math.abs(values[0] - values[1]) > 1e-9) {
+    fail('unsupported-filter', 'SVG filter blur must use one nonnegative stdDeviation value or two equal values.', primitive);
+  }
+  return values[0];
+}
+
+function filterRegionLength(value, label, element, units, fallback, relativeDefault = false) {
+  const text = String(value ?? fallback).trim();
+  if (units === 'objectBoundingBox' || text.endsWith('%') || value == null && relativeDefault) {
+    const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(%)?$/i.exec(text);
+    if (!match) fail('unsupported-filter-region', `SVG filter ${label} must use a unitless or percentage object-bounding-box value.`, element);
+    const numeric = filterNumber(match[1], label, element);
+    return { value: match[2] ? numeric / 100 : numeric, relative: true };
+  }
+  return { value: coordinateLength(text, `filter ${label}`, element), relative: false };
+}
+
+function parseFilter(node, ids) {
+  const id = node.attrs.id;
+  if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
+    fail('invalid-filter', 'Every SVG filter must have a unique, simple id.', node.tag);
+  }
+  const allowed = new Set(['id', 'filterUnits', 'primitiveUnits', 'x', 'y', 'width', 'height']);
+  for (const key of Object.keys(node.attrs)) {
+    if (/^(?:href|xlink:href)$/i.test(key)) fail('external-reference', 'SVG filters cannot reference another element.', node.tag);
+    if (!allowed.has(key)) fail('unsupported-filter', `SVG filter attribute “${key}” is unsupported.`, node.tag);
+  }
+  const units = node.attrs.filterUnits ?? 'objectBoundingBox';
+  const primitiveUnits = node.attrs.primitiveUnits ?? 'userSpaceOnUse';
+  if (!['objectBoundingBox', 'userSpaceOnUse'].includes(units)) {
+    fail('unsupported-filter', 'SVG filterUnits must be objectBoundingBox or userSpaceOnUse.', node.tag);
+  }
+  if (primitiveUnits !== 'userSpaceOnUse') {
+    fail('unsupported-filter', 'SVG primitiveUnits="objectBoundingBox" cannot be represented faithfully; use userSpaceOnUse.', node.tag);
+  }
+  const region = units === 'userSpaceOnUse'
+    ? {
+      units,
+      x: filterRegionLength(node.attrs.x, 'x', node.tag, units, '-10%', true),
+      y: filterRegionLength(node.attrs.y, 'y', node.tag, units, '-10%', true),
+      width: filterRegionLength(node.attrs.width, 'width', node.tag, units, '120%', true),
+      height: filterRegionLength(node.attrs.height, 'height', node.tag, units, '120%', true)
+    }
+    : {
+      units,
+      x: filterRegionLength(node.attrs.x, 'x', node.tag, units, '-10%'),
+      y: filterRegionLength(node.attrs.y, 'y', node.tag, units, '-10%'),
+      width: filterRegionLength(node.attrs.width, 'width', node.tag, units, '120%'),
+      height: filterRegionLength(node.attrs.height, 'height', node.tag, units, '120%')
+    };
+  if (!(region.width.value > 0) || !(region.height.value > 0)) fail('invalid-filter', 'SVG filter width and height must be positive.', node.tag);
+  if (node.children.length > MAX_FILTER_PRIMITIVES) {
+    fail('resource-limit', `SVG filters may contain at most ${MAX_FILTER_EFFECTS} editable effects.`, node.tag);
+  }
+
+  if (node.children.length === 1 && node.children[0].tag === 'feComponentTransfer') {
+    const transfer = node.children[0];
+    const alpha = transfer.children[0];
+    if (Object.keys(transfer.attrs).length === 0 && transfer.children.length === 1
+      && alpha?.tag === 'feFuncA' && alpha.children.length === 0
+      && Object.keys(alpha.attrs).length === 2 && alpha.attrs.type === 'table' && alpha.attrs.tableValues === '1 0') {
+      ids.add(id);
+      return { id, region, effects: [], alphaInversion: true };
+    }
+    fail('unsupported-filter-graph', 'Only the editor’s exact alpha-inversion filter can be used inside an editable Boolean cutout mask.', node.tag);
+  }
+
+  let previousResult = 'SourceGraphic';
+  const results = new Set(['SourceGraphic', 'SourceAlpha', 'BackgroundImage', 'BackgroundAlpha', 'FillPaint', 'StrokePaint']);
+  const effects = [];
+  const innerShadowTags = ['feGaussianBlur', 'feOffset', 'feComposite', 'feFlood', 'feComposite', 'feComposite'];
+  const assertPrimitiveAttributes = (primitive, allowed, required = allowed) => {
+    if (primitive.children.length) fail('unsupported-filter', `SVG <${primitive.tag}> cannot contain child elements.`, primitive.tag);
+    for (const key of Object.keys(primitive.attrs)) {
+      if (/^(?:href|xlink:href)$/i.test(key)) fail('external-reference', 'SVG filter primitives cannot reference another element.', primitive.tag);
+      if (!allowed.has(key)) fail('unsupported-filter', `SVG <${primitive.tag}> attribute “${key}” is unsupported.`, primitive.tag);
+    }
+    for (const key of required) {
+      if (!Object.hasOwn(primitive.attrs, key)) fail('unsupported-filter-graph', `The editor’s inner-shadow filter chain requires SVG <${primitive.tag}> attribute “${key}”.`, primitive.tag);
+    }
+  };
+  const reserveResult = primitive => {
+    const result = primitive.attrs.result;
+    if (!result || result.length > 128 || !/^[A-Za-z_][\w.-]*$/.test(result) || results.has(result)) {
+      fail('invalid-filter', `SVG <${primitive.tag}> result must be a unique simple name.`, primitive.tag);
+    }
+    results.add(result);
+    return result;
+  };
+  for (let index = 0; index < node.children.length;) {
+    const primitive = node.children[index];
+    const possibleInnerShadow = node.children.slice(index, index + innerShadowTags.length);
+    if (possibleInnerShadow.length === innerShadowTags.length
+      && possibleInnerShadow.every((item, itemIndex) => item.tag === innerShadowTags[itemIndex])) {
+      const [blur, offset, cutout, floodPrimitive, tint, composite] = possibleInnerShadow;
+      const currentInput = previousResult;
+      assertPrimitiveAttributes(blur, new Set(['in', 'stdDeviation', 'result']));
+      assertPrimitiveAttributes(offset, new Set(['in', 'dx', 'dy', 'result']));
+      assertPrimitiveAttributes(cutout, new Set(['in', 'in2', 'operator', 'result']));
+      assertPrimitiveAttributes(floodPrimitive, new Set(['flood-color', 'flood-opacity', 'result']));
+      assertPrimitiveAttributes(tint, new Set(['in', 'in2', 'operator', 'result']));
+      assertPrimitiveAttributes(composite, new Set(['in', 'in2', 'operator', 'result']));
+
+      if (blur.attrs.in !== currentInput || offset.attrs.in !== blur.attrs.result
+        || cutout.attrs.in !== currentInput || cutout.attrs.in2 !== offset.attrs.result || cutout.attrs.operator !== 'out'
+        || tint.attrs.in !== floodPrimitive.attrs.result || tint.attrs.in2 !== cutout.attrs.result || tint.attrs.operator !== 'in'
+        || composite.attrs.in !== tint.attrs.result || composite.attrs.in2 !== currentInput || composite.attrs.operator !== 'over') {
+        fail('unsupported-filter-graph', 'Only the editor’s exact Gaussian-blur, offset, alpha-cutout and color-composite inner-shadow chain can be represented as an editable effect.', primitive.tag);
+      }
+
+      const blurRadius = filterDeviation(blur.attrs.stdDeviation, blur.tag, blur);
+      const offsetX = filterNumber(offset.attrs.dx, 'dx', offset);
+      const offsetY = filterNumber(offset.attrs.dy, 'dy', offset);
+      const flood = color(floodPrimitive.attrs['flood-color'], floodPrimitive.tag);
+      const opacity = parseAlpha(floodPrimitive.attrs['flood-opacity'], 'filter flood-opacity', floodPrimitive.tag);
+      reserveResult(blur);
+      reserveResult(offset);
+      reserveResult(cutout);
+      reserveResult(floodPrimitive);
+      reserveResult(tint);
+      previousResult = reserveResult(composite);
+      effects.push({
+        type: 'inner-shadow', color: flood.value ?? '#000000', opacity: flood.alpha * opacity,
+        offsetX, offsetY, blur: blurRadius
+      });
+      index += innerShadowTags.length;
+      continue;
+    }
+
+    if (!['feGaussianBlur', 'feDropShadow'].includes(primitive.tag)) {
+      fail('unsupported-filter', `SVG filter primitive <${primitive.tag}> cannot be edited here; only linear feGaussianBlur, feDropShadow and the editor’s exact inner-shadow chain are supported.`, primitive.tag);
+    }
+    const primitiveAllowed = primitive.tag === 'feGaussianBlur'
+      ? new Set(['in', 'stdDeviation', 'result'])
+      : new Set(['in', 'dx', 'dy', 'stdDeviation', 'flood-color', 'flood-opacity', 'result']);
+    assertPrimitiveAttributes(primitive, primitiveAllowed, new Set());
+    const input = primitive.attrs.in ?? previousResult;
+    if (input !== previousResult) {
+      fail('unsupported-filter-graph', `SVG filter primitive <${primitive.tag}> reads “${input}”; only a single SourceGraphic-to-result chain can be represented.`, primitive.tag);
+    }
+    const result = primitive.attrs.result == null ? null : reserveResult(primitive);
+    previousResult = result ?? `#implicit-${index}`;
+    if (primitive.tag === 'feGaussianBlur') {
+      effects.push({ type: 'layer-blur', radius: filterDeviation(primitive.attrs.stdDeviation, primitive.tag, primitive) });
+    } else {
+      const deviation = filterDeviation(primitive.attrs.stdDeviation, primitive.tag, primitive, '2');
+      const flood = color(primitive.attrs['flood-color'] ?? 'black', primitive.tag);
+      const opacity = parseAlpha(primitive.attrs['flood-opacity'] ?? '1', 'filter flood-opacity', primitive.tag);
+      effects.push({
+        type: 'drop-shadow', color: flood.value ?? '#000000', opacity: flood.alpha * opacity,
+        offsetX: filterNumber(primitive.attrs.dx ?? '2', 'dx', primitive.tag),
+        offsetY: filterNumber(primitive.attrs.dy ?? '2', 'dy', primitive.tag), blur: deviation
+      });
+    }
+    index += 1;
+  }
+  if (effects.length > MAX_FILTER_EFFECTS) {
+    fail('unsupported-filter-graph', `SVG filter has more than ${MAX_FILTER_EFFECTS} effects and cannot be represented by this editor.`, node.tag);
+  }
+  if (effects.filter(effect => effect.type === 'layer-blur').length > 1) {
+    fail('unsupported-filter-graph', 'SVG filters with more than one layer blur cannot be represented as editable effects.', node.tag);
+  }
+  ids.add(id);
+  return { id, region, effects };
+}
+
+function parseMaskDefinition(node, ids, gradients) {
+  const id = node.attrs.id;
+  if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
+    fail('invalid-mask', 'Every SVG mask must have a unique, simple id.', node.tag);
+  }
+  const allowed = new Set(['id', 'maskUnits', 'maskContentUnits', 'mask-type', 'x', 'y', 'width', 'height']);
+  for (const key of Object.keys(node.attrs)) {
+    if (/^on/i.test(key)) fail('active-content', `SVG event handler attribute “${key}” is not accepted.`, node.tag);
+    if (!allowed.has(key)) fail('unsupported-mask', `SVG mask attribute “${key}” is unsupported.`, node.tag);
+  }
+  if (node.attrs.maskUnits !== 'userSpaceOnUse' || node.attrs.maskContentUnits !== 'userSpaceOnUse') {
+    fail('unsupported-mask-units', 'Editable SVG masks require maskUnits and maskContentUnits="userSpaceOnUse".', node.tag);
+  }
+  const maskType = node.attrs['mask-type'] ?? 'luminance';
+  if (!['alpha', 'luminance'].includes(maskType)) fail('unsupported-mask', 'SVG mask-type must be alpha or luminance.', node.tag);
+  const region = {
+    x: coordinateLength(node.attrs.x, 'mask x', node.tag),
+    y: coordinateLength(node.attrs.y, 'mask y', node.tag),
+    width: length(node.attrs.width, 'mask width', node.tag),
+    height: length(node.attrs.height, 'mask height', node.tag)
+  };
+  if (region.width <= 0 || region.height <= 0) fail('invalid-mask', 'SVG mask width and height must be positive.', node.tag);
+  const mask = { id, maskType, region, children: node.children };
+  ids.add(id);
+
+  // Validate every embedded element, including content in an unused mask, so
+  // active content, linked assets and unsupported declarations cannot hide in
+  // defs and become executable if a later edit adds a reference.
+  const visit = (child, inherited) => {
+    if (unsafeSvgElements.has(child.tag)) {
+      const code = ['script', 'foreignObject'].includes(child.tag) ? 'active-content' : ['image', 'use'].includes(child.tag) ? 'external-reference' : 'unsupported-element';
+      fail(code, `SVG element <${child.tag}> is not accepted inside a mask.`, child.tag);
+    }
+    if (child.tag === 'g' || clipPathGeometryTags.has(child.tag)) {
+      checkElementAttributes(child);
+      const style = parseStyle(child, inherited, gradients);
+      if (style.clipPathRef) fail('unsupported-mask-graph', 'Clipping is unsupported inside an editable mask.', child.tag);
+      for (const nested of child.children) visit(nested, style);
+      return;
+    }
+    fail('unsupported-mask-graph', `SVG mask child <${child.tag}> cannot be represented as one editable local vector source.`, child.tag);
+  };
+  for (const child of node.children) visit(child, initialStyle);
+  return mask;
+}
+
+function collectDefinitions(root) {
   const gradients = new Map();
+  const clipPaths = new Map();
+  const filters = new Map();
+  const masks = new Map();
   const ids = new Set();
   let stopCount = 0;
   for (const defs of root.children.filter(child => child.tag === 'defs')) {
     for (const child of defs.children) {
-      if (!['linearGradient', 'radialGradient'].includes(child.tag)) {
-        fail('unsupported-gradient', '<defs> may contain only supported gradient definitions.', child.tag);
+      if (['linearGradient', 'radialGradient'].includes(child.tag)) {
+        if (gradients.size >= MAX_GRADIENTS) fail('resource-limit', `SVG contains more than ${MAX_GRADIENTS} gradient definitions.`, 'defs');
+        stopCount += child.children.length;
+        if (stopCount > MAX_GRADIENTS * MAX_GRADIENT_STOPS) fail('resource-limit', 'SVG contains too many gradient stops.', 'defs');
+        const gradient = parseGradient(child, ids);
+        gradients.set(gradient.id, gradient);
+      } else if (child.tag === 'clipPath') {
+        // Parse clip-path styles after gradients so definition order does not
+        // change whether a local gradient reference is accepted.
+      } else if (child.tag === 'filter') {
+        if (filters.size >= MAX_FILTERS) fail('resource-limit', `SVG contains more than ${MAX_FILTERS} filter definitions.`, 'defs');
+        const filter = parseFilter(child, ids);
+        filters.set(filter.id, filter);
+      } else if (child.tag === 'mask') {
+        // Parse mask content after gradients so definition order cannot change
+        // whether a local paint reference is accepted.
+      } else {
+        fail('unsupported-definition', `<defs> element <${child.tag}> is not supported; only editable gradients, clip paths, masks, and filters are accepted.`, child.tag);
       }
-      if (gradients.size >= MAX_GRADIENTS) fail('resource-limit', `SVG contains more than ${MAX_GRADIENTS} gradient definitions.`, 'defs');
-      stopCount += child.children.length;
-      if (stopCount > MAX_GRADIENTS * MAX_GRADIENT_STOPS) fail('resource-limit', 'SVG contains too many gradient stops.', 'defs');
-      const gradient = parseGradient(child, ids);
-      gradients.set(gradient.id, gradient);
     }
   }
-  return gradients;
+  for (const defs of root.children.filter(child => child.tag === 'defs')) {
+    for (const child of defs.children.filter(entry => entry.tag === 'clipPath')) {
+      if (clipPaths.size >= MAX_CLIP_PATHS) fail('resource-limit', `SVG contains more than ${MAX_CLIP_PATHS} clip-path definitions.`, 'defs');
+      const clipPath = parseClipPath(child, ids, gradients);
+      clipPaths.set(clipPath.id, clipPath);
+    }
+  }
+  for (const defs of root.children.filter(child => child.tag === 'defs')) {
+    for (const child of defs.children.filter(entry => entry.tag === 'mask')) {
+      if (masks.size >= MAX_MASKS) fail('resource-limit', `SVG contains more than ${MAX_MASKS} mask definitions.`, 'defs');
+      const mask = parseMaskDefinition(child, ids, gradients);
+      masks.set(mask.id, mask);
+    }
+  }
+  return { gradients, clipPaths, filters, masks };
 }
 
 const inheritedProperties = new Set([
   'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
-  'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'color', 'visibility', 'font-family', 'font-size',
-  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
+  'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'clip-rule', 'color', 'visibility', 'font-family', 'font-size',
+  'font-weight', 'font-style', 'text-anchor', 'dominant-baseline', 'baseline-shift', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
 ]);
-const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility']);
+const styleProperties = new Set([...inheritedProperties, 'opacity', 'display', 'visibility', 'filter', 'clip-path', 'clip-rule', 'mask']);
+
+function parseFilterReference(value, element) {
+  const input = String(value).trim();
+  if (input === 'none') return null;
+  const reference = /^url\(\s*(?:(['"])#([A-Za-z_][\w.-]*)\1|#([A-Za-z_][\w.-]*))\s*\)$/i.exec(input);
+  if (reference) return reference[2] || reference[3];
+  if (/^url\(/i.test(input)) fail('external-reference', 'SVG filter references must point to a local supported filter.', element);
+  fail('unsupported-filter', 'SVG filter must be “none” or a local url(#filter-id) reference.', element);
+}
+
+function parseClipPathReference(value, element) {
+  const input = String(value).trim();
+  if (input === 'none') return null;
+  const reference = /^url\(\s*(?:(['"])#([A-Za-z_][\w.-]*)\1|#([A-Za-z_][\w.-]*))\s*\)$/i.exec(input);
+  if (reference) return reference[2] || reference[3];
+  if (/^url\(/i.test(input)) fail('external-reference', 'SVG clip-path references must point to a local supported clip path.', element);
+  fail('unsupported-clip-path', 'SVG clip-path must be “none” or a local url(#clip-id) reference.', element);
+}
+
+function parseMaskReference(value, element) {
+  const input = String(value).trim();
+  if (input === 'none') return null;
+  const reference = /^url\(\s*(?:(['"])#([A-Za-z_][\w.-]*)\1|#([A-Za-z_][\w.-]*))\s*\)$/i.exec(input);
+  if (reference) return reference[2] || reference[3];
+  if (/^url\(/i.test(input)) fail('external-reference', 'SVG mask references must point to a local supported mask.', element);
+  fail('unsupported-mask', 'SVG mask must be “none” or a local url(#mask-id) reference.', element);
+}
 
 function parseStyle(node, parentStyle, gradients = new Map()) {
-  const values = { ...parentStyle, opacity: 1, display: parentStyle.display, visibility: parentStyle.visibility };
+  const values = { ...parentStyle, opacity: 1, display: parentStyle.display, visibility: parentStyle.visibility, filterRef: null, clipPathRef: null, maskRef: null };
   const declarations = Object.create(null);
   for (const [name, value] of Object.entries(node.attrs)) {
-    if (inheritedProperties.has(name) || ['opacity', 'display', 'visibility'].includes(name)) declarations[name] = value;
+    if (inheritedProperties.has(name) || ['opacity', 'display', 'visibility', 'filter', 'clip-path', 'clip-rule', 'mask'].includes(name)) declarations[name] = value;
   }
   if (node.attrs.style != null) {
     for (const declaration of node.attrs.style.split(';')) {
@@ -673,6 +957,14 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
         if (!baselines.has(value)) fail('invalid-text-baseline', 'SVG dominant-baseline is not a recognized baseline value.', node.tag);
         values.dominantBaseline = value; break;
       }
+      case 'baseline-shift': {
+        const match = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(px)?$/i.exec(value);
+        const shift = match ? Number(match[1]) : NaN;
+        if (!Number.isFinite(shift) || Math.abs(shift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
+          fail('unsupported-text-baseline-shift', `SVG baseline-shift must be a finite unitless or px length within ±${MAX_TEXT_RUN_BASELINE_SHIFT} px; keywords and percentages cannot be represented.`, node.tag);
+        }
+        values.baselineShift = shift; break;
+      }
       case 'letter-spacing':
         values.letterSpacing = value === 'normal' ? 0 : coordinateLength(value, key, node.tag); break;
       case 'line-height': values.lineHeight = value; break;
@@ -705,6 +997,13 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
       case 'display':
         if (!['none', 'inline', 'block'].includes(value)) fail('unsupported-display', `SVG display value “${value}” is unsupported.`, node.tag);
         values.display = value !== 'none' && parentStyle.display; break;
+      case 'filter': values.filterRef = parseFilterReference(value, node.tag); break;
+      case 'clip-path': values.clipPathRef = parseClipPathReference(value, node.tag); break;
+      case 'mask': values.maskRef = parseMaskReference(value, node.tag); break;
+      case 'clip-rule':
+        if (!['nonzero', 'evenodd'].includes(value)) fail('unsupported-clip-path', `SVG clip-rule “${value}” is unsupported.`, node.tag);
+        values.clipRule = value;
+        break;
       case 'visibility':
         if (!['visible', 'hidden', 'collapse'].includes(value)) fail('invalid-visibility', 'SVG visibility must be visible or hidden.', node.tag);
         values.visibility = value; break;
@@ -734,7 +1033,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
   }
   for (const [property, styleKey] of [
     ['font-family', 'fontFamily'], ['font-size', 'fontSize'], ['font-weight', 'fontWeight'], ['font-style', 'fontStyle'],
-    ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['letter-spacing', 'letterSpacing'],
+    ['text-anchor', 'textAnchor'], ['dominant-baseline', 'dominantBaseline'], ['baseline-shift', 'baselineShift'], ['letter-spacing', 'letterSpacing'],
     ['line-height', 'lineHeight'], ['text-decoration', 'textDecoration'], ['text-transform', 'textCase']
   ]) if (!Object.hasOwn(declarations, property)) values[styleKey] = parentStyle[styleKey];
   if (Object.hasOwn(node.attrs, 'xml:space')) {
@@ -742,6 +1041,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
     values.xmlSpace = node.attrs['xml:space'];
   } else values.xmlSpace = parentStyle.xmlSpace;
   if (!Object.hasOwn(declarations, 'fill-rule')) values.fillRule = parentStyle.fillRule;
+  if (!Object.hasOwn(declarations, 'clip-rule')) values.clipRule = parentStyle.clipRule;
   if (typeof values.lineHeight === 'string') {
     const lineHeight = values.lineHeight.trim();
     if (lineHeight === 'normal') values.lineHeight = 1.25;
@@ -765,7 +1065,7 @@ function parseStyle(node, parentStyle, gradients = new Map()) {
 
 const geomAttrs = {
   svg: new Set(['xmlns', 'version', 'width', 'height', 'viewBox', 'preserveAspectRatio']),
-  g: new Set(), defs: new Set(['id']),
+  g: new Set(), defs: new Set(['id']), clipPath: new Set(['id', 'clipPathUnits']),
   text: new Set(['x', 'y']), tspan: new Set(),
   rect: new Set(['x', 'y', 'width', 'height', 'rx', 'ry']),
   circle: new Set(['cx', 'cy', 'r']),
@@ -775,9 +1075,9 @@ const geomAttrs = {
 };
 const commonAttrs = new Set([
   'id', 'transform', 'style', 'fill', 'stroke', 'fill-opacity', 'stroke-opacity', 'stroke-width', 'stroke-linecap',
-  'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'opacity', 'display', 'visibility', 'color', 'class',
+  'stroke-linejoin', 'stroke-dasharray', 'stroke-miterlimit', 'fill-rule', 'clip-rule', 'clip-path', 'mask', 'opacity', 'display', 'visibility', 'color', 'class',
   'href', 'xlink:href', 'xml:space', 'role', 'focusable', 'font-family', 'font-size', 'font-weight', 'font-style',
-  'text-anchor', 'dominant-baseline', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform'
+  'text-anchor', 'dominant-baseline', 'baseline-shift', 'letter-spacing', 'line-height', 'text-decoration', 'text-transform', 'filter'
 ]);
 
 function checkElementAttributes(node) {
@@ -802,6 +1102,71 @@ function checkElementAttributes(node) {
     if (commonAttrs.has(key) || allowed?.has(key)) continue;
     fail('unsupported-attribute', `SVG attribute “${key}” is not supported on <${node.tag}>.`, node.tag);
   }
+}
+
+const clipPathGeometryTags = new Set(['rect', 'circle', 'ellipse', 'polygon', 'path']);
+
+function parseClipPath(node, ids, gradients) {
+  checkElementAttributes(node);
+  const id = node.attrs.id;
+  if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id)) {
+    fail('invalid-clip-path', 'Every SVG clip path must have a unique, simple id.', node.tag);
+  }
+  const units = node.attrs.clipPathUnits ?? 'userSpaceOnUse';
+  if (units !== 'userSpaceOnUse') {
+    fail('unsupported-clip-path-units', 'Editable SVG clip paths currently require clipPathUnits="userSpaceOnUse".', node.tag);
+  }
+  let inherited = parseStyle(node, initialStyle, gradients);
+  if (inherited.filterRef || inherited.clipPathRef) fail('unsupported-clip-path', 'Nested filters and clip paths inside clip-path definitions are unsupported.', node.tag);
+  if (!inherited.display || !inherited.visible) {
+    fail('unsupported-clip-path', 'Hidden SVG clip-path geometry cannot be represented as an editable mask.', node.tag);
+  }
+  let container = node;
+  let nestedTransform = [1, 0, 0, 1, 0, 0];
+  while (container.tag === 'clipPath' || container.tag === 'g') {
+    if (container.children.length !== 1) {
+      fail('unsupported-clip-path', 'An editable SVG clip path must contain one supported closed vector shape, optionally wrapped in single-child groups.', container.tag);
+    }
+    const child = container.children[0];
+    if (unsafeSvgElements.has(child.tag)) {
+      const code = ['script', 'foreignObject'].includes(child.tag) ? 'active-content' : ['image', 'use'].includes(child.tag) ? 'external-reference' : 'unsupported-element';
+      fail(code, `SVG element <${child.tag}> is not accepted inside a clip path.`, child.tag);
+    }
+    if (child.tag !== 'g') break;
+    checkElementAttributes(child);
+    inherited = parseStyle(child, inherited, gradients);
+    if (inherited.filterRef || inherited.clipPathRef) fail('unsupported-clip-path', 'Nested filters and clip paths inside clip-path definitions are unsupported.', child.tag);
+    if (!inherited.display || !inherited.visible) {
+      fail('unsupported-clip-path', 'Hidden SVG clip-path geometry cannot be represented as an editable mask.', child.tag);
+    }
+    nestedTransform = matrixMultiply(nestedTransform, parseTransform(child.attrs.transform, child.tag));
+    container = child;
+  }
+  const shape = container.children[0];
+  if (unsafeSvgElements.has(shape.tag)) {
+    const code = ['script', 'foreignObject'].includes(shape.tag) ? 'active-content' : ['image', 'use'].includes(shape.tag) ? 'external-reference' : 'unsupported-element';
+    fail(code, `SVG element <${shape.tag}> is not accepted inside a clip path.`, shape.tag);
+  }
+  if (!clipPathGeometryTags.has(shape.tag)) {
+    fail('unsupported-clip-path', `SVG clip paths support rect, circle, ellipse, polygon, and path geometry; <${shape.tag}> is unsupported.`, shape.tag);
+  }
+  checkElementAttributes(shape);
+  if (shape.children.length) fail('unsupported-clip-path', 'SVG clip-path shapes cannot contain nested elements.', shape.tag);
+  const style = parseStyle(shape, inherited, gradients);
+  if (style.filterRef || style.clipPathRef) {
+    fail('unsupported-clip-path', 'Nested filters and clip paths inside clip-path definitions are unsupported.', shape.tag);
+  }
+  if (!style.display || !style.visible) {
+    fail('unsupported-clip-path', 'Hidden SVG clip-path geometry cannot be represented as an editable mask.', shape.tag);
+  }
+  ids.add(id);
+  return {
+    id,
+    transform: parseTransform(node.attrs.transform, node.tag),
+    shape,
+    shapeTransform: matrixMultiply(nestedTransform, parseTransform(shape.attrs.transform, shape.tag)),
+    fillRule: style.clipRule ?? style.fillRule
+  };
 }
 
 function arcCubics(start, rxInput, ryInput, rotation, largeArc, sweep, end, element) {
@@ -1369,6 +1734,412 @@ function boundsOf(nodes) {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+function effectPadding(effects) {
+  let x = 0; let y = 0;
+  for (const effect of effects || []) {
+    if (effect.type === 'layer-blur') {
+      x += effect.radius * 3;
+      y += effect.radius * 3;
+    } else if (effect.type === 'drop-shadow') {
+      x += Math.abs(effect.offsetX) + effect.blur * 3;
+      y += Math.abs(effect.offsetY) + effect.blur * 3;
+    }
+  }
+  return { x, y };
+}
+
+function unionBounds(bounds) {
+  const valid = bounds.filter(Boolean);
+  if (!valid.length) return null;
+  const left = Math.min(...valid.map(item => item.x));
+  const top = Math.min(...valid.map(item => item.y));
+  const right = Math.max(...valid.map(item => item.x + item.width));
+  const bottom = Math.max(...valid.map(item => item.y + item.height));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function visualBoundsOf(nodes, parentX = 0, parentY = 0) {
+  const bounds = [];
+  for (const node of nodes || []) {
+    const x = parentX + node.x;
+    const y = parentY + node.y;
+    const radians = (Number(node.rotation) || 0) * Math.PI / 180;
+    const width = Math.abs(node.width * Math.cos(radians)) + Math.abs(node.height * Math.sin(radians));
+    const height = Math.abs(node.height * Math.cos(radians)) + Math.abs(node.width * Math.sin(radians));
+    const padding = effectPadding(node.effects);
+    const strokeBleed = node.stroke && Number(node.strokeWidth) > 0 ? Number(node.strokeWidth) / 2 : 0;
+    bounds.push({ x: x + (node.width - width) / 2 - padding.x - strokeBleed, y: y + (node.height - height) / 2 - padding.y - strokeBleed,
+      width: width + (padding.x + strokeBleed) * 2, height: height + (padding.y + strokeBleed) * 2 });
+    if (node.children?.length) bounds.push(visualBoundsOf(node.children, x, y));
+  }
+  return unionBounds(bounds);
+}
+
+function mappedFilterRegion(region, matrix, sourceBounds, element) {
+  if (!sourceBounds || !(sourceBounds.width > 0) || !(sourceBounds.height > 0)) return null;
+  const values = [region.x, region.y, region.width, region.height];
+  if (values.some(value => value.relative)) {
+    if (!values.every(value => value.relative)) {
+      fail('unsupported-filter-region', 'SVG filter regions cannot mix relative and user-space coordinates.', element);
+    }
+    const [x, y, width, height] = values.map(value => value.value);
+    const left = -x;
+    const top = -y;
+    const right = x + width - 1;
+    const bottom = y + height - 1;
+    const tolerance = 1e-8;
+    if (left < 0 || top < 0 || right < 0 || bottom < 0
+      || Math.abs(left - right) > tolerance || Math.abs(top - bottom) > tolerance
+      || Math.abs(left - top) > tolerance) {
+      fail('unsupported-filter-region', 'Only symmetric filter regions that expand equally in both axes can be represented faithfully.', element);
+    }
+    const margin = left;
+    return { x: sourceBounds.x - sourceBounds.width * margin, y: sourceBounds.y - sourceBounds.height * margin,
+      width: sourceBounds.width * (1 + 2 * margin), height: sourceBounds.height * (1 + 2 * margin) };
+  }
+  const [x, y, width, height] = values.map(value => value.value);
+  const corners = [
+    mapPoint(matrix, { x, y }), mapPoint(matrix, { x: x + width, y }),
+    mapPoint(matrix, { x: x + width, y: y + height }), mapPoint(matrix, { x, y: y + height })
+  ];
+  const left = Math.min(...corners.map(point => point.x));
+  const top = Math.min(...corners.map(point => point.y));
+  const right = Math.max(...corners.map(point => point.x));
+  const bottom = Math.max(...corners.map(point => point.y));
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function mapFilterEffects(filter, matrix, sourceNodes, prefix, serial, element) {
+  if (!filter?.effects.length) return [];
+  if (filter.effects.length > 8) fail('unsupported-filter-graph', 'SVG filter has more than 8 effects and cannot be represented by this editor.', element);
+  const scale = matrixScale(matrix);
+  const effects = filter.effects.map((effect, index) => {
+    const blur = effect.type === 'layer-blur' ? effect.radius : effect.blur;
+    if (blur > 0 && scale == null) {
+      fail('unsupported-filter-transform', 'SVG blur under a non-uniform or skewed transform cannot be represented as an editable isotropic blur.', element);
+    }
+    const mappedBlur = blur * (scale ?? 1);
+    const mapped = effect.type === 'layer-blur'
+      ? { type: effect.type, radius: mappedBlur }
+      : {
+        type: effect.type,
+        color: effect.color,
+        opacity: effect.opacity,
+        offsetX: matrix[0] * effect.offsetX + matrix[2] * effect.offsetY,
+        offsetY: matrix[1] * effect.offsetX + matrix[3] * effect.offsetY,
+        blur: mappedBlur
+      };
+    if (mapped.type === 'layer-blur'
+      ? !Number.isFinite(mapped.radius) || mapped.radius < 0 || mapped.radius > 100
+      : !Number.isFinite(mapped.blur) || mapped.blur < 0 || mapped.blur > 100
+        || !Number.isFinite(mapped.offsetX) || Math.abs(mapped.offsetX) > 1000
+        || !Number.isFinite(mapped.offsetY) || Math.abs(mapped.offsetY) > 1000) {
+      fail('unsupported-filter-range', 'Transformed SVG filter values exceed the editor’s editable effect limits.', element);
+    }
+    return { id: `${prefix}-effect-${serial}-${index}`, visible: true, ...mapped };
+  });
+  const contentBounds = visualBoundsOf(sourceNodes);
+  if (contentBounds) {
+    const region = mappedFilterRegion(filter.region, matrix, contentBounds, element);
+    const padding = effectPadding(effects);
+    const required = { x: contentBounds.x - padding.x, y: contentBounds.y - padding.y,
+      width: contentBounds.width + padding.x * 2, height: contentBounds.height + padding.y * 2 };
+    const epsilon = Math.max(1, required.width, required.height) * 1e-7;
+    if (!region || region.x > required.x + epsilon || region.y > required.y + epsilon
+      || region.x + region.width < required.x + required.width - epsilon
+      || region.y + region.height < required.y + required.height - epsilon) {
+      fail('filter-region-clips-output', 'SVG filter region clips pixels produced by its blur or shadow; enlarge the filter region before importing.', element);
+    }
+  }
+  return effects;
+}
+
+function attachFilterEffects(nodes, effects, prefix, serial, name) {
+  if (!effects.length || !nodes.length) return nodes;
+  if (nodes.length === 1) {
+    nodes[0].effects = effects;
+    return nodes;
+  }
+  const bounds = boundsOf(nodes);
+  for (const child of nodes) translateLayer(child, bounds.x, bounds.y);
+  return [createNode('group', {
+    id: `${prefix}-filtered-${serial}`, name: cleanLayerName(name), x: bounds.x, y: bounds.y,
+    width: bounds.width, height: bounds.height, opacity: 1, fill: 'transparent', effects, children: nodes
+  })];
+}
+
+function attachClipPath(nodes, clipRef, clips, matrix, prefix, serial, name, budget) {
+  if (!clipRef) return nodes;
+  const clipPath = clips.get(clipRef);
+  if (!clipPath) fail('missing-clip-path', `SVG layer references missing clip path “${clipRef}”.`, 'clipPath');
+  if (!nodes.length) return nodes;
+  const clipMatrix = matrixMultiply(matrix, matrixMultiply(clipPath.transform, clipPath.shapeTransform));
+  const [geometry] = elementPaths(clipPath.shape, budget);
+  if (!geometry || geometry.noFill) fail('unsupported-clip-path', 'SVG clip paths require fillable vector geometry.', clipPath.shape.tag);
+  const maskSource = makePathNode(geometry, {
+    ...initialStyle,
+    fill: '#ffffff', fillAlpha: 1, fillGradient: null, fillRule: clipPath.fillRule,
+    stroke: null, strokeAlpha: 0, strokeWidth: 0, opacity: 1
+  }, clipMatrix, prefix, `clip-${serial}`).base;
+  maskSource.id = `${prefix}-clip-source-${serial}`;
+  maskSource.name = cleanLayerName(`${clipPath.shape.attrs.id || clipPath.shape.tag} clip source`);
+  maskSource.fill = '#ffffff';
+  maskSource.fillOpacity = 1;
+  maskSource.fillRule = clipPath.fillRule;
+  maskSource.opacity = 1;
+  maskSource.stroke = null;
+  maskSource.strokeWidth = 0;
+  maskSource.closed = true;
+  if (Array.isArray(maskSource.subpaths)) maskSource.subpaths = maskSource.subpaths.map(contour => ({ ...contour, closed: true }));
+  const children = [...nodes, maskSource];
+  const bounds = boundsOf(children);
+  for (const child of children) translateLayer(child, bounds.x, bounds.y);
+  return [createNode('group', {
+    id: `${prefix}-clip-wrapper-${serial}`, name: cleanLayerName(name),
+    x: bounds.x, y: bounds.y, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
+    opacity: 1, fill: 'transparent', mask: true, maskSourceId: maskSource.id, children
+  })];
+}
+
+function transformedRectBounds(matrix, x, y, width, height) {
+  const corners = [
+    mapPoint(matrix, { x, y }), mapPoint(matrix, { x: x + width, y }),
+    mapPoint(matrix, { x: x + width, y: y + height }), mapPoint(matrix, { x, y: y + height })
+  ];
+  const minX = Math.min(...corners.map(point => point.x));
+  const minY = Math.min(...corners.map(point => point.y));
+  const maxX = Math.max(...corners.map(point => point.x));
+  const maxY = Math.max(...corners.map(point => point.y));
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function assertBoundsContained(inner, outer, element) {
+  const epsilon = Math.max(1, outer.width, outer.height) * 1e-7;
+  if (inner.x < outer.x - epsilon || inner.y < outer.y - epsilon
+    || inner.x + inner.width > outer.x + outer.width + epsilon
+    || inner.y + inner.height > outer.y + outer.height + epsilon) {
+    fail('unsupported-mask-region', 'SVG mask region clips part of its vector source; enlarge the region before importing.', element);
+  }
+}
+
+function maskSourcePath(mask, matrix, prefix, serial, budget, name = 'Mask source') {
+  if (!mask.children || mask.children.length !== 1 || mask.children[0].tag !== 'g') {
+    fail('unsupported-mask-graph', 'Editable SVG masks require one transformed <g> containing one closed vector shape.', 'mask');
+  }
+  const sourceGroup = mask.children[0];
+  checkElementAttributes(sourceGroup);
+  if (sourceGroup.children.length !== 1) {
+    fail('unsupported-mask-graph', 'Editable SVG masks require one transformed <g> containing one closed vector shape.', 'mask');
+  }
+  const groupStyle = parseStyle(sourceGroup, initialStyle);
+  if (groupStyle.filterRef || groupStyle.clipPathRef || groupStyle.maskRef || !groupStyle.visible || !groupStyle.display) {
+    fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', sourceGroup.tag);
+  }
+  const shape = sourceGroup.children[0];
+  if (!clipPathGeometryTags.has(shape.tag) || shape.children.length) {
+    fail('unsupported-mask-graph', 'Editable SVG masks support one rect, circle, ellipse, polygon, or path source.', shape.tag);
+  }
+  checkElementAttributes(shape);
+  const style = parseStyle(shape, groupStyle);
+  if (style.filterRef || style.clipPathRef || style.maskRef || !style.visible || !style.display) {
+    fail('unsupported-mask-graph', 'Nested filters, masks, clipping and hidden mask sources are unsupported.', shape.tag);
+  }
+  if (style.fill !== '#ffffff' || style.fillColorAlpha !== 1 || style.fillGradient
+    || style.stroke) {
+    fail('unsupported-mask-paint', 'Editable SVG masks must use a plain white vector fill without strokes or gradients.', shape.tag);
+  }
+  const paths = elementPaths(shape, budget);
+  if (paths.length !== 1 || paths[0].noFill) {
+    fail('unsupported-mask-graph', 'Editable SVG masks require one closed, fillable vector source.', shape.tag);
+  }
+  const sourceMatrix = matrixMultiply(matrix, matrixMultiply(
+    parseTransform(sourceGroup.attrs.transform, sourceGroup.tag), parseTransform(shape.attrs.transform, shape.tag)
+  ));
+  const { base } = makePathNode(paths[0], style, sourceMatrix, prefix, name);
+  base.name = cleanLayerName(name);
+  base.fill = '#ffffff';
+  base.fillOpacity = style.fillAlpha;
+  base.fillRule = style.fillRule;
+  base.opacity = groupStyle.opacity * style.opacity;
+  base.stroke = null;
+  base.strokeWidth = 0;
+  base.closed = true;
+  if (Array.isArray(base.subpaths)) base.subpaths = base.subpaths.map(contour => ({ ...contour, closed: true }));
+  const regionBounds = transformedRectBounds(matrix, mask.region.x, mask.region.y, mask.region.width, mask.region.height);
+  assertBoundsContained(boundsOf([base]), regionBounds, 'mask');
+  return base;
+}
+
+function attachMask(nodes, maskRef, masks, matrix, prefix, serial, name, budget) {
+  if (!maskRef) return nodes;
+  const mask = masks.get(maskRef);
+  if (!mask) fail('missing-mask', `SVG layer references missing mask “${maskRef}”.`, 'mask');
+  if (!nodes.length) return nodes;
+  const source = maskSourcePath(mask, matrix, prefix, serial, budget, `${name} mask source`);
+  source.id = `${prefix}-mask-source-${serial}`;
+  const children = [...nodes, source];
+  const bounds = boundsOf(children);
+  for (const child of children) translateLayer(child, bounds.x, bounds.y);
+  return [createNode('group', {
+    id: `${prefix}-mask-wrapper-${serial}`, name: cleanLayerName(name),
+    x: bounds.x, y: bounds.y, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
+    opacity: 1, fill: 'transparent', mask: true, maskSourceId: source.id, children
+  })];
+}
+
+function sameMaskRegion(left, right, element) {
+  const close = (a, b) => Math.abs(a - b) <= Math.max(1, Math.abs(a), Math.abs(b)) * 1e-7;
+  if (![left.x, left.y, left.width, left.height].every((value, index) => close(value, [right.x, right.y, right.width, right.height][index]))) {
+    fail('unsupported-mask-region', 'Editor Boolean mask graphs require matching user-space regions on every referenced mask.', element);
+  }
+}
+
+function maskRect(node, region, { requireReference = false } = {}) {
+  if (node.tag !== 'rect' || node.children.length) fail('unsupported-mask-graph', 'Editor Boolean masks require plain rectangular composition surfaces.', node.tag);
+  checkElementAttributes(node);
+  const style = parseStyle(node, initialStyle);
+  if (!style.display || !style.visible || style.opacity !== 1 || style.fill !== '#ffffff' || style.fillColorAlpha !== 1
+    || style.fillGradient || style.fillAlpha !== 1 || style.stroke || style.filterRef || style.clipPathRef) {
+    fail('unsupported-mask-graph', 'Boolean mask composition surfaces must be visible, opaque white rectangles.', node.tag);
+  }
+  const x = coordinateLength(node.attrs.x, 'Boolean mask rectangle x', node.tag);
+  const y = coordinateLength(node.attrs.y, 'Boolean mask rectangle y', node.tag);
+  const width = length(node.attrs.width, 'Boolean mask rectangle width', node.tag);
+  const height = length(node.attrs.height, 'Boolean mask rectangle height', node.tag);
+  const rx = node.attrs.rx == null ? 0 : length(node.attrs.rx, 'Boolean mask rectangle rx', node.tag);
+  const ry = node.attrs.ry == null ? rx : length(node.attrs.ry, 'Boolean mask rectangle ry', node.tag);
+  if (x !== region.x || y !== region.y || width !== region.width || height !== region.height || rx !== 0 || ry !== 0) {
+    fail('unsupported-mask-graph', 'Boolean mask composition surfaces must exactly match the mask region.', node.tag);
+  }
+  if (requireReference && !style.maskRef) fail('unsupported-mask-graph', 'Boolean union operands must be local mask references.', node.tag);
+  if (!requireReference && style.maskRef) fail('unsupported-mask-graph', 'The final Boolean mask surface cannot contain another mask reference.', node.tag);
+  return style.maskRef;
+}
+
+function inverseMaskOperand(mask, masks, filters, expectedRegion) {
+  if (!mask || mask.maskType !== 'alpha') return null;
+  sameMaskRegion(mask.region, expectedRegion, 'mask');
+  if (mask.children.length !== 1 || mask.children[0].tag !== 'g') return null;
+  const group = mask.children[0];
+  if (group.children.length !== 1) return null;
+  checkElementAttributes(group);
+  const groupStyle = parseStyle(group, initialStyle);
+  if (!groupStyle.filterRef || groupStyle.maskRef || groupStyle.clipPathRef || groupStyle.opacity !== 1 || group.attrs.transform) return null;
+  const filter = filters.get(groupStyle.filterRef);
+  if (!filter?.alphaInversion || filter.region.units !== 'userSpaceOnUse') return null;
+  const filterRegion = {
+    x: filter.region.x.value, y: filter.region.y.value,
+    width: filter.region.width.value, height: filter.region.height.value
+  };
+  sameMaskRegion(filterRegion, expectedRegion, 'filter');
+  const ref = maskRect(group.children[0], expectedRegion, { requireReference: true });
+  return ref;
+}
+
+function booleanMaskGraph(mask, masks, filters) {
+  if (!mask || mask.maskType !== 'alpha') fail('unsupported-mask-graph', 'Editor Boolean output requires an alpha mask definition.', 'mask');
+  const region = mask.region;
+  if (region.x !== 0 || region.y !== 0) fail('unsupported-mask-region', 'Editor Boolean masks must start at user-space origin.', 'mask');
+  const operand = ref => {
+    const value = masks.get(ref);
+    if (!value || value.maskType !== 'alpha') fail('missing-mask', `Boolean mask references missing local operand mask “${ref}”.`, 'mask');
+    sameMaskRegion(value.region, region, 'mask');
+  };
+  if (!mask.children.length) fail('unsupported-mask-graph', 'An empty Boolean mask cannot be reconstructed as editable operands.', 'mask');
+
+  if (mask.children.every(child => child.tag === 'rect')) {
+    const refs = mask.children.map(child => maskRect(child, region, { requireReference: true }));
+    if (refs.length < 2) fail('unsupported-mask-graph', 'An editable Boolean operation requires at least two vector operands.', 'mask');
+    refs.forEach(operand);
+    return { operation: 'union', region, operandRefs: refs };
+  }
+
+  if (mask.children.length !== 1) fail('unsupported-mask-graph', 'Boolean output uses an unsupported mask composition graph.', 'mask');
+  const refs = [];
+  let current = mask.children[0];
+  while (current.tag === 'g') {
+    if (current.children.length !== 1) fail('unsupported-mask-graph', 'Boolean mask composition groups must contain one child.', current.tag);
+    checkElementAttributes(current);
+    const style = parseStyle(current, initialStyle);
+    if (style.filterRef || style.clipPathRef || style.opacity !== 1 || current.attrs.transform) {
+      fail('unsupported-mask-graph', 'Boolean mask composition groups cannot apply extra filters, transforms or opacity.', current.tag);
+    }
+    if (style.maskRef) refs.push(style.maskRef);
+    current = current.children[0];
+  }
+  if (current.tag !== 'rect' || current.children.length) fail('unsupported-mask-graph', 'Boolean mask composition must end in its white rectangular surface.', current.tag);
+  maskRect(current, region);
+  if (refs.length < 2) fail('unsupported-mask-graph', 'An editable Boolean operation requires at least two vector operands.', 'mask');
+
+  const inverted = refs.slice(1).map(ref => inverseMaskOperand(masks.get(ref), masks, filters, region));
+  if (inverted.every(Boolean)) {
+    operand(refs[0]);
+    inverted.forEach(operand);
+    return { operation: 'subtract', region, operandRefs: [refs[0], ...inverted] };
+  }
+  if (inverted.some(Boolean)) fail('unsupported-mask-graph', 'Boolean subtraction mixes supported and unsupported mask graphs.', 'mask');
+  const direct = refs.slice(1).every(ref => {
+    const value = masks.get(ref);
+    const group = value?.children?.[0];
+    return value?.maskType === 'alpha' && group?.tag === 'g' && group.children.length === 1
+      && clipPathGeometryTags.has(group.children[0].tag) && group.children[0].children.length === 0;
+  });
+  if (!direct) fail('unsupported-mask-graph', 'Boolean mask references use unsupported nested or filtered operand graphs.', 'mask');
+  refs.forEach(operand);
+  return { operation: 'intersect', region, operandRefs: refs };
+}
+
+function booleanOperandNode(mask, matrix, prefix, serial, index, budget) {
+  if (!mask || mask.maskType !== 'alpha') fail('unsupported-mask-graph', 'Boolean operands must be local alpha vector masks.', 'mask');
+  const path = maskSourcePath(mask, matrix, prefix, `${serial}-operand-${index}`, budget, `Operand ${index + 1}`);
+  path.id = `${prefix}-boolean-${serial}-operand-${index}`;
+  path.name = `Operand ${index + 1}`;
+  return path;
+}
+
+function importBooleanLayer(node, style, matrix, prefix, serial, masks, filters, budget) {
+  if (!style.maskRef) fail('unsupported-mask-graph', 'Editor Boolean metadata requires a local result mask.', node.tag);
+  if (style.maskRef === 'none' || style.clipPathRef) fail('unsupported-mask-graph', 'Editor Boolean output requires one local result mask without clipping.', node.tag);
+  const visibleChildren = node.children.filter(child => child.tag !== 'title');
+  if (node.children.some(child => child.tag === 'title' && (child.children.length || Object.keys(child.attrs).length))) {
+    fail('invalid-mask', 'Boolean SVG title metadata cannot contain nested markup or attributes.', 'title');
+  }
+  if (visibleChildren.length !== 1 || visibleChildren[0].tag !== 'rect') {
+    fail('unsupported-mask-graph', 'Editor Boolean output must contain exactly one rectangular painted result.', node.tag);
+  }
+  const shape = visibleChildren[0];
+  checkElementAttributes(shape);
+  const fillStyle = parseStyle(shape, initialStyle);
+  if (!fillStyle.display || !fillStyle.visible || !fillStyle.fill || fillStyle.fillGradient
+    || fillStyle.stroke || fillStyle.strokeWidth > 0 || fillStyle.filterRef || fillStyle.clipPathRef || fillStyle.maskRef) {
+    fail('unsupported-mask-graph', 'Editor Boolean output currently supports a visible solid fill without strokes or nested effects.', shape.tag);
+  }
+  const x = coordinateLength(shape.attrs.x, 'Boolean result x', shape.tag);
+  const y = coordinateLength(shape.attrs.y, 'Boolean result y', shape.tag);
+  const width = length(shape.attrs.width, 'Boolean result width', shape.tag);
+  const height = length(shape.attrs.height, 'Boolean result height', shape.tag);
+  const rx = shape.attrs.rx == null ? 0 : length(shape.attrs.rx, 'Boolean result rx', shape.tag);
+  const ry = shape.attrs.ry == null ? rx : length(shape.attrs.ry, 'Boolean result ry', shape.tag);
+  if (x !== 0 || y !== 0 || rx !== 0 || ry !== 0 || width <= 0 || height <= 0) {
+    fail('unsupported-mask-graph', 'Editor Boolean output requires an origin-aligned unrounded result rectangle.', shape.tag);
+  }
+  const graph = booleanMaskGraph(masks.get(style.maskRef), masks, filters);
+  if (graph.region.width !== width || graph.region.height !== height) {
+    fail('unsupported-mask-region', 'Boolean result rectangle and mask region must have matching dimensions.', node.tag);
+  }
+  const operationChildren = graph.operandRefs.map((ref, index) => booleanOperandNode(masks.get(ref), matrix, prefix, serial, index, budget));
+  const resultBounds = transformedRectBounds(matrix, 0, 0, width, height);
+  assertBoundsContained(boundsOf(operationChildren), resultBounds, node.tag);
+  for (const child of operationChildren) translateLayer(child, resultBounds.x, resultBounds.y);
+  const id = `${prefix}-boolean-${serial}`;
+  return createNode('boolean', {
+    id, name: cleanLayerName(localName(node)), x: resultBounds.x, y: resultBounds.y,
+    width: Math.max(1, resultBounds.width), height: Math.max(1, resultBounds.height),
+    opacity: style.opacity * fillStyle.opacity, fill: fillStyle.fill, fillOpacity: fillStyle.fillAlpha,
+    operation: graph.operation, children: operationChildren
+  });
+}
+
 function translateLayer(node, x, y) {
   node.x -= x; node.y -= y;
   return node;
@@ -1392,11 +2163,19 @@ function parsePreserveAspectRatio(value, vbWidth, vbHeight, width, height, eleme
 }
 
 function localName(node) {
+  if (node.attrs['data-tiny-image-star-node-id']) {
+    const title = node.children?.find(child => child.tag === 'title');
+    if (title && !title.children.length && title.textContent?.trim()) return cleanLayerName(title.textContent);
+  }
   return node.attrs.id ? cleanLayerName(node.attrs.id) : `${node.tag} ${node.serial}`;
 }
 
 function svgTextValue(node, style, gradients = new Map()) {
-  const runStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'textDecoration', 'fill', 'fillAlpha'];
+  const editorWrapped = node.attrs['data-tiny-image-star-text-wrap'] != null;
+  if (editorWrapped && node.attrs['data-tiny-image-star-text-wrap'] !== 'canvas-word-wrap') {
+    fail('unsupported-text-wrap', 'This Tiny Image Star SVG uses an unknown text-wrap encoding.', 'text');
+  }
+  const runStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'textDecoration', 'baselineShift', 'fill', 'fillAlpha'];
   const segments = [];
   let rawLength = 0;
   const pushSegment = (text, runStyle) => {
@@ -1420,24 +2199,64 @@ function svgTextValue(node, style, gradients = new Map()) {
       fail('unsupported-text-decoration', 'SVG text runs support only none, underline, or line-through decoration.', 'tspan');
     }
   };
+  let editorLineCount = 0;
   const collect = (parent, inheritedStyle) => {
     for (const item of parent.content || []) {
-      if (typeof item === 'string') { pushSegment(item, inheritedStyle); continue; }
+      if (typeof item === 'string') {
+        if (editorWrapped && parent === node) {
+          if (item.trim()) fail('unsupported-text-wrap', 'Tiny Image Star wrapped SVG text must contain positioned line tspans only.', 'text');
+          continue;
+        }
+        pushSegment(item, inheritedStyle); continue;
+      }
       if (['script', 'foreignObject'].includes(item.tag)) fail('active-content', `SVG element <${item.tag}> contains active or embedded content.`, item.tag);
       if (['image', 'use'].includes(item.tag) || Object.hasOwn(item.attrs, 'href') || Object.hasOwn(item.attrs, 'xlink:href')) {
         fail('external-reference', 'SVG text cannot contain linked or embedded elements.', item.tag);
       }
       if (Object.keys(item.attrs).some(key => /^on/i.test(key))) fail('active-content', 'SVG text contains an event handler attribute.', item.tag);
       if (item.tag !== 'tspan') fail('unsupported-text-feature', 'Only nested <tspan> elements with editable text styles are supported inside SVG <text>.', item.tag);
-      checkElementAttributes(item);
-      if (item.attrs.transform != null) fail('unsupported-text-transform', 'Transforms on SVG tspan elements cannot be preserved as editable text runs.', 'tspan');
+      const isEditorLine = editorWrapped && parent === node;
+      if (isEditorLine) {
+        if (item.attrs['data-tiny-image-star-list-marker'] != null) {
+          fail('unsupported-text-list', 'Tiny Image Star SVG list markers cannot be represented as editable text runs.', 'tspan');
+        }
+        if (item.attrs['word-spacing'] != null) {
+          fail('unsupported-text-spacing', 'Justified Tiny Image Star SVG text with word-spacing cannot be represented as editable text runs.', 'tspan');
+        }
+        for (const coordinate of ['x', 'y']) {
+          const raw = item.attrs[coordinate];
+          if (raw == null || /[\s,]/.test(raw)) fail('unsupported-text-positioning', 'Tiny Image Star line tspans require one x and y coordinate each.', 'tspan');
+          coordinateLength(raw, `line tspan ${coordinate}`, 'tspan');
+        }
+        if (item.attrs.textLength != null) {
+          const textLength = coordinateLength(item.attrs.textLength, 'textLength', 'tspan');
+          if (!(textLength > 0)) fail('invalid-text-length', 'Tiny Image Star line tspan textLength must be positive.', 'tspan');
+        }
+        if (item.attrs.lengthAdjust != null && item.attrs.lengthAdjust !== 'spacingAndGlyphs') {
+          fail('unsupported-text-spacing', 'Only Tiny Image Star spacingAndGlyphs line tspan adjustment is supported.', 'tspan');
+        }
+        const wrapperOnly = new Set(['x', 'y', 'textLength', 'lengthAdjust']);
+        const checked = { ...item, attrs: Object.fromEntries(Object.entries(item.attrs).filter(([key]) => !wrapperOnly.has(key))) };
+        checkElementAttributes(checked);
+      } else {
+        checkElementAttributes(item);
+        if (item.attrs.transform != null) fail('unsupported-text-transform', 'Transforms on SVG tspan elements cannot be preserved as editable text runs.', 'tspan');
+      }
       const runStyle = parseStyle(item, inheritedStyle, gradients);
       validateTspanStyle(runStyle);
+      if (isEditorLine) {
+        if (editorLineCount > 0) {
+          rawLength += 1;
+          if (rawLength > MAX_TEXT_LENGTH) fail('resource-limit', `SVG text exceeds the ${MAX_TEXT_LENGTH}-character import limit.`, 'text');
+          segments.push({ text: '\n', style: runStyle, lineBreak: true });
+        }
+        editorLineCount += 1;
+      }
       collect(item, runStyle);
     }
   };
   collect(node, style);
-  const rawValue = segments.map(segment => segment.text).join('').replace(/\r\n?/g, '\n');
+  const rawValue = segments.filter(segment => !segment.lineBreak).map(segment => segment.text).join('').replace(/\r\n?/g, '\n');
   if (style.xmlSpace === 'preserve' && (/[\t\n\r]/.test(rawValue) || /^ | $| {2,}/.test(rawValue))) {
     fail('unsupported-text-whitespace', 'SVG xml:space="preserve" text with tabs, line breaks, or repeated spaces cannot be represented faithfully.', 'text');
   }
@@ -1452,6 +2271,11 @@ function svgTextValue(node, style, gradients = new Map()) {
   if (style.xmlSpace === 'default') {
     let pendingSpaceStyle = null;
     for (const segment of segments) {
+      if (segment.lineBreak) {
+        pendingSpaceStyle = null;
+        append('\n', segment.style);
+        continue;
+      }
       for (const character of segment.text.replace(/\r\n?/g, '\n')) {
         if (/[\t\n\r ]/.test(character)) { pendingSpaceStyle ||= segment.style; continue; }
         if (pendingSpaceStyle && normalized.length) append(' ', pendingSpaceStyle);
@@ -1461,6 +2285,7 @@ function svgTextValue(node, style, gradients = new Map()) {
     }
   } else {
     for (const segment of segments) {
+      if (segment.lineBreak) { append('\n', segment.style); continue; }
       for (const character of segment.text.replace(/\r\n?/g, '\n')) append(character, segment.style);
     }
   }
@@ -1525,6 +2350,7 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
       ['fontFamily', 'fontFamily'], ['fontSize', 'fontSize'], ['fontWeight', 'fontWeight'], ['fontStyle', 'fontStyle'],
       ['lineHeight', 'lineHeight'], ['letterSpacing', 'letterSpacing'], ['textDecoration', 'textDecoration']
     ]) if (!Object.is(segment.style[source], style[source])) run[target] = segment.style[source];
+    if (segment.style.baselineShift !== 0) run.baselineShift = segment.style.baselineShift;
     const colorValue = segment.style.fill || '#000000';
     if (colorValue !== (style.fill || '#000000')) run.color = colorValue;
     return run;
@@ -1571,16 +2397,31 @@ function textLayer(node, style, matrix, prefix, serial, gradients) {
     fontStyle: style.fontStyle, lineHeight: style.lineHeight, letterSpacing: outputLetterSpacing,
     color: style.fill || '#000000', fillOpacity: style.fill ? style.fillColorAlpha * style.fillOpacityValue : 0,
     align: anchor, verticalAlign: 'top', textCase: style.textCase, textDecoration: style.textDecoration,
-    ...(hasStyledRuns ? { textRuns: textRuns.map(run => ({ ...run,
-      ...(run.fontSize != null ? { fontSize: run.fontSize * scale } : {}),
-      ...(run.letterSpacing != null ? { letterSpacing: run.letterSpacing * scale } : {}),
-      ...(run.lineHeight != null ? { lineHeight: run.lineHeight } : {})
-    })) } : {}),
+    ...(hasStyledRuns ? { textRuns: textRuns.map(run => {
+      const baselineShift = run.baselineShift == null ? null : run.baselineShift * scale;
+      if (baselineShift != null && Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
+        fail('resource-limit', `Transformed SVG baseline shift exceeds ±${MAX_TEXT_RUN_BASELINE_SHIFT} px.`, 'text');
+      }
+      return { ...run,
+        ...(run.fontSize != null ? { fontSize: run.fontSize * scale } : {}),
+        ...(run.letterSpacing != null ? { letterSpacing: run.letterSpacing * scale } : {}),
+        ...(baselineShift != null ? { baselineShift } : {}),
+        ...(run.lineHeight != null ? { lineHeight: run.lineHeight } : {})
+      };
+    }) } : {}),
     stroke: null, strokeWidth: 0, children: []
   });
 }
 
-function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients) {
+function resolveNodeFilter(style, filters, matrix, sourceNodes, prefix, node, name = localName(node)) {
+  if (!style.filterRef) return [];
+  const filter = filters.get(style.filterRef);
+  if (!filter) fail('missing-filter', `SVG layer references missing filter “${style.filterRef}”.`, node.tag);
+  if (filter.alphaInversion) fail('unsupported-filter-graph', 'SVG alpha-inversion filters are supported only inside editor Boolean cutout masks.', node.tag);
+  return mapFilterEffects(filter, matrix, sourceNodes, prefix, node.serial, name);
+}
+
+function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gradients, filters, clipPaths, masks) {
   if (node.tag === 'svg' && node !== counter.root) fail('unsupported-nested-svg', 'Nested <svg> viewports are not supported.', 'svg');
   if (node.tag === 'defs') return [];
   if (node.tag === 'title') return [];
@@ -1595,13 +2436,26 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
   const style = parseStyle(node, parentStyle, gradients);
   if (!style.display || (node.tag !== 'g' && node.tag !== 'svg' && !style.visible)) return [];
   const matrix = matrixMultiply(parentMatrix, parseTransform(node.attrs.transform, node.tag));
+  if (node.attrs['data-tiny-image-star-type'] === 'boolean') {
+    const booleanLayer = importBooleanLayer(node, style, matrix, prefix, node.serial, masks, filters, budget);
+    booleanLayer.effects = resolveNodeFilter(style, filters, matrix, [booleanLayer], prefix, node);
+    return [booleanLayer];
+  }
   if (Object.hasOwn(node.attrs, NETWORK_METADATA_ATTRIBUTE)) {
-    return [importedNetwork(node, matrix, style, prefix, counter, node.attrs[NETWORK_METADATA_ATTRIBUTE])];
+    const network = importedNetwork(node, matrix, style, prefix, counter, node.attrs[NETWORK_METADATA_ATTRIBUTE]);
+    const effects = resolveNodeFilter(style, filters, matrix, [network], prefix, node);
+    const filtered = attachFilterEffects([network], effects, prefix, node.serial, localName(node));
+    return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
   }
   if (node.tag === 'text') {
     const serial = counter.next++;
     const layer = textLayer(node, style, matrix, prefix, serial, gradients);
-    return layer ? [layer] : [];
+    const layers = layer ? [layer] : [];
+    const effects = resolveNodeFilter(style, filters, matrix, layers, prefix, node);
+    const filtered = attachFilterEffects(layers, effects, prefix, node.serial, localName(node));
+    return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
   }
   if (node.tag !== 'g' && node.tag !== 'svg') {
     const paths = elementPaths(node, budget);
@@ -1612,25 +2466,32 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
       const { base, strokeWidth, fillGradient } = makePathNode(path, style, matrix, prefix, name);
       output.push(...createPaintLayers(base, { ...style, fillGradient }, strokeWidth, prefix, serial, name, { fillAllowed: !path.noFill }));
     }
-    return output;
+    const effects = resolveNodeFilter(style, filters, matrix, output, prefix, node);
+    const filtered = attachFilterEffects(output, effects, prefix, node.serial, localName(node));
+    return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
   }
   const childLayers = [];
-  for (const child of node.children) childLayers.push(...buildTree(child, matrix, style, prefix, counter, budget, gradients));
+  for (const child of node.children) childLayers.push(...buildTree(child, matrix, style, prefix, counter, budget, gradients, filters, clipPaths, masks));
+  const effects = resolveNodeFilter(style, filters, matrix, childLayers, prefix, node);
   if (!childLayers.length) {
     if (!style.visible) return [];
     const group = createNode('group', {
       id: `${prefix}-${counter.next++}`, name: cleanLayerName(localName(node)), x: 0, y: 0, width: 0, height: 0,
-      opacity: style.opacity, children: []
+      opacity: style.opacity, effects, children: []
     });
-    return [group];
+    return attachMask(attachClipPath([group], style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
+      style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
   }
   const bounds = boundsOf(childLayers);
   for (const child of childLayers) translateLayer(child, bounds.x, bounds.y);
   const group = createNode('group', {
     id: `${prefix}-${counter.next++}`, name: cleanLayerName(localName(node)), x: bounds.x, y: bounds.y,
-    width: bounds.width, height: bounds.height, opacity: style.opacity, fill: 'transparent', children: childLayers
+    width: bounds.width, height: bounds.height, opacity: style.opacity, fill: 'transparent', effects, children: childLayers
   });
-  return [group];
+  const filtered = attachFilterEffects([group], effects, prefix, node.serial, localName(node));
+  return attachMask(attachClipPath(filtered, style.clipPathRef, clipPaths, matrix, prefix, node.serial, localName(node), budget),
+    style.maskRef, masks, matrix, prefix, node.serial, localName(node), budget);
 }
 
 /**
@@ -1642,7 +2503,7 @@ function buildTree(node, parentMatrix, parentStyle, prefix, counter, budget, gra
  */
 export function importSvgToLayers(source, { viewportWidth = null, viewportHeight = null } = {}) {
   const root = parseXml(source);
-  const gradients = collectGradients(root);
+  const { gradients, clipPaths, filters, masks } = collectDefinitions(root);
   for (const node of [root, ...root.children]) checkElementAttributes(node);
   const viewBox = parseViewBox(root.attrs.viewBox);
   const suppliedWidth = viewportWidth == null ? null : length(String(viewportWidth), 'viewport width', 'svg');
@@ -1671,12 +2532,17 @@ export function importSvgToLayers(source, { viewportWidth = null, viewportHeight
   const budget = { points: 0, tokens: 0 };
   const style = parseStyle(root, initialStyle, gradients);
   const children = [];
-  for (const child of root.children) children.push(...buildTree(child, transformedRootMatrix, style, prefix, counter, budget, gradients));
+  for (const child of root.children) children.push(...buildTree(child, transformedRootMatrix, style, prefix, counter, budget, gradients, filters, clipPaths, masks));
+  const effects = resolveNodeFilter(style, filters, transformedRootMatrix, children, prefix, root, root.attrs.id || 'Imported SVG');
+  const rootChildren = attachMask(
+    attachClipPath(children, style.clipPathRef, clipPaths, transformedRootMatrix, prefix, root.serial, root.attrs.id || 'Imported SVG', budget),
+    style.maskRef, masks, transformedRootMatrix, prefix, root.serial, root.attrs.id || 'Imported SVG', budget
+  );
   const layers = [];
-  for (const child of children) layers.push(translateLayer(child, 0, 0));
+  for (const child of rootChildren) layers.push(translateLayer(child, 0, 0));
   const rootLayer = createNode('frame', {
     id: `${prefix}-root`, name: cleanLayerName(root.attrs.id || 'Imported SVG'), x: 0, y: 0, width, height,
-    fill: 'transparent', opacity: style.opacity, stroke: null, strokeWidth: 0, clip: true, children: layers
+    fill: 'transparent', opacity: style.opacity, stroke: null, strokeWidth: 0, clip: true, effects, children: layers
   });
   const validationDocument = createDocument();
   validationDocument.pages[0].children = [rootLayer];

@@ -60,11 +60,36 @@ export function containsPointInRoundedRect(x, y, width, height, values) {
   const h = Math.max(0, Number(height) || 0);
   if (x < 0 || y < 0 || x > w || y > h) return false;
   const radii = clampCornerRadii(w, h, values);
-  let radius = 0; let centerX = 0; let centerY = 0;
-  if (x < radii.topLeft && y < radii.topLeft) { radius = radii.topLeft; centerX = radius; centerY = radius; }
-  else if (x > w - radii.topRight && y < radii.topRight) { radius = radii.topRight; centerX = w - radius; centerY = radius; }
-  else if (x > w - radii.bottomRight && y > h - radii.bottomRight) { radius = radii.bottomRight; centerX = w - radius; centerY = h - radius; }
-  else if (x < radii.bottomLeft && y > h - radii.bottomLeft) { radius = radii.bottomLeft; centerX = radius; centerY = h - radius; }
-  if (!radius) return true;
-  return (x - centerX) ** 2 + (y - centerY) ** 2 <= radius ** 2 + 1e-9;
+  // Match traceRoundedRectPath's quadratic corner segments exactly. Circular
+  // distance checks subtly disagree with these curves near the bounding-box
+  // corners, causing visible fill and clipping pixels to be unpickable.
+  if (x < radii.topLeft && y < radii.topLeft) {
+    const radius = radii.topLeft;
+    if (!radius) return true;
+    const t = Math.sqrt(Math.max(0, Math.min(1, x / radius)));
+    const boundaryY = radius * (1 - t) ** 2;
+    return y + 1e-9 >= boundaryY;
+  }
+  if (x > w - radii.topRight && y < radii.topRight) {
+    const radius = radii.topRight;
+    if (!radius) return true;
+    const t = 1 - Math.sqrt(Math.max(0, Math.min(1, (w - x) / radius)));
+    const boundaryY = radius * t ** 2;
+    return y + 1e-9 >= boundaryY;
+  }
+  if (x > w - radii.bottomRight && y > h - radii.bottomRight) {
+    const radius = radii.bottomRight;
+    if (!radius) return true;
+    const t = Math.sqrt(Math.max(0, Math.min(1, (w - x) / radius)));
+    const boundaryY = h - radius * (1 - t) ** 2;
+    return y <= boundaryY + 1e-9;
+  }
+  if (x < radii.bottomLeft && y > h - radii.bottomLeft) {
+    const radius = radii.bottomLeft;
+    if (!radius) return true;
+    const t = 1 - Math.sqrt(Math.max(0, Math.min(1, x / radius)));
+    const boundaryY = h - radius * t ** 2;
+    return y <= boundaryY + 1e-9;
+  }
+  return true;
 }

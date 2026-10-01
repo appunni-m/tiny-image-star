@@ -1,16 +1,19 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutPlainText, layoutTextRuns, textGraphemes, transformTextCase } from './text-layout.js';
 import { fillStackForNode, isValidFillStack, isValidGradientFill } from './fills.js';
+import { glassVectorExportBlockReason } from './glass-effect.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { imageCropPixels, isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
 import { strokeStackForNode } from './strokes.js';
+import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorPathContours } from './vector-path.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
+import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -104,7 +107,7 @@ function rasterImageMarkup({ image, width, height, fit, transforms = {}, attribu
   const outputWidth = rotated ? cropHeight : cropWidth;
   const outputHeight = rotated ? cropWidth : cropHeight;
   const preserveAspectRatio = `xMidYMid ${fit === 'cover' ? 'slice' : 'meet'}`;
-  if (!normalized.crop && normalized.rotation === 0) {
+  if (!normalized.crop && normalized.rotation === 0 && !normalized.flipHorizontal && !normalized.flipVertical) {
     return `<image x="0" y="0" width="${number(width)}" height="${number(height)}" preserveAspectRatio="${preserveAspectRatio}" href="${image.href}"${attributes}/>`;
   }
   const scale = fit === 'cover'
@@ -118,6 +121,15 @@ function rasterImageMarkup({ image, width, height, fit, transforms = {}, attribu
     case 180: matrix = [-scale, 0, 0, -scale, offsetX + crop.right * scale, offsetY + crop.bottom * scale]; break;
     case 270: matrix = [0, -scale, scale, 0, offsetX - crop.top * scale, offsetY + crop.right * scale]; break;
     default: matrix = [scale, 0, 0, scale, offsetX - crop.left * scale, offsetY - crop.top * scale]; break;
+  }
+  if (normalized.flipHorizontal || normalized.flipVertical) {
+    const flip = [
+      normalized.flipHorizontal ? -1 : 1, 0,
+      0, normalized.flipVertical ? -1 : 1,
+      normalized.flipHorizontal ? 2 * offsetX + outputWidth * scale : 0,
+      normalized.flipVertical ? 2 * offsetY + outputHeight * scale : 0,
+    ];
+    matrix = multiply(flip, matrix);
   }
   // Keep clipping and paint attributes in the target box's coordinate space.
   // Transforming the image element itself would also transform its clip path,
@@ -216,7 +228,12 @@ function color(document, node, kind) {
 function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis-gradient-${index}`) {
   if (!gradient) return null;
   if (!isValidGradientFill(gradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
-  const { width, height } = dimensions(node);
+  const bounds = dimensions(node);
+  // Canvas gradient creation clamps zero-sized axes to one pixel. Keep SVG
+  // coordinates aligned for open paths and lines, whose authored height or
+  // width can legitimately be zero.
+  const width = Math.max(1, bounds.width);
+  const height = Math.max(1, bounds.height);
   const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"/>`).join('');
   if (gradient.type === 'linear') {
     const angle = gradient.angle * Math.PI / 180;
@@ -239,13 +256,17 @@ function fillAttributes(document, node, { text = false, gradientId = null, fillV
   return ` fill="${escapeXml(fill)}" fill-opacity="${number(fillOpacity)}"`;
 }
 
-function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 0) {
+function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 0, gradientId = null) {
   const hasSavedStack = Array.isArray(node.strokes);
   const entry = strokeItem === undefined ? (hasSavedStack ? null : strokeStackForNode(node)[0] || null) : strokeItem;
   const strokeWidth = Number(entry ? entry.width : hasSavedStack ? 0 : node.strokeWidth || 0);
   if (!Number.isFinite(strokeWidth) || strokeWidth < 0) throw new TypeError(`SVG export requires a valid stroke width on layer ${node.name || node.id || '(unnamed)'}.`);
   const rawColor = entry ? strokeIndex === 0 && node.strokeVariableId ? color(document, node, 'stroke') : entry.color : node.stroke;
-  const resolved = rawColor && strokeWidth && (!entry || (entry.visible && entry.opacity > 0)) ? rawColor : 'none';
+  if (entry?.gradient && !isValidGradientFill(entry.gradient)) throw new TypeError(`SVG export requires a valid gradient stroke on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (entry?.gradient && !gradientId) throw new TypeError(`SVG export requires a gradient definition for the stroke on layer ${node.name || node.id || '(unnamed)'}.`);
+  const resolved = (entry?.gradient || rawColor) && strokeWidth && (!entry || (entry.visible && entry.opacity > 0))
+    ? entry?.gradient ? `url(#${gradientId})` : rawColor
+    : 'none';
   const stroke = resolved === 'transparent' ? 'none' : resolved;
   const patternValue = entry ? entry.pattern : node.strokePattern;
   const capValue = entry ? entry.cap : node.strokeCap;
@@ -262,24 +283,54 @@ function strokeAttributes(document, node, strokeItem = undefined, strokeIndex = 
   return ` stroke="${escapeXml(stroke)}"${opacity === 1 ? '' : ` stroke-opacity="${number(opacity)}"`} stroke-width="${number(strokeWidth)}"${cap === 'butt' ? '' : ` stroke-linecap="${cap}"`}${join === 'miter' ? '' : ` stroke-linejoin="${join}"`}${miter}${dash.length ? ` stroke-dasharray="${dash.map(number).join(' ')}"` : ''}`;
 }
 
-function shapeStrokeStackMarkup(node, document, measureText, gradientId = null) {
+function addStrokeGradientDefinition(node, stroke, strokeIndex, layerIndex, context) {
+  if (!stroke?.gradient) return null;
+  if (!isValidGradientFill(stroke.gradient)) throw new TypeError(`SVG export requires a valid gradient stroke on layer ${node.name || node.id || '(unnamed)'}.`);
+  const id = `tis-gradient-${layerIndex}-stroke-${strokeIndex}`;
+  if (context?.strokeGradientIds?.has(id)) return id;
+  const definition = gradientDefinition(node, layerIndex, stroke.gradient, id);
+  if (context?.defs) context.defs.push(definition.markup);
+  if (context?.strokeGradientIds) context.strokeGradientIds.add(id);
+  return definition.id;
+}
+
+function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, context = null, layerIndex = 0) {
   if (!Array.isArray(node.strokes)) return '';
   const strokes = strokeStackForNode(node);
   return strokes.map((stroke, index) => {
-    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || !stroke.color || stroke.color === 'transparent') return '';
+    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) return '';
+    const strokeGradientId = addStrokeGradientDefinition(node, stroke, index, layerIndex, context);
     let markup;
-    if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index)}`);
-    else if (node.type === 'text') markup = `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node, stroke, index)}/>`;
-    else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index });
+    if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
+    else if (node.type === 'text') markup = `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}/>`;
+    else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId });
     if (markup) markup = markup.replace(/^<(path|rect|ellipse|polygon)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"`);
-    return markup;
+    return markup + strokeDecorationMarkup(node, document, stroke, index, strokeGradientId);
   }).join('');
 }
 
-function shapeWithStrokeStackMarkup(node, document, measureText, gradientId = null) {
+function strokeDecorationMarkup(node, document, stroke, strokeIndex, gradientId = null) {
+  const decorations = strokeEndpointDecorations(node, stroke, { x: 0, y: 0 });
+  if (!decorations.length) return '';
+  const rawColor = strokeIndex === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
+  const value = stroke.gradient ? (gradientId ? `url(#${gradientId})` : null) : rawColor === 'transparent' ? 'none' : rawColor;
+  if (!value || value === 'none') return '';
+  const metadata = ` data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"`;
+  const attributes = strokeAttributes(document, node, stroke, strokeIndex, gradientId).replace(/ stroke-dasharray="[^"]*"/, '');
+  return decorations.map(item => {
+    const path = `M ${number(item.points[0].x)} ${number(item.points[0].y)}${item.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}${item.closed ? ' Z' : ''}`;
+    const role = ` data-tiny-image-star-decoration="${item.type}" data-tiny-image-star-decoration-end="${item.side}"`;
+    if (item.type === 'triangle') {
+      return `<path${metadata}${role} d="${path}" fill="${escapeXml(value)}" fill-opacity="${number(stroke.opacity)}" stroke="none"/>`;
+    }
+    return `<path${metadata}${role} d="${path}" fill="none"${attributes} stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+}
+
+function shapeWithStrokeStackMarkup(node, document, measureText, gradientId = null, context = null, layerIndex = 0) {
   const base = { ...node, stroke: null, strokeWidth: 0, strokeOpacity: 1, strokes: [] };
   return shapeMarkup(base, document, measureText, gradientId, { includeStroke: false })
-    + shapeStrokeStackMarkup(node, document, measureText, gradientId);
+    + shapeStrokeStackMarkup(node, document, measureText, gradientId, context, layerIndex);
 }
 
 function radius(document, node) {
@@ -337,6 +388,16 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
     && !(node.type === 'path' && hasFillablePathContour(node))) return 'gradient fills';
   if (!Array.isArray(node.fills) && node.type === 'network' && node.fillGradient && !(node.faces || []).length) return 'gradient fills on open vector networks';
   if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`SVG export requires valid layer effects on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (node.effects?.some(effect => effect.type === 'noise' && effect.visible !== false)) {
+    return 'noise effects (random pixel grain cannot be represented by editable SVG filters; rasterize the layer or hide/remove the effect)';
+  }
+  if (node.effects?.some(effect => effect.type === 'texture' && effect.visible !== false)) {
+    return 'texture effects (deterministic edge distress cannot be represented by editable SVG geometry; rasterize the layer or hide/remove the effect)';
+  }
+  if (glassVectorExportBlockReason(node)) return `Glass effects (${glassVectorExportBlockReason(node)})`;
+  if (node.effects?.some(effect => effect.type === 'background-blur' && effect.visible !== false)) {
+    return 'background blur effects (editable SVG filters cannot sample the pixels behind a layer)';
+  }
   if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`SVG export requires a supported blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
   if (!Array.isArray(node.fills) && node.fillGradient && !isValidGradientFill(node.fillGradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
   if (node.type === 'boolean') {
@@ -398,9 +459,9 @@ function validateTree(nodes, document, assets, imagePreviews = null, ignoredNode
   }
 }
 
-function shapeMarkup(node, document, measureText, gradientId = null, { fillValue, fillOpacity, includeStroke = true, strokeItem, strokeIndex = 0 } = {}) {
+function shapeMarkup(node, document, measureText, gradientId = null, { fillValue, fillOpacity, includeStroke = true, strokeItem, strokeIndex = 0, strokeGradientId = null } = {}) {
   const fill = fillAttributes(document, node, { text: node.type === 'text', gradientId, fillValue, fillOpacity });
-  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex) : '';
+  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
   switch (node.type) {
     case 'frame':
     case 'section':
@@ -413,7 +474,9 @@ function shapeMarkup(node, document, measureText, gradientId = null, { fillValue
     case 'ellipse':
       return `<ellipse cx="${number(node.width / 2)}" cy="${number(node.height / 2)}" rx="${number(node.width / 2)}" ry="${number(node.height / 2)}"${fill}${stroke}/>`;
     case 'line':
-      return `<path d="M 0 0 L ${number(node.width)} ${number(node.height)}" fill="none"${stroke}/>`;
+      return node.lineReverseY === true
+        ? `<path d="M 0 ${number(node.height)} L ${number(node.width)} 0" fill="none"${stroke}/>`
+        : `<path d="M 0 0 L ${number(node.width)} ${number(node.height)}" fill="none"${stroke}/>`;
     case 'star': {
       const count = Math.max(3, Math.min(32, Number(node.points) || 5));
       const radius = Math.min(node.width, node.height) / 2;
@@ -515,7 +578,7 @@ function networkEdgesByPair(node) {
   return result;
 }
 
-function networkMarkup(node, document, gradientId = null, { includeFills = true } = {}) {
+function networkMarkup(node, document, gradientId = null, { includeFills = true, context = null, layerIndex = 0 } = {}) {
   const faces = node.faces || [];
   const edgesByPair = networkEdgesByPair(node);
   let markup = '';
@@ -534,12 +597,14 @@ function networkMarkup(node, document, gradientId = null, { includeFills = true 
   const strokeEntries = Array.isArray(node.strokes) ? strokeStackForNode(node) : [null];
   for (let strokeIndex = 0; strokeIndex < strokeEntries.length; strokeIndex += 1) {
     const strokeItem = strokeEntries[strokeIndex];
-    if (strokeItem && (!strokeItem.visible || strokeItem.opacity <= 0 || strokeItem.width <= 0 || !strokeItem.color || strokeItem.color === 'transparent')) continue;
-    const stroke = strokeItem ? strokeAttributes(document, node, strokeItem, strokeIndex) : strokeAttributes(document, node);
+    if (strokeItem && (!strokeItem.visible || strokeItem.opacity <= 0 || strokeItem.width <= 0 || (!strokeItem.gradient && (!strokeItem.color || strokeItem.color === 'transparent')))) continue;
+    const strokeGradientId = addStrokeGradientDefinition(node, strokeItem, strokeIndex, layerIndex, context);
+    const stroke = strokeItem ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : strokeAttributes(document, node);
     const strokeMetadata = strokeItem ? ` data-tiny-image-star-stroke-id="${escapeXml(strokeItem.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"` : '';
     for (const edge of node.edges || []) {
       markup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}"${strokeMetadata} d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
     }
+    if (strokeItem) markup += strokeDecorationMarkup(node, document, strokeItem, strokeIndex, strokeGradientId);
   }
   return markup;
 }
@@ -607,7 +672,7 @@ function renderShapeFillStack(node, document, context, index, measureText) {
   // Strokes belong to the shape, not to individual fills. Each ordered stroke
   // is emitted after the full fill stack so later strokes remain on top.
   markup += Array.isArray(node.strokes)
-    ? shapeStrokeStackMarkup(node, document, measureText)
+    ? shapeStrokeStackMarkup(node, document, measureText, null, context, index)
     : shapeMarkup(node, document, measureText, null, { fillValue: 'transparent', fillOpacity: 0 });
   return markup;
 }
@@ -658,7 +723,7 @@ function renderNetworkFillStack(node, document, context, index) {
     });
   }
   // Emit network edges once, after all face paints.
-  return markup + networkMarkup(node, document, null, { includeFills: false });
+  return markup + networkMarkup(node, document, null, { includeFills: false, context, layerIndex: index });
 }
 
 function textLines(node, document, measureText) {
@@ -834,7 +899,12 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
         if (partColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(partColor)) {
           throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
         }
-        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}" fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
+        const baselineShift = Number(style.baselineShift || 0);
+        if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
+          throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
+        }
+        const baselineShiftAttribute = baselineShift === 0 ? '' : ` baseline-shift="${number(baselineShift)}px"`;
+        const partMarkup = `<tspan font-family="${escapeXml(style.fontFamily)}" font-size="${number(style.fontSize)}" font-weight="${escapeXml(style.fontWeight)}" font-style="${style.fontStyle}" letter-spacing="${number(style.letterSpacing)}"${baselineShiftAttribute} fill="${escapeXml(partColor)}">${escapeXml(part.text)}</tspan>`;
         if (!['underline', 'line-through'].includes(style.textDecoration) || part.width <= 0) return partMarkup;
         const scaleX = line.naturalWidth > line.width && line.naturalWidth > 0 ? line.width / line.naturalWidth : 1;
         const lineStartX = textLineStartX(node, line);
@@ -842,7 +912,7 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
         const x = lineStartX + (part.offsetX + (justification?.before || 0)) * scaleX;
         const decoratedWidth = part.width + (justification?.within || 0);
         const decorationWidth = Math.max(1, style.fontSize / 16);
-        const y = line.y + verticalOffset + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
+        const y = line.y + verticalOffset - baselineShift + style.fontSize * (style.textDecoration === 'underline' ? 1.03 : 0.55);
         const stroke = partColor === 'none' ? 'none' : partColor;
         decorations.push(`<path d="M ${number(x)} ${number(y)} L ${number(x + decoratedWidth * scaleX)} ${number(y)}" fill="none" stroke="${escapeXml(stroke)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`);
         return partMarkup;
@@ -1099,8 +1169,8 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
     let ownShape = node.mask ? ''
       : hasFillStack && node.type === 'network' ? renderNetworkFillStack(paintNode, document, context, index)
         : hasFillStack ? renderShapeFillStack(paintNode, document, context, index, measureText)
-          : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null)
-            : Array.isArray(paintNode.strokes) ? shapeWithStrokeStackMarkup(paintNode, document, measureText, gradient?.id || null)
+          : node.type === 'network' ? networkMarkup(node, document, gradient?.id || null, { context, layerIndex: index })
+            : Array.isArray(paintNode.strokes) ? shapeWithStrokeStackMarkup(paintNode, document, measureText, gradient?.id || null, context, index)
               : shapeMarkup(paintNode, document, measureText, gradient?.id || null);
     const maskSource = node.mask ? node.children.find(child => child?.id === node.maskSourceId) : null;
     const alphaMask = maskSource && isNodeVisible(document, maskSource)
@@ -1126,7 +1196,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
             attributes: ` opacity="${number(Number(node.fillOpacity ?? 1) * faceOpacity)}" clip-path="url(#${faceClipId})"`
           });
         }).join('');
-        ownShape = fills + networkMarkup(node, document, null, { includeFills: false });
+        ownShape = fills + networkMarkup(node, document, null, { includeFills: false, context, layerIndex: index });
       } else if (isLayer) {
         context.defs.push(`<clipPath id="${clipId}" clipPathUnits="userSpaceOnUse">${roundedRectMarkup(node, document)}</clipPath>`);
         ownShape = rasterImageMarkup({
@@ -1134,7 +1204,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
           transforms: asset.isPreview ? {} : node.transforms,
           attributes: ` clip-path="url(#${clipId})"`
         });
-        if (Array.isArray(node.strokes)) ownShape += shapeStrokeStackMarkup(node, document, measureText);
+        if (Array.isArray(node.strokes)) ownShape += shapeStrokeStackMarkup(node, document, measureText, null, context, index);
         else if (node.stroke && Number(node.strokeWidth) > 0) ownShape += roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node)}`);
       } else {
         const clipNode = { ...node, fill: '#ffffff', fillOpacity: 1, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0, variableBindings: {} };
@@ -1146,7 +1216,7 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
         });
         const outlineNode = { ...node, fill: '#000000', fillOpacity: 0, fillGradient: null, imageFill: null, fillStyleId: null, fillVariableId: null, variableBindings: {} };
         const outline = Array.isArray(node.strokes)
-          ? shapeStrokeStackMarkup(outlineNode, document, measureText)
+          ? shapeStrokeStackMarkup(outlineNode, document, measureText, null, context, index)
           : shapeMarkup(outlineNode, document, measureText).replace(/ fill="[^"]*" fill-opacity="[^"]*"/, ' fill="none"');
         ownShape += outline;
       }
@@ -1220,6 +1290,21 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
           include(transformPoint(matrix, Number(edge[part].x) * width, Number(edge[part].y) * height), bounds);
         }
       }
+      if (['line', 'path', 'network'].includes(node.type)) {
+        const strokes = strokeStackForNode(node);
+        for (let strokeIndex = 0; strokeIndex < strokes.length; strokeIndex += 1) {
+          const stroke = strokes[strokeIndex];
+          if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
+          for (const decoration of strokeEndpointDecorations(node, stroke, { x: 0, y: 0 })) {
+            const strokeRadius = decoration.type === 'arrow' ? stroke.width / 2 : 0;
+            for (const vertex of decoration.points) {
+              for (const [x, y] of [[vertex.x - strokeRadius, vertex.y - strokeRadius], [vertex.x + strokeRadius, vertex.y - strokeRadius], [vertex.x + strokeRadius, vertex.y + strokeRadius], [vertex.x - strokeRadius, vertex.y + strokeRadius]]) {
+                include(transformPoint(matrix, x, y), bounds);
+              }
+            }
+          }
+        }
+      }
       if (node.type === 'text') {
         const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
         const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
@@ -1245,12 +1330,17 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
             const parts = line.parts.length ? line.parts : [{ offsetX: 0, width: line.width, style: { fontSize, textDecoration: node.textDecoration } }];
             for (const part of parts) {
               const size = part.style.fontSize;
+              const baselineShift = Number(part.style.baselineShift || 0);
+              if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
+                throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
+              }
               const x1 = startX + part.offsetX * scaleX;
               const x2 = x1 + part.width * scaleX;
               const lineTop = line.y + verticalOffset;
-              const top = lineTop - size * .15;
-              const decorationBottom = lineTop + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
-              const bottom = Math.max(lineTop + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);
+              const shiftedLineTop = lineTop - baselineShift;
+              const top = shiftedLineTop - size * .15;
+              const decorationBottom = shiftedLineTop + size * (part.style.textDecoration === 'underline' ? 1.03 : .55);
+              const bottom = Math.max(shiftedLineTop + size * 1.25, decorationBottom + Math.max(1, size / 16) / 2);
               for (const [x, y] of [[x1, top], [x2, top], [x1, bottom], [x2, bottom]]) include(transformPoint(matrix, x, y), bounds);
             }
           } else {
@@ -1307,7 +1397,7 @@ export function exportNodeToSvg(node, { document = null, assets = null, imagePre
   document ||= emptyDocument;
   validateTree([node], document, assets, imagePreviews);
   const bounds = getBounds([node], { document, includePosition: false, measureText });
-  const context = { defs: [], nextIndex: 0, assets, imagePreviews };
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set() };
   const markup = renderTree([node], document, context, false, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }
@@ -1321,7 +1411,7 @@ export function exportPageToSvg(page, { document = null, assets = null, imagePre
   document ||= emptyDocument;
   validateTree(page.children, document, assets, imagePreviews);
   const bounds = getBounds(page.children, { document, measureText });
-  const context = { defs: [], nextIndex: 0, assets, imagePreviews };
+  const context = { defs: [], nextIndex: 0, assets, imagePreviews, strokeGradientIds: new Set() };
   const markup = renderTree(page.children, document, context, true, measureText);
   return svgDocument(markup, context.defs, bounds, { width, height });
 }

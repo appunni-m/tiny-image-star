@@ -1,5 +1,8 @@
-import { clampCornerRadii, cornerRadiusKeys } from './corner-radii.js';
-import { vectorPathContours } from './vector-path.js';
+import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii } from './corner-radii.js';
+import {
+  vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints,
+  vectorNetworkVertexPoint, vectorPathContours
+} from './vector-path.js';
 
 const operations = new Set(['union', 'subtract', 'intersect', 'exclude']);
 const MAX_INPUT_SEGMENTS = 512;
@@ -24,6 +27,14 @@ function finite(value) {
   return Number.isFinite(Number(value));
 }
 
+function rectangleCornerRadii(node) {
+  const radiusInput = node.cornerRadii ?? node.radius ?? 0;
+  const radiusValues = typeof radiusInput === 'number'
+    ? Object.fromEntries(cornerRadiusKeys.map(key => [key, radiusInput]))
+    : radiusInput;
+  return clampCornerRadii(node.width, node.height, radiusValues);
+}
+
 function vector(x, y) { return { x, y }; }
 function subtract(a, b) { return vector(a.x - b.x, a.y - b.y); }
 function add(a, b) { return vector(a.x + b.x, a.y + b.y); }
@@ -44,8 +55,8 @@ function isZeroHandle(handle) {
 }
 
 function validateSimpleOperand(node, { root = false } = {}) {
-  if (!node || !['rectangle', 'polygon', 'star', 'path', 'boolean'].includes(node.type)) {
-    unsupported(`“${node?.name || node?.type || 'Unknown layer'}” is not a supported polygonal shape. Ellipses and vector networks are not supported by this exact bake yet.`);
+  if (!node || !['rectangle', 'ellipse', 'polygon', 'star', 'path', 'network', 'boolean'].includes(node.type)) {
+    unsupported(`“${node?.name || node?.type || 'Unknown layer'}” is not a supported closed vector shape.`);
   }
   if (![node.x, node.y, node.width, node.height, node.rotation ?? 0].every(finite)
     || node.width <= 0 || node.height <= 0) unsupported(`“${node.name || node.type}” has invalid or zero-sized geometry.`);
@@ -57,14 +68,15 @@ function validateSimpleOperand(node, { root = false } = {}) {
   }
 
   if (node.type === 'rectangle') {
-    const radiusInput = node.cornerRadii ?? node.radius ?? 0;
-    const radiusValues = typeof radiusInput === 'number'
-      ? Object.fromEntries(cornerRadiusKeys.map(key => [key, radiusInput]))
-      : radiusInput;
-    const radii = clampCornerRadii(node.width, node.height, radiusValues);
-    if (cornerRadiusKeys.some(key => radii[key] !== 0)) unsupported(`“${node.name || node.type}” has rounded corners; only square-corner rectangles can be baked exactly.`);
+    if (node.cornerRadii != null && !isValidCornerRadii(node.cornerRadii)) {
+      unsupported(`“${node.name || node.type}” has invalid corner-radius geometry.`);
+    }
+    if (node.variableBindings?.radius) {
+      unsupported(`“${node.name || node.type}” has a mode-bound radius; remove that binding before baking its geometry.`);
+    }
     return;
   }
+  if (node.type === 'ellipse') return;
   if (node.type === 'polygon' || node.type === 'star') {
     const count = Number(node.points ?? (node.type === 'star' ? 5 : 6));
     if (!Number.isInteger(count) || count < 3 || count > 32) unsupported(`“${node.name || node.type}” has a non-integer or unsupported point count.`);
@@ -88,11 +100,98 @@ function validateSimpleOperand(node, { root = false } = {}) {
     }
     return;
   }
+  if (node.type === 'network') {
+    validateNetworkBakeSource(node);
+    return;
+  }
   if (node.type === 'boolean') {
     if (!operations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2) {
       unsupported(`“${node.name || node.type}” has an invalid Boolean operation or no source shapes.`);
     }
     for (const child of node.children) validateSimpleOperand(child);
+  }
+}
+
+function networkEdgePair(from, to) {
+  return [from, to].sort().join('\0');
+}
+
+function validateNetworkBakeSource(node) {
+  const vertices = node.vertices;
+  const edges = node.edges;
+  const faces = node.faces;
+  if (!Array.isArray(vertices) || !vertices.length || !Array.isArray(edges) || !edges.length
+    || !Array.isArray(faces) || !faces.length) {
+    unsupported(`“${node.name || node.type}” must have at least one closed network face.`);
+  }
+  const vertexIds = new Set();
+  for (const vertex of vertices) {
+    if (!vertex || typeof vertex.id !== 'string' || !vertex.id || vertexIds.has(vertex.id)
+      || !finite(vertex.x) || !finite(vertex.y)) {
+      unsupported(`“${node.name || node.type}” has malformed or duplicate network vertices.`);
+    }
+    if (vertex.mode != null && !['corner', 'smooth', 'symmetric'].includes(vertex.mode)) {
+      unsupported(`“${node.name || node.type}” has an unsupported network vertex mode.`);
+    }
+    if (vertex.mode === 'smooth' || vertex.mode === 'symmetric') {
+      unsupported(`“${node.name || node.type}” has constrained handle modes that an editable path cannot preserve.`);
+    }
+    if (vertex.split) unsupported(`“${node.name || node.type}” contains split-edge restoration metadata that an editable path cannot preserve.`);
+    vertexIds.add(vertex.id);
+  }
+
+  const edgeIds = new Set();
+  const edgePairs = new Map();
+  for (const edge of edges) {
+    if (!edge || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id)
+      || !vertexIds.has(edge.from) || !vertexIds.has(edge.to) || edge.from === edge.to
+      || ['control1', 'control2'].some(part => edge[part] != null && (!finite(edge[part].x) || !finite(edge[part].y)))) {
+      unsupported(`“${node.name || node.type}” has a malformed network edge.`);
+    }
+    const pair = networkEdgePair(edge.from, edge.to);
+    if (edgePairs.has(pair)) {
+      unsupported(`“${node.name || node.type}” has parallel edges that make its face boundaries ambiguous.`);
+    }
+    edgeIds.add(edge.id);
+    edgePairs.set(pair, edge.id);
+  }
+
+  const edgesByPair = vectorNetworkEdgePairIndex(node);
+  const faceEdgeUse = new Map();
+  const faceVertexUse = new Set();
+  for (const face of faces) {
+    const ring = face?.vertexIds;
+    if (!Array.isArray(ring) || ring.length < 3 || new Set(ring).size !== ring.length
+      || ring.some(id => !vertexIds.has(id))) {
+      unsupported(`“${node.name || node.type}” has a malformed or non-simple face vertex cycle.`);
+    }
+    if ((face.fillOpacity ?? 1) !== 1) {
+      unsupported(`“${node.name || node.type}” has a translucent face; its mask cannot be represented by a binary vector path.`);
+    }
+    for (const vertexId of ring) {
+      if (faceVertexUse.has(vertexId)) {
+        unsupported(`“${node.name || node.type}” shares junctions between faces; baking would discard that graph topology.`);
+      }
+      faceVertexUse.add(vertexId);
+    }
+    for (let index = 0; index < ring.length; index += 1) {
+      const fromId = ring[index];
+      const toId = ring[(index + 1) % ring.length];
+      if (!vectorNetworkEdgeForPair(edgesByPair, fromId, toId)) {
+        unsupported(`“${node.name || node.type}” has a face boundary that does not follow a network edge.`);
+      }
+      const pair = networkEdgePair(fromId, toId);
+      faceEdgeUse.set(pair, (faceEdgeUse.get(pair) || 0) + 1);
+      if (faceEdgeUse.get(pair) > 1) {
+        unsupported(`“${node.name || node.type}” shares network edges between faces; baking would discard that graph topology.`);
+      }
+    }
+  }
+  if (faceEdgeUse.size !== edges.length || edges.some(edge => !faceEdgeUse.has(networkEdgePair(edge.from, edge.to)))) {
+    unsupported(`“${node.name || node.type}” has open or unfilled network edges outside its closed faces.`);
+  }
+  if (faceVertexUse.size !== vertices.length) {
+    unsupported(`“${node.name || node.type}” has isolated network vertices outside its closed faces.`);
   }
 }
 
@@ -381,6 +480,19 @@ function cubicBounds(curve) {
     left: Math.min(...points.map(point => point.x)), right: Math.max(...points.map(point => point.x)),
     top: Math.min(...points.map(point => point.y)), bottom: Math.max(...points.map(point => point.y))
   };
+}
+function cubicTightBounds(curve) {
+  const extrema = axis => {
+    const p0 = curve.p0[axis]; const p1 = curve.p1[axis];
+    const p2 = curve.p2[axis]; const p3 = curve.p3[axis];
+    const a = -p0 + 3 * p1 - 3 * p2 + p3;
+    const b = 3 * p0 - 6 * p1 + 3 * p2;
+    const c = -3 * p0 + 3 * p1;
+    const cuts = [0, 1, ...rootsOfQuadratic(3 * a, 2 * b, c).filter(value => value > 0 && value < 1)];
+    return cuts.map(value => cubicPoint(curve, value)[axis]);
+  };
+  const xs = extrema('x'); const ys = extrema('y');
+  return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) };
 }
 function cubicBoundsOverlap(a, b, epsilon) {
   return a.left <= b.right + epsilon && b.left <= a.right + epsilon
@@ -739,6 +851,58 @@ function linearCurvesFromContours(contours) {
   }));
 }
 
+function roundedRectangleCurves(node) {
+  const radii = rectangleCornerRadii(node);
+  const { topLeft: tl, topRight: tr, bottomRight: br, bottomLeft: bl } = radii;
+  const left = node.x;
+  const top = node.y;
+  const right = left + node.width;
+  const bottom = top + node.height;
+  const centerX = left + node.width / 2;
+  const centerY = top + node.height / 2;
+  const rotation = node.rotation || 0;
+  const transform = point => rotation ? rotate(point, centerX, centerY, rotation) : point;
+  const contours = [];
+  const first = vector(left + tl, top);
+  let current = first;
+  const lineTo = end => {
+    if (distance(current, end) > 0) {
+      const start = transform(current);
+      const finish = transform(end);
+      const delta = subtract(finish, start);
+      contours.push(cubic(start, add(start, scale(delta, 1 / 3)), add(start, scale(delta, 2 / 3)), finish));
+    }
+    current = end;
+  };
+  // Convert each quadratic corner Q(P0, Q, P2) exactly to cubic controls:
+  // C1=P0+2/3(Q-P0), C2=P2+2/3(Q-P2). Applying rotation after conversion
+  // preserves each independent renderer radius and its corner geometry.
+  const quadraticTo = (control, end, radius) => {
+    if (radius > 0) {
+      const start = transform(current);
+      const quadraticControl = transform(control);
+      const finish = transform(end);
+      contours.push(cubic(
+        start,
+        add(start, scale(subtract(quadraticControl, start), 2 / 3)),
+        add(finish, scale(subtract(quadraticControl, finish), 2 / 3)),
+        finish
+      ));
+    }
+    current = end;
+  };
+
+  lineTo(vector(right - tr, top));
+  quadraticTo(vector(right, top), vector(right, top + tr), tr);
+  lineTo(vector(right, bottom - br));
+  quadraticTo(vector(right, bottom), vector(right - br, bottom), br);
+  lineTo(vector(left + bl, bottom));
+  quadraticTo(vector(left, bottom), vector(left, bottom - bl), bl);
+  lineTo(vector(left, top + tl));
+  quadraticTo(vector(left, top), first, tl);
+  return [contours];
+}
+
 function pathCurves(node) {
   return vectorPathContours(node).map(contour => {
     const points = contour.points || [];
@@ -763,8 +927,86 @@ function pathCurves(node) {
   });
 }
 
+function networkFaceCurves(node, face, edgesByPair) {
+  const ids = face.vertexIds;
+  const cx = node.x + node.width / 2;
+  const cy = node.y + node.height / 2;
+  const transform = point => rotate(point, cx, cy, node.rotation || 0);
+  const curves = [];
+  for (let index = 0; index < ids.length; index += 1) {
+    const fromId = ids[index];
+    const toId = ids[(index + 1) % ids.length];
+    const edge = vectorNetworkEdgeForPair(edgesByPair, fromId, toId);
+    const points = edge && vectorNetworkEdgePoints(node, edge.id, { x: node.x, y: node.y });
+    if (!points) unsupported(`“${node.name || node.type}” has a face boundary that cannot be read as a closed cubic path.`);
+    const reversed = edge.from !== fromId;
+    const start = points[reversed ? 3 : 0];
+    const end = points[reversed ? 0 : 3];
+    let control1 = points[reversed ? 2 : 1];
+    let control2 = points[reversed ? 1 : 2];
+    if (!edge.control1 && !edge.control2) {
+      const delta = subtract(end, start);
+      control1 = add(start, scale(delta, 1 / 3));
+      control2 = add(start, scale(delta, 2 / 3));
+    }
+    curves.push(cubic(transform(start), transform(control1), transform(control2), transform(end)));
+  }
+  return curves;
+}
+
+function networkCurves(node) {
+  const edgesByPair = vectorNetworkEdgePairIndex(node);
+  const faces = node.faces.map(face => networkFaceCurves(node, face, edgesByPair));
+  if (faces.length === 1) return faces;
+  // The live Boolean mask paints each network face independently. Union these
+  // closed regions first so different contour directions remain additive.
+  return curveBoolean(faces.map(contour => ({ contours: [contour], fillRule: 'nonzero' })), 'union');
+}
+
+// Editable paths store cubic handles rather than rational conic segments, so
+// an ellipse cannot be represented exactly in the native path model. Twelve
+// 30-degree cubic arcs, inset by 5e-7 of each radius, keep the approximation
+// inside the source ellipse and below 1e-6 times its longer semiaxis in
+// Hausdorff distance. The small inset also prevents rotated ellipses from
+// protruding beyond the source visual bounds and creating a spurious clip.
+function ellipseCurves(node) {
+  const segments = 12;
+  const inset = 1 - 5e-7;
+  const cx = node.x + node.width / 2;
+  const cy = node.y + node.height / 2;
+  const rx = node.width / 2 * inset;
+  const ry = node.height / 2 * inset;
+  const delta = TAU / segments;
+  const handle = 4 / 3 * Math.tan(delta / 4);
+  const angle = node.rotation || 0;
+  const transform = point => angle ? rotate(point, cx, cy, angle) : point;
+  const curves = [];
+  for (let index = 0; index < segments; index += 1) {
+    const startAngle = index * delta;
+    const endAngle = (index + 1) * delta;
+    const start = vector(cx + rx * Math.cos(startAngle), cy + ry * Math.sin(startAngle));
+    const end = vector(cx + rx * Math.cos(endAngle), cy + ry * Math.sin(endAngle));
+    const startTangent = vector(-rx * Math.sin(startAngle), ry * Math.cos(startAngle));
+    const endTangent = vector(-rx * Math.sin(endAngle), ry * Math.cos(endAngle));
+    curves.push(cubic(
+      transform(start),
+      transform(add(start, scale(startTangent, handle))),
+      transform(subtract(end, scale(endTangent, handle))),
+      transform(end)
+    ));
+  }
+  return [curves];
+}
+
 function primitiveCurves(node) {
-  return node.type === 'path' ? pathCurves(node) : linearCurvesFromContours(primitiveContours(node) || []);
+  if (node.type === 'path') return pathCurves(node);
+  if (node.type === 'ellipse') return ellipseCurves(node);
+  if (node.type === 'network') return networkCurves(node);
+  if (node.type === 'rectangle') {
+    const radii = rectangleCornerRadii(node);
+    if (cornerRadiusKeys.some(key => radii[key] > 0)) return roundedRectangleCurves(node);
+  }
+  return linearCurvesFromContours(primitiveContours(node) || []);
 }
 
 function transformCurveSet(curves, sourceTransform) {
@@ -783,8 +1025,11 @@ function booleanContentCurves(node) {
   }));
   const result = curveBoolean(shapes, node.operation);
   const epsilon = Math.max(node.width, node.height, 1) * 1e-10;
-  const withinGroupBounds = result.every(contour => contour.every(curve => [curve.p0, curve.p1, curve.p2, curve.p3].every(point =>
-    point.x >= -epsilon && point.y >= -epsilon && point.x <= node.width + epsilon && point.y <= node.height + epsilon)));
+  const withinGroupBounds = result.every(contour => contour.every(curve => {
+    const bounds = cubicTightBounds(curve);
+    return bounds.left >= -epsilon && bounds.top >= -epsilon
+      && bounds.right <= node.width + epsilon && bounds.bottom <= node.height + epsilon;
+  }));
   // Source visual bounds already match the Boolean group's clip in ordinary
   // cases. Avoid introducing artificial tangent intersections at those exact
   // bounds; run a second Boolean clip only when a control hull may exceed them.
@@ -801,6 +1046,11 @@ function shapeCurvesInParent(node) {
 }
 
 function containsCurvedPath(node) {
+  if (node.type === 'ellipse') return true;
+  if (node.type === 'network') return true;
+  if (node.type === 'rectangle') {
+    if (cornerRadiusKeys.some(key => rectangleCornerRadii(node)[key] > 0)) return true;
+  }
   if (node.type === 'path' && vectorPathContours(node).some(contour => contour.points.some(point =>
     !isZeroHandle(point.in) || !isZeroHandle(point.out)))) return true;
   return (node.children || []).some(containsCurvedPath);

@@ -130,6 +130,19 @@ try {
   const leftPanel = app.querySelector('#left-panel'); const leftToggle = app.querySelector('#sidebar-toggle');
   assert(!leftPanel.inert && leftPanel.getAttribute('aria-hidden') === 'false' && leftToggle.getAttribute('aria-expanded') === 'true', 'opening Layers should expose the panel and synchronize its toggle state.');
   assert(leftPanel.contains(app.activeElement), 'opening a mobile panel should move focus inside it.');
+  const canvasRegion = app.querySelector('#canvas-region');
+  assert(canvasRegion.inert && canvasRegion.getAttribute('aria-hidden') === 'true', 'the canvas behind an open phone panel should be removed from keyboard and screen-reader navigation.');
+  const panelFocusStops = [...leftPanel.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+    .filter(element => element.getClientRects().length && !element.closest('[hidden], [inert]'));
+  const finalPanelFocusStop = panelFocusStops.at(-1);
+  assert(finalPanelFocusStop, 'an open phone panel should expose at least one visible keyboard control.');
+  finalPanelFocusStop.focus();
+  const wrapForward = new app.defaultView.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+  finalPanelFocusStop.dispatchEvent(wrapForward);
+  assert(wrapForward.defaultPrevented && app.activeElement === leftToggle, 'Tab from the last panel control should reach its close toggle.');
+  const wrapBackward = new app.defaultView.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  leftToggle.dispatchEvent(wrapBackward);
+  assert(wrapBackward.defaultPrevented && app.activeElement === finalPanelFocusStop, 'Shift+Tab from the close toggle should return to the last panel control.');
   const escape = new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
   app.activeElement.dispatchEvent(escape);
   assert(escape.defaultPrevented, 'Escape should dismiss an open phone panel.');
@@ -242,6 +255,16 @@ try {
   assertTouchTarget(app, rotateRight, 'Rotate right control');
   tap(app, rotateRight);
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'cropped and rotated source preview');
+  const flipHorizontal = app.querySelector('[data-action="flip-image"][data-direction="horizontal"][data-transform-target="layer"]');
+  assertTouchTarget(app, flipHorizontal, 'Flip horizontal control');
+  tap(app, flipHorizontal);
+  assert(app.querySelector('[data-action="flip-image"][data-direction="horizontal"][data-transform-target="layer"]')?.getAttribute('aria-pressed') === 'true', 'the horizontal flip button should expose its active state');
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'horizontal flip preview');
+  const flipVertical = app.querySelector('[data-action="flip-image"][data-direction="vertical"][data-transform-target="layer"]');
+  assertTouchTarget(app, flipVertical, 'Flip vertical control');
+  tap(app, flipVertical);
+  assert(app.querySelector('[data-action="flip-image"][data-direction="vertical"][data-transform-target="layer"]')?.getAttribute('aria-pressed') === 'true', 'the vertical flip button should expose its active state');
+  await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'vertical flip preview');
   await waitFor(() => sampleUntouchedSecondImage(app)[3] > 0, 'untouched batch target preview');
   const beforeBatch = sampleUntouchedSecondImage(app);
 
@@ -251,7 +274,10 @@ try {
   const dialog = app.querySelector('#recipe-dialog');
   assert(dialog?.open, 'Save recipe should open from the image inspector without a context menu.');
   assert(app.querySelector('#recipe-preview-summary').textContent.includes('Crop') && app.querySelector('#recipe-preview-summary').textContent.includes('Rotate 90°')
-    && app.querySelector('#recipe-preview-summary').textContent.includes('Sharpness 40'), 'the recipe preview should describe sharpness, crop, and rotation.');
+    && app.querySelector('#recipe-preview-summary').textContent.includes('Sharpness 40')
+    && app.querySelector('#recipe-preview-summary').textContent.includes('Flip horizontal')
+    && app.querySelector('#recipe-preview-summary').textContent.includes('Flip vertical'),
+  'the recipe preview should describe sharpness, crop, rotation, and both flips.');
   app.querySelector('#recipe-name').value = 'Phone batch look';
   tap(app, app.querySelector('#save-recipe-confirm'));
   await waitFor(() => !dialog.open, 'recipe save dialog');

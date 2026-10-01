@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import { moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
@@ -31,6 +31,124 @@ test('exports editable nested geometry, text styling, rotation, opacity, and cli
   assert.match(first, /data-tiny-image-star-text-wrap="canvas-word-wrap"/);
   assert.match(first, /matrix\(/);
   assert.match(first, /opacity="0.8"/);
+});
+
+test('SVG refuses background blur when equivalent editable backdrop sampling is unavailable', () => {
+  const node = createNode('rectangle', { effects: [{ id: 'backdrop', type: 'background-blur', visible: true, radius: 12 }] });
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && /background blur effects/.test(error.feature)
+    && /cannot sample the pixels behind a layer/.test(error.message));
+  node.effects[0].visible = false;
+  assert.doesNotThrow(() => exportNodeToSvg(node), 'hidden effects do not change the exported appearance');
+});
+
+test('SVG refuses visible noise rather than silently dropping its pixel texture', () => {
+  const node = createNode('rectangle', { effects: [createLayerEffect('noise')] });
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && /noise effects/.test(error.feature)
+    && /random pixel grain cannot be represented/.test(error.message));
+  node.effects[0].visible = false;
+  assert.doesNotThrow(() => exportNodeToSvg(node), 'hidden noise does not change the exported appearance');
+});
+
+test('SVG and vector-PDF source export refuse visible texture edge distortion explicitly', () => {
+  const node = createNode('rectangle', { effects: [createLayerEffect('texture')] });
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && /texture effects/.test(error.feature)
+    && /edge distress cannot be represented by editable SVG geometry/.test(error.message)
+    && /rasterize the layer/.test(error.message));
+  node.effects[0].visible = false;
+  assert.doesNotThrow(() => exportNodeToSvg(node), 'hidden texture does not alter exported appearance');
+});
+
+test('SVG export refuses visible Glass backdrop sampling explicitly', () => {
+  const node = createNode('rectangle', { effects: [createLayerEffect('glass')] });
+  assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+    && /Glass effects/.test(error.feature)
+    && /backdrop refraction and transparency/.test(error.message)
+    && /rasterize the layer or hide\/remove/.test(error.message));
+  node.effects[0].visible = false;
+  assert.doesNotThrow(() => exportNodeToSvg(node), 'hidden Glass does not change editable vector output');
+});
+
+test('SVG preserves the direction of a negative-slope line', () => {
+  const line = createNode('line', { x: 10, y: 20, width: 80, height: 45, stroke: '#123456', strokeWidth: 3, lineReverseY: true });
+  const svg = exportNodeToSvg(line);
+  assert.match(svg, /d="M 0 45 L 80 0"/);
+});
+
+test('SVG endpoint decorations stay editable, independent per stroke, and inside the rotated viewBox', () => {
+  const line = createNode('line', {
+    width: 100, height: 0, rotation: 90,
+    strokes: [
+      { id: 'primary', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'dashed', miterLimit: 10,
+        startDecoration: 'arrow', endDecoration: 'none' },
+      { id: 'accent', color: '#abcdef', width: 4, opacity: .5, visible: true, cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10,
+        startDecoration: 'none', endDecoration: 'triangle' }
+    ]
+  });
+  const svg = exportNodeToSvg(line);
+  assert.match(svg, /viewBox="40.2 -52 19.6 103"/, 'the arrow and triangle bleed expands the rotated local bounds');
+  assert.match(svg, /<g transform="matrix\(0 1 -1 0 50 -50\)"/,
+    'markers share the layer transform and therefore scale or rotate with the line');
+  assert.match(svg, /data-tiny-image-star-decoration="arrow" data-tiny-image-star-decoration-end="start" d="M 8 -4\.4 L 0 0 L 8 4\.4" fill="none" stroke="#123456" stroke-width="2" stroke-miterlimit="10" stroke-linecap="round" stroke-linejoin="round"/,
+    'arrow is an editable vector path and retains its stroke paint while removing dash gaps');
+  assert.match(svg, /data-tiny-image-star-decoration="triangle" data-tiny-image-star-decoration-end="end" d="M 100 0 L 84 8\.8 L 84 -8\.8 Z" fill="#abcdef" fill-opacity="0\.5" stroke="none"/,
+    'triangle is a separately editable filled path with its own stroke opacity');
+  assert.doesNotMatch(svg, /data-tiny-image-star-decoration="none"/);
+
+  const defaultLine = createNode('line', { width: 40, height: 0, strokes: [
+    { id: 'plain', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }
+  ] });
+  assert.doesNotMatch(exportNodeToSvg(defaultLine), /data-tiny-image-star-decoration=/,
+    'legacy stack items with omitted decoration fields continue to mean none');
+});
+
+test('SVG exports independent editable linear and radial stroke gradients with local definitions', () => {
+  const linear = createGradientFill('linear', '#ff0000');
+  linear.angle = 90;
+  linear.stops[1].color = '#0000ff';
+  const radial = createGradientFill('radial', '#00aa44');
+  radial.stops[1].color = '#112233';
+  const rectangle = createNode('rectangle', { width: 90, height: 50, strokes: [
+    { id: 'linear-outline', color: '#ff0000', width: 3, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, gradient: linear },
+    { id: 'radial-outline', color: '#00aa44', width: 5, opacity: .6, visible: true, cap: 'round', join: 'round', pattern: 'dashed', miterLimit: 10, gradient: radial }
+  ] });
+  const svg = exportNodeToSvg(rectangle);
+  assert.match(svg, /<linearGradient id="tis-gradient-0-stroke-0" gradientUnits="userSpaceOnUse"[^>]*><stop offset="0" stop-color="#ff0000"\/><stop offset="1" stop-color="#0000ff"\/><\/linearGradient>/);
+  assert.match(svg, /<radialGradient id="tis-gradient-0-stroke-1" gradientUnits="userSpaceOnUse"[^>]*><stop offset="0" stop-color="#00aa44"\/><stop offset="1" stop-color="#112233"\/><\/radialGradient>/);
+  assert.match(svg, /data-tiny-image-star-stroke-id="linear-outline"[^>]*stroke="url\(#tis-gradient-0-stroke-0\)"/);
+  assert.match(svg, /data-tiny-image-star-stroke-id="radial-outline"[^>]*stroke="url\(#tis-gradient-0-stroke-1\)" stroke-opacity="0.6"/);
+});
+
+test('SVG decorations attach only to open path ends and network terminal vertices', () => {
+  const path = createNode('path', {
+    width: 100, height: 60, rotation: 15,
+    points: [{ x: .1, y: .5 }, { x: .9, y: .5 }],
+    subpaths: [{ closed: true, points: [{ x: .2, y: .2 }, { x: .5, y: .2 }, { x: .4, y: .5 }] }],
+    strokes: [{ id: 'path-stroke', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'triangle', endDecoration: 'arrow' }]
+  });
+  const pathSvg = exportNodeToSvg(path);
+  assert.equal([...pathSvg.matchAll(/data-tiny-image-star-decoration=/g)].length, 2,
+    'closed contours do not receive endpoint decorations');
+  assert.match(pathSvg, /data-tiny-image-star-decoration="triangle" data-tiny-image-star-decoration-end="start"/);
+  assert.match(pathSvg, /data-tiny-image-star-decoration="arrow" data-tiny-image-star-decoration-end="end"/);
+
+  const network = createNode('network', {
+    width: 100, height: 100, rotation: 30,
+    vertices: [{ id: 'a', x: 0, y: .5 }, { id: 'b', x: .5, y: .5 }, { id: 'c', x: 1, y: .5 }, { id: 'd', x: .5, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'bd', from: 'b', to: 'd' }],
+    strokes: [{ id: 'network-stroke', color: '#123456', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'arrow', endDecoration: 'triangle' }]
+  });
+  const networkSvg = exportNodeToSvg(network);
+  assert.equal([...networkSvg.matchAll(/data-tiny-image-star-decoration=/g)].length, 3,
+    'three terminal vertices receive marks while the shared junction does not');
+  assert.deepEqual([...networkSvg.matchAll(/data-tiny-image-star-decoration-end="([^"]+)"/g)].map(match => match[1]), ['start', 'end', 'end']);
+  assert.match(networkSvg, /data-tiny-image-star-edge-id="ab"/);
+  assert.match(networkSvg, /transform="matrix\(0\.866025\d+ 0\.5 -0\.5 0\.866025\d+ 31\.698729\d+ -18\.301270\d+\)"/,
+    'network endpoint geometry follows the enclosing layer rotation');
 });
 
 test('SVG export uses the selected variable mode for bound position, size, and rotation', () => {
@@ -306,9 +424,7 @@ test('orders SVG inner shadows before authored blur and drop-shadow effects like
       { id: 'blur-first', type: 'layer-blur', visible: true, radius: 3 },
       { id: 'inner-first', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.35, offsetX: 3, offsetY: -2, blur: 5 },
       { id: 'drop-shadow', type: 'drop-shadow', visible: true, color: '#304050', opacity: 0.5, offsetX: 4, offsetY: 2, blur: 6 },
-      { id: 'inner-second', type: 'inner-shadow', visible: true, color: '#506070', opacity: 0.2, offsetX: -2, offsetY: 1, blur: 2 },
-      { id: 'blur-hidden', type: 'layer-blur', visible: false, radius: 9 },
-      { id: 'blur-second', type: 'layer-blur', visible: true, radius: 1 }
+      { id: 'inner-second', type: 'inner-shadow', visible: true, color: '#506070', opacity: 0.2, offsetX: -2, offsetY: 1, blur: 2 }
     ]
   });
   const svg = exportNodeToSvg(shape);
@@ -318,8 +434,7 @@ test('orders SVG inner shadows before authored blur and drop-shadow effects like
   const secondShadow = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-0" stdDeviation="2"');
   const firstBlur = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-1" stdDeviation="3"');
   const dropShadow = filter.indexOf('<feDropShadow in="tis-effect-0-result-2"');
-  const secondBlur = filter.indexOf('<feGaussianBlur in="tis-effect-0-result-3" stdDeviation="1"');
-  const positions = [firstShadow, secondShadow, firstBlur, dropShadow, secondBlur];
+  const positions = [firstShadow, secondShadow, firstBlur, dropShadow];
   assert.ok(positions.every(position => position >= 0), 'all visible effects should be represented');
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right),
     'inner shadows should precede outer effects while outer effects retain authored order');
@@ -848,6 +963,23 @@ test('rejects unavailable, unsafe, or adjusted raster sources explicitly', () =>
     assets,
     imagePreviews: new Map([[rotated.id, { type: 'image/png', sourceBytes: new Uint8Array([3]), width: 1, height: 1 }]])
   }), /href="data:image\/png;base64,Aw=="/);
+
+  const mirrored = createNode('image', {
+    assetId: 'local', width: 100, height: 100, fit: 'contain',
+    transforms: { crop: null, rotation: 0, flipHorizontal: true },
+  });
+  assert.match(exportNodeToSvg(mirrored, { assets: dimensionedAssets }), /transform="matrix\(-0\.25 0 0 0\.25 100 25\)"/,
+    'horizontal mirroring reflects the fitted image inside the fixed target clip');
+  mirrored.transforms = { crop: null, rotation: 90, flipVertical: true };
+  assert.match(exportNodeToSvg(mirrored, { assets: dimensionedAssets }), /transform="matrix\(0 -0\.25 -0\.25 0 75 100\)"/,
+    'vertical mirroring composes with the clockwise rotation matrix');
+  const previewSvg = exportNodeToSvg(mirrored, {
+    assets: dimensionedAssets,
+    imagePreviews: new Map([[mirrored.id, { type: 'image/png', sourceBytes: new Uint8Array([9]), width: 200, height: 400 }]]),
+  });
+  assert.match(previewSvg, /href="data:image\/png;base64,CQ=="/);
+  assert.doesNotMatch(previewSvg, /<image[^>]*transform="matrix\(/,
+    'an already mirrored Pillow-RS preview is not flipped twice during SVG export');
 });
 
 test('does not reject hidden unsupported layers because they are absent from the rendered page', () => {

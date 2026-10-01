@@ -2,10 +2,6 @@ import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js
 
 const CROP_HANDLES = new Set(['n', 'e', 's', 'w', 'nw', 'ne', 'se', 'sw']);
 
-function normalizedRotation(rotation) {
-  return normalizeImageTransforms({ rotation }).rotation;
-}
-
 function checkedBounds(bounds) {
   const { left, top, width, height } = bounds || {};
   if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
@@ -44,6 +40,15 @@ function sourcePixelRectToDisplay(rect, sourceWidth, sourceHeight, rotation) {
   }
 }
 
+function flipDisplayRect(rect, width, height, flipHorizontal, flipVertical) {
+  return {
+    left: flipHorizontal ? width - rect.right : rect.left,
+    top: flipVertical ? height - rect.bottom : rect.top,
+    right: flipHorizontal ? width - rect.left : rect.right,
+    bottom: flipVertical ? height - rect.top : rect.bottom,
+  };
+}
+
 /**
  * Compute both the rendered crop bitmap bounds and the virtual full-source
  * bounds in image-layer-local coordinates. The crop is applied to source
@@ -60,6 +65,8 @@ export function calculateImageCropDisplayBounds({
   sourceHeight,
   crop = null,
   rotation = 0,
+  flipHorizontal = false,
+  flipVertical = false,
   fit = 'cover',
 }) {
   if (![frameWidth, frameHeight].every(Number.isFinite) || frameWidth <= 0 || frameHeight <= 0) {
@@ -67,12 +74,15 @@ export function calculateImageCropDisplayBounds({
   }
   const source = checkedSourceSize(sourceWidth, sourceHeight);
   if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image fit must be cover or contain.');
-  const transforms = normalizeImageTransforms({ crop, rotation });
+  const transforms = normalizeImageTransforms({ crop, rotation, flipHorizontal, flipVertical });
   const sourceCropPixels = imageCropPixels(transforms.crop, source.width, source.height)
     ?? { left: 0, top: 0, right: source.width, bottom: source.height };
   const orientedSourceWidth = transforms.rotation % 180 === 0 ? source.width : source.height;
   const orientedSourceHeight = transforms.rotation % 180 === 0 ? source.height : source.width;
-  const displayCropPixels = sourcePixelRectToDisplay(sourceCropPixels, source.width, source.height, transforms.rotation);
+  const displayCropPixels = flipDisplayRect(
+    sourcePixelRectToDisplay(sourceCropPixels, source.width, source.height, transforms.rotation),
+    orientedSourceWidth, orientedSourceHeight, transforms.flipHorizontal, transforms.flipVertical,
+  );
   const croppedWidth = displayCropPixels.right - displayCropPixels.left;
   const croppedHeight = displayCropPixels.bottom - displayCropPixels.top;
   const scale = fit === 'contain'
@@ -123,24 +133,32 @@ function normalizeRect(rect) {
  * Express a source-space crop rectangle in the image's displayed orientation.
  * Rotation follows the editor convention: positive 90 degrees is clockwise.
  */
-export function imageCropToDisplayRect(crop, rotation = 0) {
+export function imageCropToDisplayRect(crop, rotation = 0, flips = {}) {
   const source = normalizeRect(crop ?? { left: 0, top: 0, right: 1, bottom: 1 });
-  switch (normalizedRotation(rotation)) {
+  const transforms = normalizeImageTransforms({ rotation, ...flips });
+  let displayed;
+  switch (transforms.rotation) {
     case 90:
-      return { left: 1 - source.bottom, top: source.left, right: 1 - source.top, bottom: source.right };
+      displayed = { left: 1 - source.bottom, top: source.left, right: 1 - source.top, bottom: source.right }; break;
     case 180:
-      return { left: 1 - source.right, top: 1 - source.bottom, right: 1 - source.left, bottom: 1 - source.top };
+      displayed = { left: 1 - source.right, top: 1 - source.bottom, right: 1 - source.left, bottom: 1 - source.top }; break;
     case 270:
-      return { left: source.top, top: 1 - source.right, right: source.bottom, bottom: 1 - source.left };
+      displayed = { left: source.top, top: 1 - source.right, right: source.bottom, bottom: 1 - source.left }; break;
     default:
-      return source;
+      displayed = source;
   }
+  if (transforms.flipHorizontal) displayed = { ...displayed, left: 1 - displayed.right, right: 1 - displayed.left };
+  if (transforms.flipVertical) displayed = { ...displayed, top: 1 - displayed.bottom, bottom: 1 - displayed.top };
+  return displayed;
 }
 
 /** Invert an oriented display-space rectangle into the original source axes. */
-export function imageCropFromDisplayRect(rect, rotation = 0) {
-  const displayed = normalizeRect(rect);
-  switch (normalizedRotation(rotation)) {
+export function imageCropFromDisplayRect(rect, rotation = 0, flips = {}) {
+  let displayed = normalizeRect(rect);
+  const transforms = normalizeImageTransforms({ rotation, ...flips });
+  if (transforms.flipHorizontal) displayed = { ...displayed, left: 1 - displayed.right, right: 1 - displayed.left };
+  if (transforms.flipVertical) displayed = { ...displayed, top: 1 - displayed.bottom, bottom: 1 - displayed.top };
+  switch (transforms.rotation) {
     case 90:
       return { left: displayed.top, top: 1 - displayed.right, right: displayed.bottom, bottom: 1 - displayed.left };
     case 180:
@@ -160,10 +178,11 @@ export function imageCropFromDisplayRect(rect, rotation = 0) {
  * bounds are clamped. Returns null for a selection smaller than one source
  * pixel along either source axis.
  */
-export function imageCropFromDisplayDrag({ start, end, bounds: rawBounds, rotation = 0, sourceWidth, sourceHeight }) {
+export function imageCropFromDisplayDrag({ start, end, bounds: rawBounds, rotation = 0, flipHorizontal = false, flipVertical = false, sourceWidth, sourceHeight }) {
   const bounds = checkedBounds(rawBounds);
   const source = checkedSourceSize(sourceWidth, sourceHeight);
-  const turn = normalizedRotation(rotation);
+  const transforms = normalizeImageTransforms({ rotation, flipHorizontal, flipVertical });
+  const turn = transforms.rotation;
   const a = pointInDisplay(start, bounds);
   const b = pointInDisplay(end, bounds);
   const displayed = {
@@ -175,7 +194,7 @@ export function imageCropFromDisplayDrag({ start, end, bounds: rawBounds, rotati
       || (displayed.bottom - displayed.top) * source.width < 1) return null;
   } else if ((displayed.right - displayed.left) * source.width < 1
     || (displayed.bottom - displayed.top) * source.height < 1) return null;
-  return imageCropFromDisplayRect(displayed, turn);
+  return imageCropFromDisplayRect(displayed, turn, transforms);
 }
 
 /**
@@ -183,12 +202,13 @@ export function imageCropFromDisplayDrag({ start, end, bounds: rawBounds, rotati
  * resulting source-normalized crop. A moved edge cannot cross its opposite
  * edge; it is clamped to leave at least one source pixel in each axis.
  */
-export function moveImageCropHandle({ crop, handle, point, bounds: rawBounds, rotation = 0, sourceWidth, sourceHeight }) {
+export function moveImageCropHandle({ crop, handle, point, bounds: rawBounds, rotation = 0, flipHorizontal = false, flipVertical = false, sourceWidth, sourceHeight }) {
   if (!CROP_HANDLES.has(handle)) throw new TypeError('Choose a crop handle: n, e, s, w, nw, ne, se, or sw.');
   const bounds = checkedBounds(rawBounds);
   const source = checkedSourceSize(sourceWidth, sourceHeight);
-  const turn = normalizedRotation(rotation);
-  const displayed = imageCropToDisplayRect(crop, turn);
+  const transforms = normalizeImageTransforms({ rotation, flipHorizontal, flipVertical });
+  const turn = transforms.rotation;
+  const displayed = imageCropToDisplayRect(crop, turn, transforms);
   const position = pointInDisplay(point, bounds);
   const minWidth = 1 / (turn % 180 === 0 ? source.width : source.height);
   const minHeight = 1 / (turn % 180 === 0 ? source.height : source.width);
@@ -201,5 +221,5 @@ export function moveImageCropHandle({ crop, handle, point, bounds: rawBounds, ro
   displayed.right = clamp(displayed.right, displayed.left + minWidth, 1);
   displayed.top = clamp(displayed.top, 0, 1 - minHeight);
   displayed.bottom = clamp(displayed.bottom, displayed.top + minHeight, 1);
-  return imageCropFromDisplayRect(displayed, turn);
+  return imageCropFromDisplayRect(displayed, turn, transforms);
 }

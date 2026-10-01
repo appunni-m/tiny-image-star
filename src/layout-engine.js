@@ -5,6 +5,29 @@ const trackCount = (value, fallback) => {
   return Number.isFinite(count) && count >= 1 ? Math.min(64, count) : fallback;
 };
 
+const gridTrackModes = new Set(['fixed', 'hug', 'fill']);
+const boundedTrackValue = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100_000, number)) : fallback;
+};
+
+function normalizedGridTrack(track, fallbackMode = 'fill') {
+  const source = track && typeof track === 'object' && !Array.isArray(track) ? track : {};
+  const mode = gridTrackModes.has(source.mode) ? source.mode : fallbackMode;
+  if (mode === 'fixed') return { mode, value: boundedTrackValue(source.value, 120) };
+  if (mode === 'fill') {
+    const weight = Number(source.weight);
+    return { mode, weight: Number.isFinite(weight) ? Math.max(0.01, Math.min(100_000, weight)) : 1 };
+  }
+  return { mode: 'hug' };
+}
+
+export function normalizeGridTracks(value, count, fallbackMode = 'fill') {
+  const requested = Array.isArray(value) ? value.slice(0, 64) : [];
+  const size = Math.max(trackCount(count, 1), requested.length);
+  return Array.from({ length: Math.min(64, size) }, (_, index) => normalizedGridTrack(requested[index], fallbackMode));
+}
+
 function constrainSize(node, axis, value) {
   const min = Number.isFinite(node[`min${axis}`]) ? Math.max(0, node[`min${axis}`]) : 0;
   const max = Number.isFinite(node[`max${axis}`]) ? Math.max(min, node[`max${axis}`]) : Infinity;
@@ -51,7 +74,7 @@ export function createAutoLayout(overrides = {}) {
   const padding = typeof overrides.padding === 'object'
     ? { top: 16, right: 16, bottom: 16, left: 16, ...overrides.padding }
     : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 };
-  return {
+  const settings = {
     axis: 'vertical', gap, padding: { top: 16, right: 16, bottom: 16, left: 16 },
     rowGap: gap, columnGap: gap, columns: 2, rows: 'auto', autoPositioning: true,
     align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
@@ -64,6 +87,11 @@ export function createAutoLayout(overrides = {}) {
     autoPositioning: overrides.autoPositioning !== false,
     padding: Object.fromEntries(Object.entries(padding).map(([side, value]) => [side, clamp(value)]))
   };
+  if (settings.axis === 'grid') {
+    settings.columnTracks = normalizeGridTracks(overrides.columnTracks, settings.columns, 'fill');
+    settings.rowTracks = normalizeGridTracks(overrides.rowTracks, settings.rows === 'auto' ? 1 : settings.rows, settings.rows === 'auto' ? 'hug' : 'fill');
+  }
+  return settings;
 }
 
 function flowGaps(settings) {
@@ -137,6 +165,60 @@ function normalizedCell(node) {
   };
 }
 
+function preferredTrackSize(item, axis) {
+  const size = Number(item[axis === 'Width' ? 'width' : 'height']);
+  const min = Number(item[`min${axis}`]);
+  return Math.max(Number.isFinite(size) ? size : 0, Number.isFinite(min) ? min : 0, 0);
+}
+
+function gridTrackSizes(definitions, count, available, gap, flowItems, placements, axis, fallbackMode = 'fill') {
+  const tracks = Array.from({ length: count }, (_, index) => definitions[index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: fallbackMode }));
+  const sizes = tracks.map(track => track.mode === 'fixed' ? track.value : 0);
+
+  // Hug tracks first take the largest non-spanning child in each track.
+  for (const item of flowItems) {
+    const cell = placements.get(item.id);
+    const span = axis === 'Width' ? cell.columnSpan : cell.rowSpan;
+    if (span !== 1) continue;
+    const trackIndex = (axis === 'Width' ? cell.column : cell.row) - 1;
+    if (tracks[trackIndex]?.mode !== 'hug') continue;
+    sizes[trackIndex] = Math.max(sizes[trackIndex], preferredTrackSize(item, axis));
+  }
+
+  // A spanning child can enlarge the hug tracks it crosses; fixed tracks stay fixed.
+  for (const item of flowItems) {
+    const cell = placements.get(item.id);
+    const span = axis === 'Width' ? cell.columnSpan : cell.rowSpan;
+    if (span < 2) continue;
+    const start = (axis === 'Width' ? cell.column : cell.row) - 1;
+    const end = Math.min(count, start + span);
+    const indices = [];
+    for (let index = start; index < end; index += 1) if (tracks[index]?.mode === 'hug') indices.push(index);
+    if (!indices.length) continue;
+    const current = sizes.slice(start, end).reduce((sum, size) => sum + size, 0) + gap * Math.max(0, end - start - 1);
+    const extra = Math.max(0, preferredTrackSize(item, axis) - current) / indices.length;
+    for (const index of indices) sizes[index] += extra;
+  }
+
+  const fillIndices = tracks.map((track, index) => track.mode === 'fill' ? index : -1).filter(index => index >= 0);
+  const remaining = Math.max(0, available - gap * Math.max(0, count - 1) - sizes.reduce((sum, size) => sum + size, 0));
+  const totalWeight = fillIndices.reduce((sum, index) => sum + (tracks[index].weight || 1), 0);
+  if (totalWeight > 0) for (const index of fillIndices) sizes[index] = remaining * (tracks[index].weight || 1) / totalWeight;
+  return sizes;
+}
+
+function trackOffsets(sizes, gap, start) {
+  const offsets = Array(sizes.length + 1).fill(start);
+  for (let index = 0; index < sizes.length; index += 1) offsets[index + 1] = offsets[index] + sizes[index] + gap;
+  return offsets;
+}
+
+function spannedTrackSize(sizes, start, span, gap) {
+  const first = start - 1;
+  const end = Math.min(sizes.length, first + span);
+  return sizes.slice(first, end).reduce((sum, size) => sum + size, 0) + gap * Math.max(0, end - first - 1);
+}
+
 function applyGridAutoLayout(frame, settings) {
   const padding = settings.padding;
   const columns = trackCount(settings.columns, 2);
@@ -145,7 +227,6 @@ function applyGridAutoLayout(frame, settings) {
   const requestedRows = settings.rows === 'auto' ? null : trackCount(settings.rows, null);
   const innerWidth = Math.max(0, frame.width - padding.left - padding.right);
   const innerHeight = Math.max(0, frame.height - padding.top - padding.bottom);
-  const cellWidth = Math.max(0, (innerWidth - (columns - 1) * columnGap) / columns);
   const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
   if (!flowItems.length) return;
 
@@ -205,33 +286,17 @@ function applyGridAutoLayout(frame, settings) {
 
   let rowCount = requestedRows || 1;
   for (const cell of placements.values()) rowCount = Math.max(rowCount, cell.row + cell.rowSpan - 1);
-  const rowHeights = Array(rowCount).fill(requestedRows
-    ? Math.max(0, (innerHeight - rowGap * (rowCount - 1)) / rowCount)
-    : 0);
-  if (!requestedRows) {
-    for (const item of flowItems) {
-      const cell = placements.get(item.id);
-      if (cell.rowSpan === 1) rowHeights[cell.row - 1] = Math.max(rowHeights[cell.row - 1], item.height);
-    }
-    for (const item of flowItems) {
-      const cell = placements.get(item.id);
-      if (cell.rowSpan < 2) continue;
-      const current = rowHeights.slice(cell.row - 1, cell.row - 1 + cell.rowSpan).reduce((sum, height) => sum + height, 0) + rowGap * (cell.rowSpan - 1);
-      const extra = Math.max(0, item.height - current) / cell.rowSpan;
-      for (let row = cell.row - 1; row < cell.row - 1 + cell.rowSpan; row += 1) rowHeights[row] += extra;
-    }
-  }
-  const rowOffsets = Array(rowCount + 1).fill(0);
-  for (let row = 1; row <= rowCount; row += 1) rowOffsets[row] = rowOffsets[row - 1] + rowHeights[row - 1] + rowGap;
-  const rowTop = row => padding.top + rowOffsets[row - 1];
-  const rowSize = (row, span) => rowOffsets[row - 1 + span] - rowOffsets[row - 1] - rowGap;
+  const columnWidths = gridTrackSizes(settings.columnTracks || [], columns, innerWidth, columnGap, flowItems, placements, 'Width');
+  const rowHeights = gridTrackSizes(settings.rowTracks || [], rowCount, innerHeight, rowGap, flowItems, placements, 'Height', requestedRows ? 'fill' : 'hug');
+  const columnOffsets = trackOffsets(columnWidths, columnGap, padding.left);
+  const rowOffsets = trackOffsets(rowHeights, rowGap, padding.top);
 
   for (const item of flowItems) {
     const cell = placements.get(item.id);
-    const cellX = padding.left + (cell.column - 1) * (cellWidth + columnGap);
-    const cellY = rowTop(cell.row);
-    const spanWidth = cellWidth * cell.columnSpan + columnGap * (cell.columnSpan - 1);
-    const spanHeight = rowSize(cell.row, cell.rowSpan);
+    const cellX = columnOffsets[cell.column - 1];
+    const cellY = rowOffsets[cell.row - 1];
+    const spanWidth = spannedTrackSize(columnWidths, cell.column, cell.columnSpan, columnGap);
+    const spanHeight = spannedTrackSize(rowHeights, cell.row, cell.rowSpan, rowGap);
     const width = constrainSize(item, 'Width', item.layoutSizingX === 'fill' ? spanWidth : item.width);
     const height = constrainSize(item, 'Height', item.layoutSizingY === 'fill' ? spanHeight : item.height);
     const alignOffset = (available, size, align) => align === 'center' ? (available - size) / 2 : align === 'end' ? available - size : 0;

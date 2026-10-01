@@ -100,6 +100,7 @@ function assertLibrary(library) {
   validName(library.name, 'Library name');
   validRevision(library.revision, 'Library revision');
   if (!Array.isArray(library.components)) fail('Library components must be a list.');
+  if (library.componentSets != null && !Array.isArray(library.componentSets)) fail('Library component sets must be a list.');
 
   const componentIds = new Set();
   const publicationRevisions = new Set();
@@ -119,15 +120,95 @@ function assertLibrary(library) {
       publicationRevisions.add(publication.revision);
       previousRevision = publication.revision;
       validName(publication.name, 'Published component name');
+      validateComponentMetadata(publication);
       assertJsonValue(publication.root, `Published component “${component.id}”`);
-      collectSourceLayers(publication.root, `Published component “${component.id}”`);
+      const sourceLayers = collectSourceLayers(publication.root, `Published component “${component.id}”`);
+      for (const property of publication.componentProperties || []) {
+        if (!sourceLayers.has(property.targetSourceId)) fail(`Component property “${property.name}” refers to a missing source layer.`);
+      }
     }
   }
   if (publicationRevisions.size !== library.revision
     || Array.from({ length: library.revision }, (_, index) => index + 1).some(revision => !publicationRevisions.has(revision))) {
     fail('Library publication revisions must cover every revision from 1 through the library revision.');
   }
+  const setIds = new Set();
+  for (const set of library.componentSets || []) {
+    if (!set || typeof set !== 'object' || Array.isArray(set)) fail('Invalid component set record.');
+    validIdentity(set.id, 'Component set ID');
+    if (setIds.has(set.id)) fail(`Duplicate component set ID “${set.id}”.`);
+    setIds.add(set.id);
+    if (!Array.isArray(set.versions) || !set.versions.length) fail(`Component set “${set.id}” must have at least one published version.`);
+    let previousRevision = 0;
+    for (const version of set.versions) {
+      validateComponentSetSnapshot(version, library, set.id);
+      if (version.revision <= previousRevision || version.revision > library.revision) fail(`Component set “${set.id}” revisions must increase and not exceed the library revision.`);
+      previousRevision = version.revision;
+    }
+  }
   return true;
+}
+
+function validateComponentMetadata(publication) {
+  if (publication.componentSetId != null) validIdentity(publication.componentSetId, 'Component set ID');
+  if (publication.variantProperties != null) {
+    if (!publication.componentSetId || !publication.variantProperties || typeof publication.variantProperties !== 'object' || Array.isArray(publication.variantProperties)) fail('Variant properties require a component set and must be an object.');
+    assertJsonValue(publication.variantProperties, 'Variant properties');
+    for (const [name, value] of Object.entries(publication.variantProperties)) {
+      validName(name, 'Variant property name');
+      validName(value, `Variant value for ${name}`);
+    }
+  }
+  if (publication.componentProperties != null) {
+    if (!Array.isArray(publication.componentProperties) || publication.componentProperties.length > 100) fail('Component property definitions must be a list of at most 100 items.');
+    const ids = new Set();
+    for (const property of publication.componentProperties) {
+      if (!property || typeof property !== 'object' || Array.isArray(property)) fail('Invalid component property definition.');
+      validIdentity(property.id, 'Component property ID');
+      validName(property.name, 'Component property name');
+      validIdentity(property.type, 'Component property type');
+      validIdentity(property.targetSourceId, 'Component property target source ID');
+      if (ids.has(property.id)) fail(`Duplicate component property ID “${property.id}”.`);
+      ids.add(property.id);
+      if (!['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT'].includes(property.type)) fail(`Unsupported component property type “${property.type}”.`);
+      assertJsonValue(property.defaultValue, `Default value for component property “${property.name}”`);
+      if (property.preferredComponentIds != null && (!Array.isArray(property.preferredComponentIds) || property.preferredComponentIds.some(id => typeof id !== 'string'))) fail(`Invalid preferred component IDs for “${property.name}”.`);
+      if (Object.keys(property).some(key => !['id', 'name', 'type', 'targetSourceId', 'defaultValue', 'preferredComponentIds'].includes(key))) fail(`Unknown field in component property “${property.name}”.`);
+    }
+  }
+}
+
+function validateComponentSetSnapshot(snapshot, library, setId) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)
+    || snapshot.libraryId !== library.id || snapshot.componentSetId !== setId) fail('Component set publication identity does not match its library and set.');
+  validRevision(snapshot.revision, 'Component set publication revision');
+  validName(snapshot.name, 'Published component set name');
+  if (!Array.isArray(snapshot.componentIds) || snapshot.componentIds.length < 2 || new Set(snapshot.componentIds).size !== snapshot.componentIds.length) fail('A published component set must contain at least two unique component IDs.');
+  if (!Array.isArray(snapshot.properties) || !snapshot.properties.length) fail('A published component set must define at least one variant axis.');
+  const propertyNames = new Set();
+  for (const property of snapshot.properties) {
+    if (!property || typeof property !== 'object' || Array.isArray(property)) fail('Invalid component variant axis.');
+    validName(property.name, 'Variant axis name');
+    if (propertyNames.has(property.name)) fail(`Duplicate variant axis “${property.name}”.`);
+    propertyNames.add(property.name);
+    if (!Array.isArray(property.values) || !property.values.length || new Set(property.values).size !== property.values.length) fail(`Variant axis “${property.name}” must contain unique values.`);
+    for (const value of property.values) validName(value, `Variant value for ${property.name}`);
+  }
+  const combinations = new Set();
+  for (const componentId of snapshot.componentIds) {
+    validIdentity(componentId, 'Variant component ID');
+    const record = componentRecord(library, componentId);
+    // A later set snapshot must be checked against each member's publication
+    // as of that snapshot, while older set snapshots continue to resolve to
+    // the historical version that existed at their own revision.
+    const version = record?.versions.filter(item => item.revision <= snapshot.revision && item.componentSetId === setId).at(-1);
+    if (!version) fail(`Published variant “${componentId}” is missing from component set “${setId}”.`);
+    const values = version.variantProperties || {};
+    if (snapshot.properties.some(property => !property.values.includes(values[property.name]))) fail(`Published variant “${componentId}” has a value outside its component set axes.`);
+    const key = JSON.stringify(snapshot.properties.map(property => values[property.name]));
+    if (combinations.has(key)) fail(`Component set “${setId}” contains duplicate variant combinations.`);
+    combinations.add(key);
+  }
 }
 
 function componentRecord(library, componentId) {
@@ -210,6 +291,17 @@ function sourceLayerChanges(previousRoot, nextRoot) {
   return { addedSourceLayers, removedSourceLayers, changedSourceLayers };
 }
 
+function propertyState(node, property) {
+  return Object.hasOwn(node, property)
+    ? { present: true, value: clone(node[property]) }
+    : { present: false, value: null };
+}
+
+function samePropertyState(left, right) {
+  return left.present === right.present
+    && (!left.present || stableValue(left.value) === stableValue(right.value));
+}
+
 /** Create an empty library. IDs are caller supplied so identity is stable across persistence. */
 export function createComponentLibrary({ id, name }) {
   const library = {
@@ -217,7 +309,8 @@ export function createComponentLibrary({ id, name }) {
     id: validIdentity(id, 'Library ID'),
     name: validName(name, 'Library name'),
     revision: 0,
-    components: []
+    components: [],
+    componentSets: []
   };
   return deepFreeze(library);
 }
@@ -227,12 +320,31 @@ export function createComponentLibrary({ id, name }) {
  * publication. Re-publishing an existing component keeps its identity and
  * appends a monotonically increasing, library-wide revision.
  */
-export function publishComponent(library, { componentId, name, root }) {
+export function publishComponent(library, input = {}) {
+  const options = input && typeof input === 'object' ? input : {};
+  const { componentId, name, root } = options;
   assertLibrary(library);
   validIdentity(componentId, 'Component ID');
   validName(name, 'Component name');
   assertJsonValue(root, `Component “${componentId}”`);
   collectSourceLayers(root, `Component “${componentId}”`);
+  // Publishing an existing library component through the regular editor
+  // action sends only its identity, name, and root. Carry its structural
+  // metadata forward so a content revision cannot silently detach a variant
+  // or erase its component property definitions.
+  const previous = latestPublication(library, componentId);
+  const componentSetId = Object.hasOwn(options, 'componentSetId') ? options.componentSetId : previous?.componentSetId;
+  const variantProperties = Object.hasOwn(options, 'variantProperties') ? options.variantProperties : previous?.variantProperties;
+  const componentProperties = Object.hasOwn(options, 'componentProperties') ? options.componentProperties : previous?.componentProperties;
+  const metadata = {};
+  if (componentSetId != null) metadata.componentSetId = componentSetId;
+  if (variantProperties != null) metadata.variantProperties = variantProperties;
+  if (componentProperties != null) metadata.componentProperties = componentProperties;
+  validateComponentMetadata(metadata);
+  const sourceLayers = collectSourceLayers(root, `Component “${componentId}”`);
+  for (const property of metadata.componentProperties || []) {
+    if (!sourceLayers.has(property.targetSourceId)) fail(`Component property “${property.name}” refers to a missing source layer.`);
+  }
 
   const revision = library.revision + 1;
   if (!Number.isSafeInteger(revision)) fail('The library revision limit has been reached.');
@@ -241,16 +353,88 @@ export function publishComponent(library, { componentId, name, root }) {
     componentId,
     revision,
     name: name.trim(),
-    root
+    root,
+    ...metadata
   });
   const nextComponents = clone(library.components);
   const existingIndex = nextComponents.findIndex(component => component.id === componentId);
   if (existingIndex < 0) nextComponents.push({ id: componentId, versions: [clone(publication)] });
   else nextComponents[existingIndex].versions.push(clone(publication));
 
-  const nextLibrary = deepFreeze({ ...clone(library), revision, components: nextComponents });
+  const nextLibrary = deepFreeze({ ...clone(library), revision, components: nextComponents, componentSets: clone(library.componentSets || []) });
   assertLibrary(nextLibrary);
   return { library: nextLibrary, publication };
+}
+
+/**
+ * Publish a complete component set in one immutable library result. Each
+ * variant gets its own component revision; the set snapshot is stamped with
+ * the final revision and records its axes and member identities.
+ */
+export function publishComponentSet(library, { componentSetId, name, properties, variants }) {
+  assertLibrary(library);
+  validIdentity(componentSetId, 'Component set ID');
+  validName(name, 'Component set name');
+  if (!Array.isArray(variants) || variants.length < 2) fail('A component set must contain at least two variants.');
+  if (!Array.isArray(properties) || !properties.length) fail('A component set must define at least one variant axis.');
+
+  const axes = clone(properties);
+  const axisNames = new Set();
+  for (const axis of axes) {
+    if (!axis || typeof axis !== 'object' || Array.isArray(axis)) fail('Invalid component variant axis.');
+    validName(axis.name, 'Variant axis name');
+    if (axisNames.has(axis.name)) fail(`Duplicate variant axis “${axis.name}”.`);
+    axisNames.add(axis.name);
+    if (!Array.isArray(axis.values) || !axis.values.length || new Set(axis.values).size !== axis.values.length) fail(`Variant axis “${axis.name}” must contain unique values.`);
+    for (const value of axis.values) validName(value, `Variant value for ${axis.name}`);
+  }
+  const ids = new Set();
+  const combinations = new Set();
+  for (const variant of variants) {
+    if (!variant || typeof variant !== 'object' || Array.isArray(variant)) fail('Invalid component variant.');
+    validIdentity(variant.componentId, 'Component ID');
+    if (ids.has(variant.componentId)) fail(`Duplicate variant component ID “${variant.componentId}”.`);
+    ids.add(variant.componentId);
+    if (!variant.variantProperties || typeof variant.variantProperties !== 'object' || Array.isArray(variant.variantProperties)) fail(`Variant “${variant.componentId}” must specify its axis values.`);
+    const keys = Object.keys(variant.variantProperties).sort();
+    if (stableValue(keys) !== stableValue([...axisNames].sort())) fail(`Variant “${variant.componentId}” must define exactly the component set axes.`);
+    for (const axis of axes) if (!axis.values.includes(variant.variantProperties[axis.name])) fail(`Variant “${variant.componentId}” has an unknown value for axis “${axis.name}”.`);
+    const combination = JSON.stringify(axes.map(axis => variant.variantProperties[axis.name]));
+    if (combinations.has(combination)) fail('Component set variants must have unique axis combinations.');
+    combinations.add(combination);
+    const existing = latestPublication(library, variant.componentId);
+    if (existing?.componentSetId && existing.componentSetId !== componentSetId) fail(`Component “${variant.componentId}” already belongs to another published set.`);
+  }
+
+  let next = library;
+  const publications = [];
+  for (const variant of variants) {
+    const result = publishComponent(next, {
+      componentId: variant.componentId,
+      name: variant.name,
+      root: variant.root,
+      componentSetId,
+      variantProperties: variant.variantProperties,
+      ...(variant.componentProperties == null ? {} : { componentProperties: variant.componentProperties })
+    });
+    next = result.library;
+    publications.push(result.publication);
+  }
+  const setSnapshot = immutableClone({
+    libraryId: library.id,
+    componentSetId,
+    revision: next.revision,
+    name: name.trim(),
+    componentIds: variants.map(variant => variant.componentId),
+    properties: axes
+  });
+  const componentSets = clone(next.componentSets || []);
+  const index = componentSets.findIndex(set => set.id === componentSetId);
+  if (index < 0) componentSets.push({ id: componentSetId, versions: [clone(setSnapshot)] });
+  else componentSets[index].versions.push(clone(setSnapshot));
+  const nextLibrary = deepFreeze({ ...clone(next), componentSets });
+  assertLibrary(nextLibrary);
+  return { library: nextLibrary, publication: setSnapshot, publications };
 }
 
 /** Validate a library; returns true or throws a TypeError describing the invalid field. */
@@ -332,6 +516,7 @@ export function updateLinkedInstanceSnapshot(instance, library) {
   const nextOverrides = {};
   const preservedOverrides = [];
   const droppedOverrides = [];
+  const conflictingOverrides = [];
   for (const [sourceLayerId, properties] of Object.entries(instance.overrides)) {
     const before = beforeLayers.get(sourceLayerId);
     const after = afterLayers.get(sourceLayerId);
@@ -351,6 +536,25 @@ export function updateLinkedInstanceSnapshot(instance, library) {
     }
     nextOverrides[sourceLayerId] = clone(properties);
     preservedOverrides.push({ sourceLayerId, properties: Object.keys(properties).sort() });
+
+    const conflicts = [];
+    for (const property of Object.keys(properties).sort()) {
+      const baseValue = propertyState(before.node, property);
+      const sourceValue = propertyState(after.node, property);
+      const instanceValue = { present: true, value: clone(properties[property]) };
+      const sourceChanged = !samePropertyState(baseValue, sourceValue);
+      const instanceChanged = !samePropertyState(baseValue, instanceValue);
+      if (sourceChanged && instanceChanged && !samePropertyState(sourceValue, instanceValue)) {
+        conflicts.push({ property, base: baseValue, source: sourceValue, instance: instanceValue });
+      }
+    }
+    if (conflicts.length) {
+      conflictingOverrides.push({
+        sourceLayerId,
+        name: after.node.name || before.node.name || '',
+        properties: conflicts
+      });
+    }
   }
 
   const changes = sourceLayerChanges(instance.sourceSnapshot.root, publication.root);
@@ -369,7 +573,8 @@ export function updateLinkedInstanceSnapshot(instance, library) {
     toRevision: publication.revision,
     ...changes,
     preservedOverrides,
-    droppedOverrides
+    droppedOverrides,
+    conflictingOverrides: conflictingOverrides.sort((left, right) => left.sourceLayerId.localeCompare(right.sourceLayerId))
   });
   return { instance: updated, report };
 }

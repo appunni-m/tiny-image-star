@@ -500,6 +500,101 @@ test('smart animation switches image-fill references at halfway while interpolat
   assert.deepEqual(at(1), toFill, 'the destination image fill snapshot stays exact');
 });
 
+test('smart animation interpolates valid same-asset image crops and preserves quarter-turn transforms', () => {
+  const fromTransforms = {
+    crop: { left: .1, top: .15, right: .9, bottom: .85 },
+    rotation: 0, flipHorizontal: false, flipVertical: true
+  };
+  const toTransforms = {
+    crop: { left: .3, top: .35, right: .7, bottom: .65 },
+    rotation: 90, flipHorizontal: false, flipVertical: true
+  };
+  const from = createNode('frame', { children: [createNode('image', {
+    name: 'Same photo', assetId: 'photo', fit: 'cover', rotation: 350, transforms: fromTransforms
+  })] });
+  const to = createNode('frame', { children: [createNode('image', {
+    name: 'Same photo', assetId: 'photo', fit: 'cover', rotation: 10, transforms: toTransforms
+  })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0];
+
+  const quarter = at(.25);
+  const threeQuarter = at(.75);
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} should be close to ${expected}`);
+  assert.deepEqual([quarter.transforms.rotation, quarter.transforms.flipHorizontal, quarter.transforms.flipVertical], [0, false, true]);
+  assert.deepEqual([threeQuarter.transforms.rotation, threeQuarter.transforms.flipHorizontal, threeQuarter.transforms.flipVertical], [90, false, true]);
+  for (const [field, expected] of Object.entries({ left: .15, top: .2, right: .85, bottom: .8 })) near(quarter.transforms.crop[field], expected);
+  for (const [field, expected] of Object.entries({ left: .25, top: .3, right: .75, bottom: .7 })) near(threeQuarter.transforms.crop[field], expected);
+  assert.equal(quarter.rotation, 355, 'the image layer itself follows continuous shortest-path rotation');
+  assert.equal(at(.5).rotation, 360);
+  assert.deepEqual(at(0).transforms, fromTransforms, 'the authored source transform remains exact');
+  assert.deepEqual(at(1).transforms, toTransforms, 'the authored destination transform remains exact');
+
+  const fitFrom = createNode('frame', { children: [createNode('image', {
+    name: 'Fit change', assetId: 'photo', fit: 'cover', transforms: fromTransforms
+  })] });
+  const fitTo = createNode('frame', { children: [createNode('image', {
+    name: 'Fit change', assetId: 'photo', fit: 'contain', transforms: toTransforms
+  })] });
+  assert.equal(interpolateSmartFrame(fitFrom, fitTo, .25).children[0].fit, 'cover');
+  assert.deepEqual(interpolateSmartFrame(fitFrom, fitTo, .25).children[0].transforms, fromTransforms,
+    'a layer fit change keeps its associated image transform on the source snapshot');
+  assert.equal(interpolateSmartFrame(fitFrom, fitTo, .5).children[0].fit, 'contain');
+  assert.deepEqual(interpolateSmartFrame(fitFrom, fitTo, .5).children[0].transforms, toTransforms,
+    'layer fit and transform switch together at the midpoint');
+});
+
+test('smart animation interpolates same-asset image fill crops but snaps asset, fit, and flip changes', () => {
+  const cropA = { left: .1, top: .1, right: .9, bottom: .9 };
+  const cropB = { left: .3, top: .2, right: .8, bottom: .7 };
+  const imageFill = (assetId, crop, options = {}) => createImageFill(assetId, {
+    fit: 'cover', transforms: { crop, rotation: 0, flipHorizontal: false, flipVertical: false }, ...options
+  });
+  const fill = (id, image, opacity = 1) => ({ id, type: 'image', visible: true, opacity, imageFill: image });
+  const make = (name, image, opacity = 1) => createNode('rectangle', {
+    name, fills: [fill(`fill-${name}`, image, opacity)]
+  });
+  const cases = [
+    { name: 'same asset', from: imageFill('photo', cropA), to: imageFill('photo', cropB), interpolates: true },
+    { name: 'asset replacement', from: imageFill('photo-a', cropA), to: imageFill('photo-b', cropB), interpolates: false },
+    { name: 'fit change', from: imageFill('photo', cropA), to: imageFill('photo', cropB, { fit: 'contain' }), interpolates: false },
+    { name: 'flip topology change', from: imageFill('photo', cropA), to: imageFill('photo', cropB, {
+      transforms: { crop: cropB, rotation: 0, flipHorizontal: true, flipVertical: false }
+    }), interpolates: false }
+  ];
+  const from = createNode('frame', { children: cases.map(item => make(item.name, item.from, .2)) });
+  const to = createNode('frame', { children: cases.map(item => make(item.name, item.to, .8)) });
+
+  for (const [index, item] of cases.entries()) {
+    const quarter = interpolateSmartFrame(from, to, .25).children[index].fills[0];
+    const middle = interpolateSmartFrame(from, to, .5).children[index].fills[0];
+    assert.ok(Math.abs(quarter.opacity - .35) < Number.EPSILON * 2, `${item.name} opacity remains continuous`);
+    if (item.interpolates) {
+      assert.equal(quarter.imageFill.assetId, 'photo');
+      assert.ok(Math.abs(quarter.imageFill.transforms.crop.left - .15) < Number.EPSILON * 2);
+      assert.equal(quarter.imageFill.fit, 'cover');
+    } else {
+      assert.deepEqual(quarter.imageFill, item.from, `${item.name} keeps its source configuration before halfway`);
+      assert.deepEqual(middle.imageFill, item.to, `${item.name} switches to the destination configuration at halfway`);
+    }
+  }
+});
+
+test('smart animation keeps malformed image transforms discrete instead of interpolating them', () => {
+  const from = createNode('frame', { children: [createNode('image', {
+    name: 'Malformed photo', assetId: 'photo', transforms: { crop: null, rotation: 0 }
+  })] });
+  const to = createNode('frame', { children: [createNode('image', {
+    name: 'Malformed photo', assetId: 'photo', transforms: { crop: null, rotation: 90 }
+  })] });
+  from.children[0].transforms.rotation = 45;
+  to.children[0].transforms.crop = { left: .7, top: .2, right: .3, bottom: .8 };
+
+  const quarter = interpolateSmartFrame(from, to, .25).children[0].transforms;
+  const threeQuarter = interpolateSmartFrame(from, to, .75).children[0].transforms;
+  assert.deepEqual(quarter, from.children[0].transforms, 'an invalid source representation is preserved as a discrete source snapshot');
+  assert.deepEqual(threeQuarter, to.children[0].transforms, 'an invalid destination representation is preserved as a discrete destination snapshot');
+});
+
 test('smart animation snaps incompatible and variable-bound gradients at the midpoint', () => {
   const linear = { type: 'linear', angle: 0, stops: [
     { id: 'a', position: 0, color: '#000000' }, { id: 'b', position: 1, color: '#ffffff' }
@@ -823,20 +918,20 @@ test('smart animation crossfades paths with different closure or invalid coordin
 
 test('smart animation interpolates compatible rich-text run metrics and solid colors', () => {
   const fromRuns = [
-    { text: 'Hello ', fontSize: 12, fontWeight: '400', lineHeight: 1, letterSpacing: -2, color: '#000000' },
-    { text: 'world', fontSize: 20, fontWeight: 500, lineHeight: 1.2, letterSpacing: 0, color: '#204060' }
+    { text: 'Hello ', fontSize: 12, fontWeight: '400', lineHeight: 1, letterSpacing: -2, baselineShift: -4, color: '#000000' },
+    { text: 'world', fontSize: 20, fontWeight: 500, lineHeight: 1.2, letterSpacing: 0, baselineShift: 2, color: '#204060' }
   ];
   const toRuns = [
-    { text: 'Hello ', fontSize: 32, fontWeight: 700, lineHeight: 2, letterSpacing: 4, color: '#ffffff' },
-    { text: 'world', fontSize: 40, fontWeight: 800, lineHeight: 1.8, letterSpacing: 6, color: '#e0a080' }
+    { text: 'Hello ', fontSize: 32, fontWeight: 700, lineHeight: 2, letterSpacing: 4, baselineShift: 8, color: '#ffffff' },
+    { text: 'world', fontSize: 40, fontWeight: 800, lineHeight: 1.8, letterSpacing: 6, baselineShift: -6, color: '#e0a080' }
   ];
   const from = createNode('frame', { children: [createNode('text', { name: 'Headline', text: 'Hello world', textRuns: fromRuns })] });
   const to = createNode('frame', { children: [createNode('text', { name: 'Headline', text: 'Hello world', textRuns: toRuns })] });
 
   const middleRuns = interpolateSmartFrame(from, to, 0.5).children[0].textRuns;
   assert.deepEqual(middleRuns, [
-    { text: 'Hello ', fontSize: 22, fontWeight: 550, lineHeight: 1.5, letterSpacing: 1, color: '#808080' },
-    { text: 'world', fontSize: 30, fontWeight: 650, lineHeight: 1.5, letterSpacing: 3, color: '#807070' }
+    { text: 'Hello ', fontSize: 22, fontWeight: 550, lineHeight: 1.5, letterSpacing: 1, baselineShift: 2, color: '#808080' },
+    { text: 'world', fontSize: 30, fontWeight: 650, lineHeight: 1.5, letterSpacing: 3, baselineShift: -2, color: '#807070' }
   ]);
 
   assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].textRuns, fromRuns, 'the starting endpoint keeps its original run values');
@@ -845,6 +940,50 @@ test('smart animation interpolates compatible rich-text run metrics and solid co
   assert.deepEqual(interpolateSmartFrame(from, to, 2).children[0].textRuns, toRuns, 'progress above one clamps to the destination endpoint');
   assert.deepEqual(from.children[0].textRuns, fromRuns, 'interpolation leaves source runs unchanged');
   assert.deepEqual(to.children[0].textRuns, toRuns, 'interpolation leaves destination runs unchanged');
+});
+
+test('smart animation interpolates inherited run metrics through the layer styles while preserving sparse runs', () => {
+  const from = createNode('frame', { children: [createNode('text', {
+    name: 'Inherited', text: 'Title', fontSize: 12, fontWeight: 300, lineHeight: 1, letterSpacing: -2,
+    color: '#000000', textRuns: [{ text: 'Title' }]
+  })] });
+  const to = createNode('frame', { children: [createNode('text', {
+    name: 'Inherited', text: 'Title', fontSize: 28, fontWeight: 700, lineHeight: 2, letterSpacing: 6,
+    color: '#ffffff', textRuns: [{ text: 'Title' }]
+  })] });
+
+  const middle = interpolateSmartFrame(from, to, .25).children[0];
+  assert.deepEqual(middle.textRuns, [{ text: 'Title' }], 'inherited styles stay sparse on the run');
+  assert.deepEqual([middle.fontSize, middle.fontWeight, middle.lineHeight, middle.letterSpacing, middle.color], [16, 400, 1.25, 0, '#404040']);
+});
+
+test('smart animation snaps rich text continuously only when run content matches and no typography binding is active', () => {
+  const makeFrame = ({ text = 'Title', variableBindings = {}, textVariableId = null, value = 0 } = {}) => createNode('frame', { children: [createNode('text', {
+    name: 'Bound title', text, fontSize: 12 + value, color: value ? '#ffffff' : '#000000',
+    textVariableId, variableBindings,
+    textRuns: [{ text, fontSize: 12 + value, baselineShift: value, color: value ? '#ffffff' : '#000000' }]
+  })] });
+  const from = makeFrame({ variableBindings: { fontSize: 'font-size-light' }, value: 0 });
+  const to = makeFrame({ variableBindings: { fontSize: 'font-size-dark' }, value: 20 });
+  const quarter = interpolateSmartFrame(from, to, .25).children[0];
+  assert.deepEqual(quarter.textRuns, from.children[0].textRuns, 'a variable-bound typography value keeps its authored run style until midpoint');
+  assert.equal(quarter.fontSize, from.children[0].fontSize);
+  assert.deepEqual(quarter.variableBindings, from.children[0].variableBindings);
+  assert.deepEqual(interpolateSmartFrame(from, to, .5).children[0].textRuns, to.children[0].textRuns);
+
+  const changedContentFrom = createNode('frame', { children: [createNode('text', {
+    name: 'Changing title', text: 'Before', textRuns: [{ text: 'Before', baselineShift: 2 }]
+  })] });
+  const changedContentTo = createNode('frame', { children: [createNode('text', {
+    name: 'Changing title', text: 'After', textRuns: [{ text: 'After', baselineShift: 18 }]
+  })] });
+  assert.deepEqual(interpolateSmartFrame(changedContentFrom, changedContentTo, .25).children[0].textRuns,
+    changedContentFrom.children[0].textRuns, 'changed content remains a discrete text transition');
+
+  const colorBoundFrom = makeFrame({ textVariableId: 'light-text', value: 0 });
+  const colorBoundTo = makeFrame({ textVariableId: 'dark-text', value: 20 });
+  assert.deepEqual(interpolateSmartFrame(colorBoundFrom, colorBoundTo, .25).children[0].textRuns,
+    colorBoundFrom.children[0].textRuns, 'text color variable bindings prevent interpolation of the run palette');
 });
 
 test('smart animation snaps rich-text styles when unchanged text has incompatible run segmentation', () => {
@@ -909,6 +1048,115 @@ test('smart animation interpolates compatible drop-shadow and layer-blur effects
   assert.deepEqual(to, originalTo, 'interpolation does not mutate destination effect values');
 });
 
+test('smart animation interpolates texture size and spread safely while clip-to-shape switches at halfway', () => {
+  const fromEffect = createLayerEffect('texture', {
+    id: 'texture-before', sizeX: 0.7, sizeY: 1.1, radius: 4, clipToShape: true
+  });
+  const toEffect = createLayerEffect('texture', {
+    id: 'texture-after', sizeX: 2.7, sizeY: 5.1, radius: 20, clipToShape: false
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Paper', effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Paper', effects: [toEffect] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].effects[0];
+  assert.deepEqual([at(0.25).sizeX, at(0.25).sizeY, at(0.25).radius], [1.2, 2.1, 8]);
+  assert.equal(at(0.25).clipToShape, true, 'clip mode remains source-owned before halfway');
+  assert.deepEqual([at(0.75).sizeX, at(0.75).sizeY, at(0.75).radius], [2.2, 4.1, 16]);
+  assert.equal(at(0.75).clipToShape, false, 'clip mode switches at halfway');
+  assert.deepEqual(at(0), fromEffect);
+  assert.deepEqual(at(1), toEffect);
+
+  const without = createNode('frame', { children: [createNode('rectangle', { name: 'Paper', effects: [] })] });
+  const withTexture = createNode('frame', { children: [createNode('rectangle', { name: 'Paper', effects: [toEffect] })] });
+  assert.deepEqual(interpolateSmartFrame(without, withTexture, 0.25).children[0].effects, [], 'a new edge-distress operation snaps as a whole because it has no opacity control');
+  assert.deepEqual(interpolateSmartFrame(without, withTexture, 0.5).children[0].effects, [toEffect]);
+});
+
+test('smart animation interpolates Glass optics with wrapped light angles and snaps insertion at halfway', () => {
+  const fromEffect = createLayerEffect('glass', {
+    id: 'glass-before', lightAngle: 350, lightIntensity: 20, refraction: 10, depth: 30,
+    dispersion: 0, frost: 10, splay: 20
+  });
+  const toEffect = createLayerEffect('glass', {
+    id: 'glass-after', lightAngle: 10, lightIntensity: 80, refraction: 90, depth: 70,
+    dispersion: 100, frost: 60, splay: 40
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Glass card', fillOpacity: .5, effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Glass card', fillOpacity: .5, effects: [toEffect] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].effects[0];
+  assert.deepEqual([at(.25).lightAngle, at(.5).lightAngle, at(.75).lightAngle], [355, 0, 5], 'light direction takes the short circular route');
+  assert.deepEqual([at(.25).lightIntensity, at(.25).refraction, at(.25).depth, at(.25).dispersion, at(.25).frost, at(.25).splay], [35, 30, 40, 25, 22.5, 25]);
+  assert.deepEqual(at(0), fromEffect);
+  assert.deepEqual(at(1), toEffect);
+
+  const empty = createNode('frame', { children: [createNode('rectangle', { name: 'Glass card', effects: [] })] });
+  const withGlass = createNode('frame', { children: [createNode('rectangle', { name: 'Glass card', fillOpacity: .5, effects: [toEffect] })] });
+  assert.deepEqual(interpolateSmartFrame(empty, withGlass, .25).children[0].effects, [], 'new Glass has no opacity channel, so its full stack waits until halfway');
+  assert.deepEqual(interpolateSmartFrame(empty, withGlass, .5).children[0].effects, [toEffect]);
+});
+
+test('smart animation smoothly interpolates noise settings and keeps a stable texture recipe', () => {
+  const fromEffect = createLayerEffect('noise', {
+    id: 'grain-before', mode: 'duo', sizeX: 2, sizeY: 4, density: 20,
+    color: '#000000', color2: '#ffffff', opacity: 0.2
+  });
+  const toEffect = createLayerEffect('noise', {
+    id: 'grain-after', mode: 'multi', sizeX: 10, sizeY: 12, density: 80,
+    color: '#ff0000', color2: '#00ff00', opacity: 0.8
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [toEffect] })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].effects[0];
+  const quarter = at(0.25);
+  const middle = at(0.5);
+  const threeQuarter = at(0.75);
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} should be close to ${expected}`);
+  assert.equal(quarter.mode, 'duo', 'the color-count mode remains source-owned before halfway');
+  assert.deepEqual([quarter.sizeX, quarter.sizeY, quarter.density], [4, 6, 35]);
+  near(quarter.opacity, 0.35);
+  assert.equal(quarter.color, '#400000');
+  assert.equal(quarter.color2, '#bfffbf');
+  assert.equal(middle.mode, 'multi', 'categorical color-count mode switches at halfway');
+  assert.deepEqual([middle.sizeX, middle.sizeY, middle.density], [6, 8, 50]);
+  near(middle.opacity, 0.5);
+  assert.equal(threeQuarter.mode, 'multi');
+  assert.deepEqual([threeQuarter.sizeX, threeQuarter.sizeY, threeQuarter.density], [8, 10, 65]);
+  near(threeQuarter.opacity, 0.65);
+  assert.equal(threeQuarter.color, '#bf0000');
+  assert.deepEqual(at(0), fromEffect, 'the start frame keeps its exact saved effect');
+  assert.deepEqual(at(1), toEffect, 'the end frame keeps its exact saved effect');
+  assert.deepEqual(JSON.parse(JSON.stringify(quarter)), quarter, 'intermediate noise settings remain locally serializable');
+});
+
+test('smart animation fades inserted noise while preserving its deterministic layer and effect identity', () => {
+  const noise = createLayerEffect('noise', {
+    id: 'grain-added', mode: 'mono', sizeX: 3, sizeY: 5, density: 60, color: '#334455', opacity: 0.8
+  });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [noise] })] });
+  const incoming = interpolateSmartFrame(from, to, 0.25).children[0].effects[0];
+  assert.equal(incoming.id, 'grain-added');
+  assert.equal(incoming.type, 'noise');
+  assert.equal(incoming.opacity, 0.2, 'a newly appearing noise texture ramps from transparent');
+  assert.deepEqual([incoming.sizeX, incoming.sizeY, incoming.density], [3, 5, 60]);
+  assert.equal(incoming.color, '#334455');
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].effects, []);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].effects, [noise]);
+});
+
+test('smart animation interpolates background-blur radius and effect insertion continuously', () => {
+  const fromEffect = createLayerEffect('background-blur', { id: 'backdrop-before', radius: 4 });
+  const toEffect = createLayerEffect('background-blur', { id: 'backdrop-after', radius: 20 });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [fromEffect] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [toEffect] })] });
+  const middle = interpolateSmartFrame(from, to, .25).children[0].effects[0];
+  assert.equal(middle.type, 'background-blur');
+  assert.equal(middle.id, 'backdrop-before');
+  assert.equal(middle.radius, 8);
+  const inserted = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [] })] });
+  const withEffect = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [toEffect] })] });
+  assert.equal(interpolateSmartFrame(inserted, withEffect, .5).children[0].effects[0].radius, 10);
+});
+
 test('smart animation interpolates compatible inner-shadow color and geometry without mutating or leaking non-serializable values', () => {
   const fromEffect = createLayerEffect('inner-shadow', {
     id: 'inner-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2
@@ -961,10 +1209,48 @@ test('smart animation keeps inner-shadow stacks discrete when visibility compati
   assert.deepEqual(atMidpoint.children[0].effects, [toEffect], 'the full destination stack switches at the midpoint');
 });
 
+test('smart animation smoothly adds and removes compatible trailing effects', () => {
+  const fromShadow = createLayerEffect('drop-shadow', {
+    id: 'shadow-before', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2
+  });
+  const toShadow = createLayerEffect('drop-shadow', {
+    id: 'shadow-after', color: '#ffffff', opacity: 0.8, offsetX: 8, offsetY: -6, blur: 10
+  });
+  const addedInnerShadow = createLayerEffect('inner-shadow', {
+    id: 'shadow-before', color: '#204060', opacity: 0.6, offsetX: 2, offsetY: 4, blur: 8
+  });
+  const addedBlur = createLayerEffect('layer-blur', { id: 'blur-entering', radius: 8 });
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [fromShadow] })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', effects: [toShadow, addedInnerShadow, addedBlur] })] });
+  const at = (start, end, progress) => interpolateSmartFrame(start, end, progress).children[0].effects;
+
+  const quarter = at(from, to, 0.25);
+  const threeQuarter = at(from, to, 0.75);
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} should be close to ${expected}`);
+  assert.equal(quarter.length, 3, 'the incoming tail is present as a valid zero-to-full contribution');
+  assert.equal(new Set(quarter.map(effect => effect.id)).size, quarter.length, 'the transient union keeps effect IDs unique even if endpoints reused an ID');
+  assert.equal(quarter[0].color, '#404040', 'the matched prefix continues to interpolate while the tail enters');
+  assert.equal(quarter[0].offsetX, 2);
+  near(quarter[1].opacity, 0.15);
+  assert.equal(quarter[2].radius, 2);
+  near(threeQuarter[1].opacity, 0.45);
+  assert.equal(threeQuarter[2].radius, 6);
+  assert.deepEqual(at(from, to, 0), [fromShadow], 'the source endpoint retains its exact stack shape');
+  assert.deepEqual(at(from, to, 1), [toShadow, addedInnerShadow, addedBlur], 'the destination endpoint retains its exact stack shape');
+  assert.deepEqual(JSON.parse(JSON.stringify(quarter)), quarter, 'the intermediate effect stack remains serialization-safe');
+
+  const reverseQuarter = at(to, from, 0.25);
+  assert.equal(reverseQuarter.length, 3, 'an outgoing tail remains present while it fades');
+  assert.equal(new Set(reverseQuarter.map(effect => effect.id)).size, reverseQuarter.length);
+  near(reverseQuarter[1].opacity, 0.45);
+  assert.equal(reverseQuarter[2].radius, 6);
+  assert.deepEqual(at(to, from, 1), [fromShadow], 'the reverse destination endpoint removes the completed tail');
+});
+
 test('smart animation snaps effect stacks with incompatible count, order, or invalid values at the midpoint', () => {
   const shadow = createLayerEffect('drop-shadow', { id: 'shadow', color: '#000000', opacity: 0.2, offsetX: 0, offsetY: 2, blur: 2 });
   const blur = createLayerEffect('layer-blur', { id: 'blur', radius: 2 });
-  const changedCount = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' }), blur];
+  const changedCount = [createLayerEffect('layer-blur', { id: 'blur-end', radius: 10 })];
   const changedOrder = [createLayerEffect('layer-blur', { ...blur, id: 'blur-end', radius: 10 }), createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: '#ffffff' })];
   const invalidValue = [createLayerEffect('drop-shadow', { ...shadow, id: 'shadow-end', color: 'red' })];
   const innerShadow = createLayerEffect('inner-shadow', {
@@ -977,7 +1263,7 @@ test('smart animation snaps effect stacks with incompatible count, order, or inv
     id: 'inner-after', color: 'transparent', opacity: 0.8, offsetX: 4, offsetY: 6, blur: 10
   })];
   const stacks = [
-    { from: [shadow], to: changedCount },
+    { from: [shadow, blur], to: changedCount },
     { from: [shadow, blur], to: changedOrder },
     { from: [shadow], to: invalidValue },
     { from: [innerShadow], to: changedInnerShadowType },
@@ -999,6 +1285,36 @@ test('smart animation snaps effect stacks with incompatible count, order, or inv
     );
     assert.equal(interpolateSmartFrame(from, to, 0.25).children.length, 1, 'incompatible effects on an otherwise matched layer use midpoint fallback instead of crossfading the layer');
   }
+});
+
+test('smart animation preserves the exact authored frame snapshots at both transition endpoints', () => {
+  const from = createNode('frame', {
+    name: 'Source',
+    rendererMetadata: { sourceOnly: true },
+    children: [
+      createNode('rectangle', { name: 'Shared', x: 10, rendererMetadata: { revision: 'source' } }),
+      createNode('path', { name: 'Source mask', visible: false, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] })
+    ]
+  });
+  const to = createNode('frame', {
+    name: 'Destination',
+    rendererMetadata: { destinationOnly: true },
+    children: [
+      createNode('rectangle', { name: 'Shared', x: 20, rendererMetadata: { revision: 'destination' } }),
+      createNode('network', { name: 'Destination mask', vertices: [], edges: [], faces: [] })
+    ]
+  });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const start = interpolateSmartFrame(from, to, 0);
+  const end = interpolateSmartFrame(from, to, 1);
+  assert.deepEqual(start, originalFrom, 'the start is the complete source snapshot, including unsupported metadata and child topology');
+  assert.deepEqual(end, originalTo, 'the end is the complete destination snapshot without zero-opacity source leftovers');
+  assert.notEqual(start, from, 'endpoint snapshots are cloned so callers cannot mutate either authored frame');
+  assert.notEqual(end, to, 'endpoint snapshots are cloned so callers cannot mutate either authored frame');
+  assert.deepEqual(from, originalFrom);
+  assert.deepEqual(to, originalTo);
 });
 
 test('smart animation rejects non-frame endpoints and clamps its progress', () => {

@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createNode, createFillLayer, addNode, createComponent, createComponentInstance, findNode, syncComponentInstances } from '../src/model.js';
+import { readFile } from 'node:fs/promises';
+import { createDocument, createNode, createFillLayer, createLayerEffect, createEffectStyle, addNode, createComponent, createComponentInstance, findNode, parseDocument, syncComponentInstances } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
-import { packLocalPackage } from '../src/storage.js';
+import { packLocalPackage, unpackLocalPackage } from '../src/storage.js';
+import { MAX_IMAGE_SOURCE_PIXELS } from '../src/image-engine.js';
 import {
-  deleteStoredDocument, duplicateStoredDocument, listSavedDocuments, loadDocumentById,
-  deleteFontAsset, importLocalPackage, listDocumentVersions, listFontAssets, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, renameStoredDocument, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes
+  claimRecipeBatchRecovery, deleteFontAsset, deleteRecipeBatchRecovery, deleteStoredDocument, duplicateStoredDocument, importLocalPackage,
+  listDocumentVersions, listFontAssets, listSavedDocuments, loadDocumentById, loadDocumentVersion, loadFontAsset,
+  loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadRecipeBatchRecovery, renameStoredDocument,
+  saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes
 } from '../src/storage.js';
 
 function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
@@ -206,12 +210,171 @@ test('local library lists, retrieves, renames, duplicates, and deletes documents
   assert.ok([original.id, second.id, duplicate.id].includes((await loadLatestDocument()).id),
     'the existing latest-document API continues to return a saved document');
 
+  const recovery = {
+    ownerToken: 'run-storage-library-original', recipe: { id: 'recipe-recovery', name: 'Warm', adjustments: {} },
+    pageId: original.activePageId, targetIds: [image.id], status: 'running'
+  };
+  await claimRecipeBatchRecovery({ documentId: original.id, ...recovery });
+  await claimRecipeBatchRecovery({ ...recovery, documentId: second.id, ownerToken: 'run-storage-library-second' });
+  assert.ok(await loadRecipeBatchRecovery(original.id));
+
+  await assert.rejects(deleteStoredDocument(original.id), /already has an image recipe batch running/,
+    'document removal cannot erase a live tab’s recovery journal');
+  await deleteRecipeBatchRecovery(original.id, recovery.ownerToken);
   assert.equal(await deleteStoredDocument(original.id), true);
   assert.equal(await deleteStoredDocument(original.id), false);
+  assert.equal(await loadRecipeBatchRecovery(original.id), null, 'deleting a design removes its stale recovery journal in the same transaction');
+  assert.ok(await loadRecipeBatchRecovery(second.id), 'deleting one design leaves another design recovery journal intact');
+  await deleteRecipeBatchRecovery(second.id, 'run-storage-library-second');
   assert.equal(await loadDocumentById(original.id), null);
   assert.ok(await loadDocumentById(duplicate.id));
   assert.deepEqual(new Uint8Array((await loadImageAsset('library-asset')).bytes), bytes,
     'assets remain intact because the v1 asset store has no document ownership metadata');
+});
+
+test('boot recovery selects the newest parseable snapshot and retains corrupt rows for repair', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?newest-valid-boot-recovery-test');
+  await storage.loadLatestDocument(); // Initialize the mock schema before seeding snapshots.
+
+  const oldest = createDocument();
+  oldest.name = 'Oldest valid design';
+  const newestValid = createDocument();
+  newestValid.name = 'Newest valid design';
+  const corrupt = createDocument();
+  corrupt.name = 'Damaged design';
+  corrupt.schema = 'broken-local-design';
+  const missingIdentity = createDocument();
+  delete missingIdentity.id;
+  const mismatchedIdentity = createDocument();
+  const missingIdentityRowId = 'saved-row-without-document-id';
+  const mismatchedIdentityRowId = 'saved-row-with-mismatched-document-id';
+  indexedDb.database.seed('documents', { id: oldest.id, savedAt: 10, document: oldest });
+  indexedDb.database.seed('documents', { id: newestValid.id, savedAt: 20, document: newestValid });
+  indexedDb.database.seed('documents', { id: corrupt.id, savedAt: 30, document: corrupt });
+  indexedDb.database.seed('documents', { id: missingIdentityRowId, savedAt: 40, document: missingIdentity });
+  indexedDb.database.seed('documents', { id: mismatchedIdentityRowId, savedAt: 50, document: mismatchedIdentity });
+
+  const restoration = await storage.loadLatestValidDocument(parseDocument);
+  assert.equal(restoration.document.id, newestValid.id, 'recovery should choose the nearest older valid snapshot');
+  assert.equal(restoration.recordId, newestValid.id);
+  assert.equal(restoration.revision, 0, 'legacy saved rows without a revision load as revision zero');
+  assert.deepEqual(restoration.invalidRecords.map(record => record.id), [mismatchedIdentityRowId, missingIdentityRowId, corrupt.id]);
+  assert.throws(() => parseDocument(missingIdentity), /Invalid local design file/,
+    'a design without stable identity must fail central validation');
+  assert.equal((await storage.loadLatestDocument()).id, mismatchedIdentity.id,
+    'the raw latest record remains unchanged and available for manual repair');
+  assert.deepEqual(await storage.loadDocumentById(corrupt.id), corrupt);
+  assert.ok(await storage.loadDocumentById(missingIdentityRowId), 'the missing-ID row remains available for manual repair');
+  assert.ok(await storage.loadDocumentById(mismatchedIdentityRowId), 'the mismatched-ID row remains available for manual repair');
+  assert.ok((await storage.listSavedDocuments()).some(record => record.id === mismatchedIdentityRowId),
+    'the damaged rows remain discoverable in the local design library');
+
+  const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const bootStart = main.indexOf('async function boot()');
+  const bootEnd = main.indexOf('\nsyncMobilePanelAccessibility();', bootStart);
+  assert.ok(bootStart >= 0 && bootEnd > bootStart, 'boot recovery should have a bounded implementation');
+  const boot = main.slice(bootStart, bootEnd);
+  assert.match(boot, /loadLatestValidDocument\(parseDocument\)/,
+    'startup should validate snapshots and fall back before rendering the editor');
+  assert.match(boot, /restoration\.invalidRecords\.length[\s\S]*?damaged design remains in Your designs for manual repair/,
+    'startup should clearly preserve and disclose the damaged row');
+  assert.match(boot, /state\.documentStorageRevision\s*=\s*restoration\.revision/,
+    'startup must carry the restored row revision into the first autosave compare-and-swap');
+});
+
+test('document compare-and-swap preserves a newer tab save and fences rename revisions', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?document-save-cas-concurrency-test');
+  await storage.loadLatestDocument();
+
+  const initial = createDocument();
+  initial.name = 'Shared design';
+  indexedDb.database.seed('documents', { id: initial.id, savedAt: 1, revision: 4, document: initial });
+  const tabA = await storage.loadDocumentRecordById(initial.id);
+  const tabB = await storage.loadDocumentRecordById(initial.id);
+  assert.equal(tabA.revision, 4);
+  assert.equal(tabB.revision, 4);
+  tabA.document.name = 'Saved by tab A';
+  tabB.document.name = 'Unsaved tab B edits';
+
+  assert.equal(await storage.saveDocument(tabA.document, { expectedRevision: tabA.revision }), 5);
+  await assert.rejects(
+    storage.saveDocument(tabB.document, { expectedRevision: tabB.revision }),
+    error => error instanceof storage.DocumentSaveConflictError
+      && error.documentId === initial.id && error.expectedRevision === 4 && error.actualRevision === 5,
+    'a second tab with a stale revision cannot overwrite the first tab'
+  );
+  assert.equal((await storage.loadDocumentById(initial.id)).name, 'Saved by tab A');
+
+  assert.equal(await storage.saveDocument(tabB.document), 6,
+    'direct fixture/API saves remain unconditional when no expected revision is supplied');
+  assert.equal(await storage.renameStoredDocument(initial.id, 'Renamed safely', { expectedRevision: 6 }), true);
+  const renamed = await storage.loadDocumentRecordById(initial.id);
+  assert.equal(renamed.revision, 7, 'document-library rename advances the per-document revision');
+  assert.equal(renamed.document.name, 'Renamed safely');
+  await assert.rejects(
+    storage.saveDocument(tabA.document, { expectedRevision: 6 }),
+    error => error instanceof storage.DocumentSaveConflictError && error.actualRevision === 7,
+    'an editor opened before a rename must detect the newer row revision'
+  );
+
+  const legacy = createDocument();
+  legacy.name = 'Legacy row';
+  indexedDb.database.seed('documents', { id: legacy.id, savedAt: 2, document: legacy });
+  const loadedLegacy = await storage.loadDocumentRecordById(legacy.id);
+  assert.equal(loadedLegacy.revision, 0, 'a pre-revision document row is treated as revision zero');
+  assert.equal(await storage.saveDocument(loadedLegacy.document, { expectedRevision: loadedLegacy.revision }), 1,
+    'the first compare-and-swap upgrades the legacy row into revision one');
+});
+
+test('editor conflict recovery keeps this tab on a separate copy and blocks switching if that copy cannot be saved', async () => {
+  const main = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const body = (name, nextName) => {
+    const start = main.indexOf(`function ${name}(`) >= 0
+      ? main.indexOf(`function ${name}(`)
+      : main.indexOf(`async function ${name}(`);
+    const end = main.indexOf(`\n${nextName}`, start);
+    assert.ok(start >= 0 && end > start, `expected to find bounded ${name} implementation`);
+    return main.slice(start, end);
+  };
+  const enqueue = body('enqueueDocumentSave', 'async function preserveDocumentSaveConflict');
+  assert.match(enqueue, /conflict\s*\?\s*\{\s*\.\.\.snapshot,\s*id:\s*conflict\.recoveryId,\s*name:\s*conflict\.recoveryName\s*\}/,
+    'once conflicted, later editor snapshots are written under the separate recovery ID');
+  assert.match(enqueue, /saveDocument\(persistedSnapshot,\s*\{\s*expectedRevision:\s*state\.documentStorageRevision\s*\}\)/,
+    'ordinary autosaves use the active design revision compare-and-swap');
+
+  const preserve = body('preserveDocumentSaveConflict', 'function setDocumentEditingBlocked');
+  assert.match(preserve, /recoveryId:\s*createId\('recovery'\)/);
+  assert.match(preserve, /recoveryName/);
+  assert.match(preserve, /serializeDocument\(state\.document\)/,
+    'the recovery copy captures the current in-memory edits');
+  assert.match(preserve, /enqueueDocumentSave\(latestSnapshot,[\s\S]*?false\)/,
+    'the recovery snapshot is saved independently of the conflicted source row');
+
+  const persist = body('persistCurrentDocumentNow', 'function releaseImageRuntimeForDocumentSwitch');
+  assert.match(persist, /error instanceof DocumentSaveConflictError[\s\S]*?preserveDocumentSaveConflict/);
+  assert.match(persist, /return conflict\.saved/,
+    'a design switch can proceed only after the separate recovery copy is durable');
+
+  const switching = body('switchToDocument', 'async function renderDesignLibrary');
+  assert.match(switching, /state\.documentStorageRevision\s*=\s*nextStorageRevision/);
+  assert.match(switching, /state\.documentSaveConflict\s*=\s*null/,
+    'switching designs clears only the previous design’s conflict fence');
+  assert.match(switching, /sameDocumentAfterSave[\s\S]*?state\.documentStorageRevision/,
+    'restoring a version of the active design fences against the revision advanced by its pre-switch save');
+  assert.match(switching, /nextDocument\.id === currentDocumentId && state\.documentSaveConflict/,
+    'a restore cannot overwrite a newer cross-tab revision after autosave has moved this tab to a recovery copy');
+
+  const restore = body('restoreDocumentVersion', 'function imageNodesAcrossPages');
+  assert.doesNotMatch(restore, /expectedStorageRevision:/,
+    'version restore must not reuse the stale revision read before its own pre-switch autosave');
+
+  const namedSave = body('saveNamedDocumentVersion', 'async function restoreDocumentVersion');
+  assert.match(namedSave, /persistCurrentDocumentNow\(\)[\s\S]*?state\.documentSaveConflict[\s\S]*?Open[\s\S]*?recoveryName[\s\S]*?return;[\s\S]*?saveDocumentVersion/,
+    'a checkpoint from a conflicted editor must not enter the newer source design history');
 });
 
 test('local document versions deduplicate autosaves, retain named checkpoints, fence owners, and prune old snapshots', async () => {
@@ -338,8 +501,8 @@ test('package font ID and family collisions are remapped without replacing local
 
 test('package import reuses identical sources and remaps asset and document collisions without replacement', async () => {
   globalThis.indexedDB = createIndexedDbMock();
-  const originalBytes = new Uint8Array([1, 2, 3]);
-  const incomingBytes = new Uint8Array([9, 8, 7]);
+  const originalBytes = pngHeader(3, 2);
+  const incomingBytes = pngHeader(5, 4);
   await saveImageAssetBytes('shared-asset', 'original.png', 'image/png', originalBytes);
   const existingDocument = createDocument();
   existingDocument.name = 'Existing';
@@ -375,8 +538,8 @@ test('package import reuses identical sources and remaps asset and document coll
 
 test('package import remaps secondary image-fill assets when an existing source ID collides', async () => {
   globalThis.indexedDB = createIndexedDbMock();
-  const originalBytes = new Uint8Array([1, 2, 3]);
-  const incomingBytes = new Uint8Array([9, 8, 7]);
+  const originalBytes = pngHeader(3, 2);
+  const incomingBytes = pngHeader(5, 4);
   await saveImageAssetBytes('shared-texture', 'original.png', 'image/png', originalBytes);
   const incomingDocument = createDocument();
   const shape = createNode('rectangle', {
@@ -404,8 +567,8 @@ test('package import remaps secondary image-fill assets when an existing source 
 
 test('package import remaps image sources in component overrides before later component sync', async () => {
   globalThis.indexedDB = createIndexedDbMock();
-  const originalBytes = new Uint8Array([1, 2, 3]);
-  const incomingBytes = new Uint8Array([9, 8, 7]);
+  const originalBytes = pngHeader(3, 2);
+  const incomingBytes = pngHeader(5, 4);
   await saveImageAssetBytes('component-texture', 'original.png', 'image/png', originalBytes);
   const incomingDocument = createDocument();
   const root = createNode('frame', { name: 'Image component' });
@@ -450,6 +613,25 @@ test('package import rejects missing referenced source bytes before opening a wr
   assert.equal(openCalls, 0, 'incomplete package input is rejected before any storage writes begin');
 });
 
+test('package import rejects empty, unknown, and oversized image bytes before storage opens', async () => {
+  let openCalls = 0;
+  globalThis.indexedDB = { open() { openCalls += 1; throw new Error('storage must remain untouched'); } };
+  const invalidSources = [
+    new Uint8Array(),
+    new Uint8Array([0, 1, 2, 3, 4]),
+    pngHeader(MAX_IMAGE_SOURCE_PIXELS + 1, 1)
+  ];
+
+  for (const [index, bytes] of invalidSources.entries()) {
+    const document = createDocument();
+    addNode(document, createNode('image', { assetId: `unsafe-source-${index}` }));
+    await assert.rejects(importLocalPackage(document, [
+      { id: `unsafe-source-${index}`, name: `unsafe-${index}.png`, type: 'image/png', bytes }
+    ]), /invalid or unsafe/i);
+  }
+  assert.equal(openCalls, 0, 'invalid package image bytes are rejected before migrations or durable writes can begin');
+});
+
 function pngHeader(width, height) {
   const bytes = new Uint8Array(24);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
@@ -457,6 +639,22 @@ function pngHeader(width, height) {
   new DataView(bytes.buffer).setUint32(16, width);
   new DataView(bytes.buffer).setUint32(20, height);
   return bytes;
+}
+
+function webpExifHeader(width, height, orientation) {
+  const chunk = (type, payload) => {
+    const bytes = Buffer.alloc(8 + payload.length + (payload.length & 1));
+    bytes.write(type, 0, 'ascii'); bytes.writeUInt32LE(payload.length, 4); Buffer.from(payload).copy(bytes, 8);
+    return bytes;
+  };
+  const extended = Buffer.alloc(10); extended[0] = 0x08;
+  extended.writeUIntLE(width - 1, 4, 3); extended.writeUIntLE(height - 1, 7, 3);
+  const tiff = Buffer.alloc(26);
+  tiff.write('II', 0, 'ascii'); tiff.writeUInt16LE(42, 2); tiff.writeUInt32LE(8, 4); tiff.writeUInt16LE(1, 8);
+  tiff.writeUInt16LE(0x0112, 10); tiff.writeUInt16LE(3, 12); tiff.writeUInt32LE(1, 14); tiff.writeUInt16LE(orientation, 18);
+  const body = Buffer.concat([Buffer.from('WEBP'), chunk('VP8X', extended), chunk('EXIF', Buffer.concat([Buffer.from('Exif\0\0', 'binary'), tiff]))]);
+  const bytes = Buffer.alloc(8 + body.length); bytes.write('RIFF', 0, 'ascii'); bytes.writeUInt32LE(body.length, 4); body.copy(bytes, 8);
+  return new Uint8Array(bytes);
 }
 
 test('image metadata is persisted atomically and can be read without source bytes', async () => {
@@ -475,6 +673,17 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
   assert.equal(indexedDb.observations.openVersion, 6, 'opening the store upgrades the legacy database schema for local fonts, metadata, versions, and recipe recovery');
+});
+
+test('image catalog metadata preserves non-default WebP EXIF orientation for restore validation', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?asset-orientation-metadata-test');
+  const bytes = webpExifHeader(3, 2, 6);
+  await storage.saveImageAssetBytes('oriented-webp', 'portrait.webp', 'image/webp', bytes);
+  assert.deepEqual((await storage.loadImageAssetMetadata('oriented-webp')).dimensions, {
+    width: 2, height: 3, pixels: 6, orientation: 6,
+  });
 });
 
 test('legacy asset metadata is backfilled once, one source record at a time', async () => {
@@ -547,4 +756,23 @@ test('package completeness includes image bytes reachable only from linked-compo
 
   assert.throws(() => packLocalPackage(document, available('snapshot-only')), /resolved-only.*bytes are missing/i);
   assert.throws(() => packLocalPackage(document, available('resolved-only')), /snapshot-only.*bytes are missing/i);
+});
+
+test('effect style catalogs persist in local IndexedDB documents and .flocal exports', async () => {
+  globalThis.indexedDB = createIndexedDbMock();
+  const document = createDocument();
+  const source = createNode('rectangle', {
+    effects: [
+      createLayerEffect('inner-shadow', { id: 'saved-inner', offsetX: 2 }),
+      createLayerEffect('drop-shadow', { id: 'saved-drop', offsetY: 6, blur: 9 })
+    ]
+  });
+  addNode(document, source);
+  const style = createEffectStyle(document, source.id, 'Reusable depth');
+
+  await saveDocument(document);
+  const localCopy = await loadDocumentById(document.id);
+  assert.deepEqual(localCopy.effectStyles, [style], 'local document snapshots retain the style catalog');
+  const portable = unpackLocalPackage(packLocalPackage(localCopy, []));
+  assert.deepEqual(portable.document.effectStyles, [style], '.flocal export retains ordered effect values and style identity');
 });

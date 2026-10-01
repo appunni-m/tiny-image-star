@@ -159,17 +159,21 @@ test('recipe batch recovery round-trips defensive copies and is keyed by documen
   globalThis.indexedDB = mock.indexedDB;
   const storage = await loadStorageForTest();
   const input = {
+    ownerToken: 'run-roundtrip',
     documentId: 'design-recovery', recipe: { id: 'recipe-1', name: 'Warm', adjustments: { exposure: 0.25 } },
     pageId: 'page-1', targetIds: ['image-a', 'image-b'], status: 'running'
   };
 
-  await storage.saveRecipeBatchRecovery(input);
+  const claimed = await storage.claimRecipeBatchRecovery(input, { now: 10_000, leaseMs: 5_000 });
+  assert.equal(claimed.leaseExpiresAt, 15_000);
+  assert.deepEqual(await storage.saveRecipeBatchRecovery(input, { now: 11_000, leaseMs: 5_000 }), { leaseExpiresAt: 16_000 });
   input.recipe.adjustments.exposure = 0.9;
   input.targetIds.push('image-c');
   const loaded = await storage.loadRecipeBatchRecovery('design-recovery');
   assert.deepEqual(loaded, {
+    ownerToken: 'run-roundtrip', leaseExpiresAt: 16_000,
     documentId: 'design-recovery', recipe: { id: 'recipe-1', name: 'Warm', adjustments: { exposure: 0.25 } },
-    pageId: 'page-1', targetIds: ['image-a', 'image-b'], status: 'running', savedAt: loaded.savedAt
+    pageId: 'page-1', targetIds: ['image-a', 'image-b'], status: 'running', savedAt: 11_000
   });
   loaded.recipe.adjustments.exposure = -1;
   loaded.targetIds.pop();
@@ -183,6 +187,7 @@ test('recipe batch recovery rejects malformed input and ignores corrupt stored r
   globalThis.indexedDB = mock.indexedDB;
   const storage = await loadStorageForTest();
   const valid = {
+    ownerToken: 'run-invalid-fixture',
     documentId: 'design-recovery', recipe: { id: 'recipe-1' }, pageId: 'page-1',
     targetIds: ['image-a'], status: 'running'
   };
@@ -211,14 +216,75 @@ test('recipe batch recovery delete reports whether a record existed', async () =
   const mock = createIndexedDbMock();
   globalThis.indexedDB = mock.indexedDB;
   const storage = await loadStorageForTest();
-  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), false);
-  await storage.saveRecipeBatchRecovery({
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery', 'run-delete-fixture'), false);
+  const recovery = {
+    ownerToken: 'run-delete-fixture',
     documentId: 'design-recovery', recipe: { id: 'recipe-1' }, pageId: 'page-1',
     targetIds: ['image-a'], status: 'complete'
-  });
-  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), true);
-  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery'), false);
+  };
+  await storage.claimRecipeBatchRecovery(recovery);
+  await assert.rejects(storage.deleteRecipeBatchRecovery('design-recovery', 'run-stale-owner'), /no longer owns/);
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery', recovery.ownerToken), true);
+  assert.equal(await storage.deleteRecipeBatchRecovery('design-recovery', recovery.ownerToken), false);
   assert.equal(await storage.loadRecipeBatchRecovery('design-recovery'), null);
+});
+
+test('recipe recovery claims serialize concurrent tabs and fence stale save/delete after takeover', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const base = {
+    documentId: 'design-concurrent-recovery', recipe: { id: 'recipe-1', name: 'Warm' },
+    pageId: 'page-1', targetIds: ['image-a'], status: 'running'
+  };
+  const now = 50_000;
+  const attempts = await Promise.allSettled([
+    storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-tab-a' }, { now, leaseMs: 5_000 }),
+    storage.claimRecipeBatchRecovery({ ...base, ownerToken: 'run-tab-b' }, { now, leaseMs: 5_000 })
+  ]);
+  const winners = attempts.filter(result => result.status === 'fulfilled');
+  const losers = attempts.filter(result => result.status === 'rejected');
+  assert.equal(winners.length, 1, 'exactly one same-document tab acquires the initial lease');
+  assert.equal(losers.length, 1, 'the competing tab is refused before it can replace the journal');
+  assert.equal(losers[0].reason.name, 'RecipeBatchRecoveryLeaseError');
+  assert.equal(losers[0].reason.reason, 'active');
+  const oldOwner = winners[0].value.ownerToken;
+  const nextOwner = oldOwner === 'run-tab-a' ? 'run-tab-b' : 'run-tab-a';
+  assert.equal((await storage.loadRecipeBatchRecovery(base.documentId)).ownerToken, oldOwner);
+
+  await assert.rejects(storage.saveRecipeBatchRecovery({ ...base, ownerToken: nextOwner }), /no longer owns/);
+  await assert.rejects(storage.deleteRecipeBatchRecovery(base.documentId, nextOwner), /no longer owns/);
+  const takeover = await storage.claimRecipeBatchRecovery({ ...base, ownerToken: nextOwner }, {
+    expectedOwnerToken: oldOwner, now: 55_001, leaseMs: 5_000
+  });
+  assert.equal(takeover.ownerToken, nextOwner, 'a recovery tab takes over only after the prior lease expires');
+  await assert.rejects(storage.saveRecipeBatchRecovery({ ...base, ownerToken: oldOwner }, { now: 55_002 }), /no longer owns/);
+  await assert.rejects(storage.deleteRecipeBatchRecovery(base.documentId, oldOwner), /no longer owns/);
+  assert.equal((await storage.loadRecipeBatchRecovery(base.documentId)).ownerToken, nextOwner);
+  assert.equal(await storage.deleteRecipeBatchRecovery(base.documentId, nextOwner), true);
+});
+
+test('legacy recovery rows retain their savedAt grace window before fenced takeover', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const now = Date.now();
+  await storage.loadRecipeBatchRecovery('legacy-recovery'); // Initialize schema before injecting an old-version row.
+  mock.inject('figma-local-documents', 'recipeBatchRecovery', {
+    documentId: 'legacy-recovery', recipe: { id: 'legacy-recipe' }, pageId: 'page-1',
+    targetIds: ['image-a'], status: 'running', savedAt: now
+  });
+  const legacy = await storage.loadRecipeBatchRecovery('legacy-recovery');
+  assert.equal(legacy.ownerToken, null);
+  assert.ok(legacy.leaseExpiresAt > now, 'a row written by the old tab version remains protected during its compatibility grace');
+  await assert.rejects(storage.claimRecipeBatchRecovery({ ...legacy, ownerToken: 'run-new-tab' }, {
+    expectedOwnerToken: null, now: now + 1
+  }), error => error.name === 'RecipeBatchRecoveryLeaseError' && error.reason === 'active');
+  const resumed = await storage.claimRecipeBatchRecovery({ ...legacy, ownerToken: 'run-new-tab' }, {
+    expectedOwnerToken: null, now: legacy.leaseExpiresAt + 1
+  });
+  assert.equal(resumed.ownerToken, 'run-new-tab');
+  assert.equal((await storage.loadRecipeBatchRecovery('legacy-recovery')).ownerToken, 'run-new-tab');
 });
 
 test('libraries persist and reload by stable identity, list as summaries, and delete independently', async () => {
@@ -273,6 +339,70 @@ test('parallel component publications serialize revisions and preserve both libr
   assert.equal(stored.revision, 2);
   assert.deepEqual(new Set(stored.components.map(component => component.id)), new Set(['component-card', 'component-button']));
   assert.deepEqual(stored.components.flatMap(component => component.versions.map(version => version.revision)).sort(), [1, 2]);
+});
+
+test('component-set publication persists axes atomically at the latest revision and returns immutable snapshots', async () => {
+  const mock = createIndexedDbMock();
+  globalThis.indexedDB = mock.indexedDB;
+  const storage = await loadStorageForTest();
+  const library = createComponentLibrary({ id: 'library-set-concurrent', name: 'Concurrent set publishes' });
+  await storage.saveComponentLibrary(library);
+  const set = {
+    componentSetId: 'set-button',
+    name: 'Button',
+    properties: [
+      { name: 'State', values: ['Default', 'Hover'] },
+      { name: 'Size', values: ['Small'] }
+    ],
+    variants: [
+      {
+        componentId: 'button-default', name: 'Button/Default',
+        root: { id: 'default-root', type: 'frame', children: [] },
+        variantProperties: { State: 'Default', Size: 'Small' },
+        componentProperties: [{ id: 'label', name: 'Label', type: 'TEXT', targetSourceId: 'default-label', defaultValue: 'Go' }]
+      },
+      {
+        componentId: 'button-hover', name: 'Button/Hover',
+        root: { id: 'hover-root', type: 'frame', children: [{ id: 'hover-label', type: 'text', text: 'Go', children: [] }] },
+        variantProperties: { State: 'Hover', Size: 'Small' }
+      }
+    ]
+  };
+  set.variants[0].root.children = [{ id: 'default-label', type: 'text', text: 'Go', children: [] }];
+
+  const [setResult, componentResult] = await Promise.all([
+    storage.publishStoredComponentSet(library.id, set),
+    storage.publishStoredComponent(library.id, {
+      componentId: 'component-icon', name: 'Icon', root: { id: 'icon-root', type: 'frame', children: [] }
+    })
+  ]);
+  set.name = 'Caller mutation';
+  set.properties[0].values.push('Pressed');
+
+  const stored = await storage.loadComponentLibrary(library.id);
+  assert.equal(stored.revision, 3);
+  assert.deepEqual(
+    [setResult.publications[0].revision, setResult.publications[1].revision, componentResult.publication.revision].sort((a, b) => a - b),
+    [1, 2, 3],
+    'the set and component publications share one monotonic library revision sequence'
+  );
+  assert.equal(setResult.publication.revision, 2, 'set metadata is stamped with its final variant revision');
+  assert.deepEqual(setResult.publication.componentIds, ['button-default', 'button-hover']);
+  assert.deepEqual(setResult.publication.properties, [
+    { name: 'State', values: ['Default', 'Hover'] },
+    { name: 'Size', values: ['Small'] }
+  ]);
+  assert.deepEqual(stored.componentSets[0].versions[0], setResult.publication);
+  assert.deepEqual(stored.components.find(item => item.id === 'button-default').versions[0].componentProperties, [
+    { id: 'label', name: 'Label', type: 'TEXT', targetSourceId: 'default-label', defaultValue: 'Go' }
+  ]);
+  assert.deepEqual(new Set(stored.components.map(item => item.id)), new Set(['button-default', 'button-hover', 'component-icon']));
+
+  setResult.publication.properties[0].values.push('Mutated result');
+  setResult.library.components[0].versions[0].root.children[0].text = 'Mutated result';
+  const reloaded = await storage.loadComponentLibrary(library.id);
+  assert.deepEqual(reloaded.componentSets[0].versions[0].properties[0].values, ['Default', 'Hover']);
+  assert.equal(reloaded.components.find(item => item.id === 'button-default').versions[0].root.children[0].text, 'Go');
 });
 
 test('save rejects malformed snapshots and a corrupt library does not hide healthy library rows', async () => {

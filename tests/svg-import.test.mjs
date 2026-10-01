@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, parseDocument, serializeDocument } from '../src/model.js';
+import { createDocument, createNode, parseDocument, serializeDocument } from '../src/model.js';
 import { importSvgToLayers, SvgImportError } from '../src/svg-import.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 
@@ -136,6 +136,127 @@ test('foreign SVG paths stay ordinary editable path layers without app network m
   assert.equal(allNodes(imported.nodes).filter(node => node.type === 'path').length, 1);
 });
 
+test('imports simple user-space SVG clip paths as editable vector mask groups', () => {
+  const result = importSvgToLayers(`<svg width="100" height="60">
+    <defs><clipPath id="round-clip" transform="translate(1 2)">
+      <g transform="translate(3 4)" clip-rule="evenodd">
+        <circle id="clip-circle" cx="20" cy="18" r="10" transform="translate(2 1)" fill="#000" fill-opacity=".1"/>
+      </g>
+    </clipPath></defs>
+    <g id="poster" transform="translate(10 8)" clip-path="url(#round-clip)">
+      <rect id="artwork" width="60" height="40" fill="#ff0000"/>
+    </g>
+  </svg>`);
+  const maskGroup = allNodes(result.nodes).find(node => node.type === 'group' && node.mask);
+  assert.ok(maskGroup, 'clip-path becomes an editable mask group instead of a flattened bitmap');
+  assert.equal(maskGroup.name, 'poster');
+  assert.equal(maskGroup.children.length, 2);
+  const source = maskGroup.children.find(node => node.id === maskGroup.maskSourceId);
+  assert.ok(source);
+  assert.equal(source.type, 'path');
+  assert.equal(source.name, 'clip-circle clip source');
+  assert.equal(source.fill, '#ffffff');
+  assert.equal(source.fillOpacity, 1, 'clip geometry is opaque regardless of source paint opacity');
+  assert.equal(source.closed, true);
+  assert.equal(source.fillRule, 'evenodd', 'inherited clip-rule is retained by the editable vector source');
+  assert.deepEqual([source.x, source.y, source.width, source.height], [16, 15, 20, 20],
+    'clip-path, nested group, shape, and target transforms are retained in editable geometry');
+  const clippedContent = maskGroup.children.find(node => node.id !== maskGroup.maskSourceId);
+  assert.equal(clippedContent.type, 'group');
+  assert.equal(allNodes([clippedContent]).some(node => node.name === 'artwork' && node.fill === '#ff0000'), true);
+  const svg = exportNodeToSvg(maskGroup);
+  assert.match(svg, /<mask id="tis-mask-0"/);
+  assert.match(svg, /mask="url\(#tis-mask-0\)"/);
+  assert.match(svg, /fill="#ffffff" fill-opacity="1"/);
+});
+
+test('rejects multi-shape SVG clip paths instead of flattening their union semantics', () => {
+  importFailure(`<svg><defs><clipPath id="clip"><circle cx="5" cy="5" r="4"/><rect width="10" height="10"/></clipPath></defs><rect width="10" height="10" clip-path="url(#clip)"/></svg>`, 'unsupported-clip-path');
+  importFailure(`<svg><defs><clipPath id="clip"><g><circle cx="5" cy="5" r="4"/><rect width="10" height="10"/></g></clipPath></defs><rect width="10" height="10" clip-path="url(#clip)"/></svg>`, 'unsupported-clip-path');
+});
+
+test('round-trips the editor SVG alpha-mask group as editable vector content and source', () => {
+  const original = createNode('group', {
+    id: 'poster-mask', name: 'Poster mask', width: 100, height: 80, mask: true, maskSourceId: 'oval-mask',
+    children: [
+      createNode('rectangle', { id: 'poster-art', name: 'Poster art', width: 100, height: 80, fill: '#e34b2f' }),
+      createNode('ellipse', { id: 'oval-mask', name: 'Oval mask', x: 10, y: 10, width: 60, height: 50, fill: '#123456' })
+    ]
+  });
+  const imported = importSvgToLayers(exportNodeToSvg(original));
+  const group = allNodes(imported.nodes).find(node => node.type === 'group' && node.mask);
+  assert.ok(group, 'the mask URL becomes a native editable mask group');
+  assert.equal(group.name, 'Poster mask');
+  const source = group.children.find(node => node.id === group.maskSourceId);
+  assert.equal(source.type, 'path');
+  assert.equal(source.fill, '#ffffff');
+  assert.deepEqual([source.x, source.y, source.width, source.height], [10, 10, 60, 50]);
+  assert.ok(allNodes([group]).some(node => node.name === 'Poster art'));
+
+  const reopened = importSvgToLayers(exportNodeToSvg(group));
+  assert.ok(allNodes(reopened.nodes).some(node => node.type === 'group' && node.mask), 'imported editable mask groups can be exported and reopened');
+});
+
+test('round-trips an editor Boolean subtract mask into editable operands', () => {
+  const original = createNode('boolean', {
+    id: 'cutout', name: 'Cutout', operation: 'subtract', width: 100, height: 80, fill: '#4b74c2',
+    children: [
+      createNode('ellipse', { id: 'base-shape', name: 'Base', x: 5, y: 5, width: 80, height: 70, opacity: 0.6, fillOpacity: 0.5 }),
+      createNode('rectangle', { id: 'cutter-shape', name: 'Cutter', x: 35, y: 0, width: 50, height: 80 })
+    ]
+  });
+  const imported = importSvgToLayers(exportNodeToSvg(original));
+  const boolean = allNodes(imported.nodes).find(node => node.type === 'boolean');
+  assert.ok(boolean, 'the editor result-mask expression is recovered as a live Boolean layer');
+  assert.equal(boolean.name, 'Cutout');
+  assert.equal(boolean.operation, 'subtract');
+  assert.equal(boolean.fill, '#4b74c2');
+  assert.equal(boolean.children.length, 2);
+  assert.equal(boolean.children[0].fillOpacity * boolean.children[0].opacity, 0.3,
+    'the serialized operand preserves the source alpha product');
+  const reopened = importSvgToLayers(exportNodeToSvg(boolean));
+  const reopenedBoolean = allNodes(reopened.nodes).find(node => node.type === 'boolean');
+  assert.equal(reopenedBoolean.operation, 'subtract', 'Boolean cutout remains editable after another SVG round trip');
+  assert.equal(reopenedBoolean.children.length, 2);
+});
+
+test('reconstructs editor Boolean union and intersection mask graphs', () => {
+  for (const operation of ['union', 'intersect']) {
+    const original = createNode('boolean', {
+      id: `boolean-${operation}`, name: operation, operation, width: 90, height: 60,
+      children: [
+        createNode('rectangle', { width: 65, height: 55 }),
+        createNode('ellipse', { x: 20, y: 5, width: 70, height: 50 })
+      ]
+    });
+    const imported = importSvgToLayers(exportNodeToSvg(original));
+    const result = allNodes(imported.nodes).find(node => node.type === 'boolean');
+    assert.ok(result);
+    assert.equal(result.operation, operation);
+    assert.equal(result.children.length, 2);
+    const reopened = importSvgToLayers(exportNodeToSvg(result));
+    assert.equal(allNodes(reopened.nodes).find(node => node.type === 'boolean').operation, operation);
+  }
+});
+
+test('rejects external, malformed and unsupported editable mask graphs', () => {
+  importFailure(`<svg><rect width="10" height="10" mask="url(https://example.test/mask.svg#mask)"/></svg>`, 'external-reference');
+  importFailure(`<svg><rect width="10" height="10" mask="url(#missing-mask)"/></svg>`, 'missing-mask');
+  importFailure(`<svg><defs><mask id="mask" maskUnits="objectBoundingBox" maskContentUnits="userSpaceOnUse" x="0" y="0" width="1" height="1"/></defs><rect width="10" height="10" mask="url(#mask)"/></svg>`, 'unsupported-mask-units');
+  importFailure(`<svg><defs><mask id="mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><image href="https://example.test/mask.png"/></mask></defs><rect width="10" height="10" mask="url(#mask)"/></svg>`, 'external-reference');
+  importFailure(`<svg><defs>
+    <mask id="nested" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><g><rect x="0" y="0" width="10" height="10" fill="#fff"/></g></mask>
+    <mask id="mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="10" height="10"><g><g mask="url(#nested)"><rect x="0" y="0" width="10" height="10" fill="#fff"/></g></g></mask>
+  </defs><rect width="10" height="10" mask="url(#mask)"/></svg>`, 'unsupported-mask-graph');
+
+  const boolean = createNode('boolean', {
+    operation: 'subtract', width: 40, height: 30,
+    children: [createNode('rectangle', { width: 40, height: 30 }), createNode('ellipse', { x: 10, y: 5, width: 20, height: 20 })]
+  });
+  const unsupportedInverse = exportNodeToSvg(boolean).replace('tableValues="1 0"', 'tableValues="0 1"');
+  importFailure(unsupportedInverse, 'unsupported-filter-graph');
+});
+
 test('network payload failures reject the complete SVG import', () => {
   const valid = exportNodeToSvg(createNetworkForSvgRoundTrip());
   const malformed = valid.replace(/data-tiny-image-star-network-v1="[^"]*"/, 'data-tiny-image-star-network-v1="{&quot;version&quot;:2}"');
@@ -235,7 +356,121 @@ test('rejects active content, external references, declarations, and unresolved 
   importFailure(`<svg><use href="#shape"/></svg>`, 'external-reference');
   importFailure(`<!DOCTYPE svg [<!ENTITY x SYSTEM "https://example.test/x">]><svg>&x;</svg>`, 'unsafe-declaration');
   importFailure(`<svg><rect width="10" height="10" style="fill:url(https://example.test/a.svg#x)"/></svg>`, 'external-reference');
-  importFailure(`<svg><rect width="10" height="10" filter="url(#blur)"/></svg>`, 'unsupported-attribute');
+  importFailure(`<svg><rect width="10" height="10" filter="url(#blur)"/></svg>`, 'missing-filter');
+  importFailure(`<svg><rect width="10" height="10" clip-path="url(https://example.test/clip.svg#shape)"/></svg>`, 'external-reference');
+  importFailure(`<svg><rect width="10" height="10" clip-path="url(#missing-clip)"/></svg>`, 'missing-clip-path');
+  importFailure(`<svg><defs><clipPath id="bad-clip"><circle cx="5" cy="5" r="4" onload="run()"/></clipPath></defs><rect width="10" height="10" clip-path="url(#bad-clip)"/></svg>`, 'active-content');
+});
+
+test('imports faithful SVG layer-blur and drop-shadow chains as editable layer effects', () => {
+  const result = importSvgToLayers(`<svg width="100" height="80">
+    <defs>
+      <filter id="soft" filterUnits="userSpaceOnUse" x="-12" y="-12" width="124" height="104">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="4 4" result="softened"/>
+      </filter>
+      <filter id="shadow" filterUnits="userSpaceOnUse" x="-11" y="-10" width="122" height="100">
+        <feDropShadow in="SourceGraphic" dx="5" dy="-4" stdDeviation="2" flood-color="#33669980" flood-opacity=".5" result="shadowed"/>
+      </filter>
+    </defs>
+    <rect id="blurred" x="0" y="0" width="100" height="80" filter="url(#soft)" fill="#fff"/>
+    <rect id="shadowed" x="0" y="0" width="100" height="80" style="filter: url(#shadow)" fill="#fff"/>
+  </svg>`);
+  const nodes = allNodes(result.nodes);
+  const blur = nodes.find(node => node.name === 'blurred');
+  assert.deepEqual(blur.effects.map(({ type, radius }) => ({ type, radius })), [{ type: 'layer-blur', radius: 4 }]);
+  const shadow = nodes.find(node => node.name === 'shadowed');
+  assert.deepEqual(shadow.effects.map(({ type, color, opacity, offsetX, offsetY, blur: radius }) =>
+    ({ type, color, opacity, offsetX, offsetY, blur: radius })), [{
+    type: 'drop-shadow', color: '#336699', opacity: 128 / 255 * 0.5, offsetX: 5, offsetY: -4, blur: 2
+  }]);
+});
+
+test('maps SVG filter coordinates through uniform transforms and preserves ordered shadows', () => {
+  const result = importSvgToLayers(`<svg width="100" height="100">
+    <defs><filter id="chain" filterUnits="userSpaceOnUse" x="-8" y="-8" width="116" height="116">
+      <feDropShadow in="SourceGraphic" dx="3" dy="0" stdDeviation="1" flood-color="#000" flood-opacity=".5" result="first"/>
+      <feDropShadow in="first" dx="-2" dy="0" stdDeviation="0" flood-color="#ff0000" result="second"/>
+    </filter></defs>
+    <g transform="translate(10 10) rotate(90) scale(2)" filter="url(#chain)">
+      <rect width="50" height="50" fill="#fff"/>
+    </g>
+  </svg>`);
+  const group = allNodes(result.nodes).find(node => node.type === 'group' && node.effects?.length);
+  assert.ok(group);
+  assert.deepEqual(group.effects.map(effect => [effect.type, Math.round(effect.offsetX * 1e9) / 1e9 || 0, effect.offsetY, effect.blur, effect.opacity]), [
+    ['drop-shadow', 0, 6, 2, 0.5], ['drop-shadow', 0, -4, 0, 1]
+  ]);
+});
+
+test('round-trips the importer-supported layer blur and drop-shadow primitives from SVG export', () => {
+  const original = createNode('rectangle', {
+    id: 'card', name: 'card', width: 100, height: 60, fill: '#fff',
+    effects: [
+      { id: 'blur', type: 'layer-blur', visible: true, radius: 3 },
+      { id: 'shadow', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 }
+    ]
+  });
+  const source = importSvgToLayers(exportNodeToSvg(original));
+  const layer = allNodes(source.nodes).find(node => node.effects?.length);
+  assert.deepEqual(layer.effects.map(effect => effect.type), ['layer-blur', 'drop-shadow']);
+  assert.equal(layer.effects[0].radius, 3);
+  assert.equal(layer.effects[1].color, '#112233');
+  assert.equal(layer.effects[1].opacity, 0.25);
+  assert.equal(layer.effects[1].offsetX, 5);
+  assert.equal(layer.effects[1].offsetY, -2);
+  assert.equal(layer.effects[1].blur, 3);
+});
+
+test('round-trips editor-exported inner-shadow filter chains as editable ordered effects', () => {
+  const original = createNode('rectangle', {
+    id: 'card', name: 'card', width: 100, height: 60, fill: '#fff',
+    effects: [
+      { id: 'outer', type: 'drop-shadow', visible: true, color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3 },
+      { id: 'inner-a', type: 'inner-shadow', visible: true, color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5 },
+      { id: 'blur', type: 'layer-blur', visible: true, radius: 1 },
+      { id: 'inner-b', type: 'inner-shadow', visible: true, color: '#102030', opacity: 0.75, offsetX: -4, offsetY: 6, blur: 2 }
+    ]
+  });
+  const source = importSvgToLayers(exportNodeToSvg(original));
+  const layer = allNodes(source.nodes).find(node => node.effects?.length);
+  assert.deepEqual(layer.effects.map(({ type, color, opacity, offsetX, offsetY, blur, radius }) =>
+    ({ type, color, opacity, offsetX, offsetY, blur, radius })), [
+    { type: 'inner-shadow', color: '#abcdef', opacity: 0.4, offsetX: 2, offsetY: -3, blur: 5, radius: undefined },
+    { type: 'inner-shadow', color: '#102030', opacity: 0.75, offsetX: -4, offsetY: 6, blur: 2, radius: undefined },
+    { type: 'drop-shadow', color: '#112233', opacity: 0.25, offsetX: 5, offsetY: -2, blur: 3, radius: undefined },
+    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 1 }
+  ]);
+});
+
+test('rejects near-matching inner-shadow graphs instead of importing them as editable effects', () => {
+  const markup = `<svg width="100" height="80"><defs><filter id="inner" filterUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="100">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blurred"/>
+    <feOffset in="blurred" dx="2" dy="-1" result="offset"/>
+    <feComposite in="SourceGraphic" in2="offset" operator="xor" result="shape"/>
+    <feFlood flood-color="#123456" flood-opacity=".5" result="paint"/>
+    <feComposite in="paint" in2="shape" operator="in" result="shadow"/>
+    <feComposite in="shadow" in2="SourceGraphic" operator="over" result="result"/>
+  </filter></defs><rect width="100" height="80" filter="url(#inner)" fill="#fff"/></svg>`;
+  assert.throws(() => importSvgToLayers(markup), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter-graph' && /exact.*inner-shadow chain/.test(error.message));
+});
+
+test('fails closed with actionable errors for unsupported SVG filter graphs and clipping', () => {
+  const filter = body => `<svg width="100" height="100"><defs><filter id="fx" filterUnits="userSpaceOnUse" x="-100" y="-100" width="300" height="300">${body}</filter></defs><rect width="100" height="100" filter="url(#fx)" fill="#fff"/></svg>`;
+  assert.throws(() => importSvgToLayers(filter('<feColorMatrix type="saturate" values="0"/>')), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter' && /feColorMatrix/.test(error.message));
+  assert.throws(() => importSvgToLayers(filter('<feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blurred"/><feDropShadow in="SourceGraphic"/>')), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter-graph' && /single SourceGraphic-to-result chain/.test(error.message));
+  assert.throws(() => importSvgToLayers(`<svg><defs><filter id="fx"><feGaussianBlur stdDeviation="6"/></filter></defs><rect width="100" height="100" filter="url(#fx)" fill="#fff"/></svg>`), error =>
+    error instanceof SvgImportError && error.code === 'filter-region-clips-output' && /enlarge the filter region/.test(error.message));
+  assert.throws(() => importSvgToLayers(`<svg><defs><filter id="fx" filterUnits="userSpaceOnUse" x="-10" y="-10" width="120" height="120"><feGaussianBlur stdDeviation="1 2"/></filter></defs><rect width="100" height="100" filter="url(#fx)" fill="#fff"/></svg>`), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter' && /two equal values/.test(error.message));
+  assert.throws(() => importSvgToLayers(`<svg><defs><filter id="fx" filterUnits="userSpaceOnUse" x="-20" y="-20" width="140" height="140"><feGaussianBlur stdDeviation="2"/></filter></defs><rect width="100" height="100" transform="scale(2 1)" filter="url(#fx)" fill="#fff"/></svg>`), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter-transform' && /non-uniform/.test(error.message));
+  assert.throws(() => importSvgToLayers(filter('<feGaussianBlur in="SourceGraphic" stdDeviation="2"/><feOffset dx="2" dy="2"/>')), error =>
+    error instanceof SvgImportError && error.code === 'unsupported-filter' && /feOffset/.test(error.message));
+  importFailure(`<svg><defs><clipPath id="clip" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><rect width="10" height="10" clip-path="url(#clip)"/></svg>`, 'unsupported-clip-path-units');
+  importFailure(`<svg><defs><clipPath id="clip"><use href="#shape"/></clipPath></defs><rect width="10" height="10" clip-path="url(#clip)"/></svg>`, 'external-reference');
 });
 
 test('reports model-incompatible geometry and paint explicitly', () => {

@@ -1,8 +1,8 @@
 {
   "package": "pillow-rs",
-  "version": "12.2.0-alpha.2",
+  "version": "12.2.0-alpha.4",
   "sourceRef": "main",
-  "sourceCommit": "90165587c26460ed0f5db950b9417ecb122b07cb",
+  "sourceCommit": "8906bb70d8db1664c1c02b06fdd94cf343734fb9",
   "sourcePatch": {
     "path": "patches/pillow-rs/encode-quality.patch",
     "sha256": "851e427723b45851eefb787ab06e8e24f09c87f6221302d72f5d12a8d92f68d3"
@@ -14,10 +14,10 @@
   },
   "files": {
     "pillow_rs_js.js": "bbaa64fbad4660be3407ee76b55546f26dc90aade3ed49fc0a20210cbe517e6d",
-    "pillow_rs_js_bg.wasm": "73adaf12141b4cc62f363ed52b739d7e75450a5eacac05345ea1711f1d111593",
+    "pillow_rs_js_bg.wasm": "050ed780315a4c0ece71d7d4a7edc9bc0b5506712cfd4623ed6d8cab6cbc17a4",
     "PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405"
   },
   "integrityAlgorithm": "sha512 over each sorted filename, NUL, file bytes, NUL",
-  "integrity": "sha512-NxkVFaampLvBoBLP+58JJyB2Mb5QEBYoMoqt1VDKHuakFxLWgtmckeEmpnMzLUa56ax/5LdUQIdj0nv6+zkeAg==",
+  "integrity": "sha512-eZL+EPf7rsDQChVayORbW5EUxwnEkFW5T1/MOkSyYbD0/Xja7g3FCWuKOSc3NWSs0FbZqxyvlvuY15BWzsJsVQ==",
   "artifactSource": "Release-profile WASM compiled from the pinned upstream main commit with the local JPEG/WebP quality patch and fixed build toolchain."
 }

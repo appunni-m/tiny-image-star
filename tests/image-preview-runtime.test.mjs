@@ -170,6 +170,27 @@ test('editor preview disposal cannot strand references or skip cleanup when brow
   assert.match(renderBody, /try \{ if \(previewUrl\) URL\.revokeObjectURL\(previewUrl\); \} catch/);
 });
 
+test('late editor renders are fenced after both async boundaries before publishing a preview', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('async function renderImagePreview(');
+  const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  assert.notEqual(renderStart, -1);
+  assert.notEqual(renderEnd, -1);
+  const body = source.slice(renderStart, renderEnd);
+  const fence = 'generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version';
+  const firstRender = body.indexOf('const result = await imageEngine.render(');
+  const bitmapDecode = body.indexOf('bitmap = await createImageBitmap(previewBlob);');
+  const publish = body.indexOf('releasePreviewResources(previewKey);', bitmapDecode);
+
+  assert.ok(firstRender >= 0 && bitmapDecode > firstRender && publish > bitmapDecode, 'the preview render and bitmap decode both happen before publication');
+  assert.ok(body.indexOf(fence, firstRender) > firstRender && body.indexOf(fence, firstRender) < bitmapDecode,
+    'a newer edit or document replacement fences the WASM result before allocating a bitmap');
+  assert.ok(body.indexOf(fence, bitmapDecode) > bitmapDecode && body.indexOf(fence, bitmapDecode) < publish,
+    'a newer edit or document replacement fences a late bitmap before replacing the visible preview');
+  assert.ok(body.slice(body.indexOf('} catch (error) {')).includes(`if (${fence}) return false;`),
+    'stale errors cannot overwrite the newer preview status');
+});
+
 test('pruning deleted nodes cancels timers and releases only orphan preview resources', () => {
   const runtime = runtimeMaps();
   const cancelled = [];

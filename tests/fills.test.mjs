@@ -4,9 +4,9 @@ import { addNode, createComponent, createComponentInstance, createDocument, crea
 import { createGradientPaint, gradientFillToCSS, isFillStackSupported, isValidGradientFill } from '../src/fills.js';
 import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageFill } from '../src/image-fills.js';
 
-test('image fills default to uncropped upright pixels and validate normalized crop and rotation', () => {
+test('image fills default to uncropped upright pixels and validate crop, rotation, and flips', () => {
   const defaults = createImageFill('asset-photo');
-  assert.deepEqual(defaults.transforms, { crop: null, rotation: 0 });
+  assert.deepEqual(defaults.transforms, { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false });
   assert.deepEqual(defaults.adjustments, defaultImageAdjustments);
   assert.equal(isValidImageFill(defaults), true);
 
@@ -15,21 +15,38 @@ test('image fills default to uncropped upright pixels and validate normalized cr
   assert.equal(isValidImageFill({ ...creativeFill, adjustments: { ...creativeFill.adjustments, posterizeBits: 9 } }), false);
 
   const cropped = createImageFill('asset-photo', {
-    transforms: { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90 }
+    transforms: { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90, flipHorizontal: true }
   });
-  assert.deepEqual(cropped.transforms, { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90 });
+  assert.deepEqual(cropped.transforms, { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90, flipHorizontal: true, flipVertical: false });
   assert.equal(isValidImageFill(cropped), true);
 
   for (const transforms of [
     { crop: { left: -0.01, top: 0, right: 0.8, bottom: 1 }, rotation: 0 },
     { crop: { left: 0.6, top: 0, right: 0.6, bottom: 1 }, rotation: 0 },
     { crop: null, rotation: 45 },
-    { crop: null, rotation: 90.5 }
+    { crop: null, rotation: 90.5 },
+    { crop: null, rotation: 0, flipVertical: 'yes' }
   ]) {
     assert.equal(isValidImageFill({ ...defaults, transforms }), false);
   }
   assert.throws(() => createImageFill('asset-photo', { transforms: { crop: { left: 0, top: 0, right: 1.1, bottom: 1 } } }), /crop edges/);
   assert.throws(() => createImageFill('asset-photo', { transforms: { rotation: 45 } }), /quarter turns/);
+});
+
+test('image-fill crop and rotation remain attached to the same source after document reload', () => {
+  const document = createDocument();
+  const fill = createImageFill('asset-photo', {
+    transforms: { crop: { left: 0.125, top: 0.25, right: 0.875, bottom: 0.75 }, rotation: 270 },
+    adjustments: { brightness: 18, saturation: -12 }
+  });
+  const shape = createNode('rectangle', { imageFill: fill });
+  addNode(document, shape);
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reopened), true);
+  assert.deepEqual(reopened.pages[0].children[0].imageFill.transforms, fill.transforms);
+  assert.deepEqual(reopened.pages[0].children[0].imageFill.adjustments, fill.adjustments);
+  assert.equal(reopened.pages[0].children[0].imageFill.assetId, 'asset-photo', 'reloading edits leaves the original asset identity unchanged');
 });
 
 test('compound paths with any closed contour support ordered solid and image fills', () => {

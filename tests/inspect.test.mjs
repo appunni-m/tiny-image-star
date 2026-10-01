@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindColorVariable, bindVariable, createDocument, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, findNode, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindColorVariable, bindVariable, createDocument, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, findNode, getNodeGeometry, setVariableValue } from '../src/model.js';
 import { createAutoLayout } from '../src/layout-engine.js';
 import { createImageFill } from '../src/image-fills.js';
 import { buildInspectOutput } from '../src/inspect.js';
+import { nodeLocalToPage } from '../src/transform-geometry.js';
 
 test('Inspect output reports page-space geometry, resolved styles, text metrics and exact layer JSON', () => {
   const document = createDocument();
@@ -37,6 +38,41 @@ test('Inspect output reports page-space geometry, resolved styles, text metrics 
   assert.match(output.css, /text-decoration: underline;/);
   assert.match(output.css, /transform: rotate\(-4deg\);/);
   assert.equal(JSON.parse(output.json).id, label.id);
+});
+
+test('Inspect page position follows nested rotated transforms and matches generated CSS', () => {
+  const document = createDocument();
+  const outer = createNode('frame', { name: 'Outer', x: 80, y: 30, width: 200, height: 160, rotation: 27 });
+  const inner = createNode('frame', { name: 'Inner', x: 40, y: 25, width: 120, height: 90, rotation: -13 });
+  const card = createNode('rectangle', { name: 'Rotated card', x: 15, y: 12, width: 50, height: 30, rotation: 8 });
+  addNode(document, outer);
+  addNode(document, inner, { parentId: outer.id });
+  addNode(document, card, { parentId: inner.id });
+
+  const ancestors = [outer, inner].map(node => ({ ...node, ...getNodeGeometry(document, node) }));
+  const cardGeometry = getNodeGeometry(document, card);
+  const center = nodeLocalToPage(card, { x: cardGeometry.width / 2, y: cardGeometry.height / 2 }, ancestors);
+  const expected = { x: center.x - cardGeometry.width / 2, y: center.y - cardGeometry.height / 2 };
+  const output = buildInspectOutput(document, [findNode(document, card.id)]);
+
+  assert.ok(Math.abs(output.layers[0].position.x - expected.x) < 1e-9);
+  assert.ok(Math.abs(output.layers[0].position.y - expected.y) < 1e-9);
+  assert.ok(output.css.includes(`left: ${Number(expected.x.toFixed(4))}px;`));
+});
+
+test('Inspect reports resize constraints alongside resolved page-space placement', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { name: 'Resizable frame', x: 30, y: 40, width: 240, height: 160 });
+  const card = createNode('rectangle', {
+    name: 'Pinned card', x: 16, y: 18, width: 80, height: 48,
+    constraints: { horizontal: 'right', vertical: 'bottom' }
+  });
+  addNode(document, frame);
+  addNode(document, card, { parentId: frame.id });
+  const output = buildInspectOutput(document, [findNode(document, card.id)]);
+
+  assert.deepEqual(output.layers[0].constraints, { horizontal: 'right', vertical: 'bottom' });
+  assert.deepEqual(output.layers[0].position, { x: 46, y: 58 });
 });
 
 test('Inspect output provides nested HTML and CSS scaffolding for a selected layer tree', () => {
@@ -191,8 +227,63 @@ test('Inspect output describes responsive grid layout and multiple selected laye
   assert.match(output.css, /\.card-primary-[a-z0-9_-]+/);
   assert.match(output.css, /\.badge-[a-z0-9_-]+/);
   assert.match(output.css, /Placement is controlled by the parent auto layout/);
+  assert.deepEqual(output.layers[0].layout, {
+    axis: 'grid', positioning: 'flow', sizing: { width: 'fixed', height: 'fixed' }, gridCell: {}
+  });
   assert.equal(/position: absolute;/.test(output.css), false, 'Auto-layout children should remain in flow instead of receiving page-space positioning.');
   assert.deepEqual(JSON.parse(output.json).map(node => node.id), [card.id, badge.id]);
+});
+
+test('Inspect output preserves authored fixed, hug, and weighted grid tracks and cell fill sizing', () => {
+  const document = createDocument();
+  const grid = createNode('frame', {
+    name: 'Weighted Grid', width: 420, height: 260,
+    autoLayout: {
+      axis: 'grid', columns: 3, rows: 2, rowGap: 12, columnGap: 8,
+      padding: { top: 10, right: 14, bottom: 12, left: 8 },
+      columnTracks: [{ mode: 'fixed', value: 80 }, { mode: 'hug' }, { mode: 'fill', weight: 2 }],
+      rowTracks: [{ mode: 'fixed', value: 50 }, { mode: 'fill', weight: 3 }]
+    }
+  });
+  const card = createNode('rectangle', {
+    name: 'Flexible Card', width: 80, height: 50, layoutSizingX: 'fill', layoutSizingY: 'fill',
+    minWidth: 72, maxWidth: 320, gridCell: { row: 2, column: 3, columnSpan: 1, alignX: 'center', alignY: 'end' }
+  });
+  addNode(document, grid); addNode(document, card, { parentId: grid.id });
+
+  const output = buildInspectOutput(document, [findNode(document, grid.id)]);
+  const cardOutput = buildInspectOutput(document, [findNode(document, card.id)]);
+  assert.deepEqual(cardOutput.layers[0].layout, {
+    axis: 'grid', positioning: 'flow', sizing: { width: 'fill', height: 'fill' },
+    gridCell: { row: 2, column: 3, columnSpan: 1, alignX: 'center', alignY: 'end' }
+  });
+  assert.match(output.css, /grid-template-columns: 80px max-content minmax\(0, 2fr\);/);
+  assert.match(output.css, /grid-template-rows: 50px minmax\(0, 3fr\);/);
+  assert.match(output.css, /padding: 10px 14px 12px 8px;/);
+  assert.match(output.css, /grid-column: 3 \/ span 1;/);
+  assert.match(output.css, /grid-row: 2 \/ span 1;/);
+  assert.match(output.css, /justify-self: center;/);
+  assert.match(output.css, /align-self: end;/);
+  assert.match(output.css, /width: 100%;/);
+  assert.match(output.css, /height: 100%;/);
+  assert.match(output.css, /min-width: 72px;/);
+  assert.match(output.css, /max-width: 320px;/);
+});
+
+test('Inspect auto rows ignore hidden and absolute children when choosing explicit CSS tracks', () => {
+  const document = createDocument();
+  const grid = createNode('frame', { width: 300, height: 200, autoLayout: { axis: 'grid', columns: 2, rows: 'auto', rowTracks: [{ mode: 'hug' }] } });
+  const visible = createNode('rectangle', { gridCell: { row: 1, column: 1 } });
+  const hidden = createNode('rectangle', { visible: false, gridCell: { row: 8, column: 1 } });
+  const absolute = createNode('rectangle', { layoutPositioning: 'absolute', gridCell: { row: 12, column: 1 } });
+  addNode(document, grid);
+  addNode(document, visible, { parentId: grid.id });
+  addNode(document, hidden, { parentId: grid.id });
+  addNode(document, absolute, { parentId: grid.id });
+
+  const { css } = buildInspectOutput(document, [findNode(document, grid.id)]);
+  assert.match(css, /grid-template-rows: max-content;/);
+  assert.doesNotMatch(css, /grid-template-rows:[^;]*max-content\s+max-content/);
 });
 
 test('Inspect output safely encodes arbitrary font family names', () => {
@@ -240,18 +331,71 @@ test('Inspect exposes ordered stroke records while CSS reports the primary strok
   assert.match(output.css, /2 ordered strokes are preserved in layer JSON/);
 });
 
+test('Inspect preserves stroke gradient stops and identifies the CSS color approximation', () => {
+  const document = createDocument();
+  const gradient = createGradientFill('radial', '#ff8800');
+  gradient.stops[1].color = '#2200ff';
+  const shape = createNode('rectangle', { name: 'Gradient outline', strokes: [
+    { id: 'gradient-outline', color: '#ff8800', width: 4, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, gradient }
+  ] });
+  addNode(document, shape);
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.deepEqual(output.layers[0].stroke.gradient, gradient);
+  assert.deepEqual(output.layers[0].strokes[0].gradient, gradient);
+  assert.deepEqual(JSON.parse(output.json).strokes[0].gradient, gradient);
+  assert.match(output.css, /Linear\/radial stroke gradient is preserved in layer JSON/);
+});
+
 test('Inspect output hands off enabled layer effects as CSS filters and structured data', () => {
   const document = createDocument();
   const shape = createNode('rectangle', { effects: [
     createLayerEffect('drop-shadow', { offsetX: 4, offsetY: 8, blur: 6, opacity: 0.3 }),
     createLayerEffect('inner-shadow', { offsetX: -1, offsetY: 2, blur: 3, opacity: 0.4, color: '#123456' }),
-    createLayerEffect('layer-blur', { radius: 2, visible: false })
+    createLayerEffect('layer-blur', { radius: 2, visible: false }),
+    createLayerEffect('background-blur', { radius: 12 })
   ] });
   addNode(document, shape);
   const output = buildInspectOutput(document, [findNode(document, shape.id)]);
   assert.match(output.css, /filter: drop-shadow\(4px 8px 6px rgba\(0, 0, 0, 0\.3\)\);/);
   assert.match(output.css, /box-shadow: inset -1px 2px 3px rgba\(18, 52, 86, 0\.4\);/);
+  assert.match(output.css, /backdrop-filter: blur\(12px\);/);
   assert.deepEqual(output.layers[0].effects, shape.effects);
+});
+
+test('Inspect warns in every generated handoff when Glass, Noise, or Texture have no CSS equivalent', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { name: 'Styled card', effects: [
+    createLayerEffect('glass'),
+    createLayerEffect('noise', { mode: 'duo' }),
+    createLayerEffect('texture'),
+    createLayerEffect('noise', { visible: false })
+  ] });
+  addNode(document, shape);
+
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  const warning = 'Visible Glass, Noise, Texture effects are preserved in layer data but not reproduced by generated CSS.';
+  assert.match(output.css, new RegExp(`/\\* ${warning} \\*/`));
+  assert.match(output.html, new RegExp(`<!-- ${warning} -->`));
+  assert.match(output.jsx, new RegExp(`\\{/\\* ${warning} \\*/\\}`));
+  assert.match(output.vue, new RegExp(`<!-- ${warning} -->`));
+  assert.deepEqual(output.layers[0].effects, shape.effects, 'the full editable effect stack remains available as structured data');
+});
+
+test('Inspect omits unsupported-effect warnings when Glass, Noise, and Texture are hidden', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', { effects: [
+    createLayerEffect('glass', { visible: false }),
+    createLayerEffect('noise', { visible: false }),
+    createLayerEffect('texture', { visible: false })
+  ] });
+  addNode(document, shape);
+
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.doesNotMatch(output.css, /not reproduced by generated CSS/);
+  assert.doesNotMatch(output.html, /not reproduced by generated CSS/);
+  assert.doesNotMatch(output.jsx, /not reproduced by generated CSS/);
+  assert.doesNotMatch(output.vue, /not reproduced by generated CSS/);
 });
 
 test('Inspect output includes editable gradient fills in CSS and structured layer data', () => {

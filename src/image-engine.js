@@ -1,5 +1,6 @@
 import { DEFAULT_DECODED_SOURCE_PIXEL_BUDGET } from './decoded-source-cache.js';
 import { ImageMemoryLimitError } from './image-memory-budget.js';
+import { identifyRasterContainer, inspectJpegMetadata, inspectTiffDimensions, inspectWebpExifOrientation, tiffOrientation } from './raster-preflight.js';
 
 const MIB_PIXELS = 1_000_000;
 const MIB_BYTES = 1024 * 1024;
@@ -18,7 +19,6 @@ const MAX_WORKER_RECOVERY_ATTEMPTS = 2;
 const ACTIVE_BYTES_PER_PIXEL = 32;
 const MAX_SINGLE_RENDER_WORKING_SET_BYTES = 512 * MIB_BYTES;
 const MAX_HEADER_SCAN_BYTES = 1024 * 1024;
-const JPEG_FRAME_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 
 function bytesView(sourceBytes) {
   if (sourceBytes instanceof ArrayBuffer) return new DataView(sourceBytes);
@@ -38,6 +38,15 @@ function imageDimensions(width, height) {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) return null;
   const pixels = width * height;
   return Number.isSafeInteger(pixels) ? { width, height, pixels } : null;
+}
+
+function withOrientation(dimensions, orientation, pending = false) {
+  if (!dimensions) return null;
+  Object.defineProperties(dimensions, {
+    orientation: { value: orientation, enumerable: false },
+    orientationPending: { value: pending, enumerable: false },
+  });
+  return dimensions;
 }
 
 function pngDimensions(view) {
@@ -61,26 +70,8 @@ function bmpDimensions(view) {
 }
 
 function jpegDimensions(view) {
-  if (view.byteLength < 4 || view.getUint8(0) !== 0xff || view.getUint8(1) !== 0xd8) return null;
-  let offset = 2;
-  const limit = Math.min(view.byteLength, MAX_HEADER_SCAN_BYTES);
-  while (offset + 4 <= limit) {
-    if (view.getUint8(offset) !== 0xff) return null;
-    while (offset < limit && view.getUint8(offset) === 0xff) offset += 1;
-    if (offset >= limit) return null;
-    const marker = view.getUint8(offset++);
-    if (marker === 0xd9 || marker === 0xda) return null;
-    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-    if (offset + 2 > limit) return null;
-    const segmentLength = view.getUint16(offset);
-    if (segmentLength < 2 || offset + segmentLength > limit) return null;
-    if (JPEG_FRAME_MARKERS.has(marker)) {
-      if (segmentLength < 7) return null;
-      return imageDimensions(view.getUint16(offset + 5), view.getUint16(offset + 3));
-    }
-    offset += segmentLength;
-  }
-  return null;
+  const metadata = inspectJpegMetadata(view);
+  return metadata && withOrientation(imageDimensions(metadata.width, metadata.height), metadata.orientation);
 }
 
 function webpDimensions(view) {
@@ -97,18 +88,24 @@ function webpDimensions(view) {
     if (type === 'VP8X' && size >= 10 && data + 10 <= end) {
       const width = 1 + view.getUint8(data + 4) + (view.getUint8(data + 5) << 8) + (view.getUint8(data + 6) << 16);
       const height = 1 + view.getUint8(data + 7) + (view.getUint8(data + 8) << 8) + (view.getUint8(data + 9) << 16);
-      return imageDimensions(width, height);
+      const rawDimensions = imageDimensions(width, height);
+      const metadata = inspectWebpExifOrientation(view);
+      if (metadata.orientation === null && !metadata.pending) return null;
+      if (metadata.orientation >= 5) {
+        return withOrientation(imageDimensions(height, width), metadata.orientation);
+      }
+      return withOrientation(rawDimensions, metadata.orientation, metadata.pending);
     }
     if (type === 'VP8 ' && size >= 10 && data + 10 <= end
       && view.getUint8(data + 3) === 0x9d && view.getUint8(data + 4) === 0x01 && view.getUint8(data + 5) === 0x2a) {
-      return imageDimensions(view.getUint16(data + 6, true) & 0x3fff, view.getUint16(data + 8, true) & 0x3fff);
+      return withOrientation(imageDimensions(view.getUint16(data + 6, true) & 0x3fff, view.getUint16(data + 8, true) & 0x3fff), 1);
     }
     if (type === 'VP8L' && size >= 5 && data + 5 <= end && view.getUint8(data) === 0x2f) {
       const b1 = view.getUint8(data + 1); const b2 = view.getUint8(data + 2);
       const b3 = view.getUint8(data + 3); const b4 = view.getUint8(data + 4);
       const width = 1 + b1 + ((b2 & 0x3f) << 8);
       const height = 1 + (b2 >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10);
-      return imageDimensions(width, height);
+      return withOrientation(imageDimensions(width, height), 1);
     }
     if (chunkEnd > end) return null;
     offset = chunkEnd;
@@ -151,7 +148,13 @@ function pnmDimensions(view) {
 
 function rasterDimensions(view) {
   if (!view) return null;
-  return pngDimensions(view) || jpegDimensions(view) || gifDimensions(view) || bmpDimensions(view) || webpDimensions(view) || pnmDimensions(view);
+  const jpeg = jpegDimensions(view);
+  if (jpeg) return jpeg;
+  const webp = webpDimensions(view);
+  if (webp) return webp;
+  const tiff = inspectTiffDimensions(view);
+  if (tiff) return withOrientation(tiff, tiffOrientation(view));
+  return withOrientation(pngDimensions(view) || gifDimensions(view) || bmpDimensions(view) || pnmDimensions(view), 1);
 }
 
 /** The source-pixel ceiling enforced by the local Pillow-RS decoder. */
@@ -172,7 +175,17 @@ export function inspectRasterDimensions(sourceBytes) {
 export function assertSafeRasterDimensions(sourceBytes) {
   const dimensions = inspectRasterDimensions(sourceBytes);
   if (!dimensions) {
-    throw new Error('Tiny Image Star could not verify this image size before decoding. Use a PNG, JPEG, GIF, BMP, WebP, or PNM image.');
+    const container = identifyRasterContainer(sourceBytes);
+    if (container === 'heif') {
+      throw new Error('HEIC/HEIF photos are not supported by the current local Pillow-RS decoder. Export the photo as JPEG or PNG, then import that copy.');
+    }
+    if (container === 'avif') {
+      throw new Error('AVIF images are not supported by the current local Pillow-RS decoder. Export the image as JPEG or PNG, then import that copy.');
+    }
+    if (container === 'tiff') {
+      throw new Error('Tiny Image Star could not verify this TIFF variant safely. Export it as PNG or JPEG, then import that copy.');
+    }
+    throw new Error('Tiny Image Star could not verify this image size before decoding. Use a PNG, JPEG, GIF, BMP, WebP, TIFF, or PNM image.');
   }
   if (dimensions.pixels > MAX_IMAGE_SOURCE_PIXELS) {
     throw new RangeError(`This image is ${dimensions.width.toLocaleString()} × ${dimensions.height.toLocaleString()} (${dimensions.pixels.toLocaleString()} pixels). The local editor supports images up to ${MAX_IMAGE_SOURCE_PIXELS.toLocaleString()} pixels; resize it before importing.`);
@@ -272,6 +285,10 @@ export class LocalImageEngine {
     this.concurrency = Math.min(2, maxWorkers);
     this.workers = [];
     this.queue = [];
+    this.queueHead = 0;
+    this.queuedCount = 0;
+    this.queueTombstones = 0;
+    this.queuedByGroup = new Map();
     this.queuedByKey = new Map();
     this.pausedQueueGroups = new Set();
     this.exhaustedQueueGroups = new Set();
@@ -284,6 +301,11 @@ export class LocalImageEngine {
     this.cacheConfigurationPending = new Set();
     this.poolConfigured = true;
     this.activeSourceAssetId = null;
+    // The selected image gets one worker-local cache with the complete shared
+    // cache allowance. Splitting the allowance evenly across a large worker
+    // pool can make a perfectly ordinary camera image uncacheable and force a
+    // full decode on every slider update.
+    this.activeSourceSlot = null;
   }
 
   setConcurrency(value) {
@@ -326,6 +348,12 @@ export class LocalImageEngine {
     if (this.activeSourceAssetId === assetId) return;
     this.activeSourceAssetId = assetId;
     for (const slot of this.workers) this.#sendActiveSource(slot);
+    const pool = this.workers.filter(slot => !slot.failed && !slot.retireWhenIdle);
+    this.activeSourceSlot = assetId == null
+      ? null
+      : pool.find(slot => slot.loaded.has(assetId)) || pool[0] || null;
+    this.#configureCachePool();
+    this.#dispatch();
   }
 
   #sendActiveSource(slot) {
@@ -399,7 +427,12 @@ export class LocalImageEngine {
     const schedulableWorkers = this.workers.filter(workerSlot => !workerSlot.failed && !workerSlot.retireWhenIdle).length;
     if (schedulableWorkers === 0) {
       const queuedError = new Error('All local image workers stopped unexpectedly.');
-      const queued = this.queue.splice(0);
+      const queued = this.queue.filter(Boolean);
+      this.queue = [];
+      this.queueHead = 0;
+      this.queuedCount = 0;
+      this.queueTombstones = 0;
+      this.queuedByGroup.clear();
       for (const job of queued) {
         if (job.queueGroup) failedQueueGroups.add(job.queueGroup);
       }
@@ -481,6 +514,8 @@ export class LocalImageEngine {
         this.queuedByKey.set(replaceKey, job);
       }
       this.queue.push(job);
+      this.queuedCount += 1;
+      if (queueGroup !== null) this.queuedByGroup.set(queueGroup, (this.queuedByGroup.get(queueGroup) || 0) + 1);
       if (!this.workers.length) this.setConcurrency(this.concurrency);
       this.#dispatch();
       this.#notify();
@@ -488,11 +523,35 @@ export class LocalImageEngine {
   }
 
   #removeQueuedJob(job, error) {
-    const index = this.queue.indexOf(job);
+    const index = this.queue.indexOf(job, this.queueHead);
     if (index < 0) return false;
-    this.queue.splice(index, 1);
+    this.#removeQueueAt(index);
     if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
     job.reject(error);
+    return true;
+  }
+
+  #removeQueueAt(index) {
+    const removed = this.queue[index];
+    if (removed == null) return false;
+    this.queue[index] = null;
+    this.queuedCount -= 1;
+    if (removed.queueGroup !== null) {
+      const groupCount = this.queuedByGroup.get(removed.queueGroup) || 0;
+      if (groupCount <= 1) this.queuedByGroup.delete(removed.queueGroup);
+      else this.queuedByGroup.set(removed.queueGroup, groupCount - 1);
+    }
+    this.queueTombstones += 1;
+    while (this.queueHead < this.queue.length && this.queue[this.queueHead] == null) this.queueHead += 1;
+    if (this.queuedCount === 0) {
+      this.queue = [];
+      this.queueHead = 0;
+      this.queueTombstones = 0;
+    } else if (this.queueTombstones >= 1024 && this.queueTombstones * 2 >= this.queue.length) {
+      this.queue = this.queue.slice(this.queueHead).filter(Boolean);
+      this.queueHead = 0;
+      this.queueTombstones = 0;
+    }
     return true;
   }
 
@@ -512,7 +571,7 @@ export class LocalImageEngine {
     if (active >= this.concurrency) return;
     const idle = this.workers.filter(item => item.ready && !item.busy);
     if (!idle.length) return;
-    if (!this.queue.length) return;
+    if (this.queuedCount === 0) return;
     // A job may exceed the shared concurrency budget only when alone. Every
     // job has already passed the non-overridable per-image hard ceiling. If
     // the queue head cannot fit beside active work, let the first fitting job
@@ -524,22 +583,42 @@ export class LocalImageEngine {
     // A paused queue group remains in place for resume, but must not block
     // unrelated work. Keep original queue indices so FIFO ordering is
     // preserved among all jobs eligible to run at this moment.
-    const eligible = this.queue
-      .map((job, index) => ({ job, index }))
-      .filter(({ job }) => job.queueGroup === null || !this.pausedQueueGroups.has(job.queueGroup));
-    const eligibleIndex = eligible.findIndex(({ job }) => fitsAvailableMemory(job));
-    if (eligibleIndex < 0) return;
-    const { job, index: queueIndex } = eligible[eligibleIndex];
-    const blockedJobs = eligible.slice(0, eligibleIndex).map(({ job: blockedJob }) => blockedJob);
-    if (blockedJobs.length) {
+    // Scan only through the first admissible job. Most recipe workloads have
+    // a fitting FIFO head, so building mapped and filtered copies of the full
+    // queue here turns each completed image into work proportional to the
+    // remaining batch size (quadratic total queue bookkeeping).
+    let queueIndex = -1;
+    let job;
+    let affinitySlot = null;
+    let blockedJobs = null;
+    for (let index = this.queueHead; index < this.queue.length; index += 1) {
+      const candidate = this.queue[index];
+      if (candidate == null) continue;
+      if (candidate.queueGroup !== null && this.pausedQueueGroups.has(candidate.queueGroup)) continue;
+      if (!fitsAvailableMemory(candidate)) {
+        (blockedJobs ||= []).push(candidate);
+        continue;
+      }
+      const sourceOwner = candidate.assetId === this.activeSourceAssetId
+        ? this.workers.find(item => !item.failed && item.loaded.has(candidate.assetId))
+        : null;
+      const preferred = sourceOwner || (candidate.assetId === this.activeSourceAssetId ? this.activeSourceSlot : null);
+      if (preferred?.busy) continue;
+      affinitySlot = preferred;
+      queueIndex = index;
+      job = candidate;
+      break;
+    }
+    if (queueIndex < 0) return;
+    if (blockedJobs) {
       if (blockedJobs.some(job => (job.memoryBypasses || 0) >= MAX_MEMORY_BLOCKED_JOB_BYPASSES)) return;
     }
     // Keep jobs FIFO, but prefer the worker that already owns this decoded
     // source. An arbitrary free worker would request another byte copy and
     // decode the same original into a second worker-local cache.
-    const slot = idle.find(item => item.loaded.has(job.assetId)) || idle[0];
+    const slot = affinitySlot || idle.find(item => item.loaded.has(job.assetId)) || idle[0];
     if (!slot) return;
-    this.queue.splice(queueIndex, 1);
+    this.#removeQueueAt(queueIndex);
     if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
     const requestId = this.nextRequestId++;
     const firstLoad = !slot.loaded.has(job.assetId);
@@ -569,7 +648,9 @@ export class LocalImageEngine {
         quality: job.quality,
         outputMode: job.outputMode,
       }, bytes ? [bytes.buffer] : []);
-      for (const blockedJob of blockedJobs) blockedJob.memoryBypasses = (blockedJob.memoryBypasses || 0) + 1;
+      if (blockedJobs) {
+        for (const blockedJob of blockedJobs) blockedJob.memoryBypasses = (blockedJob.memoryBypasses || 0) + 1;
+      }
     } catch (error) {
       this.pending.delete(requestId);
       slot.busy = false;
@@ -592,6 +673,9 @@ export class LocalImageEngine {
   #configureCachePool() {
     const pool = this.workers.filter(slot => !slot.failed && !slot.retireWhenIdle);
     const activeCount = Math.min(this.concurrency, pool.length);
+    if (this.activeSourceAssetId != null && (!this.activeSourceSlot || !pool.includes(this.activeSourceSlot))) {
+      this.activeSourceSlot = pool.find(slot => slot.loaded.has(this.activeSourceAssetId)) || pool[0] || null;
+    }
     const generation = ++this.cacheGeneration;
     this.poolConfigured = pool.length === 0;
     this.cacheConfigurationPending = new Set(pool);
@@ -609,7 +693,11 @@ export class LocalImageEngine {
     const baseBudget = Math.floor(this.maxCachedPixels / activeCount);
     let remainder = this.maxCachedPixels % activeCount;
     for (const [index, slot] of pool.entries()) {
-      slot.cacheBudget = index < activeCount ? baseBudget + (remainder-- > 0 ? 1 : 0) : 0;
+      if (this.activeSourceAssetId != null) {
+        slot.cacheBudget = slot === this.activeSourceSlot ? this.maxCachedPixels : 0;
+      } else {
+        slot.cacheBudget = index < activeCount ? baseBudget + (remainder-- > 0 ? 1 : 0) : 0;
+      }
       if (slot.initialized) this.#sendCacheConfiguration(slot);
     }
   }
@@ -683,7 +771,12 @@ export class LocalImageEngine {
   }
 
   cancelQueued(error = new DOMException('The image operation was cancelled.', 'AbortError')) {
-    for (const job of this.queue.splice(0)) job.reject(error);
+    for (const job of this.queue) job?.reject(error);
+    this.queue = [];
+    this.queueHead = 0;
+    this.queuedCount = 0;
+    this.queueTombstones = 0;
+    this.queuedByGroup.clear();
     this.queuedByKey.clear();
     this.#notify();
   }
@@ -693,14 +786,14 @@ export class LocalImageEngine {
   }
 
   metrics() {
-    return { concurrency: this.concurrency, workersReady: this.workers.filter(item => item.ready).length, active: this.workers.filter(item => item.busy).length, activeRenderBytes: this.activeRenderBytes, maxActiveRenderBytes: this.maxActiveRenderBytes, queued: this.queue.length, paused: this.paused };
+    return { concurrency: this.concurrency, workersReady: this.workers.filter(item => item.ready).length, active: this.workers.filter(item => item.busy).length, activeRenderBytes: this.activeRenderBytes, maxActiveRenderBytes: this.maxActiveRenderBytes, queued: this.queuedCount, paused: this.paused };
   }
 
   queueGroupMetrics(queueGroup) {
     if (typeof queueGroup !== 'string' || !queueGroup) throw new TypeError('A queue group needs a nonempty ID.');
     return {
       active: [...this.pending.values()].filter(job => job.queueGroup === queueGroup).length,
-      queued: this.queue.filter(job => job.queueGroup === queueGroup).length,
+      queued: this.queuedByGroup.get(queueGroup) || 0,
     };
   }
 

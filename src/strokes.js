@@ -1,10 +1,13 @@
 /** Ordered, local stroke paints with a compatibility view for legacy layers. */
 
+import { isValidGradientFill } from './fills.js';
+
 export const MAX_STROKES_PER_NODE = 32;
 
 const caps = new Set(['butt', 'round', 'square']);
 const joins = new Set(['miter', 'round', 'bevel']);
 const patterns = new Set(['solid', 'dashed', 'dotted']);
+const endpointDecorations = new Set(['none', 'arrow', 'triangle']);
 const clone = value => structuredClone(value);
 const id = () => `stroke-${globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`;
 
@@ -19,7 +22,8 @@ function legacyStrokeForNode(node) {
     cap: node.strokeCap ?? (node.strokePattern === 'dotted' ? 'round' : 'butt'),
     join: node.strokeJoin ?? 'miter',
     pattern: node.strokePattern ?? 'solid',
-    miterLimit: node.strokeMiterLimit ?? 10
+    miterLimit: node.strokeMiterLimit ?? 10,
+    startDecoration: 'none', endDecoration: 'none'
   }];
 }
 
@@ -41,11 +45,17 @@ export function ensureStrokeStack(node) {
 }
 
 export function createStroke(overrides = {}) {
-  return {
+  const stroke = {
     id: id(), color: '#1e1e1e', width: 1, opacity: 1, visible: true,
     cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+    startDecoration: 'none', endDecoration: 'none',
     ...overrides
   };
+  if (Object.hasOwn(stroke, 'gradient')) {
+    if (stroke.gradient == null) delete stroke.gradient;
+    else stroke.gradient = clone(stroke.gradient);
+  }
+  return stroke;
 }
 
 export function addStroke(node, stroke = createStroke()) {
@@ -88,6 +98,12 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (Object.hasOwn(changes, 'join') && joins.has(changes.join)) stroke.join = changes.join;
   if (Object.hasOwn(changes, 'pattern') && patterns.has(changes.pattern)) stroke.pattern = changes.pattern;
   if (Object.hasOwn(changes, 'miterLimit') && Number.isFinite(changes.miterLimit) && changes.miterLimit >= 1 && changes.miterLimit <= 1000) stroke.miterLimit = changes.miterLimit;
+  if (Object.hasOwn(changes, 'startDecoration') && endpointDecorations.has(changes.startDecoration)) stroke.startDecoration = changes.startDecoration;
+  if (Object.hasOwn(changes, 'endDecoration') && endpointDecorations.has(changes.endDecoration)) stroke.endDecoration = changes.endDecoration;
+  if (Object.hasOwn(changes, 'gradient')) {
+    if (changes.gradient === null) delete stroke.gradient;
+    else if (isValidGradientFill(changes.gradient)) stroke.gradient = clone(changes.gradient);
+  }
   syncLegacyStrokeFields(node);
   return stroke;
 }
@@ -107,7 +123,10 @@ export function syncLegacyStrokeFields(node) {
     }
     return node;
   }
-  node.stroke = primary.color;
+  // Keep old clients useful when a gradient is the primary paint. The ordered
+  // stack remains canonical; the scalar compatibility field exposes its first
+  // stop as the closest solid-color approximation.
+  node.stroke = primary.gradient?.stops?.[0]?.color ?? primary.color;
   node.strokeWidth = primary.width;
   node.strokeOpacity = primary.opacity;
   node.strokeCap = primary.cap;
@@ -140,7 +159,10 @@ export function isValidStroke(stroke) {
     && typeof stroke.visible === 'boolean'
     && caps.has(stroke.cap) && joins.has(stroke.join) && patterns.has(stroke.pattern)
     && Number.isFinite(stroke.miterLimit) && stroke.miterLimit >= 1 && stroke.miterLimit <= 1000
-    && (stroke.pattern !== 'dotted' || stroke.cap === 'round'));
+    && (stroke.pattern !== 'dotted' || stroke.cap === 'round')
+    && (!Object.hasOwn(stroke, 'startDecoration') || endpointDecorations.has(stroke.startDecoration))
+    && (!Object.hasOwn(stroke, 'endDecoration') || endpointDecorations.has(stroke.endDecoration))
+    && (!Object.hasOwn(stroke, 'gradient') || isValidGradientFill(stroke.gradient)));
 }
 
 export function isValidStrokeStack(strokes, node = null) {

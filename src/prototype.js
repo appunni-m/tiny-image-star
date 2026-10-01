@@ -1,8 +1,9 @@
 import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, switchComponentInstanceVariant, walkNodes } from './model.js';
+import { pageToNodeLocal } from './transform-geometry.js';
 
 const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
-const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
-const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant']);
+const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
+const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
 const maxPrototypeDelay = 10_000;
@@ -11,7 +12,13 @@ const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
   'bottom-left', 'bottom-center', 'bottom-right'
 ]);
-const conditionOperators = new Set(['equals', 'not-equals']);
+const conditionOperators = new Set(['equals', 'not-equals', 'greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
+const numericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
+
+function isPrototypeConditionOperator(operator, type) {
+  return conditionOperators.has(operator)
+    && (!numericConditionOperators.has(operator) || type === 'number');
+}
 
 function normalizePrototypeCondition(document, condition) {
   if (condition == null) return null;
@@ -23,7 +30,7 @@ function normalizePrototypeCondition(document, condition) {
   const variable = document.variables?.find(item => item.id === condition.variableId);
   if (typeof condition.variableId !== 'string' || !condition.variableId
     || !variable || condition.type !== variable.type
-    || !conditionOperators.has(condition.operator)
+    || !isPrototypeConditionOperator(condition.operator, condition.type)
     || !isVariableValue(condition.type, condition.value)) {
     throw new TypeError('Invalid prototype interaction condition.');
   }
@@ -46,10 +53,17 @@ function conditionIdentity(condition) {
 function prototypeConditionMatches(document, condition, session, node) {
   if (condition == null) return true;
   const variable = document.variables?.find(item => item.id === condition.variableId);
-  if (!variable || variable.type !== condition.type || !conditionOperators.has(condition.operator)
+  if (!variable || variable.type !== condition.type || !isPrototypeConditionOperator(condition.operator, condition.type)
     || !isVariableValue(condition.type, condition.value)) return false;
   const value = resolveVariableValueWithModeOverrides(document, variable.id, session?.variableModes, node);
   if (!isVariableValue(variable.type, value)) return false;
+  if (numericConditionOperators.has(condition.operator)) {
+    if (variable.type !== 'number') return false;
+    if (condition.operator === 'greater-than') return value > condition.value;
+    if (condition.operator === 'greater-than-or-equal') return value >= condition.value;
+    if (condition.operator === 'less-than') return value < condition.value;
+    return value <= condition.value;
+  }
   const matches = variable.type === 'color'
     ? value.toLowerCase() === condition.value.toLowerCase()
     : value === condition.value;
@@ -232,6 +246,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   collectionId,
   modeId,
   targetVariantId,
+  scrollTargetId,
+  scrollAlignment = 'nearest',
   condition = null
 } = {}) {
   if (!actions.has(action)) throw new TypeError('Unsupported prototype action.');
@@ -243,6 +259,9 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (!transitions.has(transition)) throw new TypeError('Unsupported prototype transition.');
   if (!easings.has(easing)) throw new TypeError('Unsupported prototype easing.');
   if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
+  if (transition === 'scroll' && action !== 'scroll-to') throw new TypeError('Scroll transitions can only be used with scroll-to actions.');
+  if (action === 'scroll-to' && transition !== 'scroll' && transition !== 'instant') throw new TypeError('Scroll-to actions support only instant or scroll transitions.');
+  if (!['nearest', 'start', 'center', 'end'].includes(scrollAlignment)) throw new TypeError('Unsupported prototype scroll alignment.');
   const source = findNode(document, sourceId, sourcePageId);
   const needsDestination = action === 'navigate' || action === 'open-overlay' || action === 'swap-overlay';
   const candidateDestination = needsDestination ? findNodeAcrossPages(document, destinationId) : null;
@@ -258,6 +277,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   const targetVariant = action === 'change-variant'
     ? document.components?.find(item => item.id === targetVariantId)
     : null;
+  const scrollTarget = action === 'scroll-to' ? findNode(document, scrollTargetId, sourcePageId) : null;
   if (!source) throw new Error('The interaction source layer no longer exists.');
   if (needsDestination && (!destination || destination.node.type !== 'frame')) throw new Error('Prototype navigation and overlay actions must end at a frame.');
   if (!needsDestination && destinationId != null) throw new TypeError('Back, close overlay, and open link actions cannot have a frame destination.');
@@ -268,13 +288,27 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (action === 'change-variant' && (!sourceComponent?.componentSetId || targetVariant?.componentSetId !== sourceComponent.componentSetId || targetVariant.id === sourceComponent.id)) {
     throw new TypeError('Choose a different variant from this component instance’s set.');
   }
+  if (action === 'scroll-to') {
+    if (!scrollTarget || typeof scrollTargetId !== 'string' || !scrollTargetId) throw new TypeError('Choose a scroll target on this page.');
+    const sourceFrames = [...source.parents, source.node].filter(node => node.type === 'frame');
+    const sourcePresentationFrame = sourceFrames.at(-1);
+    const targetScreenIndex = sourcePresentationFrame
+      ? scrollTarget.parents.findIndex(node => node.id === sourcePresentationFrame.id)
+      : -1;
+    const hasScrollableAncestor = targetScreenIndex >= 0 && scrollTarget.parents.slice(targetScreenIndex)
+      .some(node => node.type === 'frame' && ['vertical', 'horizontal', 'both'].includes(node.overflowBehavior));
+    if (!sourcePresentationFrame || !hasScrollableAncestor) {
+      throw new TypeError('Choose a target inside a scrollable frame on the same prototype screen.');
+    }
+  } else if (scrollTargetId != null) throw new TypeError('Only scroll-to interactions can have a scroll target.');
   if (action === 'open-overlay' && !overlayPositions.has(overlayPosition)) throw new TypeError('Unsupported prototype overlay position.');
   const interactions = source.node.interactions ||= [];
   const existing = interactions.find(item => item.action === action && item.trigger === trigger && item.destinationId === (destination?.node?.id ?? null) && item.destinationPageId === (destination?.page?.id ?? null)
     && conditionIdentity(item.condition) === conditionIdentity(normalizedCondition)
     && (action !== 'open-link' || normalizePrototypeLinkUrl(item.url) === linkUrl)
     && (action !== 'set-variable-mode' || item.collectionId === collectionId)
-    && (action !== 'change-variant' || item.targetVariantId === targetVariantId));
+    && (action !== 'change-variant' || item.targetVariantId === targetVariantId)
+    && (action !== 'scroll-to' || (item.scrollTargetId === scrollTargetId && item.scrollAlignment === scrollAlignment)));
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
@@ -288,6 +322,10 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     }
     if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
     if (action === 'change-variant') existing.targetVariantId = targetVariantId;
+    if (action === 'scroll-to') {
+      existing.scrollTargetId = scrollTargetId;
+      existing.scrollAlignment = scrollAlignment;
+    }
     if (normalizedCondition) existing.condition = normalizedCondition;
     else delete existing.condition;
     if (trigger === 'after-delay') existing.delay = delay;
@@ -307,6 +345,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
   if (action === 'change-variant') Object.assign(interaction, { instanceId: source.node.id, targetVariantId });
+  if (action === 'scroll-to') Object.assign(interaction, { scrollTargetId, scrollAlignment });
   if (normalizedCondition) interaction.condition = normalizedCondition;
   if (trigger === 'after-delay') interaction.delay = delay;
   if (action === 'open-overlay') Object.assign(interaction, {
@@ -392,6 +431,16 @@ export function applyPrototypeInteraction(document, session, interaction) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
   if (interaction.action === 'back') return backPrototypeSession(session);
   if (interaction.action === 'open-link') return normalizePrototypeLinkUrl(interaction.url) ? 'link-opened' : false;
+  if (interaction.action === 'scroll-to') {
+    const pageId = session.overlays?.at(-1)?.pageId || session.pageId;
+    const target = findNode(document, interaction.scrollTargetId, pageId);
+    const frameId = session.overlays?.at(-1)?.frameId || session.frameId;
+    const screenIndex = target?.parents.findIndex(node => node.id === frameId) ?? -1;
+    if (!target || screenIndex < 0
+      || !target.parents.slice(screenIndex).some(node => node.type === 'frame' && ['vertical', 'horizontal', 'both'].includes(node.overflowBehavior))) return false;
+    rememberPrototypeHoverInteraction(session, interaction);
+    return 'scroll-to';
+  }
   if (interaction.action === 'set-variable-mode') {
     const collection = document.variableCollections?.find(item => item.id === interaction.collectionId);
     if (!collection || (interaction.modeId != null && !collection.modes.some(mode => mode.id === interaction.modeId))) return false;
@@ -532,15 +581,15 @@ export function updatePrototypeInteraction(document, sourceId, interactionId, de
 
 export function findFrameAtPoint(page, point, document = null) {
   const matches = [];
-  const visit = (nodes, parentX = 0, parentY = 0, depth = 0) => {
+  const visit = (nodes, ancestors = [], depth = 0) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
-      const geometry = document ? getNodeGeometry(document, node) : node;
-      const x = parentX + geometry.x;
-      const y = parentY + geometry.y;
-      const inside = point.x >= x && point.y >= y && point.x <= x + geometry.width && point.y <= y + geometry.height;
+      const geometry = document ? { ...node, ...getNodeGeometry(document, node) } : node;
+      const localPoint = pageToNodeLocal(geometry, point, ancestors);
+      const inside = localPoint.x >= 0 && localPoint.y >= 0
+        && localPoint.x <= geometry.width && localPoint.y <= geometry.height;
       if (inside && node.type === 'frame') matches.push({ node, depth, area: geometry.width * geometry.height });
-      if (inside || !node.clip) visit(node.children || [], x, y, depth + 1);
+      if (inside || !node.clip) visit(node.children || [], [...ancestors, geometry], depth + 1);
     }
   };
   visit(page?.children || []);

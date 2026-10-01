@@ -27,6 +27,66 @@ test('component instances link to a main component and can be placed on another 
   assert.equal(validateDocument(document), true);
 });
 
+test('component synchronization remaps internal prototype scroll targets to each instance', () => {
+  const document = createDocument();
+  const main = createNode('frame', { name: 'Scrollable card', width: 300, height: 220 });
+  const viewport = createNode('frame', { name: 'Viewport', width: 260, height: 120, overflowBehavior: 'vertical' });
+  const hotspot = createNode('rectangle', { name: 'Scroll trigger', width: 40, height: 24 });
+  const target = createNode('rectangle', { name: 'Target', y: 320, width: 60, height: 32 });
+  addNode(document, main);
+  addNode(document, viewport, { parentId: main.id });
+  addNode(document, hotspot, { parentId: viewport.id });
+  addNode(document, target, { parentId: viewport.id });
+  const component = createComponent(document, main.id, 'Scrollable card');
+  const first = createComponentInstance(document, component.id);
+  const second = createComponentInstance(document, component.id);
+
+  addPrototypeInteraction(document, hotspot.id, null, {
+    action: 'scroll-to', trigger: 'on-click', transition: 'scroll',
+    scrollTargetId: target.id, scrollAlignment: 'start'
+  });
+  assert.equal(syncComponentInstances(document, component.id), 2);
+
+  for (const instance of [first, second]) {
+    const instanceViewport = instance.children[0];
+    const instanceHotspot = instanceViewport.children[0];
+    const instanceTarget = instanceViewport.children[1];
+    assert.equal(instanceHotspot.interactions[0].scrollTargetId, instanceTarget.id);
+    assert.notEqual(instanceHotspot.interactions[0].scrollTargetId, target.id);
+  }
+  assert.equal(validateDocument(document), true);
+});
+
+test('switching a component variant remaps its internal prototype scroll targets', () => {
+  const document = createDocument();
+  const createScrollableVariant = name => {
+    const main = createNode('frame', { name, width: 300, height: 220 });
+    const viewport = createNode('frame', { name: 'Viewport', width: 260, height: 120, overflowBehavior: 'vertical' });
+    const hotspot = createNode('rectangle', { name: 'Scroll trigger', width: 40, height: 24 });
+    const target = createNode('rectangle', { name: 'Target', y: 320, width: 60, height: 32 });
+    addNode(document, main);
+    addNode(document, viewport, { parentId: main.id });
+    addNode(document, hotspot, { parentId: viewport.id });
+    addNode(document, target, { parentId: viewport.id });
+    return { component: createComponent(document, main.id, name), hotspot, target };
+  };
+  const off = createScrollableVariant('Toggle / State=Off');
+  const on = createScrollableVariant('Toggle / State=On');
+  createComponentSet(document, [off.component.id, on.component.id]);
+  const instance = createComponentInstance(document, off.component.id);
+  addPrototypeInteraction(document, on.hotspot.id, null, {
+    action: 'scroll-to', trigger: 'on-click', transition: 'scroll',
+    scrollTargetId: on.target.id, scrollAlignment: 'center'
+  });
+
+  assert.equal(switchComponentInstanceVariant(document, instance.id, on.component.id), true);
+  const instanceHotspot = instance.children[0].children[0];
+  const instanceTarget = instance.children[0].children[1];
+  assert.equal(instanceHotspot.interactions[0].scrollTargetId, instanceTarget.id);
+  assert.notEqual(instanceHotspot.interactions[0].scrollTargetId, on.target.id);
+  assert.equal(validateDocument(document), true);
+});
+
 test('component blend-mode overrides validate with the component property schema', () => {
   const document = createDocument();
   const main = createNode('rectangle', { name: 'Blend card' });
@@ -388,6 +448,34 @@ test('variant value changes reject duplicate combinations and deleting a variant
   assert.equal(a.componentSetId, undefined);
   assert.equal(a.variantProperties, undefined);
   assert.equal(validateDocument(document), true);
+});
+
+test('variant value changes enforce the shared printable 80-character policy atomically', () => {
+  const document = createDocument();
+  const first = createNode('rectangle'); const second = createNode('rectangle');
+  addNode(document, first); addNode(document, second);
+  const a = createComponent(document, first.id, 'Chip / Tone=Blue');
+  const b = createComponent(document, second.id, 'Chip / Tone=Green');
+  const set = createComponentSet(document, [a.id, b.id], 'Chip');
+
+  const maximumLengthValue = 'x'.repeat(80);
+  assert.equal(setComponentVariantProperty(document, b.id, 'Tone', ` ${maximumLengthValue} `).Tone, maximumLengthValue);
+  assert.deepEqual(set.properties[0].values, ['Blue', maximumLengthValue]);
+  assert.equal(validateDocument(document), true, 'the maximum supported printable value remains a valid design');
+
+  for (const invalidValue of [
+    'x'.repeat(81),
+    'two\nlines',
+    'nul\u0000character',
+    'delete\u007fcharacter'
+  ]) {
+    const before = structuredClone(document);
+    assert.throws(
+      () => setComponentVariantProperty(document, b.id, 'Tone', invalidValue),
+      /Variant value for “Tone” must contain 1–80 printable characters/
+    );
+    assert.deepEqual(document, before, 'invalid input must not mutate variant values or the set value domain');
+  }
 });
 
 test('typed component properties project defaults and instance values through sync and reload', () => {

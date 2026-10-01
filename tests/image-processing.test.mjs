@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage, renderImageOutput } from '../src/image-processing.js';
 import { createImageFill } from '../src/image-fills.js';
+import { rotateImageTransforms } from '../src/image-transforms.js';
 
 function twoPixelBmp() {
   const bytes = Buffer.alloc(62);
@@ -224,6 +225,85 @@ test('Pillow-RS crops normalized source bounds, rotates clockwise, and reports o
   } finally { original.free(); }
 });
 
+test('latest Pillow-RS WASM flips pixels horizontally and vertically after crop and rotation', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourColorBmp());
+  try {
+    const horizontal = renderImage(original, {}, { flipHorizontal: true }, pillow);
+    assert.deepEqual(horizontal.bytes.slice(0, 8), Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.deepEqual([horizontal.flipHorizontal, horizontal.flipVertical], [true, false]);
+    const horizontalPixels = decodeOriginal(pillow, horizontal.bytes);
+    try {
+      assert.deepEqual(pixel(horizontalPixels, 0, 0), [0, 255, 0]);
+      assert.deepEqual(pixel(horizontalPixels, 1, 0), [255, 0, 0]);
+      assert.deepEqual(pixel(horizontalPixels, 0, 1), [255, 255, 0]);
+      assert.deepEqual(pixel(horizontalPixels, 1, 1), [0, 0, 255]);
+    } finally { horizontalPixels.free(); }
+
+    const verticalAfterClockwiseRotation = renderImage(original, {}, {
+      rotation: 90, flipHorizontal: true,
+    }, pillow);
+    const verticalPixels = decodeOriginal(pillow, verticalAfterClockwiseRotation.bytes);
+    try {
+      assert.deepEqual([verticalAfterClockwiseRotation.width, verticalAfterClockwiseRotation.height], [2, 2]);
+      assert.deepEqual(pixel(verticalPixels, 0, 0), [255, 0, 0]);
+      assert.deepEqual(pixel(verticalPixels, 1, 0), [0, 0, 255]);
+      assert.deepEqual(pixel(verticalPixels, 0, 1), [0, 255, 0]);
+      assert.deepEqual(pixel(verticalPixels, 1, 1), [255, 255, 0]);
+    } finally { verticalPixels.free(); }
+
+    const vertical = renderImage(original, {}, { flipVertical: true }, pillow);
+    const verticalOnlyPixels = decodeOriginal(pillow, vertical.bytes);
+    try {
+      assert.deepEqual(pixel(verticalOnlyPixels, 0, 0), [0, 0, 255]);
+      assert.deepEqual(pixel(verticalOnlyPixels, 1, 0), [255, 255, 0]);
+      assert.deepEqual(pixel(verticalOnlyPixels, 0, 1), [255, 0, 0]);
+      assert.deepEqual(pixel(verticalOnlyPixels, 1, 1), [0, 255, 0]);
+    } finally { verticalOnlyPixels.free(); }
+
+    const rotatedFlippedState = rotateImageTransforms({ flipHorizontal: true }, 'right');
+    const carriedFlip = renderImage(original, {}, rotatedFlippedState, pillow);
+    const carriedPixels = decodeOriginal(pillow, carriedFlip.bytes);
+    try {
+      assert.deepEqual(rotatedFlippedState, { crop: null, rotation: 90, flipHorizontal: false, flipVertical: true });
+      assert.deepEqual(pixel(carriedPixels, 0, 0), [255, 255, 0]);
+      assert.deepEqual(pixel(carriedPixels, 1, 0), [0, 255, 0]);
+      assert.deepEqual(pixel(carriedPixels, 0, 1), [0, 0, 255]);
+      assert.deepEqual(pixel(carriedPixels, 1, 1), [255, 0, 0]);
+    } finally { carriedPixels.free(); }
+
+    assert.deepEqual(pixel(original, 0, 0), [255, 0, 0], 'flips leave the retained original unchanged');
+  } finally { original.free(); }
+});
+
+test('successive edits and previews always render from the same retained original image', async () => {
+  await pillow.default();
+  const original = decodeOriginal(pillow, fourColorBmp());
+  const originalPixels = Array.from({ length: 2 }, (_, y) => Array.from({ length: 2 }, (_, x) => [...original.getpixel(x, y)]));
+  let earlierPreview;
+  let incorrectlyCompounded;
+  try {
+    earlierPreview = renderImage(original, { invert: true }, {}, pillow);
+    const changedSettings = renderImage(original, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow);
+
+    // Model the bug where an editor decodes its previous preview as the next
+    // render source. The correct render has to match a fresh render of the
+    // current settings against the retained original, not that compounded one.
+    const previousPreviewImage = decodeOriginal(pillow, earlierPreview.bytes);
+    try {
+      incorrectlyCompounded = renderImage(previousPreviewImage, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow);
+    } finally { previousPreviewImage.free(); }
+
+    assert.notDeepEqual(changedSettings.bytes, incorrectlyCompounded.bytes, 'the current preview is not progressively edited from the previous preview');
+    assert.deepEqual(
+      Array.from({ length: 2 }, (_, y) => Array.from({ length: 2 }, (_, x) => [...original.getpixel(x, y)])),
+      originalPixels,
+      'Pillow-RS preview renders preserve the retained decoded original across repeated edits'
+    );
+  } finally { original.free(); }
+});
+
 test('Pillow-RS validates normalized crop bounds and quarter-turn rotation', async () => {
   await pillow.default();
   const original = decodeOriginal(pillow, fourColorBmp());
@@ -261,6 +341,31 @@ test('Pillow-RS creative tone effects change RGBA pixels while preserving alpha 
   } finally { original.free(); }
 });
 
+test('Pillow-RS photographic exposure, temperature, and tint work in linear light and preserve alpha', async () => {
+  await pillow.default();
+  const original = new pillow.Image('RGBA', 4, 1, null);
+  original.putpixel(0, 0, 128, 128, 128, 0);
+  original.putpixel(1, 0, 128, 128, 128, 64);
+  original.putpixel(2, 0, 128, 128, 128, 128);
+  original.putpixel(3, 0, 128, 128, 128, 255);
+  try {
+    const sourcePixels = Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]);
+    const exposure = decodeOriginal(pillow, renderImage(original, { exposure: 50 }, {}, pillow).bytes);
+    const warm = decodeOriginal(pillow, renderImage(original, { temperature: 100 }, {}, pillow).bytes);
+    const magenta = decodeOriginal(pillow, renderImage(original, { tint: 100 }, {}, pillow).bytes);
+    try {
+      assert.ok([...exposure.getpixel(3, 0)].slice(0, 3).every(channel => channel > 128), 'one positive exposure stop brightens neutral midtones');
+      assert.ok(exposure.getpixel(3, 0)[0] < 200, 'exposure clips gradually in linear light instead of doubling gamma-encoded values');
+      assert.ok(warm.getpixel(3, 0)[0] > warm.getpixel(3, 0)[2], 'positive temperature warms the image');
+      assert.ok(magenta.getpixel(3, 0)[0] > magenta.getpixel(3, 0)[1] && magenta.getpixel(3, 0)[2] > magenta.getpixel(3, 0)[1], 'positive tint shifts toward magenta');
+      for (const output of [exposure, warm, magenta]) {
+        assert.deepEqual(Array.from({ length: 4 }, (_, x) => output.getpixel(x, 0)[3]), [0, 64, 128, 255], 'zero and partial alpha samples stay exact');
+      }
+      assert.deepEqual(Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]), sourcePixels, 'every setting is recomputed from the retained source image');
+    } finally { exposure.free(); warm.free(); magenta.free(); }
+  } finally { original.free(); }
+});
+
 test('RGBA tone-effect setup frees the color intermediate when alpha extraction fails', () => {
   let colorFreed = false;
   const color = { free() { colorFreed = true; } };
@@ -285,6 +390,7 @@ test('creative tone settings validate and image-fill recipes use the same local 
     for (const settings of [
       { autoContrast: 1 }, { posterizeBits: -1 }, { posterizeBits: 2.5 },
       { solarize: true, solarizeThreshold: 256 }, { invert: 'yes' }, { inventedTone: true },
+      { exposure: 101 }, { temperature: -101 }, { tint: NaN },
     ]) assert.throws(() => renderImage(original, settings, {}, pillow), /invalid setting/);
     assert.throws(() => renderImage(original, { invert: true }), /does not provide the requested tone effect/);
 
@@ -296,6 +402,13 @@ test('creative tone settings validate and image-fill recipes use the same local 
       assert.deepEqual([...output.getpixel(2, 0)], [191, 127, 63, 128]);
       assert.deepEqual([...output.getpixel(3, 0)], [63, 63, 63, 255]);
     } finally { output.free(); }
+
+    const photoFill = createImageFill('asset-photo', { adjustments: { exposure: 35, temperature: -30, tint: 25 } });
+    const photoOutput = decodeOriginal(pillow, renderImage(original, photoFill.adjustments, photoFill.transforms, pillow).bytes);
+    try {
+      assert.notDeepEqual([...photoOutput.getpixel(1, 0)], [...original.getpixel(1, 0)], 'image fills use the same local photographic treatment pipeline');
+      assert.deepEqual([...photoOutput.getpixel(1, 0)][3], 64, 'image-fill color controls preserve source transparency');
+    } finally { photoOutput.free(); }
 
     const rgb = decodeOriginal(pillow, twoPixelBmp());
     try {

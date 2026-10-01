@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDocument, createLayerEffect, createNode, addNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding } from '../src/layer-effects.js';
+import { buildLayerEffectBoxShadow, buildLayerEffectFilter, isValidLayerEffects, layerEffectPadding, moveLayerEffect } from '../src/layer-effects.js';
 
 test('drop shadows and layer blur are saved as editable layer effects', () => {
   const document = createDocument();
@@ -12,6 +12,22 @@ test('drop shadows and layer blur are saved as editable layer effects', () => {
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
   assert.deepEqual(shape.effects, [shadow, blur]);
   assert.throws(() => createLayerEffect('unsupported'), /Unsupported layer effect/);
+});
+
+test('background blur is a bounded editable effect and is excluded from foreground filters and effect padding', () => {
+  const document = createDocument();
+  const blur = createLayerEffect('background-blur', { radius: 24 });
+  const shape = createNode('rectangle', { effects: [blur] });
+  addNode(document, shape);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  assert.deepEqual(shape.effects, [blur]);
+  assert.equal(isValidLayerEffects([{ ...blur, radius: 100 }]), true);
+  assert.equal(isValidLayerEffects([{ ...blur, radius: 101 }]), false);
+  assert.equal(buildLayerEffectFilter([blur]), 'none');
+  assert.deepEqual(layerEffectPadding([blur]), { x: 0, y: 0 });
+  assert.equal(isValidLayerEffects([blur, createLayerEffect('layer-blur')]), false, 'the two blur modes are mutually exclusive');
+  assert.equal(isValidLayerEffects([blur, createLayerEffect('background-blur')]), false, 'a layer has only one background blur');
+  assert.throws(() => createLayerEffect('not-a-blur'), /Unsupported layer effect/);
 });
 
 test('inner shadows are validated, serialized, and excluded from outer filter padding', () => {
@@ -28,14 +44,48 @@ test('inner shadows are validated, serialized, and excluded from outer filter pa
   assert.deepEqual(layerEffectPadding([inner]), { x: 0, y: 0 });
 });
 
-test('effect validation bounds the stack and rejects malformed or duplicate effects', () => {
-  const effects = Array.from({ length: 8 }, (_, index) => createLayerEffect('layer-blur', { radius: index }));
-  assert.equal(isValidLayerEffects(effects), true);
-  assert.equal(isValidLayerEffects([...effects, createLayerEffect('layer-blur')]), false);
-  assert.equal(isValidLayerEffects([effects[0], { ...effects[0] }]), false);
-  assert.equal(isValidLayerEffects([{ ...effects[0], radius: 101 }]), false);
-  assert.equal(isValidLayerEffects([{ ...createLayerEffect('drop-shadow'), opacity: 1.5 }]), false);
-  assert.equal(isValidLayerEffects([{ ...effects[0], visible: 1 }]), false);
+test('effect validation allows eight shadows of each kind and one mutually exclusive blur', () => {
+  const dropShadows = Array.from({ length: 8 }, (_, index) => createLayerEffect('drop-shadow', { id: `drop-${index}` }));
+  const innerShadows = Array.from({ length: 8 }, (_, index) => createLayerEffect('inner-shadow', { id: `inner-${index}` }));
+  const layerBlur = createLayerEffect('layer-blur', { id: 'layer-blur' });
+  const backgroundBlur = createLayerEffect('background-blur', { id: 'background-blur' });
+  assert.equal(isValidLayerEffects([...dropShadows, ...innerShadows, layerBlur]), true);
+  assert.equal(isValidLayerEffects([...dropShadows, ...innerShadows, backgroundBlur]), true);
+  assert.equal(isValidLayerEffects([...dropShadows, createLayerEffect('drop-shadow', { id: 'drop-over-limit' })]), false);
+  assert.equal(isValidLayerEffects([...innerShadows, createLayerEffect('inner-shadow', { id: 'inner-over-limit' })]), false);
+  assert.equal(isValidLayerEffects([dropShadows[0], { ...dropShadows[0] }]), false);
+  assert.equal(isValidLayerEffects([layerBlur, backgroundBlur]), false, 'layer and background blur are mutually exclusive');
+  assert.equal(isValidLayerEffects([{ ...layerBlur, radius: 101 }]), false);
+  assert.equal(isValidLayerEffects([{ ...dropShadows[0], opacity: 1.5 }]), false);
+  assert.equal(isValidLayerEffects([{ ...innerShadows[0], visible: 1 }]), false);
+});
+
+test('effect stack reordering is stable, directional, and bounded at both ends', () => {
+  const effects = ['drop-shadow', 'inner-shadow', 'layer-blur'].map((type, index) => createLayerEffect(type, { id: `ordered-${index}` }));
+  assert.equal(moveLayerEffect(effects, 'ordered-0', 'up'), false);
+  assert.equal(moveLayerEffect(effects, 'ordered-2', 'down'), false);
+  assert.equal(moveLayerEffect(effects, 'missing', 'up'), false);
+  assert.equal(moveLayerEffect(effects, 'ordered-2', 'sideways'), false);
+  assert.equal(moveLayerEffect(effects, 'ordered-2', 'up'), true);
+  assert.deepEqual(effects.map(effect => effect.id), ['ordered-0', 'ordered-2', 'ordered-1']);
+  assert.equal(moveLayerEffect(effects, 'ordered-0', 'down'), true);
+  assert.deepEqual(effects.map(effect => effect.id), ['ordered-2', 'ordered-0', 'ordered-1']);
+});
+
+test('reordered stacks retain authored order while the Canvas filter stage includes only outer blur and shadow filters', () => {
+  const effects = [
+    createLayerEffect('inner-shadow', { id: 'mixed-inner' }),
+    createLayerEffect('drop-shadow', { id: 'mixed-drop' }),
+    createLayerEffect('layer-blur', { id: 'mixed-blur' })
+  ];
+  const outerFilters = buildLayerEffectFilter(effects);
+  assert.equal(moveLayerEffect(effects, 'mixed-inner', 'down'), true);
+  assert.deepEqual(effects.map(effect => effect.id), ['mixed-drop', 'mixed-inner', 'mixed-blur'], 'the model retains the changed mixed-type order');
+  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'inner shadows remain in their separately composited renderer pass');
+  assert.equal(moveLayerEffect(effects, 'mixed-blur', 'up'), true);
+  assert.equal(buildLayerEffectFilter(effects), outerFilters, 'crossing an inner shadow does not change the outer-filter chain');
+  assert.equal(moveLayerEffect(effects, 'mixed-blur', 'up'), true);
+  assert.match(buildLayerEffectFilter(effects), /^blur\(/, 'reordering two outer filters changes their live filter-chain order');
 });
 
 test('effect filters preserve order, scale with output resolution, and ignore hidden effects', () => {

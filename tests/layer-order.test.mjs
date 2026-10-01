@@ -1,7 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, findNode, validateDocument } from '../src/model.js';
-import { layerDropReorder, moveLayerOneVisualRow, reorderLayerForDrop } from '../src/layer-order.js';
+import { canMoveLayerOneVisualRow, layerDropReorder, layerOrderShortcutDirection, moveLayerOneVisualRow, reorderLayerForDrop } from '../src/layer-order.js';
+
+test('keyboard layer-order shortcuts use Alt+ArrowUp and Alt+ArrowDown only', () => {
+  assert.equal(layerOrderShortcutDirection({ key: 'ArrowUp', altKey: true }), 'up');
+  assert.equal(layerOrderShortcutDirection({ key: 'ArrowDown', altKey: true }), 'down');
+  for (const event of [
+    { key: 'ArrowLeft', altKey: true },
+    { key: 'ArrowUp', altKey: false },
+    { key: 'ArrowUp', altKey: true, ctrlKey: true },
+    { key: 'ArrowDown', altKey: true, metaKey: true },
+    { key: 'ArrowDown', altKey: true, shiftKey: true },
+    null
+  ]) assert.equal(layerOrderShortcutDirection(event), null);
+});
 
 test('layer-row drops reorder siblings using the reversed visual stack order', () => {
   const document = createDocument();
@@ -74,12 +87,15 @@ test('one-row layer moves follow reversed stack order and stop at sibling bounda
   addNode(document, top, { parentId: container.id });
 
   // The visible order is [Top, Middle, Bottom].
+  assert.equal(canMoveLayerOneVisualRow(document, middle.id, 'up'), true);
+  assert.equal(canMoveLayerOneVisualRow(document, middle.id, 'sideways'), false);
   assert.equal(moveLayerOneVisualRow(document, middle.id, 'up'), true);
   assert.deepEqual(container.children.map(node => node.name), ['Bottom', 'Top', 'Middle']);
   assert.equal(moveLayerOneVisualRow(document, middle.id, 'down'), true);
   assert.deepEqual(container.children.map(node => node.name), ['Bottom', 'Middle', 'Top']);
 
   assert.equal(moveLayerOneVisualRow(document, top.id, 'up'), false, 'the visible top row cannot move above its container');
+  assert.equal(canMoveLayerOneVisualRow(document, top.id, 'up'), false);
   assert.equal(moveLayerOneVisualRow(document, bottom.id, 'down'), false, 'the visible bottom row cannot move below its container');
   assert.equal(moveLayerOneVisualRow(document, middle.id, 'sideways'), false, 'unknown directions are rejected');
   assert.equal(validateDocument(document), true);
@@ -97,6 +113,7 @@ test('one-row layer moves respect locked layers, neighbors, and ancestors', () =
 
   lockedContainer.locked = false;
   lockedChild.locked = true;
+  assert.equal(canMoveLayerOneVisualRow(document, lockedChild.id, 'down'), false);
   assert.equal(moveLayerOneVisualRow(document, lockedChild.id, 'down'), false, 'a locked source cannot move');
   assert.equal(moveLayerOneVisualRow(document, sibling.id, 'up'), false, 'a locked adjacent layer cannot be crossed');
   assert.deepEqual(lockedContainer.children.map(node => node.name), ['Locked child', 'Sibling']);

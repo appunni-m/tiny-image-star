@@ -44,8 +44,10 @@ test('a selected child of a rotated ancestor is positioned and rotated in page s
   const output = buildInspectOutput(document, [findNode(document, child.id)]);
   const childCss = declarationsFor(output.css, classNameFor(output.css, 'extracted-child'));
 
-  // Summary values keep their existing page-space contract.
-  assert.deepEqual(output.layers[0].position, { x: 110, y: 100 });
+  // The inspector and generated CSS use the same transformed standalone root.
+  assert.ok(Math.abs(output.layers[0].position.x - 206) < 1e-9);
+  assert.ok(Math.abs(output.layers[0].position.y - 46) < 1e-9);
+  assert.equal(output.layers[0].rotation, 95);
   // The standalone snippet folds the omitted ancestor transform into the root.
   // Its untransformed box is centered on the transformed page-space center
   // (221, 55), then CSS applies the summed 95-degree rotation around that

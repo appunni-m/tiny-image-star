@@ -2,14 +2,17 @@ import { isValidGradientFill } from './fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
 import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
 import { isValidStrokeStack } from './strokes.js';
+import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
 
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
 const textNodeNumericProperties = ['paragraphSpacing', 'firstLineIndent', 'listSpacing'];
-const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
+const textRunNumericProperties = ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'baselineShift'];
+const textRunInheritanceDefaults = { fontSize: 24, fontWeight: 400, lineHeight: 1.25, letterSpacing: 0, baselineShift: 0 };
+const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letterSpacing'];
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
-  'fillStyleId', 'fillGradient', 'imageFill', 'fillVariableId', 'strokeVariableId', 'textVariableId',
+  'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
 ];
@@ -106,12 +109,58 @@ function interpolateFillStack(fromNode, toNode, progress) {
     } else if (fill.type === 'linear' || fill.type === 'radial') {
       const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
       if (!boundPaint) result.gradient = interpolateGradient(start.gradient, fill.gradient, progress);
+    } else if (fill.type === 'image') {
+      const imageFill = interpolateImageFill(start.imageFill, fill.imageFill, progress);
+      if (imageFill) result.imageFill = imageFill;
     }
-    // Image fills deliberately retain the source reference before halfway and
-    // take the destination reference at halfway; their crop/fit semantics are
-    // categorical, while the fill's own opacity remains continuous.
+    // Image references and incompatible crop/fit transforms remain categorical;
+    // compatible same-asset crop transforms can move with the shared source.
     return result;
   });
+}
+
+const fullImageCrop = Object.freeze({ left: 0, top: 0, right: 1, bottom: 1 });
+
+function interpolateImageCrop(fromCrop, toCrop, progress) {
+  if (fromCrop == null && toCrop == null) return null;
+  const start = fromCrop || fullImageCrop;
+  const end = toCrop || fullImageCrop;
+  return {
+    left: start.left + (end.left - start.left) * progress,
+    top: start.top + (end.top - start.top) * progress,
+    right: start.right + (end.right - start.right) * progress,
+    bottom: start.bottom + (end.bottom - start.bottom) * progress
+  };
+}
+
+function interpolateImageTransforms(fromAssetId, fromFit, fromTransforms, toAssetId, toFit, toTransforms, progress) {
+  if (fromAssetId !== toAssetId || (fromFit ?? 'cover') !== (toFit ?? 'cover')
+    || !isValidImageTransforms(fromTransforms) || !isValidImageTransforms(toTransforms)) return null;
+  const from = normalizeImageTransforms(fromTransforms);
+  const to = normalizeImageTransforms(toTransforms);
+  // Flip state is a discrete orientation topology. A toggle mirrors the image
+  // at the midpoint; the crop and rotation follow that same discrete snapshot.
+  if (from.flipHorizontal !== to.flipHorizontal || from.flipVertical !== to.flipVertical) return null;
+
+  const categorical = progress < 0.5 ? from : to;
+  return {
+    ...categorical,
+    crop: interpolateImageCrop(from.crop, to.crop, progress),
+    // Image transform rotation is deliberately quarter-turn-only in the
+    // persisted/rendered representation. The layer's own rotation property
+    // is already continuously interpolated by the normal layer path.
+    rotation: categorical.rotation
+  };
+}
+
+function interpolateImageFill(fromImageFill, toImageFill, progress) {
+  if (!fromImageFill || !toImageFill) return null;
+  const transforms = interpolateImageTransforms(
+    fromImageFill.assetId, fromImageFill.fit, fromImageFill.transforms,
+    toImageFill.assetId, toImageFill.fit, toImageFill.transforms, progress
+  );
+  if (!transforms) return null;
+  return { ...structuredClone(progress < 0.5 ? fromImageFill : toImageFill), transforms };
 }
 
 function canInterpolateStrokeStack(fromNode, toNode) {
@@ -140,40 +189,97 @@ function interpolateStrokeStack(fromNode, toNode, progress) {
   });
 }
 
+function canInterpolateEffectPair(from, to) {
+  if (from.type !== to.type || from.visible !== to.visible) return false;
+  if (from.type === 'noise' || from.type === 'texture' || from.type === 'glass') return true;
+  // Shadow colors are only interpolated as six-digit hex values. Keep the
+  // stack on its existing midpoint fallback if either endpoint cannot be
+  // represented by that color interpolation path.
+  return from.type === 'layer-blur' || from.type === 'background-blur'
+    || interpolateColor(from.color, to.color, 0.5) !== null;
+}
+
+function interpolateEffectPair(from, to, progress) {
+  const categoricalSource = progress < 0.5 ? from : to;
+  const result = structuredClone(categoricalSource);
+  if (to.type === 'drop-shadow' || to.type === 'inner-shadow') {
+    for (const property of ['opacity', 'offsetX', 'offsetY', 'blur']) {
+      result[property] = from[property] + (to[property] - from[property]) * progress;
+    }
+    result.color = interpolateColor(from.color, to.color, progress) || result.color;
+  } else if (to.type === 'layer-blur' || to.type === 'background-blur') {
+    result.radius = from.radius + (to.radius - from.radius) * progress;
+  } else if (to.type === 'noise') {
+    for (const property of ['sizeX', 'sizeY', 'density', 'opacity']) {
+      result[property] = from[property] + (to[property] - from[property]) * progress;
+    }
+    result.color = interpolateColor(from.color, to.color, progress) || result.color;
+    result.color2 = interpolateColor(from.color2, to.color2, progress) || result.color2;
+  } else if (to.type === 'texture') {
+    for (const property of ['sizeX', 'sizeY', 'radius']) {
+      result[property] = from[property] + (to[property] - from[property]) * progress;
+    }
+  } else if (to.type === 'glass') {
+    const angle = interpolateRotation(from.lightAngle, to.lightAngle, progress);
+    result.lightAngle = ((angle % 360) + 360) % 360;
+    for (const property of ['lightIntensity', 'refraction', 'depth', 'dispersion', 'frost', 'splay']) {
+      result[property] = from[property] + (to[property] - from[property]) * progress;
+    }
+  }
+  return result;
+}
+
 function canInterpolateEffects(from, to) {
   return Array.isArray(from) && Array.isArray(to)
     && from.length === to.length
     && isValidLayerEffects(from) && isValidLayerEffects(to)
-    && from.every((effect, index) => {
-      const destination = to[index];
-      if (effect.type !== destination.type || effect.visible !== destination.visible) return false;
-      // Shadow colors are only interpolated as six-digit hex values. Keep the
-      // entire stack on its existing midpoint fallback if either endpoint
-      // cannot be represented by that color interpolation path.
-      return effect.type === 'layer-blur'
-        || interpolateColor(effect.color, destination.color, 0.5) !== null;
-    });
+    && from.every((effect, index) => canInterpolateEffectPair(effect, to[index]));
 }
 
 function interpolateEffects(from, to, progress) {
   if (progress === 0) return structuredClone(from);
   if (progress === 1) return structuredClone(to);
-  if (!canInterpolateEffects(from, to)) return null;
+  if (!Array.isArray(from) || !Array.isArray(to)
+      || !isValidLayerEffects(from) || !isValidLayerEffects(to)) return null;
 
-  const categoricalSource = progress < 0.5 ? from : to;
-  return to.map((effect, index) => {
-    const start = from[index];
-    const result = structuredClone(categoricalSource[index]);
+  if (canInterpolateEffects(from, to)) {
+    return to.map((effect, index) => interpolateEffectPair(from[index], effect, progress));
+  }
+
+  // A pure trailing insertion/removal has an unambiguous correspondence: all
+  // shared effects stay in order and only the tail enters or exits. Animate
+  // that tail through its natural zero-contribution value instead of popping
+  // the complete stack at the midpoint. Other topology/visibility changes
+  // keep the established discrete fallback.
+  if (from.length === to.length) return null;
+  const commonLength = Math.min(from.length, to.length);
+  for (let index = 0; index < commonLength; index += 1) {
+    if (!canInterpolateEffectPair(from[index], to[index])) return null;
+  }
+
+  const targetHasTail = to.length > from.length;
+  const longer = targetHasTail ? to : from;
+  if (longer.slice(commonLength).some(effect => ['texture', 'glass'].includes(effect.type))) return null;
+  const tailProgress = targetHasTail ? progress : 1 - progress;
+  const shared = Array.from({ length: commonLength }, (_, index) => {
+    const result = interpolateEffectPair(from[index], to[index], progress);
+    // Preserve IDs from the longer stack throughout the transition. The
+    // shorter endpoint may reuse one of those IDs on a different effect.
+    result.id = longer[index].id;
+    return result;
+  });
+  const tail = longer.slice(commonLength).map(effect => {
+    const result = structuredClone(effect);
     if (effect.type === 'drop-shadow' || effect.type === 'inner-shadow') {
-      for (const property of ['opacity', 'offsetX', 'offsetY', 'blur']) {
-        result[property] = start[property] + (effect[property] - start[property]) * progress;
-      }
-      result.color = interpolateColor(start.color, effect.color, progress) || result.color;
-    } else if (effect.type === 'layer-blur') {
-      result.radius = start.radius + (effect.radius - start.radius) * progress;
+      result.opacity *= tailProgress;
+    } else if (effect.type === 'layer-blur' || effect.type === 'background-blur') {
+      result.radius *= tailProgress;
+    } else if (effect.type === 'noise') {
+      result.opacity *= tailProgress;
     }
     return result;
   });
+  return [...shared, ...tail];
 }
 
 function canMatch(from, to) {
@@ -420,9 +526,26 @@ function fadeLayer(node, progress, entering) {
 function interpolateLayer(from, to, progress, resolveRadius = null) {
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
+  if (from.type === 'image' && to.type === 'image') {
+    const transforms = interpolateImageTransforms(
+      from.assetId, from.fit, from.transforms,
+      to.assetId, to.fit, to.transforms, progress
+    );
+    if (transforms) copy.transforms = transforms;
+  }
+  if (from.imageFill && to.imageFill) {
+    const imageFill = interpolateImageFill(from.imageFill, to.imageFill, progress);
+    if (imageFill) copy.imageFill = imageFill;
+  }
   const effects = interpolateEffects(from.effects, to.effects, progress);
   if (effects) copy.effects = effects;
   for (const property of numericProperties) {
+    if (from.type === 'text' && to.type === 'text'
+      && ['fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'].includes(property)
+      && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {
+      snapProperty(copy, from, to, property, progress);
+      continue;
+    }
     const start = finiteStyleNumber(from[property]);
     const end = finiteStyleNumber(to[property]);
     if (start === null || end === null) continue;
@@ -433,6 +556,11 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
   }
   interpolateCornerRadii(copy, from, to, progress, resolveRadius);
   for (const property of colorProperties) {
+    if (property === 'color' && from.type === 'text' && to.type === 'text'
+      && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {
+      snapProperty(copy, from, to, property, progress);
+      continue;
+    }
     const variable = property === 'fill' ? 'fillVariableId' : property === 'stroke' ? 'strokeVariableId' : 'textVariableId';
     if (from[variable] || to[variable]) continue;
     const color = interpolateColor(from[property], to[property], progress);
@@ -453,6 +581,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
     copy.opacity = layerOpacity(from) * (1 - progress);
   } else if (from.visible === false && to.visible === false) copy.visible = false;
   if (from.type === 'text' && to.type === 'text') {
+    snapTextVariableBindings(copy, from, to, progress);
     for (const property of textNodeNumericProperties) {
       const hasStart = Object.prototype.hasOwnProperty.call(from, property);
       const hasEnd = Object.prototype.hasOwnProperty.call(to, property);
@@ -467,7 +596,9 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
         else delete copy[property];
       } else copy[property] = start + (end - start) * progress;
     }
-    const textRuns = interpolateTextRuns(from.textRuns, to.textRuns, progress);
+    const textRuns = hasTextTypographyBinding(from) || hasTextTypographyBinding(to)
+      ? null
+      : interpolateTextRuns(from.textRuns, to.textRuns, progress, from, to);
     if (textRuns) copy.textRuns = textRuns;
     else snapProperty(copy, from, to, 'textRuns', progress);
   }
@@ -498,6 +629,22 @@ function finiteStyleNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function hasTextTypographyBinding(node) {
+  return Boolean(node?.textStyleId || node?.textVariableId
+    || textVariableBindingProperties.some(property => node?.variableBindings?.[property]));
+}
+
+function snapTextVariableBindings(copy, from, to, progress) {
+  const source = progress < 0.5 ? from : to;
+  const bindings = { ...(copy.variableBindings || {}) };
+  for (const property of textVariableBindingProperties) delete bindings[property];
+  for (const property of textVariableBindingProperties) {
+    if (source.variableBindings?.[property]) bindings[property] = source.variableBindings[property];
+  }
+  if (Object.keys(bindings).length) copy.variableBindings = bindings;
+  else delete copy.variableBindings;
+}
+
 function shortestRotationDelta(from, to) {
   const difference = (to % 360) - (from % 360);
   const wrapped = ((difference % 360) + 360) % 360;
@@ -513,24 +660,29 @@ function interpolateRotation(from, to, progress) {
   return start + shortestRotationDelta(start, end) * progress;
 }
 
-function interpolateTextRuns(fromRuns, toRuns, progress) {
-  if (!Array.isArray(fromRuns) || !Array.isArray(toRuns) || fromRuns.length !== toRuns.length) return null;
-  if (fromRuns.some((run, index) => run.text !== toRuns[index].text)) return null;
+function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
+  if (!Array.isArray(fromRuns) || !Array.isArray(toRuns) || fromRuns.length !== toRuns.length
+    || typeof fromNode?.text !== 'string' || fromNode.text !== toNode?.text
+    || fromRuns.map(run => run?.text).join('') !== fromNode.text
+    || toRuns.map(run => run?.text).join('') !== toNode.text
+    || fromRuns.some((run, index) => !run || !toRuns[index] || typeof run.text !== 'string' || run.text !== toRuns[index].text)) return null;
 
   return toRuns.map((toRun, index) => {
     const fromRun = fromRuns[index];
-    const run = structuredClone(toRun);
+    const run = structuredClone(progress < 0.5 ? fromRun : toRun);
     for (const property of textRunNumericProperties) {
-      const start = finiteStyleNumber(fromRun[property]);
-      const end = finiteStyleNumber(toRun[property]);
+      if (fromRun[property] == null && toRun[property] == null) continue;
+      const inherited = textRunInheritanceDefaults[property];
+      const start = finiteStyleNumber(fromRun[property] ?? fromNode[property] ?? inherited);
+      const end = finiteStyleNumber(toRun[property] ?? toNode[property] ?? inherited);
       if (start === null || end === null) continue;
-      run[property] = progress === 0 ? fromRun[property]
-        : progress === 1 ? toRun[property]
-          : start + (end - start) * progress;
+      run[property] = start + (end - start) * progress;
     }
-    if (fromRun.color != null && toRun.color != null) {
-      const color = interpolateColor(fromRun.color, toRun.color, progress);
-      if (color) run.color = progress === 0 ? fromRun.color : progress === 1 ? toRun.color : color;
+    if (fromRun.color != null || toRun.color != null) {
+      const start = fromRun.color ?? fromNode.color ?? '#1e1e1e';
+      const end = toRun.color ?? toNode.color ?? '#1e1e1e';
+      const color = interpolateColor(start, end, progress);
+      if (color) run.color = color;
     }
     return run;
   });
@@ -558,6 +710,12 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null)
 export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
   if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
   const amount = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
+  // Return the authored snapshots at the endpoints. Building the transition
+  // tree from the destination and snapping only known fields can otherwise
+  // leak destination-only metadata into the source frame, and zero-opacity
+  // entering layers can still affect masks or hit testing in some renderers.
+  if (amount === 0) return structuredClone(fromFrame);
+  if (amount === 1) return structuredClone(toFrame);
   const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
   const frame = structuredClone(toFrame);
   snapProperties(frame, fromFrame, toFrame, amount);

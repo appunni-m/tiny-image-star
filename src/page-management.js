@@ -46,6 +46,7 @@ export function duplicatePage(document, pageId, { createId = prefix => `${prefix
           interaction.destinationId = ids.get(interaction.destinationId);
           interaction.destinationPageId = newPageId;
         }
+        if (ids.has(interaction.scrollTargetId)) interaction.scrollTargetId = ids.get(interaction.scrollTargetId);
       }
       for (const child of item.children || []) rewrite(child);
     };

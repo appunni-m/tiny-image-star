@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #20232a;
   background: #f3f4f6;
@@ -104,6 +104,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layer-chevron:focus-visible { outline: 2px solid #0d99ff; outline-offset: 1px; }
 .layer-icon { display: grid; place-items: center; width: 14px; height: 16px; flex: 0 0 14px; color: #777; }
 .layer-name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; font-size: 11px; }
+.layer-reorder-handle { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; padding: 0; border-radius: 5px; color: var(--muted, #777); background: transparent; font-size: 17px; line-height: 1; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.layer-reorder-handle:hover, .layer-reorder-handle:active { color: var(--ink, #333); background: var(--surface-hover, #eceff3); }
+.layer-reorder-handle:active { cursor: grabbing; }
+.layer-reorder-handle:focus-visible { outline: 2px solid var(--focus-ring, #0d99ff); outline-offset: -2px; }
 .layer-order-control { display: none; width: 21px; height: 21px; flex: 0 0 21px; padding: 0; border-radius: 4px; color: #777; font-size: 12px; line-height: 1; touch-action: manipulation; }
 .layer-actions-menu { display: none; width: 21px; height: 21px; flex: 0 0 21px; place-items: center; padding: 0; border-radius: 4px; color: #777; font-size: 17px; line-height: 1; touch-action: manipulation; }
 .layer-row:hover .layer-order-control, .layer-row.is-selected .layer-order-control, .layer-row:focus-within .layer-order-control { display: grid; place-items: center; }
@@ -286,6 +290,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 #scene-canvas.tool-hand, #scene-canvas.is-panning { cursor: grab; }
 #scene-canvas.is-panning { cursor: grabbing; }
 #scene-canvas.tool-frame, #scene-canvas.tool-section, #scene-canvas.tool-rectangle, #scene-canvas.tool-ellipse, #scene-canvas.tool-line, #scene-canvas.tool-polygon, #scene-canvas.tool-star, #scene-canvas.tool-pen, #scene-canvas.tool-pencil { cursor: crosshair; }
+#scene-canvas.tool-eyedropper { cursor: crosshair; }
 #scene-canvas.tool-text { cursor: text; }
 .canvas-drop-overlay { display: none; position: absolute; inset: 12px; place-items: center; border: 2px dashed #0d99ff; border-radius: 10px; background: rgba(226,244,255,.82); color: #0879cb; font-size: 14px; font-weight: 600; pointer-events: none; }
 .canvas-drop-overlay.is-visible { display: grid; }
@@ -442,6 +447,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .auto-layout-variable-bindings { margin: 9px 0 2px; padding-top: 8px; border-top: 1px solid var(--line); }
 .auto-layout-variable-bindings > summary { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .auto-layout-variable-bindings[open] > summary { margin-bottom: 7px; }
+.grid-track-editor { margin-top: 8px; border-top: 1px solid var(--line); }
+.grid-track-editor > summary { min-height: 36px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
+.grid-track-list { display: grid; gap: 6px; }
+.grid-track-row { min-width: 0; display: grid; grid-template-columns: minmax(48px, .65fr) minmax(96px, 1.2fr) minmax(78px, .9fr); align-items: center; gap: 6px; }
+.grid-track-name { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.grid-track-row .select-field { width: 100%; height: 34px; padding-inline: 5px; }
+.grid-track-value { min-width: 0; height: 34px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9px; }
+.grid-track-value input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; text-align: right; }
+.grid-track-content { grid-column: 3; overflow: hidden; color: var(--muted); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .fill-row { display: flex; align-items: center; gap: 7px; height: 29px; }
 .color-swatch { position: relative; width: 24px; height: 24px; overflow: hidden; border: 1px solid #d9d9d9; border-radius: 5px; background: conic-gradient(#fff 25%, #ddd 0 50%, #fff 0 75%, #ddd 0) 0 0/8px 8px; }
 .color-swatch input { position: absolute; inset: -5px; width: 34px; height: 34px; opacity: 0; cursor: pointer; }
@@ -475,6 +489,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layer-effect-heading strong { flex: 1; font-weight: 600; }
 .layer-effect-heading label, .effect-color-row label { display: flex; align-items: center; gap: 6px; color: #777; font-size: 10px; }
 .stroke-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; align-items: end; }
+.stroke-paint-controls { grid-column: 1 / -1; display: grid; gap: 5px; min-width: 0; }
+.stroke-gradient-controls { min-width: 0; }
+.stroke-gradient-controls > .stroke-field { max-width: 50%; }
 .stroke-field { min-width: 0; display: grid; gap: 4px; color: #777; font-size: 10px; }
 .stroke-field input, .stroke-field select { width: 100%; min-width: 0; height: 32px; padding: 0 7px; border: 1px solid #e6e6e6; border-radius: 5px; background: #fff; color: #333; font-size: 11px; }
 .stroke-field input[type=color] { padding: 3px; }
@@ -486,6 +503,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .effect-opacity { flex: 1; }
 .effect-opacity input[type=range] { width: 100%; min-width: 40px; }
 .effect-opacity output { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.glass-effect-slider { display: grid; grid-template-columns: minmax(0, 1fr) 38px; align-items: center; gap: 3px 8px; width: 100%; color: var(--muted); font-size: 11px; }
+.glass-effect-slider > span { grid-column: 1 / -1; }
+.glass-effect-slider input[type=range] { grid-column: 1; }
+.glass-effect-slider output { grid-column: 2; }
+.glass-angle-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, .5fr) auto; align-items: center; gap: 8px; margin-block: 2px; color: var(--muted); font-size: 11px; }
+.glass-angle-field input { width: 100%; min-width: 0; height: 32px; padding-inline: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--ink); font-size: 13px; }
+.glass-angle-field input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.glass-angle-field b { color: var(--muted); font-weight: 500; }
+.effect-clip { display: flex; align-items: center; gap: 8px; min-height: 36px; color: #666; font-size: 12px; }
+.effect-clip input { width: 16px; height: 16px; margin: 0; accent-color: #0d99ff; }
 .export-setting-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .export-setting-row label { min-width: 0; display: grid; gap: 4px; color: #777; font-size: 9px; }
 .export-setting-row .select-field, .export-suffix input { width: 100%; min-width: 0; height: 28px; }
@@ -603,6 +630,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .context-menu button .shortcut { margin-left: auto; color: #9b9b9b; font-size: 10px; }
 .context-menu .menu-separator { height: 1px; margin: 4px 5px; background: #eee; }
 .context-menu .menu-label { padding: 7px 9px 4px; color: #999; font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.context-menu button[role="menuitemradio"] { gap: 8px; }
+.context-menu button[role="menuitemradio"]::before { width: 14px; color: var(--muted); content: "○"; font-size: 13px; }
+.context-menu button[role="menuitemradio"][aria-checked="true"]::before { color: var(--blue); content: "●"; }
 .context-menu .recipe-option::before { content: '✦'; color: #8a5ce0; }
 .context-menu .recipe-option.is-empty { color: #999; cursor: default; }
 .bulk-bar { z-index: 12; position: fixed; left: 50%; bottom: 82px; transform: translateX(-50%); width: min(850px, calc(100vw - 32px)); min-height: 66px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(135px, .8fr) minmax(210px, 1fr) auto; align-items: center; gap: 19px; padding: 10px 13px; border: 1px solid #dedede; border-radius: 10px; background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
@@ -722,11 +752,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .text-format-button[data-paragraph-align="right"]::before { background-size: 16px 1.5px, 11px 1.5px, 14px 1.5px; background-position: right top, right center, right bottom; }
 .text-format-button[data-paragraph-align="justify"]::before { background-size: 16px 1.5px, 16px 1.5px, 16px 1.5px; background-position: left top, left center, left bottom; }
 .text-format-button[aria-pressed="true"] { border-color: #9bcfff; background: #eaf5ff; color: #087dcc; }
-.text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
+.text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { height: 32px; display: flex; align-items: center; gap: 4px; padding: 0 5px; border: 1px solid #e5e5e5; border-radius: 6px; color: #777; font-size: 9px; white-space: nowrap; }
 .text-format-size-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-line-height-label input { width: 44px; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-color-label input { width: 25px; height: 25px; padding: 1px; border: 0; background: transparent; }
-.text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-decoration-label select { min-width: 0; width: 100%; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
+.text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { min-width: 0; width: 100%; height: 27px; padding: 0 3px; border: 0; background: transparent; color: #333; font-size: 11px; }
 .text-format-done { min-width: 44px; padding: 0 7px; background: #1e1e1e; color: #fff; font-size: 10px; }
 .presentation-dialog { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; overflow: hidden; border: 0; background: #333; color: #f1f3f7; }
 .presentation-dialog::backdrop { background: #222; }
@@ -763,9 +793,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .left-panel.is-open, .right-panel.is-open { transform: translateX(0); visibility: visible; transition-delay: 0s, 0s; }
   .mobile-scrim.is-visible { z-index: 8; display: block; position: absolute; inset: 45px 0 0; background: rgba(0,0,0,.14); }
   .layer-row { height: auto; min-height: 40px; max-width: 100%; overflow: hidden; gap: 3px; padding-left: min(var(--layer-indent), 18px) !important; }
-  .layer-chevron, .layer-chevron-placeholder { width: 40px; height: 40px; flex-basis: 40px; }
-  .layer-chevron { width: 40px; height: 40px; flex: 0 0 40px; display: grid; place-items: center; }
+  .layer-chevron, .layer-chevron-placeholder { width: 36px; height: 40px; flex-basis: 36px; }
+  .layer-chevron { width: 36px; height: 40px; flex: 0 0 36px; display: grid; place-items: center; }
   .layer-icon { width: 18px; height: 40px; flex-basis: 18px; }
+  .layer-reorder-handle { width: 32px; height: 40px; flex-basis: 32px; }
   .layer-order-control { width: 40px; height: 40px; flex-basis: 40px; }
   .layer-visibility { width: 40px; height: 40px; flex-basis: 40px; }
   .layer-row .layer-order-control, .layer-row .layer-visibility, .layer-row .layer-actions-menu { flex-shrink: 0; }
@@ -775,6 +806,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layers-heading .tiny-icon-button { width: 40px; height: 40px; }
   .layer-select-mode { min-width: 52px; min-height: 40px; padding: 0 8px; font-size: 11px; }
   .add-fill { height: auto; min-height: 40px; font-size: 12px; }
+  .vector-point-actions .add-fill { min-height: 44px; }
   .recipe-picker { min-height: 40px; font-size: 12px; }
   .recipe-save-button, .recipe-apply-button { min-height: 44px; font-size: 12px; }
   .property-section .primary-button.recipe-apply-button { height: auto; min-height: 44px; }
@@ -810,9 +842,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .stroke-field-grid { gap: 8px; }
   .stroke-field { min-width: 0; font-size: 11px; }
   .stroke-field input, .stroke-field select { height: 40px; font-size: 12px; }
+  .stroke-gradient-controls .gradient-stop-row input[type=color], .stroke-gradient-controls .gradient-stop-row input[type=number] { height: 40px; }
+  .stroke-gradient-controls .gradient-stop-row .tiny-icon-button { width: 40px; height: 40px; }
   .stroke-opacity-row { grid-template-columns: 62px minmax(0, 1fr) 34px; }
   .effect-color-row input[type=color] { width: 36px; height: 34px; }
   .effect-opacity output { min-width: 36px; }
+  .effect-clip { min-height: 44px; font-size: 13px; }
+  .effect-clip input { width: 20px; height: 20px; }
   .prototype-controls #prototype-delay { min-height: 44px; margin-top: 0; }
   .prototype-interaction-row { min-height: 48px; gap: 5px; }
   .prototype-edit-button { min-width: 46px; min-height: 44px; font-size: 10px; }
@@ -833,9 +869,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .gradient-stop-row input[type=color], .gradient-stop-row input[type=number] { height: 36px; font-size: 12px; }
   .text-format-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; width: min(360px, calc(100% - 16px)); padding: 5px; overflow-y: auto; max-height: min(360px, 50dvh); overscroll-behavior: contain; }
   .text-format-button, .text-format-done { min-width: 40px; height: 44px; font-size: 14px; }
-  .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
+  .text-format-size-label, .text-format-line-height-label, .text-format-color-label, .text-format-family-label, .text-format-weight-label, .text-format-spacing-label, .text-format-baseline-shift-label, .text-format-decoration-label { box-sizing: border-box; width: 100%; min-width: 40px; height: 44px; justify-content: center; padding: 0 3px; font-size: 9px; }
   .text-format-family-label { grid-column: span 4; }
-  .text-format-size-label input, .text-format-line-height-label input, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-decoration-label select { box-sizing: border-box; width: min(100%, 58px); min-width: 40px; height: 40px; font-size: 13px; }
+  .text-format-size-label input, .text-format-line-height-label input, .text-format-family-label input, .text-format-weight-label select, .text-format-spacing-label input, .text-format-baseline-shift-label input, .text-format-decoration-label select { box-sizing: border-box; width: min(100%, 58px); min-width: 40px; height: 40px; font-size: 13px; }
   .text-format-family-label input { width: 100%; }
   .text-format-color-label input { width: 40px; min-width: 40px; height: 40px; flex: 0 0 40px; }
   .text-format-done { min-width: 52px; padding: 0 5px; font-size: 11px; }
@@ -855,6 +891,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layout-guide-appearance input[type="color"] { width: 40px; height: 38px; }
   .layout-guide-opacity { grid-template-columns: 46px minmax(0, 1fr) 38px; }
   .layout-guide-opacity input { min-height: 28px; }
+  .grid-track-editor > summary { min-height: 44px; font-size: 12px; }
+  .grid-track-row { grid-template-columns: minmax(42px, .55fr) minmax(88px, 1.1fr) minmax(72px, .85fr); gap: 5px; }
+  .grid-track-name { font-size: 11px; }
+  .grid-track-row .select-field, .grid-track-value { height: 42px; min-height: 42px; font-size: 12px; }
+  .grid-track-value { grid-template-columns: auto minmax(0, 1fr); padding-inline: 4px; }
+  .grid-track-value input { min-height: 38px; font-size: 16px; }
+  .grid-track-content { font-size: 10px; }
   .inspect-panel { gap: 10px; padding: 10px; }
   .inspector-tabs { justify-content: space-between; }
   .inspector-tab { min-width: 0; padding: 0 4px; font-size: 10px; }
@@ -1125,12 +1168,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .left-panel, .right-panel, .layers-list, .inspector-content { overscroll-behavior: contain; }
   .layer-row { min-height: 44px; }
   .layer-chevron, .layer-icon { height: 44px; }
+  .layer-reorder-handle { width: 32px; height: 44px; flex-basis: 32px; touch-action: none; }
   .layer-row .layer-order-control, .layer-row .layer-visibility {
     width: 44px;
     height: 44px;
     flex: 0 0 44px;
     border-radius: 8px;
   }
+  .layer-row .layer-visibility { width: 44px; height: 44px; flex: 0 0 44px; }
   .layer-row .layer-actions-menu { width: 44px; height: 44px; flex: 0 0 44px; border-radius: 8px; }
   .layer-row.is-selected .layer-order-control,
   .layer-row.is-selected .layer-visibility,
@@ -1145,9 +1190,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
   .inspector-tabs { flex-basis: 48px; gap: 3px; padding-inline: 6px; }
   .inspector-tab { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 6px; }
+  .grid-track-row .select-field, .grid-track-value { min-height: 44px; height: 44px; }
+  .grid-track-value input { min-height: 42px; font-size: 16px; }
   .corner-radius-controls .property-field { height: 44px; min-height: 44px; }
   .corner-radius-controls .property-field input { min-height: 42px; font-size: 16px; }
-  .property-section button:not(.tiny-icon-button) { min-height: 40px; }
+  .property-section :where(button:not(.tiny-icon-button)) { min-height: 44px; }
   .property-section .tiny-icon-button { width: 40px; min-width: 40px; height: 40px; }
   .property-section .add-fill, .property-section .primary-button, .property-section .secondary-button { min-height: 44px; }
   .bottom-toolbar { min-height: 58px; }
@@ -1160,8 +1207,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 /* Match the editor chrome to the device appearance while keeping the artwork
    itself untouched. The canvas remains a neutral dark work surface in both
    themes so selection colors and transparent pixels stay easy to inspect. */
-@media (prefers-color-scheme: dark) {
-  :root {
+
+  :root[data-theme="dark"] {
     color-scheme: dark;
     color: #e6e9ef;
     background: #1b1d22;
@@ -1178,133 +1225,263 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     --panel-shadow: 0 16px 40px rgba(0,0,0,.5), 0 3px 10px rgba(0,0,0,.3);
   }
 
-  body, .app-shell, .workspace { color: var(--ink); background: #1b1d22; }
-  .topbar { background: rgba(36,38,45,.98); border-bottom-color: var(--border); box-shadow: 0 1px 0 rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.18); }
-  .brand-mark { background: linear-gradient(145deg, #0d99ff, #7457df); }
-  .topbar-button, .icon-button, .canvas-action-button, .tiny-icon-button { color: #c4c9d2; }
-  .topbar-button:hover, .icon-button:hover, .canvas-action-button:hover, .tiny-icon-button:hover,
-  .page-row:hover, .layer-row:hover, .tool-button:hover { background: var(--surface-hover); }
-  .document-name { color: #f0f2f6; }
-  .document-name:hover, .document-name:focus { border-color: #4c515d; background: #30333a; }
-  .save-state, .chevron, .section-heading, .sidebar-tab, .inspector-tab,
-  .prototype-placeholder, .prototype-hint, .prototype-empty-links,
-  .empty-sidebar, .inspector-empty, .inspect-intro > small { color: #a3a9b3; }
-  .mode-switcher { border-color: #424650; background: #30333a; }
-  .workspace, .left-panel, .right-panel { background: #25272e; }
-  .left-panel { border-right-color: var(--border); }
-  .right-panel { border-left-color: var(--border); }
-  .sidebar-tabs, .inspector-tabs, .pages-section, .property-section,
-  .sidebar-footer, .inspector-footer { border-color: var(--border); }
-  .sidebar-tab.is-active, .inspector-tab.is-active, .property-heading,
-  .inspect-intro > strong, .inspect-empty strong, .prototype-current-frame,
-  .prototype-help strong, .local-library-header, .layer-name { color: #e0e4eb; }
-  .sidebar-tab.is-active::after, .inspector-tab.is-active::after { background: #38a8ff; }
-  .page-row, .layer-row, .multi-align-button, .add-fill { color: #c5cad3; }
-  .page-row.is-active { color: #eef7ff; background: #263b4d; box-shadow: inset 2px 0 0 #38a8ff; }
-  .layer-row.is-selected { color: #a8dcff; background: #23394b; box-shadow: inset 0 0 0 1px rgba(56,168,255,.22); }
-  .layer-select-mode, .layer-search-wrap input, .select-field, .color-value,
-  .fill-opacity, .export-suffix input, .layout-guide-heading select,
-  .layout-guide-field input, .layout-guide-field select,
-  .gradient-stop-row input[type=number], .gradient-stop-row input[type=color], .text-field,
-  .variable-value, .component-property-definition, .multi-align-button,
-  .export-button, .secondary-button, .bar-action, .text-format-button,
-  .text-format-size-label, .text-format-line-height-label, .text-format-family-label,
-  .text-format-weight-label, .text-format-spacing-label, .text-format-decoration-label {
+  :root[data-theme="dark"] body,
+  :root[data-theme="dark"] .app-shell,
+  :root[data-theme="dark"] .workspace { color: var(--ink); background: #1b1d22; }
+  :root[data-theme="dark"] .topbar { background: rgba(36,38,45,.98); border-bottom-color: var(--border); box-shadow: 0 1px 0 rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.18); }
+  :root[data-theme="dark"] .brand-mark { background: linear-gradient(145deg, #0d99ff, #7457df); }
+  :root[data-theme="dark"] .topbar-button,
+  :root[data-theme="dark"] .icon-button,
+  :root[data-theme="dark"] .canvas-action-button,
+  :root[data-theme="dark"] .tiny-icon-button { color: #c4c9d2; }
+  :root[data-theme="dark"] .topbar-button:hover,
+  :root[data-theme="dark"] .icon-button:hover,
+  :root[data-theme="dark"] .canvas-action-button:hover,
+  :root[data-theme="dark"] .tiny-icon-button:hover,
+  :root[data-theme="dark"] .page-row:hover,
+  :root[data-theme="dark"] .layer-row:hover,
+  :root[data-theme="dark"] .tool-button:hover { background: var(--surface-hover); }
+  :root[data-theme="dark"] .document-name { color: #f0f2f6; }
+  :root[data-theme="dark"] .document-name:hover,
+  :root[data-theme="dark"] .document-name:focus { border-color: #4c515d; background: #30333a; }
+  :root[data-theme="dark"] .save-state,
+  :root[data-theme="dark"] .chevron,
+  :root[data-theme="dark"] .section-heading,
+  :root[data-theme="dark"] .sidebar-tab,
+  :root[data-theme="dark"] .inspector-tab,
+  :root[data-theme="dark"] .prototype-placeholder,
+  :root[data-theme="dark"] .prototype-hint,
+  :root[data-theme="dark"] .prototype-empty-links,
+  :root[data-theme="dark"] .empty-sidebar,
+  :root[data-theme="dark"] .inspector-empty,
+  :root[data-theme="dark"] .inspect-intro > small { color: #a3a9b3; }
+  :root[data-theme="dark"] .mode-switcher { border-color: #424650; background: #30333a; }
+  :root[data-theme="dark"] .workspace,
+  :root[data-theme="dark"] .left-panel,
+  :root[data-theme="dark"] .right-panel { background: #25272e; }
+  :root[data-theme="dark"] .left-panel { border-right-color: var(--border); }
+  :root[data-theme="dark"] .right-panel { border-left-color: var(--border); }
+  :root[data-theme="dark"] .sidebar-tabs,
+  :root[data-theme="dark"] .inspector-tabs,
+  :root[data-theme="dark"] .pages-section,
+  :root[data-theme="dark"] .property-section,
+  :root[data-theme="dark"] .sidebar-footer,
+  :root[data-theme="dark"] .inspector-footer { border-color: var(--border); }
+  :root[data-theme="dark"] .sidebar-tab.is-active,
+  :root[data-theme="dark"] .inspector-tab.is-active,
+  :root[data-theme="dark"] .property-heading,
+  :root[data-theme="dark"] .inspect-intro > strong,
+  :root[data-theme="dark"] .inspect-empty strong,
+  :root[data-theme="dark"] .prototype-current-frame,
+  :root[data-theme="dark"] .prototype-help strong,
+  :root[data-theme="dark"] .local-library-header,
+  :root[data-theme="dark"] .layer-name { color: #e0e4eb; }
+  :root[data-theme="dark"] .sidebar-tab.is-active::after,
+  :root[data-theme="dark"] .inspector-tab.is-active::after { background: #38a8ff; }
+  :root[data-theme="dark"] .page-row,
+  :root[data-theme="dark"] .layer-row,
+  :root[data-theme="dark"] .multi-align-button,
+  :root[data-theme="dark"] .add-fill { color: #c5cad3; }
+  :root[data-theme="dark"] .page-row.is-active { color: #eef7ff; background: #263b4d; box-shadow: inset 2px 0 0 #38a8ff; }
+  :root[data-theme="dark"] .layer-row.is-selected { color: #a8dcff; background: #23394b; box-shadow: inset 0 0 0 1px rgba(56,168,255,.22); }
+  :root[data-theme="dark"] .layer-select-mode,
+  :root[data-theme="dark"] .layer-search-wrap input,
+  :root[data-theme="dark"] .select-field,
+  :root[data-theme="dark"] .color-value,
+  :root[data-theme="dark"] .fill-opacity,
+  :root[data-theme="dark"] .export-suffix input,
+  :root[data-theme="dark"] .layout-guide-heading select,
+  :root[data-theme="dark"] .layout-guide-field input,
+  :root[data-theme="dark"] .layout-guide-field select,
+  :root[data-theme="dark"] .gradient-stop-row input[type=number],
+  :root[data-theme="dark"] .gradient-stop-row input[type=color],
+  :root[data-theme="dark"] .text-field,
+  :root[data-theme="dark"] .variable-value,
+  :root[data-theme="dark"] .component-property-definition,
+  :root[data-theme="dark"] .multi-align-button,
+  :root[data-theme="dark"] .export-button,
+  :root[data-theme="dark"] .secondary-button,
+  :root[data-theme="dark"] .bar-action,
+  :root[data-theme="dark"] .text-format-button,
+  :root[data-theme="dark"] .text-format-size-label,
+  :root[data-theme="dark"] .text-format-line-height-label,
+  :root[data-theme="dark"] .text-format-family-label,
+  :root[data-theme="dark"] .text-format-weight-label,
+  :root[data-theme="dark"] .text-format-spacing-label,
+  :root[data-theme="dark"] .text-format-baseline-shift-label,
+  :root[data-theme="dark"] .text-format-decoration-label {
     color: #e0e4eb;
     border-color: #454953;
     background-color: #30333a;
   }
-  .layer-search-wrap input, .variable-value, .text-field, .comment-compose textarea,
-  .property-field, .size-limit-field, .multi-selection-card,
-  .local-library-card, .variable-collection-card, .component-property-definition,
-  .typography-style-row, .layer-effect-card, .export-setting-row, .layout-guide-card,
-  .inspect-layer-card, .inspect-code-card, .comment-thread-row, .comment-message,
-  .design-file-row, .slot-picker-list, .recipe-preview {
+  :root[data-theme="dark"] .layer-search-wrap input,
+  :root[data-theme="dark"] .variable-value,
+  :root[data-theme="dark"] .text-field,
+  :root[data-theme="dark"] .comment-compose textarea,
+  :root[data-theme="dark"] .property-field,
+  :root[data-theme="dark"] .size-limit-field,
+  :root[data-theme="dark"] .multi-selection-card,
+  :root[data-theme="dark"] .local-library-card,
+  :root[data-theme="dark"] .variable-collection-card,
+  :root[data-theme="dark"] .component-property-definition,
+  :root[data-theme="dark"] .typography-style-row,
+  :root[data-theme="dark"] .layer-effect-card,
+  :root[data-theme="dark"] .export-setting-row,
+  :root[data-theme="dark"] .layout-guide-card,
+  :root[data-theme="dark"] .inspect-layer-card,
+  :root[data-theme="dark"] .inspect-code-card,
+  :root[data-theme="dark"] .comment-thread-row,
+  :root[data-theme="dark"] .comment-message,
+  :root[data-theme="dark"] .design-file-row,
+  :root[data-theme="dark"] .slot-picker-list,
+  :root[data-theme="dark"] .recipe-preview {
     color: #e0e4eb;
     border-color: #3e424b;
     background-color: #2a2d34;
   }
-  .property-field, .size-limit-field { background: #30333a; }
-  .property-field:focus-within, .size-limit-field:focus-within { background: #383c45; }
-  .property-field input, .size-limit-field input, .color-value, .fill-opacity,
-  .gradient-stop-row input[type=number], .text-format-size-label input,
-  .text-format-line-height-label input, .text-format-family-label input,
-  .text-format-weight-label select, .text-format-spacing-label input,
-  .text-format-decoration-label select { color: #edf0f5; }
-  .layer-search-wrap input:focus, .select-field:focus, .color-value:focus,
-  .fill-opacity:focus, .export-suffix input:focus, .gradient-stop-row input:focus,
-  .text-field:focus { border-color: #55aff1; }
-  .layer-select-mode:hover, .page-row:hover, .layer-row:hover,
-  .component-card:hover, .color-style-card:hover,
-  .local-library-publish:hover:not(:disabled), .local-library-component:hover,
-  .add-fill:hover, .variable-apply:hover, .typography-style-apply:hover,
-  .inspect-copy:hover, .context-menu button:hover:not(:disabled),
-  .slot-picker-row:hover, .design-file-actions button:hover,
-  .comment-thread-row:hover, .export-button:hover, .secondary-button:hover,
-  .comment-text-button:hover, .bar-action:hover { background-color: #373b44; }
-  .empty-layer-icon, .variable-type-badge, .component-card-icon,
-  .typography-style-mark, .comment-compose, .comments-empty > span,
-  .prototype-interaction-icon, .prototype-connect-hint, .property-field,
-  .size-limit-field, .layer-effect-card, .export-setting-row,
-  .layout-guide-card, .component-slot-value, .recipe-preview {
+  :root[data-theme="dark"] .property-field,
+  :root[data-theme="dark"] .size-limit-field { background: #30333a; }
+  :root[data-theme="dark"] .property-field:focus-within,
+  :root[data-theme="dark"] .size-limit-field:focus-within { background: #383c45; }
+  :root[data-theme="dark"] .property-field input,
+  :root[data-theme="dark"] .size-limit-field input,
+  :root[data-theme="dark"] .color-value,
+  :root[data-theme="dark"] .fill-opacity,
+  :root[data-theme="dark"] .gradient-stop-row input[type=number],
+  :root[data-theme="dark"] .text-format-size-label input,
+  :root[data-theme="dark"] .text-format-line-height-label input,
+  :root[data-theme="dark"] .text-format-family-label input,
+  :root[data-theme="dark"] .text-format-weight-label select,
+  :root[data-theme="dark"] .text-format-spacing-label input,
+  :root[data-theme="dark"] .text-format-baseline-shift-label input,
+  :root[data-theme="dark"] .text-format-decoration-label select { color: #edf0f5; }
+  :root[data-theme="dark"] .layer-search-wrap input:focus,
+  :root[data-theme="dark"] .select-field:focus,
+  :root[data-theme="dark"] .color-value:focus,
+  :root[data-theme="dark"] .fill-opacity:focus,
+  :root[data-theme="dark"] .export-suffix input:focus,
+  :root[data-theme="dark"] .gradient-stop-row input:focus,
+  :root[data-theme="dark"] .text-field:focus { border-color: #55aff1; }
+  :root[data-theme="dark"] .layer-select-mode:hover,
+  :root[data-theme="dark"] .page-row:hover,
+  :root[data-theme="dark"] .layer-row:hover,
+  :root[data-theme="dark"] .component-card:hover,
+  :root[data-theme="dark"] .color-style-card:hover,
+  :root[data-theme="dark"] .local-library-publish:hover:not(:disabled),
+  :root[data-theme="dark"] .local-library-component:hover,
+  :root[data-theme="dark"] .add-fill:hover,
+  :root[data-theme="dark"] .variable-apply:hover,
+  :root[data-theme="dark"] .typography-style-apply:hover,
+  :root[data-theme="dark"] .inspect-copy:hover,
+  :root[data-theme="dark"] .context-menu button:hover:not(:disabled),
+  :root[data-theme="dark"] .slot-picker-row:hover,
+  :root[data-theme="dark"] .design-file-actions button:hover,
+  :root[data-theme="dark"] .comment-thread-row:hover,
+  :root[data-theme="dark"] .export-button:hover,
+  :root[data-theme="dark"] .secondary-button:hover,
+  :root[data-theme="dark"] .comment-text-button:hover,
+  :root[data-theme="dark"] .bar-action:hover { background-color: #373b44; }
+  :root[data-theme="dark"] .empty-layer-icon,
+  :root[data-theme="dark"] .variable-type-badge,
+  :root[data-theme="dark"] .component-card-icon,
+  :root[data-theme="dark"] .typography-style-mark,
+  :root[data-theme="dark"] .comment-compose,
+  :root[data-theme="dark"] .comments-empty > span,
+  :root[data-theme="dark"] .prototype-interaction-icon,
+  :root[data-theme="dark"] .prototype-connect-hint,
+  :root[data-theme="dark"] .property-field,
+  :root[data-theme="dark"] .size-limit-field,
+  :root[data-theme="dark"] .layer-effect-card,
+  :root[data-theme="dark"] .export-setting-row,
+  :root[data-theme="dark"] .layout-guide-card,
+  :root[data-theme="dark"] .component-slot-value,
+  :root[data-theme="dark"] .recipe-preview {
     background-color: #30333a;
     border-color: #424650;
   }
-  .sidebar-footer, .inspector-footer { background: #22242a; }
-  .local-library-header small, .local-library-component small,
-  .inspect-layer-card > header span, .inspect-layer-card dt,
-  .inspect-text-value > span, .inspect-code-card > header span,
-  .inspect-code-card > p, .prototype-controls label, .prototype-help,
-  .multi-selection-card span, .bulk-info span, .bulk-progress-wrap,
-  .speed-control, .speed-control output { color: #a6acb6; }
-  .inspect-layer-card > header { border-bottom-color: #3b3e47; }
-  .inspect-layer-card > header strong, .inspect-layer-card dd,
-  .inspect-text-value p, .inspect-code-card > header strong,
-  .inspect-copy, .prototype-interaction-copy strong { color: #d6dae2; }
-  .inspect-copy, .design-file-actions button { border-color: #454953; background: #30333a; }
-  .inspect-json-card details { border-top-color: #3b3e47; }
-  .inspect-json-card summary { color: #b3b8c2; }
-  .inspect-code-card pre { background: #17191e; color: #e2e6ee; }
-  .canvas-region { background-color: var(--canvas-base); }
-  .canvas-topline { color: #d8dde5; border-bottom-color: rgba(0,0,0,.45); background: rgba(35,38,45,.94); }
-  .canvas-breadcrumb, .crumb-file { color: #c4cad4; }
-  .canvas-action-button.is-active, .tool-button.is-selected,
-  .text-format-button[aria-pressed="true"] { color: #9dd8ff; border-color: #35617f; background: #263d50; }
-  .canvas-drop-overlay { border-color: #38a8ff; background: rgba(26,51,70,.93); color: #a4dcff; }
-  .zoom-controls, .bottom-toolbar { border-color: #454953; background: rgba(39,42,49,.98); }
-  .tool-button { color: #cbd0d9; }
-  .canvas-ruler { color: #d4d9e2; background: rgba(45,48,56,.93); }
-  .zoom-readout:hover { background: #3a3e47; }
-  .context-menu, .bulk-bar, .text-format-toolbar { color: #e6e9ef; border-color: #444852; background: rgba(39,42,49,.985); }
-  .context-menu .menu-separator { background: #444852; }
-  .context-menu button:disabled, .context-menu .menu-label,
-  .context-menu .recipe-option.is-empty { color: #858b96; }
-  .bulk-progress-track { background: #454953; }
-  .bar-action { background: #30333a; }
-  .bar-action.primary, .primary-button, .comment-mini-pin { color: #fff; background: var(--primary-action-bg); }
-  .modal, .design-library-content, .component-slot-dialog form { color: #e6e9ef; border-color: #444852; background: #272a31; }
-  .recipe-recovery-card { border-color: #454953; background: #30333a; }
-  .recipe-recovery-card strong { color: #e6e9ef; }
-  .recipe-recovery-card span { color: #b4bac4; }
-  .modal-copy, .field-label, .field-help, .slot-picker-count { color: #b4bac4; }
-  .local-font-row { border-color: #41454e; background: #30333a; }
-  .local-font-sample { background: #3b3545; color: #e3d8f2; }
-  .local-font-copy strong { color: #dfe2e8; }
-  .local-font-copy small, .local-fonts-empty { color: #a6acb6; }
-  .slot-picker-list { border-color: #41454e; background: #22242a; }
-  .slot-picker-row { color: #dde1e8; border-bottom-color: #393c44; }
-  .design-file-actions button, .secondary-button, .comment-text-button { color: #e0e4eb; }
-  .design-library-content > .dialog-actions { border-top-color: #41454e; background: rgba(39,42,49,.98); }
-  .recipe-preview { color: #d5c5ff; border-color: #564574; }
-  .text-editor-overlay { border-color: #55afff; background: rgba(34,36,42,.96); color: #f1f3f7; }
-  .text-format-toolbar { color: #e3e6ed; }
-  .mobile-scrim.is-visible { background: rgba(0,0,0,.52); }
-  .layer-row.is-selected .layer-order-control:not(:disabled),
-  .layer-row.is-selected .layer-visibility { color: #9dd8ff; background: #303b47; }
-  * { scrollbar-color: #555a66 #272a31; }
-  *::-webkit-scrollbar-thumb { background: #555a66; }
-  *::-webkit-scrollbar-thumb:hover { background-color: #707785; }
-}
+  :root[data-theme="dark"] .sidebar-footer,
+  :root[data-theme="dark"] .inspector-footer { background: #22242a; }
+  :root[data-theme="dark"] .local-library-header small,
+  :root[data-theme="dark"] .local-library-component small,
+  :root[data-theme="dark"] .inspect-layer-card > header span,
+  :root[data-theme="dark"] .inspect-layer-card dt,
+  :root[data-theme="dark"] .inspect-text-value > span,
+  :root[data-theme="dark"] .inspect-code-card > header span,
+  :root[data-theme="dark"] .inspect-code-card > p,
+  :root[data-theme="dark"] .prototype-controls label,
+  :root[data-theme="dark"] .prototype-help,
+  :root[data-theme="dark"] .multi-selection-card span,
+  :root[data-theme="dark"] .bulk-info span,
+  :root[data-theme="dark"] .bulk-progress-wrap,
+  :root[data-theme="dark"] .speed-control,
+  :root[data-theme="dark"] .speed-control output { color: #a6acb6; }
+  :root[data-theme="dark"] .inspect-layer-card > header { border-bottom-color: #3b3e47; }
+  :root[data-theme="dark"] .inspect-layer-card > header strong,
+  :root[data-theme="dark"] .inspect-layer-card dd,
+  :root[data-theme="dark"] .inspect-text-value p,
+  :root[data-theme="dark"] .inspect-code-card > header strong,
+  :root[data-theme="dark"] .inspect-copy,
+  :root[data-theme="dark"] .prototype-interaction-copy strong { color: #d6dae2; }
+  :root[data-theme="dark"] .inspect-copy,
+  :root[data-theme="dark"] .design-file-actions button { border-color: #454953; background: #30333a; }
+  :root[data-theme="dark"] .inspect-json-card details { border-top-color: #3b3e47; }
+  :root[data-theme="dark"] .inspect-json-card summary { color: #b3b8c2; }
+  :root[data-theme="dark"] .inspect-code-card pre { background: #17191e; color: #e2e6ee; }
+  :root[data-theme="dark"] .canvas-region { background-color: var(--canvas-base); }
+  :root[data-theme="dark"] .canvas-topline { color: #d8dde5; border-bottom-color: rgba(0,0,0,.45); background: rgba(35,38,45,.94); }
+  :root[data-theme="dark"] .canvas-breadcrumb,
+  :root[data-theme="dark"] .crumb-file { color: #c4cad4; }
+  :root[data-theme="dark"] .canvas-action-button.is-active,
+  :root[data-theme="dark"] .tool-button.is-selected,
+  :root[data-theme="dark"] .text-format-button[aria-pressed="true"] { color: #9dd8ff; border-color: #35617f; background: #263d50; }
+  :root[data-theme="dark"] .canvas-drop-overlay { border-color: #38a8ff; background: rgba(26,51,70,.93); color: #a4dcff; }
+  :root[data-theme="dark"] .zoom-controls,
+  :root[data-theme="dark"] .bottom-toolbar { border-color: #454953; background: rgba(39,42,49,.98); }
+  :root[data-theme="dark"] .tool-button { color: #cbd0d9; }
+  :root[data-theme="dark"] .canvas-ruler { color: #d4d9e2; background: rgba(45,48,56,.93); }
+  :root[data-theme="dark"] .zoom-readout:hover { background: #3a3e47; }
+  :root[data-theme="dark"] .context-menu,
+  :root[data-theme="dark"] .bulk-bar,
+  :root[data-theme="dark"] .text-format-toolbar { color: #e6e9ef; border-color: #444852; background: rgba(39,42,49,.985); }
+  :root[data-theme="dark"] .context-menu .menu-separator { background: #444852; }
+  :root[data-theme="dark"] .context-menu button:disabled,
+  :root[data-theme="dark"] .context-menu .menu-label,
+  :root[data-theme="dark"] .context-menu .recipe-option.is-empty { color: #858b96; }
+  :root[data-theme="dark"] .bulk-progress-track { background: #454953; }
+  :root[data-theme="dark"] .bar-action { background: #30333a; }
+  :root[data-theme="dark"] .bar-action.primary,
+  :root[data-theme="dark"] .primary-button,
+  :root[data-theme="dark"] .comment-mini-pin { color: #fff; background: var(--primary-action-bg); }
+  :root[data-theme="dark"] .modal,
+  :root[data-theme="dark"] .design-library-content,
+  :root[data-theme="dark"] .component-slot-dialog form { color: #e6e9ef; border-color: #444852; background: #272a31; }
+  :root[data-theme="dark"] .recipe-recovery-card { border-color: #454953; background: #30333a; }
+  :root[data-theme="dark"] .recipe-recovery-card strong { color: #e6e9ef; }
+  :root[data-theme="dark"] .recipe-recovery-card span { color: #b4bac4; }
+  :root[data-theme="dark"] .modal-copy,
+  :root[data-theme="dark"] .field-label,
+  :root[data-theme="dark"] .field-help,
+  :root[data-theme="dark"] .slot-picker-count { color: #b4bac4; }
+  :root[data-theme="dark"] .local-font-row { border-color: #41454e; background: #30333a; }
+  :root[data-theme="dark"] .local-font-sample { background: #3b3545; color: #e3d8f2; }
+  :root[data-theme="dark"] .local-font-copy strong { color: #dfe2e8; }
+  :root[data-theme="dark"] .local-font-copy small,
+  :root[data-theme="dark"] .local-fonts-empty { color: #a6acb6; }
+  :root[data-theme="dark"] .slot-picker-list { border-color: #41454e; background: #22242a; }
+  :root[data-theme="dark"] .slot-picker-row { color: #dde1e8; border-bottom-color: #393c44; }
+  :root[data-theme="dark"] .design-file-actions button,
+  :root[data-theme="dark"] .secondary-button,
+  :root[data-theme="dark"] .comment-text-button { color: #e0e4eb; }
+  :root[data-theme="dark"] .design-library-content > .dialog-actions { border-top-color: #41454e; background: rgba(39,42,49,.98); }
+  :root[data-theme="dark"] .recipe-preview { color: #d5c5ff; border-color: #564574; }
+  :root[data-theme="dark"] .text-editor-overlay { border-color: #55afff; background: rgba(34,36,42,.96); color: #f1f3f7; }
+  :root[data-theme="dark"] .text-format-toolbar { color: #e3e6ed; }
+  :root[data-theme="dark"] .mobile-scrim.is-visible { background: rgba(0,0,0,.52); }
+  :root[data-theme="dark"] .layer-row.is-selected .layer-order-control:not(:disabled),
+  :root[data-theme="dark"] .layer-row.is-selected .layer-visibility { color: #9dd8ff; background: #303b47; }
+  :root[data-theme="dark"] * { scrollbar-color: #555a66 #272a31; }
+  :root[data-theme="dark"] *::-webkit-scrollbar-thumb { background: #555a66; }
+  :root[data-theme="dark"] *::-webkit-scrollbar-thumb:hover { background-color: #707785; }
 
 /* Phone workspace hierarchy: make navigation and canvas controls easy to reach. */
 @media (max-width: 820px) {
@@ -1463,142 +1640,382 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
 }
 @media (max-width: 360px) and (pointer: coarse) {
+  .layer-row .layer-visibility { display: none !important; }
   .layer-row .layer-order-control, .layer-row .layer-visibility, .layer-row .layer-actions-menu {
-    width: 40px;
-    height: 40px;
-    flex: 0 0 40px;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
   }
 }
 
-@media (prefers-color-scheme: dark) and (max-width: 820px) {
-  .topbar { border-bottom-color: var(--border); }
-  .left-panel, .right-panel { border-color: var(--border); background: var(--panel); }
-  .zoom-controls, .bottom-toolbar { border-color: #454953; background: rgba(39,42,49,.98); }
-  .bottom-toolbar::after {
+@media (max-width: 820px) {
+  :root[data-theme="dark"] .topbar { border-bottom-color: var(--border); }
+  :root[data-theme="dark"] .left-panel,
+  :root[data-theme="dark"] .right-panel { border-color: var(--border); background: var(--panel); }
+  :root[data-theme="dark"] .zoom-controls,
+  :root[data-theme="dark"] .bottom-toolbar { border-color: #454953; background: rgba(39,42,49,.98); }
+  :root[data-theme="dark"] .bottom-toolbar::after {
     background: linear-gradient(90deg, rgba(39,42,49,.12), rgba(39,42,49,.98) 66%);
     color: #cbd0d9;
   }
-  .layer-row.is-selected .layer-order-control:not(:disabled),
-  .layer-row.is-selected .layer-visibility { color: #9dd8ff; background: #303b47; }
+  :root[data-theme="dark"] .layer-row.is-selected .layer-order-control:not(:disabled),
+  :root[data-theme="dark"] .layer-row.is-selected .layer-visibility { color: #9dd8ff; background: #303b47; }
+}
+
+@media (max-width: 820px) and (pointer: coarse) {
+  .mobile-panel-toggle, .present-button { min-width: 44px; min-height: 44px; }
+  .present-button { width: 44px; }
+  .presentation-toolbar { height: 60px; }
+  .presentation-control { width: 44px; min-width: 44px; height: 44px; min-height: 44px; flex-basis: 44px; }
+  #share-button { min-height: 44px; }
+  .canvas-top-actions .canvas-action-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .page-row-menu { flex-basis: 44px; }
+  .page-row-menu > summary { width: 44px; height: 44px; }
+  .layers-heading .tiny-icon-button,
+  .section-heading > .tiny-icon-button,
+  .sidebar-footer .tiny-icon-button { width: 44px; min-width: 44px; height: 44px; }
+  .layer-select-mode { min-height: 44px; }
+
+  .component-slot-value .secondary-button,
+  .export-button,
+  .local-font-remove,
+  .variable-mode-add,
+  .variable-apply,
+  .typography-style-actions button,
+  .blend-mode-select,
+  .prototype-interaction-row .tiny-icon-button,
+  .comment-new-button,
+  .comment-text-button,
+  .comment-compose-actions .primary-button,
+  .comment-compose-actions .secondary-button,
+  .comment-thread-actions .secondary-button,
+  .comment-delete-button,
+  .inspect-copy,
+  .export-setting-actions .secondary-button,
+  .export-setting-actions .tiny-icon-button,
+  .layout-guide-adds button,
+  .design-file-actions button { min-height: 44px; }
+  .grid-track-row .select-field, .grid-track-value { min-height: 44px; height: 44px; }
+  .grid-track-value input { min-height: 42px; font-size: 16px; }
+  .component-slot-reset,
+  .local-font-remove,
+  .variable-remove,
+  .layout-guide-visibility,
+  .layout-guide-remove { width: 44px; min-width: 44px; height: 44px; }
+  .variable-remove { flex-basis: 44px; }
+  .stroke-field input, .stroke-field select,
+  .fill-type-row .select-field,
+  .image-fill-source .select-field,
+  .export-setting-row .select-field, .export-suffix input,
+  .layout-guide-heading select, .layout-guide-field input, .layout-guide-field select {
+    min-height: 44px;
+    height: 44px;
+  }
+  .gradient-stop-row input[type="color"], .gradient-stop-row input[type="number"] { min-height: 44px; height: 44px; }
+  .effect-color-row input[type="color"], .layout-guide-appearance input[type="color"] { min-width: 44px; width: 44px; min-height: 44px; height: 44px; }
+  .speed-control input { min-height: 44px; }
+  .bulk-actions .bar-action { min-height: 44px; }
+
+  /* Checkbox labels are the touch target. Keep the native checkmark compact,
+     while giving the whole setting row a reliable 44px hit area. */
+  .component-property-value { min-height: 44px; }
+  .prototype-controls label:has(input[type="checkbox"]) { min-height: 44px; }
+  .field-caption:has(input[type="checkbox"]),
+  .field-caption[for="auto-layout-auto-positioning"],
+  .field-caption[for="auto-layout-wrap"] {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .field-caption:has(input[type="checkbox"]) input[type="checkbox"],
+  #auto-layout-auto-positioning, #auto-layout-wrap {
+    width: 24px;
+    height: 24px;
+    justify-self: end;
+    align-self: center;
+  }
+
+  /* The inspector is dense on desktop; on touch screens give the controls
+     people adjust most often a full finger target without changing desktop. */
+  .inspector-content .property-field { height: 44px; min-height: 44px; }
+  .inspector-content .property-field input { box-sizing: border-box; min-height: 44px; height: 44px; font-size: 16px; }
+  .inspector-content :where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]), select, textarea) {
+    box-sizing: border-box;
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .inspector-content input[type="range"] {
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-block: 8px;
+  }
+  .inspector-content input[type="color"] {
+    box-sizing: border-box;
+    min-width: 44px;
+    width: 44px;
+    min-height: 44px;
+    height: 44px;
+  }
+  .inspector-content .fill-row { height: 44px; min-height: 44px; gap: 8px; }
+  .inspector-content .fill-row .color-swatch { box-sizing: border-box; width: 44px; height: 44px; flex: 0 0 44px; }
+  .inspector-content .fill-row .color-swatch input { inset: 0; width: 100%; height: 100%; }
+  .inspector-content .color-value, .inspector-content .fill-opacity { box-sizing: border-box; height: 44px; min-height: 44px; font-size: 16px; }
+  .inspector-content .image-fill-source { min-height: 44px; }
+  .inspector-content .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 44px; }
+  .inspector-content .gradient-stop-row input[type="color"],
+  .inspector-content .gradient-stop-row input[type="number"] { min-height: 44px; height: 44px; font-size: 16px; }
+  .inspector-content .gradient-stop-row .tiny-icon-button,
+  .inspector-content .property-section .tiny-icon-button { box-sizing: border-box; width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .inspector-content .layer-effect-heading { min-height: 44px; }
+  .inspector-content .layer-effect-heading label { min-width: 44px; min-height: 44px; }
+  .inspector-content .effect-clip { min-height: 44px; }
+
+  .prototype-flow-controls .select-field { min-height: 44px; }
+  .prototype-current-frame > span {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .prototype-current-frame .secondary-button {
+    min-width: 0;
+    min-height: 44px;
+    height: 44px;
+    padding-inline: 6px;
+    font-size: 10px;
+    white-space: normal;
+  }
+  .prototype-controls #prototype-overlay-color { min-height: 44px; height: 44px; }
 }
 
 /* Keep labels and helper text readable on surfaces that have their own colors
    rather than inheriting the editor's foreground. */
-@media (prefers-color-scheme: dark) {
-  .page-row.is-active .page-row-icon { color: #68bdff; }
-  .layer-chevron, .layer-icon, .local-library-header small,
-  .local-library-component small, .local-library-empty,
-  .variable-collection-header, .variable-name, .variable-mode-name,
-  .variables-empty, .components-empty, .component-card-name, .component-link-copy span,
-  .component-property-heading, .component-property-heading span,
-  .component-property-definition small, .component-property-value,
-  .component-slot-copy strong, .component-slot-copy small, .variant-control,
-  .color-style-name, .color-styles-empty, .typography-styles-hint,
-  .typography-styles-empty, .typography-style-name,
-  .typography-style-copy small, .typography-style-actions button,
-  .asset-card-name, .asset-hint, .crumb-separator, .crumb-chevron,
-  .tool-button kbd, .comments-panel-header span, .comment-compose > label,
-  .comment-compose-actions > span, .comment-row-copy small, .comment-row-arrow,
-  .comment-list-limit, .comments-empty, .comments-empty strong,
-  .comment-message time, .comment-message p, .export-hint, .fill-type-row,
-  .image-fill-source, .gradient-stop-row label, .property-field label,
-  .size-limit-field span, .property-separator, .lock-ratio,
-  .field-caption, .variable-binding-row, .frame-variable-mode,
-  .network-face-heading, .network-face-heading output, .slider-row label,
-  .image-output-field,
-  .slider-row output, .image-properties-note, .layer-effect-heading,
-  .layer-effect-heading label, .effect-color-row label,
-  .export-setting-row label, .export-quality output,
-  .export-setting-actions > span, .layout-guide-field,
-  .layout-guide-appearance label, .layout-guide-opacity output,
-  .layout-guide-adds button, .prototype-section-label,
-  .prototype-interaction-copy small, .prototype-controls label,
-  .prototype-help, .context-menu button .shortcut, .context-menu .menu-label,
-  .bulk-info span, .bulk-progress-wrap, .speed-control, .speed-control output,
-  .slot-picker-count, .slot-picker-row small, .slot-picker-empty,
-  .design-library-empty, .design-file-date, .modal-eyebrow, .modal-copy,
-  .field-label, .empty-sidebar strong, .inspector-empty strong,
-  .variable-type-badge, .text-format-size-label, .text-format-line-height-label,
-  .text-format-color-label, .text-format-family-label,
-  .text-format-weight-label, .text-format-spacing-label,
-  .text-format-decoration-label {
+
+  :root[data-theme="dark"] .page-row.is-active .page-row-icon { color: #68bdff; }
+  :root[data-theme="dark"] .layer-chevron,
+  :root[data-theme="dark"] .layer-icon,
+  :root[data-theme="dark"] .local-library-header small,
+  :root[data-theme="dark"] .local-library-component small,
+  :root[data-theme="dark"] .local-library-empty,
+  :root[data-theme="dark"] .variable-collection-header,
+  :root[data-theme="dark"] .variable-name,
+  :root[data-theme="dark"] .variable-mode-name,
+  :root[data-theme="dark"] .variables-empty,
+  :root[data-theme="dark"] .components-empty,
+  :root[data-theme="dark"] .component-card-name,
+  :root[data-theme="dark"] .component-link-copy span,
+  :root[data-theme="dark"] .component-property-heading,
+  :root[data-theme="dark"] .component-property-heading span,
+  :root[data-theme="dark"] .component-property-definition small,
+  :root[data-theme="dark"] .component-property-value,
+  :root[data-theme="dark"] .component-slot-copy strong,
+  :root[data-theme="dark"] .component-slot-copy small,
+  :root[data-theme="dark"] .variant-control,
+  :root[data-theme="dark"] .color-style-name,
+  :root[data-theme="dark"] .color-styles-empty,
+  :root[data-theme="dark"] .typography-styles-hint,
+  :root[data-theme="dark"] .typography-styles-empty,
+  :root[data-theme="dark"] .typography-style-name,
+  :root[data-theme="dark"] .typography-style-copy small,
+  :root[data-theme="dark"] .typography-style-actions button,
+  :root[data-theme="dark"] .asset-card-name,
+  :root[data-theme="dark"] .asset-hint,
+  :root[data-theme="dark"] .crumb-separator,
+  :root[data-theme="dark"] .crumb-chevron,
+  :root[data-theme="dark"] .tool-button kbd,
+  :root[data-theme="dark"] .comments-panel-header span,
+  :root[data-theme="dark"] .comment-compose > label,
+  :root[data-theme="dark"] .comment-compose-actions > span,
+  :root[data-theme="dark"] .comment-row-copy small,
+  :root[data-theme="dark"] .comment-row-arrow,
+  :root[data-theme="dark"] .comment-list-limit,
+  :root[data-theme="dark"] .comments-empty,
+  :root[data-theme="dark"] .comments-empty strong,
+  :root[data-theme="dark"] .comment-message time,
+  :root[data-theme="dark"] .comment-message p,
+  :root[data-theme="dark"] .export-hint,
+  :root[data-theme="dark"] .fill-type-row,
+  :root[data-theme="dark"] .image-fill-source,
+  :root[data-theme="dark"] .gradient-stop-row label,
+  :root[data-theme="dark"] .property-field label,
+  :root[data-theme="dark"] .size-limit-field span,
+  :root[data-theme="dark"] .property-separator,
+  :root[data-theme="dark"] .lock-ratio,
+  :root[data-theme="dark"] .field-caption,
+  :root[data-theme="dark"] .variable-binding-row,
+  :root[data-theme="dark"] .frame-variable-mode,
+  :root[data-theme="dark"] .network-face-heading,
+  :root[data-theme="dark"] .network-face-heading output,
+  :root[data-theme="dark"] .slider-row label,
+  :root[data-theme="dark"] .image-output-field,
+  :root[data-theme="dark"] .slider-row output,
+  :root[data-theme="dark"] .image-properties-note,
+  :root[data-theme="dark"] .layer-effect-heading,
+  :root[data-theme="dark"] .layer-effect-heading label,
+  :root[data-theme="dark"] .effect-clip,
+  :root[data-theme="dark"] .effect-color-row label,
+  :root[data-theme="dark"] .export-setting-row label,
+  :root[data-theme="dark"] .export-quality output,
+  :root[data-theme="dark"] .export-setting-actions > span,
+  :root[data-theme="dark"] .layout-guide-field,
+  :root[data-theme="dark"] .layout-guide-appearance label,
+  :root[data-theme="dark"] .layout-guide-opacity output,
+  :root[data-theme="dark"] .layout-guide-adds button,
+  :root[data-theme="dark"] .prototype-section-label,
+  :root[data-theme="dark"] .prototype-interaction-copy small,
+  :root[data-theme="dark"] .prototype-controls label,
+  :root[data-theme="dark"] .prototype-help,
+  :root[data-theme="dark"] .context-menu button .shortcut,
+  :root[data-theme="dark"] .context-menu .menu-label,
+  :root[data-theme="dark"] .bulk-info span,
+  :root[data-theme="dark"] .bulk-progress-wrap,
+  :root[data-theme="dark"] .speed-control,
+  :root[data-theme="dark"] .speed-control output,
+  :root[data-theme="dark"] .slot-picker-count,
+  :root[data-theme="dark"] .slot-picker-row small,
+  :root[data-theme="dark"] .slot-picker-empty,
+  :root[data-theme="dark"] .design-library-empty,
+  :root[data-theme="dark"] .design-file-date,
+  :root[data-theme="dark"] .modal-eyebrow,
+  :root[data-theme="dark"] .modal-copy,
+  :root[data-theme="dark"] .field-label,
+  :root[data-theme="dark"] .empty-sidebar strong,
+  :root[data-theme="dark"] .inspector-empty strong,
+  :root[data-theme="dark"] .variable-type-badge,
+  :root[data-theme="dark"] .text-format-size-label,
+  :root[data-theme="dark"] .text-format-line-height-label,
+  :root[data-theme="dark"] .text-format-color-label,
+  :root[data-theme="dark"] .text-format-family-label,
+  :root[data-theme="dark"] .text-format-weight-label,
+  :root[data-theme="dark"] .text-format-spacing-label,
+  :root[data-theme="dark"] .text-format-baseline-shift-label,
+  :root[data-theme="dark"] .text-format-decoration-label {
     color: #a6acb6;
   }
-  .bulk-info .bulk-rate { color: #d6dae2; }
-  .component-card-icon, .typography-style-mark, .inspect-intro > span,
-  .prototype-interaction-icon, .prototype-connect-hint {
+  :root[data-theme="dark"] .bulk-info .bulk-rate { color: #d6dae2; }
+  :root[data-theme="dark"] .component-card-icon,
+  :root[data-theme="dark"] .typography-style-mark,
+  :root[data-theme="dark"] .inspect-intro > span,
+  :root[data-theme="dark"] .prototype-interaction-icon,
+  :root[data-theme="dark"] .prototype-connect-hint {
     color: #c2a7ff;
   }
-  .local-library-card, .variable-collection-card, .variable-row,
-  .component-card, .component-set-card, .component-set-variant, .color-style-card, .component-property-editor-wrap,
-  .component-property-definition, .component-slot-value,
-  .typography-style-row, .inspect-layer-card, .inspect-code-card,
-  .comment-thread-row, .comment-message {
+  :root[data-theme="dark"] .local-library-card,
+  :root[data-theme="dark"] .variable-collection-card,
+  :root[data-theme="dark"] .variable-row,
+  :root[data-theme="dark"] .component-card,
+  :root[data-theme="dark"] .component-set-card,
+  :root[data-theme="dark"] .component-set-variant,
+  :root[data-theme="dark"] .color-style-card,
+  :root[data-theme="dark"] .component-property-editor-wrap,
+  :root[data-theme="dark"] .component-property-definition,
+  :root[data-theme="dark"] .component-slot-value,
+  :root[data-theme="dark"] .typography-style-row,
+  :root[data-theme="dark"] .inspect-layer-card,
+  :root[data-theme="dark"] .inspect-code-card,
+  :root[data-theme="dark"] .comment-thread-row,
+  :root[data-theme="dark"] .comment-message {
     border-color: #3e424b;
   }
-  .comment-thread-row, .comment-message { background-color: #2a2d34; }
-  .component-set-card, .component-set-variant { background-color: #24262c; }
-  .component-set-heading input, .component-set-axis-name input,
-  .component-set-add-axis input, .component-set-variant-values input,
-  .component-set-placement .select-field { border-color: #41444d; background: #24262c; color: var(--text); }
-  .component-set-place-selected, .component-set-place-variant,
-  .component-set-add-axis > button, .component-set-remove-axis { border-color: #4c435e; background: #302a3a; color: #d7c8f5; }
-  .component-set-editor, .component-set-add-axis { border-color: #3e424b; }
-  .comment-new-button, .comment-anchor-hint, .comment-compose-actions .secondary-button,
-  .comment-delete-button {
+  :root[data-theme="dark"] .comment-thread-row,
+  :root[data-theme="dark"] .comment-message { background-color: #2a2d34; }
+  :root[data-theme="dark"] .component-set-card,
+  :root[data-theme="dark"] .component-set-variant { background-color: #24262c; }
+  :root[data-theme="dark"] .component-set-heading input,
+  :root[data-theme="dark"] .component-set-axis-name input,
+  :root[data-theme="dark"] .component-set-add-axis input,
+  :root[data-theme="dark"] .component-set-variant-values input,
+  :root[data-theme="dark"] .component-set-placement .select-field { border-color: #41444d; background: #24262c; color: var(--text); }
+  :root[data-theme="dark"] .component-set-place-selected,
+  :root[data-theme="dark"] .component-set-place-variant,
+  :root[data-theme="dark"] .component-set-add-axis > button,
+  :root[data-theme="dark"] .component-set-remove-axis { border-color: #4c435e; background: #302a3a; color: #d7c8f5; }
+  :root[data-theme="dark"] .component-set-editor,
+  :root[data-theme="dark"] .component-set-add-axis { border-color: #3e424b; }
+  :root[data-theme="dark"] .comment-new-button,
+  :root[data-theme="dark"] .comment-anchor-hint,
+  :root[data-theme="dark"] .comment-compose-actions .secondary-button,
+  :root[data-theme="dark"] .comment-delete-button {
     color: #d6dae2;
     border-color: #454953;
     background-color: #30333a;
   }
-  .comment-row-copy strong, .inspect-intro > strong,
-  .inspect-empty strong, .inspect-layer-card > header strong,
-  .inspect-layer-card dd, .inspect-text-value p,
-  .inspect-code-card > header strong, .inspect-copy,
-  .inspect-json-card summary, .prototype-current-frame,
-  .prototype-interaction-copy strong, .prototype-help strong,
-  .component-link-copy strong, .color-style-name,
-  .typography-style-name, .asset-card-name, .design-file-name,
-  .design-file-actions button[data-action="delete"],
-  .slot-picker-name, .comment-message p {
+  :root[data-theme="dark"] .comment-row-copy strong,
+  :root[data-theme="dark"] .inspect-intro > strong,
+  :root[data-theme="dark"] .inspect-empty strong,
+  :root[data-theme="dark"] .inspect-layer-card > header strong,
+  :root[data-theme="dark"] .inspect-layer-card dd,
+  :root[data-theme="dark"] .inspect-text-value p,
+  :root[data-theme="dark"] .inspect-code-card > header strong,
+  :root[data-theme="dark"] .inspect-copy,
+  :root[data-theme="dark"] .inspect-json-card summary,
+  :root[data-theme="dark"] .prototype-current-frame,
+  :root[data-theme="dark"] .prototype-interaction-copy strong,
+  :root[data-theme="dark"] .prototype-help strong,
+  :root[data-theme="dark"] .component-link-copy strong,
+  :root[data-theme="dark"] .color-style-name,
+  :root[data-theme="dark"] .typography-style-name,
+  :root[data-theme="dark"] .asset-card-name,
+  :root[data-theme="dark"] .design-file-name,
+  :root[data-theme="dark"] .design-file-actions button[data-action="delete"],
+  :root[data-theme="dark"] .slot-picker-name,
+  :root[data-theme="dark"] .comment-message p {
     color: #e0e4eb;
   }
-  .zoom-readout, .text-field::placeholder,
-  .layer-search-wrap input::placeholder,
-  .comment-compose textarea::placeholder,
-  .size-limit-field input::placeholder { color: #a6acb6; }
-  .toolbar-separator, .zoom-divider { border-left-color: #454953; }
-  .asset-thumb { border-color: #424650; background-color: #30333a; }
-  .context-menu .recipe-option::before { color: #c2a7ff; }
-  .typography-style-actions button:hover { color: #e0e4eb; }
-  .comment-thread-row.is-resolved .comment-mini-pin { background: #59636f; }
-  .bar-action.primary, .primary-button, .comment-mini-pin,
-  .design-file-actions button[data-action="open"] {
+  :root[data-theme="dark"] .zoom-readout,
+  :root[data-theme="dark"] .text-field::placeholder,
+  :root[data-theme="dark"] .layer-search-wrap input::placeholder,
+  :root[data-theme="dark"] .comment-compose textarea::placeholder,
+  :root[data-theme="dark"] .size-limit-field input::placeholder { color: #a6acb6; }
+  :root[data-theme="dark"] .toolbar-separator,
+  :root[data-theme="dark"] .zoom-divider { border-left-color: #454953; }
+  :root[data-theme="dark"] .asset-thumb { border-color: #424650; background-color: #30333a; }
+  :root[data-theme="dark"] .context-menu .recipe-option::before { color: #c2a7ff; }
+  :root[data-theme="dark"] .typography-style-actions button:hover { color: #e0e4eb; }
+  :root[data-theme="dark"] .comment-thread-row.is-resolved .comment-mini-pin { background: #59636f; }
+  :root[data-theme="dark"] .bar-action.primary,
+  :root[data-theme="dark"] .primary-button,
+  :root[data-theme="dark"] .comment-mini-pin,
+  :root[data-theme="dark"] .design-file-actions button[data-action="open"] {
     border-color: var(--primary-action-border);
     background: var(--primary-action-bg);
   }
-  .bar-action.primary:hover, .primary-button:hover,
-  .design-file-actions button[data-action="open"]:hover { background: var(--primary-action-hover); }
-  .layer-select-mode.is-active {
+  :root[data-theme="dark"] .bar-action.primary:hover,
+  :root[data-theme="dark"] .primary-button:hover,
+  :root[data-theme="dark"] .design-file-actions button[data-action="open"]:hover { background: var(--primary-action-hover); }
+  :root[data-theme="dark"] .layer-select-mode.is-active {
     color: #a8dcff;
     border-color: #35617f;
     background: #263d50;
   }
-  .layout-guide-visibility[aria-pressed="true"],
-  .comment-delete-button { color: #ff9b91; }
-  .device-icon, .image-engine-status { color: #50d49c; }
-  .variable-type-badge, .empty-layer-icon, .comments-empty > span,
-  .typography-style-mark, .prototype-interaction-icon,
-  .prototype-connect-hint, .comment-compose, .comment-anchor-hint {
+  :root[data-theme="dark"] .layout-guide-visibility[aria-pressed="true"],
+  :root[data-theme="dark"] .comment-delete-button { color: #ff9b91; }
+  :root[data-theme="dark"] .device-icon,
+  :root[data-theme="dark"] .image-engine-status { color: #50d49c; }
+  :root[data-theme="dark"] .variable-type-badge,
+  :root[data-theme="dark"] .empty-layer-icon,
+  :root[data-theme="dark"] .comments-empty > span,
+  :root[data-theme="dark"] .typography-style-mark,
+  :root[data-theme="dark"] .prototype-interaction-icon,
+  :root[data-theme="dark"] .prototype-connect-hint,
+  :root[data-theme="dark"] .comment-compose,
+  :root[data-theme="dark"] .comment-anchor-hint {
     border-color: #424650;
     background-color: #30333a;
   }
-  .component-card:hover, .color-style-card:hover,
-  .local-library-publish:hover:not(:disabled), .local-library-component:hover,
-  .typography-style-apply:hover, .typography-style-actions button:hover,
-  .comment-thread-row:hover, .comment-text-button:hover,
-  .export-button:hover, .secondary-button:hover,
-  .context-menu button:hover:not(:disabled), .slot-picker-row:hover {
+  :root[data-theme="dark"] .component-card:hover,
+  :root[data-theme="dark"] .color-style-card:hover,
+  :root[data-theme="dark"] .local-library-publish:hover:not(:disabled),
+  :root[data-theme="dark"] .local-library-component:hover,
+  :root[data-theme="dark"] .typography-style-apply:hover,
+  :root[data-theme="dark"] .typography-style-actions button:hover,
+  :root[data-theme="dark"] .comment-thread-row:hover,
+  :root[data-theme="dark"] .comment-text-button:hover,
+  :root[data-theme="dark"] .export-button:hover,
+  :root[data-theme="dark"] .secondary-button:hover,
+  :root[data-theme="dark"] .context-menu button:hover:not(:disabled),
+  :root[data-theme="dark"] .slot-picker-row:hover {
     background-color: #373b44;
   }
-  .presentation-dialog { color: #e6e9ef; }
-}
+  :root[data-theme="dark"] .presentation-dialog { color: #e6e9ef; }

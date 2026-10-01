@@ -89,3 +89,18 @@ export async function createFallbackImage(source, {
     if (output !== decoded) decoded.close?.();
   }
 }
+
+/**
+ * Build the bounded canvas fallback from an already-rendered local Pillow-RS
+ * PNG. This keeps TIFF and EXIF-oriented JPEGs on the same decoder and pixel
+ * orientation as subsequent edits without changing the retained source bytes.
+ */
+export async function createPillowFallbackImage(renderPreview, options = {}) {
+  if (typeof renderPreview !== 'function') throw new TypeError('A local Pillow-RS preview renderer is required.');
+  const rendered = await renderPreview();
+  if (!rendered?.bytes || !Number.isSafeInteger(rendered.width) || !Number.isSafeInteger(rendered.height)) {
+    throw new TypeError('The local Pillow-RS preview is missing valid image bytes or dimensions.');
+  }
+  const source = new Blob([rendered.bytes], { type: rendered.mimeType || 'image/png' });
+  return createFallbackImage(source, options);
+}

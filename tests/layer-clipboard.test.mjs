@@ -9,6 +9,7 @@ import {
 } from '../src/model.js';
 import { createLayerClipboard, layerClipboardSchema, pasteLayerClipboard } from '../src/layer-clipboard.js';
 import { History } from '../src/history.js';
+import { addPrototypeInteraction } from '../src/prototype.js';
 import { parentLocalToPageTransform, transformPoint } from '../src/transform-geometry.js';
 
 test('copying a nested mask tree remaps every layer reference and keeps one shared local image asset', () => {
@@ -29,6 +30,35 @@ test('copying a nested mask tree remaps every layer reference and keeps one shar
   assert.equal('bytes' in pasted.children[0], false, 'clipboard snapshots never embed image bytes');
   assert.equal(validateDocument(pastedDocument), true);
   assert.equal(document.pages[0].children.length, 1, 'building a paste candidate never mutates the source document');
+});
+
+test('layer clipboard remaps internal scroll targets and drops routes whose targets are outside the pasted page', () => {
+  const document = createDocument();
+  const screen = createNode('frame', { name: 'Long screen' });
+  const scroller = createNode('frame', { name: 'Content', overflowBehavior: 'vertical', width: 300, height: 180 });
+  const hotspot = createNode('rectangle', { name: 'Jump link' });
+  const target = createNode('rectangle', { name: 'Footer anchor', y: 400 });
+  scroller.children.push(hotspot, target);
+  screen.children.push(scroller);
+  addNode(document, screen);
+  addPrototypeInteraction(document, hotspot.id, null, { action: 'scroll-to', scrollTargetId: target.id });
+  const treeClipboard = createLayerClipboard(document, [findNode(document, screen.id)]);
+
+  const pastedTree = pasteLayerClipboard(document, treeClipboard);
+  const copiedScreen = pastedTree.nodes[0];
+  const copiedHotspot = copiedScreen.children[0].children.find(node => node.name === 'Jump link copy');
+  const copiedTarget = copiedScreen.children[0].children.find(node => node.name === 'Footer anchor copy');
+  assert.equal(copiedHotspot.interactions[0].scrollTargetId, copiedTarget.id);
+  assert.equal(validateDocument(pastedTree.document), true);
+
+  const secondPage = structuredClone(document.pages[0]);
+  secondPage.id = 'page-for-scroll-paste'; secondPage.name = 'Other page'; secondPage.children = [];
+  document.pages.push(secondPage);
+  const hotspotClipboard = createLayerClipboard(document, [findNode(document, hotspot.id)]);
+  const pastedHotspot = pasteLayerClipboard(document, hotspotClipboard, { pageId: secondPage.id });
+  assert.equal(pastedHotspot.nodes[0].interactions, undefined,
+    'a copied hotspot must not keep a scroll-to route to a target left on another page');
+  assert.equal(validateDocument(pastedHotspot.document), true);
 });
 
 test('repeated copy-paste creates fresh IDs with progressive offsets; cut-paste restores the source position', () => {

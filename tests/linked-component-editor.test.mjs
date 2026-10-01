@@ -86,6 +86,34 @@ test('linked editor instances use distinct IDs, keep source identity, and retain
   assert.equal(instance.linkedComponent.sourceRevision, 2);
 });
 
+test('linked editor instances remap internal prototype scroll targets to their new layer IDs', () => {
+  const root = sourceTree();
+  const scroller = { id: 'source-scroll-frame', type: 'frame', name: 'Scrollable content', x: 0, y: 0, width: 200, height: 120, rotation: 0, opacity: 1, overflowBehavior: 'vertical', children: [] };
+  const hotspot = { id: 'source-scroll-hotspot', type: 'rectangle', name: 'Jump link', x: 0, y: 0, width: 40, height: 20, rotation: 0, opacity: 1, children: [], interactions: [
+    { id: 'source-scroll-interaction', action: 'scroll-to', trigger: 'on-click', scrollTargetId: 'source-scroll-target', scrollAlignment: 'end', transition: 'scroll', duration: 300 }
+  ] };
+  const target = { id: 'source-scroll-target', type: 'rectangle', name: 'Anchor', x: 0, y: 350, width: 80, height: 24, rotation: 0, opacity: 1, children: [] };
+  scroller.children.push(hotspot, target);
+  root.children.push(scroller);
+  const library = publishComponent(createComponentLibrary({ id: 'scroll-library', name: 'Scroll library' }), {
+    componentId: 'component-scroll', name: 'Scrollable card', root
+  }).library;
+  const snapshot = createLinkedInstanceSnapshot(library, 'component-scroll', { instanceId: 'scroll-card' });
+  const document = createDocument();
+  let serial = 0;
+  const instance = createLinkedEditorInstance(snapshot, {
+    document, makeNodeId: type => `${type}-scroll-instance-${++serial}`
+  });
+  addNode(document, instance);
+
+  const copiedScroller = instance.children.find(node => node.componentSourceId === scroller.id);
+  const copiedHotspot = copiedScroller.children.find(node => node.componentSourceId === hotspot.id);
+  const copiedTarget = copiedScroller.children.find(node => node.componentSourceId === target.id);
+  assert.notEqual(copiedTarget.id, target.id);
+  assert.equal(copiedHotspot.interactions[0].scrollTargetId, copiedTarget.id);
+  assert.equal(validateDocument(document), true);
+});
+
 test('document validation rejects malformed local component snapshots and source mappings', () => {
   const library = makeLibrary();
   const snapshot = createLinkedInstanceSnapshot(library, 'component-card', { instanceId: 'invalid-link' });

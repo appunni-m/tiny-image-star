@@ -11,6 +11,8 @@ import { validateDocument } from './model.js';
 export const TINY_IMAGE_STAR_DTCG_EXTENSION = 'tiny-image-star';
 const supportedTypes = new Set(['color', 'number', 'string', 'boolean']);
 const dtcgPrimitiveTypes = new Set(['color', 'number', 'string']);
+const dtcgMeasurementTypes = new Set(['dimension', 'duration']);
+const localMeasurementTypes = new Set(['dimension', 'duration']);
 
 export class DesignTokenInteropError extends TypeError {
   constructor(message, code = 'INVALID_DTCG') {
@@ -66,6 +68,62 @@ function assertLocalValue(type, value, label) {
   if (type === 'string' && /[{}]/u.test(value)) {
     fail(`${label} contains braces, which are ambiguous with DTCG token references.`, 'AMBIGUOUS_STRING');
   }
+}
+
+function localDtcgType(variable) {
+  return variable.dtcgType ?? variable.type;
+}
+
+function outputDtcgType(variable) {
+  if (variable.type === 'boolean') return 'string';
+  return localDtcgType(variable);
+}
+
+function assertMeasurementValue(value, label, kind, units) {
+  if (!isRecord(value) || Object.keys(value).some(key => !['value', 'unit'].includes(key))
+    || typeof value.value !== 'number' || !Number.isFinite(value.value)
+    || typeof value.unit !== 'string') {
+    fail(`${label} must be a finite DTCG ${kind} value with a supported unit.`, `INVALID_${kind.toUpperCase()}_VALUE`);
+  }
+  if (!units.has(value.unit)) {
+    fail(`${label} uses unsupported ${kind} unit "${value.unit}".`, 'UNSUPPORTED_UNIT');
+  }
+}
+
+function dtcgDimensionToLocal(value, label) {
+  assertMeasurementValue(value, label, 'dimension', new Set(['px']));
+  return value.value;
+}
+
+function dtcgDurationToLocal(value, label) {
+  assertMeasurementValue(value, label, 'duration', new Set(['ms', 's']));
+  if (value.unit === 'ms') return value.value;
+  const milliseconds = value.value * 1000;
+  if (!Number.isFinite(milliseconds) || !Object.is(milliseconds / 1000, value.value)) {
+    fail(`${label} cannot be converted from seconds to milliseconds without losing precision.`, 'UNSUPPORTED_PRECISION');
+  }
+  return milliseconds;
+}
+
+function dtcgValueToLocal(localType, semanticType, value, label) {
+  if (localType === 'color') return dtcgColorToLocal(value, label);
+  if (semanticType === 'dimension') return dtcgDimensionToLocal(value, label);
+  if (semanticType === 'duration') return dtcgDurationToLocal(value, label);
+  if (localType === 'boolean') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return null;
+  }
+  assertLocalValue(localType, value, label);
+  return value;
+}
+
+function localValueToDtcg(variable, value) {
+  if (variable.type === 'color') return localColorToDtcg(value);
+  if (variable.type === 'boolean') return String(value);
+  if (variable.dtcgType === 'dimension') return { value, unit: 'px' };
+  if (variable.dtcgType === 'duration') return { value, unit: 'ms' };
+  return value;
 }
 
 function localColorToDtcg(hex) {
@@ -160,6 +218,10 @@ function validateLocalDocument(document) {
       || !collection || !supportedTypes.has(variable.type) || typeof variable.name !== 'string' || !variable.name.trim()) {
       fail('A variable has an invalid identity, collection, name, or type.', 'INVALID_LOCAL_VARIABLE');
     }
+    if (variable.dtcgType !== undefined
+      && (!localMeasurementTypes.has(variable.dtcgType) || variable.type !== 'number')) {
+      fail(`Variable "${variable.name}" has an invalid DTCG measurement type.`, 'INVALID_LOCAL_TYPE');
+    }
     const nameKey = variable.name.toLowerCase();
     const seenNames = namesByCollection.get(collection.id) || new Set();
     if (seenNames.has(nameKey)) fail(`Collection "${collection.name}" has case-insensitive duplicate variable name "${variable.name}".`, 'AMBIGUOUS_VARIABLE_NAME');
@@ -191,7 +253,7 @@ function validateLocalDocument(document) {
   }
   for (const variable of variables) for (const targetId of Object.values(variable.aliasesByMode || {})) {
     const target = byId.get(targetId);
-    if (!target || target.type !== variable.type || target.id === variable.id) {
+    if (!target || target.type !== variable.type || localDtcgType(target) !== localDtcgType(variable) || target.id === variable.id) {
       fail(`Variable "${variable.name}" has a missing, self-referential, or type-incompatible alias.`, 'INVALID_LOCAL_ALIAS');
     }
   }
@@ -266,16 +328,14 @@ export function exportDtcgTokens(document) {
     for (const { segments, variable } of pathsByCollection.get(collection.id) || []) {
       const path = [collection.name, ...segments];
       const modeId = collection.defaultModeId;
-      const token = { $type: variable.type === 'boolean' ? 'string' : variable.type };
+      const token = { $type: outputDtcgType(variable) };
       const defaultAliasId = variable.aliasesByMode?.[modeId];
       if (defaultAliasId) {
         const target = byId.get(defaultAliasId);
         const targetCollection = collectionById(collections, target.collectionId);
         const targetPath = [targetCollection.name, ...splitLocalVariableName(target.name, `Variable "${target.name}"`)];
         token.$ref = `#/${targetPath.map(jsonPointerEscape).join('/')}/$value`;
-      } else if (variable.type === 'color') token.$value = localColorToDtcg(variable.valuesByMode[modeId]);
-      else if (variable.type === 'boolean') token.$value = String(variable.valuesByMode[modeId]);
-      else token.$value = variable.valuesByMode[modeId];
+      } else token.$value = localValueToDtcg(variable, variable.valuesByMode[modeId]);
       insertToken(collectionGroup, segments, token);
     }
   }
@@ -370,11 +430,11 @@ function resolveAliasPath(token, byPath) {
   return null;
 }
 
-function typeFromDtcg(type, label, customType = null) {
-  if (customType === 'boolean') return 'boolean';
+function typeFromDtcg(type, label) {
   if (typeof type !== 'string') fail(`${label} has no explicit or inherited DTCG type.`, 'MISSING_TYPE');
-  if (!dtcgPrimitiveTypes.has(type)) fail(`${label} uses unsupported DTCG type "${type}".`, 'UNSUPPORTED_TYPE');
-  return type;
+  if (dtcgPrimitiveTypes.has(type)) return { type, dtcgType: type };
+  if (dtcgMeasurementTypes.has(type)) return { type: 'number', dtcgType: type };
+  fail(`${label} uses unsupported DTCG type "${type}".`, 'UNSUPPORTED_TYPE');
 }
 
 function parseExternalDocument(document, options, warnings) {
@@ -395,24 +455,20 @@ function parseExternalDocument(document, options, warnings) {
     if (resolved.has(token)) return token;
     if (resolving.has(token)) fail(`DTCG alias cycle at "${token.path.join('.')}".`, 'ALIAS_CYCLE');
     resolving.add(token);
-    let type = token.inheritedType;
+    let dtcgType = token.inheritedType;
     let aliasTarget = null;
     if (token.aliasPath) {
       aliasTarget = byPath.get(makePathKey(token.aliasPath));
       if (!aliasTarget) fail(`DTCG alias from "${token.path.join('.')}" points to missing token "${token.aliasPath.join('.')}".`, 'UNRESOLVED_REFERENCE');
       resolveToken(aliasTarget);
-      if (type == null) type = aliasTarget.type;
-      if (type !== aliasTarget.type) fail(`DTCG alias "${token.path.join('.')}" has a different type from its target.`, 'TYPE_MISMATCH');
+      if (dtcgType == null) dtcgType = aliasTarget.dtcgType;
+      if (dtcgType !== aliasTarget.dtcgType) fail(`DTCG alias "${token.path.join('.')}" has a different type from its target.`, 'TYPE_MISMATCH');
     }
-    const localType = token.localType;
-    token.type = typeFromDtcg(type, `Token "${token.path.join('.')}"`, localType);
+    const localType = typeFromDtcg(dtcgType, `Token "${token.path.join('.')}"`);
+    token.type = localType.type;
+    token.dtcgType = localType.dtcgType;
     if (aliasTarget) token.value = structuredClone(aliasTarget.value);
-    else if (token.type === 'color') token.value = dtcgColorToLocal(token.node.$value, `Token "${token.path.join('.')}"`);
-    else {
-      const value = token.node.$value;
-      assertLocalValue(token.type, value, `Token "${token.path.join('.')}"`);
-      token.value = value;
-    }
+    else token.value = dtcgValueToLocal(token.type, token.dtcgType, token.node.$value, `Token "${token.path.join('.')}"`);
     resolving.delete(token);
     resolved.add(token);
     return token;
@@ -433,7 +489,8 @@ function parseExternalDocument(document, options, warnings) {
     names.add(nameKey);
     const variable = {
       id: newId('variable'), collectionId: collection.id, name, type: token.type,
-      valuesByMode: { [mode.id]: structuredClone(token.value) }
+      valuesByMode: { [mode.id]: structuredClone(token.value) },
+      ...(localMeasurementTypes.has(token.dtcgType) ? { dtcgType: token.dtcgType } : {})
     };
     idsByPath.set(makePathKey(token.path), variable.id);
     return variable;
@@ -487,16 +544,20 @@ function assertExtensionDocument(extension, tokens, warnings = []) {
       if (!target || !targetPath || !tokenAlias || makePathKey(tokenAlias) !== makePathKey(targetPath)) {
         fail(`Default DTCG reference for "${entry.name}" does not match its Tiny Image Star alias.`, 'INVALID_EXTENSION');
       }
-      const projectedType = entry.type === 'boolean' ? 'string' : entry.type;
+      const projectedType = outputDtcgType(entry);
       if (token.node.$type !== projectedType) fail(`DTCG type for "${entry.name}" disagrees with its Tiny Image Star extension.`, 'INVALID_EXTENSION');
     } else {
       if (tokenAlias) fail(`DTCG token "${entry.name}" has an alias absent from the Tiny Image Star extension.`, 'INVALID_EXTENSION');
       const value = token.node.$value;
       const expectedValue = entry.valuesByMode[collectionMode];
-      const projection = entry.type === 'color' ? dtcgColorToLocal(value, `Token "${entry.name}"`)
-        : entry.type === 'boolean' ? (value === 'true' ? true : value === 'false' ? false : null)
-          : value;
-      const projectedType = entry.type === 'boolean' ? 'string' : entry.type;
+      let projection = null;
+      try {
+        projection = dtcgValueToLocal(entry.type, localDtcgType(entry), value, `Token "${entry.name}"`);
+      } catch (error) {
+        if (!(error instanceof DesignTokenInteropError)) throw error;
+        fail(`DTCG default value for "${entry.name}" disagrees with its Tiny Image Star extension.`, 'INVALID_EXTENSION');
+      }
+      const projectedType = outputDtcgType(entry);
       if (token.node.$type !== projectedType) fail(`DTCG type for "${entry.name}" disagrees with its Tiny Image Star extension.`, 'INVALID_EXTENSION');
       if (projection === null || !Object.is(projection, expectedValue)) fail(`DTCG default value for "${entry.name}" disagrees with its Tiny Image Star extension.`, 'INVALID_EXTENSION');
     }

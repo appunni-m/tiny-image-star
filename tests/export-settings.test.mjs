@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, createDocument, createExportSetting, createNode, parseDocument,
+  addNode, createDocument, createExportSetting, createNode, findNode, parseDocument,
   serializeDocument, validateDocument
 } from '../src/model.js';
 
@@ -19,6 +19,23 @@ test('export settings default to an editable PNG 1x preset and survive local doc
   const document = documentWith([createExportSetting({ id: 'retina-webp', format: 'webp', scale: 2, suffix: '@2x', quality: 82 })]);
   const roundTrip = parseDocument(serializeDocument(document));
   assert.deepEqual(roundTrip.pages[0].children[0].exportSettings, document.pages[0].children[0].exportSettings);
+});
+
+test('nested export settings are recovered by layer ID after other top-level layers are saved first', () => {
+  const document = createDocument();
+  const earlierFrame = createNode('frame', { name: 'Earlier frame' });
+  const group = createNode('group', { name: 'Nested artwork' });
+  const artwork = createNode('rectangle', {
+    name: 'Artwork',
+    exportSettings: [createExportSetting({ id: 'webp-retina', format: 'webp', scale: 2, suffix: '@2x', quality: 84 })]
+  });
+  addNode(document, earlierFrame);
+  addNode(document, group);
+  addNode(document, artwork, { parentId: group.id });
+
+  const reloaded = parseDocument(serializeDocument(document));
+  assert.equal(reloaded.pages[0].children[0].id, earlierFrame.id);
+  assert.deepEqual(findNode(reloaded, artwork.id)?.node.exportSettings, artwork.exportSettings);
 });
 
 test('export settings reject malformed format, scale, suffix, quality, duplicate IDs, and excess entries', () => {

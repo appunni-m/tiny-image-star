@@ -204,6 +204,195 @@ test('plain and rich text layout preserve repeated, leading, and trailing spaces
   assert.deepEqual(richWrapped.lines.map(line => line.displayText), ['one', 'two']);
 });
 
+test('Unicode nonbreaking spaces, word joiners, and nonbreaking hyphens never become soft-wrap boundaries', () => {
+  const separators = ['\u00a0', '\u2007', '\u202f', '\u2060', '\u2011'];
+  const measure = value => textGraphemes(value).length * 10;
+  const baseStyle = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0
+  };
+
+  for (const separator of separators) {
+    const text = `A${separator}B`;
+    const plain = layoutPlainText(text, 20, measure, { lineHeight: 10 });
+    assert.deepEqual(plain.lines.map(line => line.displayText), [text],
+      `plain text must keep U+${separator.codePointAt(0).toString(16).toUpperCase()} attached to both neighbors`);
+
+    const rich = layoutTextRuns([{ text: 'A', fontWeight: 700 }, { text: separator }, { text: 'B', color: '#123456' }], 20, baseStyle,
+      value => measure(value));
+    assert.deepEqual(rich.lines.map(line => line.displayText), [text],
+      `rich text must keep U+${separator.codePointAt(0).toString(16).toUpperCase()} attached across styled run boundaries`);
+    assert.equal(rich.lines[0].parts.map(part => part.text).join(''), text,
+      'the line layout preserves the source text even when the unbreakable sequence is wider than its box');
+  }
+
+  const measurementSpace = layoutPlainText('10\u00a0MB 12\u202fkg', 50, value => textGraphemes(value).reduce((width, cluster) => width + (cluster === ' ' ? 5 : 10), 0), {
+    lineHeight: 10
+  });
+  assert.deepEqual(measurementSpace.lines.map(line => line.displayText), ['10\u00a0MB', '12\u202fkg'],
+    'breakable spaces between values still wrap while unit separators remain intact');
+
+  const longUnbreakableValue = `A${'\u00a0'.repeat(300)}B`;
+  const narrowMeasure = value => textGraphemes(value).length;
+  assert.deepEqual(layoutPlainText(longUnbreakableValue, 10, narrowMeasure, { lineHeight: 10 }).lines.map(line => line.displayText),
+    [longUnbreakableValue], 'the long-token probe cap never breaks a no-break sequence');
+  const longRich = layoutTextRuns([{ text: longUnbreakableValue }], 10, baseStyle, narrowMeasure);
+  assert.deepEqual(longRich.lines.map(line => line.displayText), [longUnbreakableValue],
+    'rich text also preserves a no-break sequence beyond the bounded-probe threshold');
+});
+
+test('soft hyphens and zero-width spaces create only discretionary plain and rich line breaks', () => {
+  const measure = value => textGraphemes(value).length * 10;
+  const sourceSoftHyphen = 'ab\u00adcd';
+  const sourceZeroWidthSpace = 'ab\u200bcd';
+  const plainOptions = { lineHeight: 10 };
+
+  const softWrapped = layoutPlainText(sourceSoftHyphen, 30, measure, plainOptions);
+  assert.deepEqual(softWrapped.lines.map(line => line.displayText), ['ab-', 'cd'],
+    'a chosen soft-hyphen opportunity renders one visible hyphen');
+  assert.equal(sourceSoftHyphen, 'ab\u00adcd', 'layout does not rewrite the stored source string');
+  assert.ok(softWrapped.lines.every(line => !line.displayText.includes('\u00ad')),
+    'the invisible source marker is not emitted as display text');
+
+  const zeroWidthWrapped = layoutPlainText(sourceZeroWidthSpace, 30, measure, plainOptions);
+  assert.deepEqual(zeroWidthWrapped.lines.map(line => line.displayText), ['ab', 'cd'],
+    'a chosen zero-width-space opportunity creates a break without a visible character');
+  assert.ok(zeroWidthWrapped.lines.every(line => !line.displayText.includes('\u200b')));
+
+  for (const source of [sourceSoftHyphen, sourceZeroWidthSpace]) {
+    assert.deepEqual(layoutPlainText(source, 50, measure, plainOptions).lines.map(line => line.displayText), ['abcd'],
+      'unselected discretionary markers are invisible and do not split a word');
+  }
+  assert.deepEqual(layoutPlainText('aa a\u00adbc', 50, measure, plainOptions).lines.map(line => line.displayText), ['aa a-', 'bc'],
+    'a soft-hyphen opportunity may use the remaining width on the current line');
+  assert.deepEqual(layoutPlainText('aa a\u200bbc', 50, measure, plainOptions).lines.map(line => line.displayText), ['aa a', 'bc'],
+    'a zero-width-space opportunity may use the remaining width without adding a glyph');
+  assert.deepEqual(layoutPlainText('abcd', 40, measure, plainOptions).lines.map(line => line.displayText), ['abcd'],
+    'ordinary words receive no new discretionary break points');
+
+  const baseStyle = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0
+  };
+  const richSoftRuns = [
+    { text: 'ab' }, { text: '\u00ad', fontWeight: 700, color: '#ff0000' }, { text: 'cd' }
+  ];
+  const richSoft = layoutTextRuns(richSoftRuns, 30, baseStyle, measure);
+  assert.deepEqual(richSoft.lines.map(line => line.displayText), ['ab-', 'cd'],
+    'rich text honors a soft-hyphen opportunity even when its marker is in a separate run');
+  assert.deepEqual(richSoft.lines[0].parts.map(part => [part.text, part.style.fontWeight, part.style.color]), [
+    ['ab', 400, '#1e1e1e'], ['-', 700, '#ff0000']
+  ], 'the visible hyphen inherits the discretionary marker run style');
+  assert.equal(richSoftRuns.map(run => run.text).join(''), sourceSoftHyphen,
+    'rich source runs retain their original soft-hyphen character');
+
+  const richContextualSoftRuns = [
+    { text: 'aa a' }, { text: '\u00ad', fontWeight: 700, color: '#ff0000' }, { text: 'bc' }
+  ];
+  const richContextualSoft = layoutTextRuns(richContextualSoftRuns, 50, baseStyle, measure);
+  assert.deepEqual(richContextualSoft.lines.map(line => line.displayText), ['aa a-', 'bc'],
+    'rich soft-hyphen wrapping can use remaining line width across styled runs');
+  const contextualHyphen = richContextualSoft.lines[0].parts.find(part => part.text === '-');
+  assert.equal(contextualHyphen.style.fontWeight, 700);
+  assert.equal(contextualHyphen.style.color, '#ff0000');
+
+  const richZeroRuns = [{ text: 'ab' }, { text: '\u200b', color: '#ff0000' }, { text: 'cd' }];
+  const richZero = layoutTextRuns(richZeroRuns, 30, baseStyle, measure);
+  assert.deepEqual(richZero.lines.map(line => line.displayText), ['ab', 'cd'],
+    'rich text honors a zero-width-space opportunity across styled-run boundaries');
+  assert.ok(richZero.lines.every(line => line.parts.every(part => !/[\u00ad\u200b]/u.test(part.text))));
+  assert.equal(richZeroRuns.map(run => run.text).join(''), sourceZeroWidthSpace,
+    'rich source runs retain their original zero-width-space character');
+
+  const richContextualZero = layoutTextRuns([
+    { text: 'aa a' }, { text: '\u200b', color: '#ff0000' }, { text: 'bc' }
+  ], 50, baseStyle, measure);
+  assert.deepEqual(richContextualZero.lines.map(line => line.displayText), ['aa a', 'bc'],
+    'rich zero-width-space wrapping can use remaining line width across styled runs');
+
+  const richList = layoutTextRuns([
+    { text: 'aa a' }, { text: '\u00ad', fontWeight: 700 }, { text: 'bc' }
+  ], 80, { ...baseStyle, firstLineIndent: 10, paragraphStyles: [{ listStyle: 'bulleted' }] }, measure);
+  assert.deepEqual(richList.lines.map(line => [line.displayText, line.indent]), [['aa a-', 28], ['bc', 18]],
+    'rich discretionary wrapping respects list marker gutters and first-line indentation');
+  assert.ok(richList.lines.every(line => line.indent + line.naturalWidth <= 80),
+    'rich list line widths stay inside the available paragraph box');
+
+  const plainList = layoutPlainText('aa a\u00adbc', 80, measure, {
+    lineHeight: 10, firstLineIndent: 10, paragraphStyles: [{ listStyle: 'bulleted' }]
+  });
+  assert.deepEqual(plainList.lines.map(line => [line.displayText, line.indent]), [['aa a-', 28], ['bc', 18]],
+    'discretionary wrapping respects the indented first-line width and list hanging indent');
+  assert.ok(plainList.lines.every(line => line.indent + line.naturalWidth <= 80),
+    'list line natural widths remain within the text box after discretionary wrapping');
+
+  for (const source of ['A\u00ad\u00a0B', 'A\u00a0\u00adB', 'A\u200b\u202fB']) {
+    const visible = source.replace(/[\u00ad\u200b]/gu, '');
+    assert.deepEqual(layoutPlainText(source, 20, measure, plainOptions).lines.map(line => line.displayText), [visible],
+      'a discretionary marker cannot create a break beside a Unicode no-break character');
+    const richRuns = [...source].map((text, index) => index === 1 ? { text, color: '#ff0000' } : { text });
+    assert.deepEqual(layoutTextRuns(richRuns, 20, baseStyle, measure).lines.map(line => line.displayText), [visible],
+      'rich discretionary markers respect no-break characters across run boundaries');
+  }
+
+  assert.deepEqual(layoutPlainText('ab\u200b\u00adcd', 30, measure, plainOptions).lines.map(line => line.displayText), ['ab-', 'cd'],
+    'adjacent discretionary markers at one boundary choose the soft hyphen as the visible break');
+  assert.deepEqual(layoutTextRuns([{ text: 'ab' }, { text: '\u200b\u00ad' }, { text: 'cd' }], 30, baseStyle, measure)
+    .lines.map(line => line.displayText), ['ab-', 'cd'],
+  'rich adjacent markers keep the same soft-hyphen preference');
+  assert.deepEqual(layoutPlainText('\u00ad\u200b', 50, measure, plainOptions).lines.map(line => line.displayText), [''],
+    'marker-only plain paragraphs render no discretionary glyph');
+  assert.deepEqual(layoutTextRuns([{ text: '\u00ad\u200b' }], 50, baseStyle, measure).lines.map(line => line.displayText), [''],
+    'marker-only rich paragraphs render no discretionary glyph');
+  assert.deepEqual(layoutPlainText('\u00adab\u200b', 50, measure, plainOptions).lines.map(line => line.displayText), ['ab'],
+    'leading and trailing discretionary markers disappear when no break can use them');
+  assert.deepEqual(layoutTextRuns([{ text: '\u00adab\u200b' }], 50, baseStyle, measure).lines.map(line => line.displayText), ['ab'],
+    'rich leading and trailing markers disappear when no break can use them');
+
+  const richUnbroken = layoutTextRuns(richSoftRuns, 50, baseStyle, measure);
+  assert.deepEqual(richUnbroken.lines.map(line => line.displayText), ['abcd'],
+    'rich text hides an unused soft hyphen and avoids a visible hyphen when no break is taken');
+  assert.deepEqual(layoutTextRuns([{ text: 'abcd' }], 40, baseStyle, measure).lines.map(line => line.displayText), ['abcd'],
+    'ordinary rich text receives no new discretionary break points');
+});
+
+test('discretionary breaks compose with CJK and Thai wrapping in plain and rich text', () => {
+  const cjkMeasure = value => textGraphemes(value).reduce((width, cluster) => width + (cluster === '-' ? 5 : 10), 0);
+  const plainOptions = { lineHeight: 10 };
+  const baseStyle = {
+    fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
+    lineHeight: 1, letterSpacing: 0
+  };
+  const richLines = (text, width, measure) => layoutTextRuns([{ text }], width, baseStyle, measure).lines.map(line => line.displayText);
+
+  for (const [width, expected] of [[20, ['日本', '語文', '章']], [25, ['日本-', '語文', '章']]]) {
+    assert.deepEqual(layoutPlainText(`日本\u00ad語文章`, width, cjkMeasure, plainOptions).lines.map(line => line.displayText), expected,
+      'a CJK soft hyphen is shown only if its chosen break and hyphen fit the line');
+    assert.deepEqual(richLines(`日本\u00ad語文章`, width, cjkMeasure), expected,
+      'rich CJK wrapping matches the plain-text discretionary break');
+  }
+  for (const width of [20, 25]) {
+    const baseline = layoutPlainText('日本語文章', width, cjkMeasure, plainOptions).lines.map(line => line.displayText);
+    assert.deepEqual(layoutPlainText(`日本\u200b語文章`, width, cjkMeasure, plainOptions).lines.map(line => line.displayText), baseline,
+      'a zero-width marker preserves natural CJK wrap opportunities');
+    assert.deepEqual(richLines(`日本\u200b語文章`, width, cjkMeasure), baseline,
+      'rich zero-width markers preserve natural CJK wrapping');
+  }
+
+  const thaiMeasure = value => textGraphemes(value).length * 10;
+  for (const marker of ['\u00ad', '\u200b']) {
+    for (const width of [30, 40]) {
+      const expected = marker === '\u00ad' && width === 40 ? ['ไทย-', 'ภาษา']
+        : width === 40 ? ['ไทย', 'ภาษา'] : ['ไทย', 'ภาษ', 'า'];
+      const source = `ไทย${marker}ภาษา`;
+      assert.deepEqual(layoutPlainText(source, width, thaiMeasure, plainOptions).lines.map(line => line.displayText), expected,
+        'Thai marker breaks preserve dictionary wrapping and still handle an overwide suffix');
+      assert.deepEqual(richLines(source, width, thaiMeasure), expected,
+        'rich Thai marker breaks match plain wrapping and suffix fallback');
+    }
+  }
+});
+
 test('CJK text wraps at grapheme boundaries and observes common kinsoku punctuation rules', () => {
   const measure = value => textGraphemes(value).length * 10;
   const plain = layoutPlainText('日本語の文章', 20, measure, { lineHeight: 10 });

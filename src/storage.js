@@ -1,6 +1,6 @@
-import { createId } from './model.js';
-import { publishComponent, validateComponentLibrary } from './component-library.js';
-import { inspectRasterDimensions } from './image-engine.js';
+import { assertDocumentTreeBounds, createId } from './model.js';
+import { publishComponent, publishComponentSet, validateComponentLibrary } from './component-library.js';
+import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { validateLocalFontAsset } from './font-assets.js';
 
 const DB_NAME = 'figma-local-documents';
@@ -12,12 +12,42 @@ export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
 const MAX_RECIPE_BATCH_TARGET_IDS = 100_000;
 const MAX_RECIPE_BATCH_ID_LENGTH = 256;
 const MAX_RECIPE_BATCH_RECIPE_BYTES = 256 * 1024;
+export const RECIPE_BATCH_RECOVERY_LEASE_MS = 120_000;
+// Older tabs wrote recovery rows without a renewable lease. Hold those rows
+// through one bounded compatibility window before allowing a newer tab to
+// take them over; they cannot heartbeat or be fenced by the new code.
+export const LEGACY_RECIPE_BATCH_RECOVERY_GRACE_MS = 30 * 60_000;
 const RECIPE_BATCH_STATUSES = new Set(['running', 'paused', 'cancelled', 'complete']);
 const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
 const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
 const dbPromises = new Map();
 let assetMetadataMigrationPromise = null;
 let fontMetadataMigrationPromise = null;
+
+export class DocumentSaveConflictError extends Error {
+  constructor(documentId, expectedRevision, actualRevision) {
+    super('This design was saved in another tab. Your edits need to be preserved as a separate recovery copy.');
+    this.name = 'DocumentSaveConflictError';
+    this.documentId = documentId;
+    this.expectedRevision = expectedRevision;
+    this.actualRevision = actualRevision;
+  }
+}
+
+export class RecipeBatchRecoveryLeaseError extends Error {
+  constructor(documentId, reason = 'active', leaseExpiresAt = null) {
+    const message = reason === 'active'
+      ? 'This design already has an image recipe batch running in another tab.'
+      : reason === 'owner'
+        ? 'This tab no longer owns the image recipe recovery record.'
+        : 'The image recipe recovery record changed in another tab. Reload it before continuing.';
+    super(message);
+    this.name = 'RecipeBatchRecoveryLeaseError';
+    this.documentId = documentId;
+    this.reason = reason;
+    this.leaseExpiresAt = leaseExpiresAt;
+  }
+}
 
 function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
@@ -110,7 +140,10 @@ function imageAssetMetadata(id, name, type, sourceBytes) {
     name: typeof name === 'string' ? name : '',
     type: typeof type === 'string' ? type : '',
     byteLength: bytes?.byteLength ?? 0,
-    dimensions: dimensions ? { width: dimensions.width, height: dimensions.height, pixels: dimensions.pixels } : null
+    dimensions: dimensions ? {
+      width: dimensions.width, height: dimensions.height, pixels: dimensions.pixels,
+      ...(Number.isInteger(dimensions.orientation) && dimensions.orientation !== 1 ? { orientation: dimensions.orientation } : {}),
+    } : null
   };
 }
 
@@ -212,11 +245,34 @@ function migrateAssetMetadataOnce() {
   return migration;
 }
 
-export async function saveDocument(document) {
+export async function saveDocument(document, options = {}) {
+  const compareAndSwap = Object.hasOwn(options, 'expectedRevision');
+  const expectedRevision = options.expectedRevision;
+  if (compareAndSwap && !(expectedRevision === null || (Number.isSafeInteger(expectedRevision) && expectedRevision >= 0))) {
+    throw new TypeError('An expected document revision must be null or a non-negative safe integer.');
+  }
   const db = await openDatabase();
   const tx = db.transaction('documents', 'readwrite');
-  tx.objectStore('documents').put({ id: document.id, savedAt: Date.now(), document });
-  await transactionDone(tx);
+  const store = tx.objectStore('documents');
+  const done = transactionDone(tx);
+  let savedRevision = null;
+  let conflict = null;
+  const request = store.get(document.id);
+  request.onsuccess = () => {
+    const existing = request.result;
+    const actualRevision = existing
+      ? (Number.isSafeInteger(existing.revision) && existing.revision >= 0 ? existing.revision : 0)
+      : null;
+    if (compareAndSwap && actualRevision !== expectedRevision) {
+      conflict = new DocumentSaveConflictError(document.id, expectedRevision, actualRevision);
+      return;
+    }
+    savedRevision = (actualRevision ?? 0) + 1;
+    store.put({ ...existing, id: document.id, savedAt: Date.now(), revision: savedRevision, document });
+  };
+  await done;
+  if (conflict) throw conflict;
+  return savedRevision;
 }
 
 function validRecipeBatchId(value) {
@@ -247,21 +303,126 @@ function cloneRecipeBatchRecovery(input) {
       recipe,
       pageId: input.pageId,
       targetIds: [...input.targetIds],
-      status: input.status
+      status: input.status,
+      ownerToken: validRecipeBatchOwnerToken(input.ownerToken) ? input.ownerToken : null,
+      leaseExpiresAt: Number.isFinite(input.leaseExpiresAt) ? input.leaseExpiresAt : null
     };
   } catch {
     return null;
   }
 }
 
-/** Save the local recovery journal for one image-recipe batch. */
-export async function saveRecipeBatchRecovery({ documentId, recipe, pageId, targetIds, status } = {}) {
-  const recovery = cloneRecipeBatchRecovery({ documentId, recipe, pageId, targetIds, status });
-  if (!recovery) throw new TypeError('Invalid image recipe batch recovery data.');
+function validRecipeBatchOwnerToken(value) {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_RECIPE_BATCH_ID_LENGTH;
+}
+
+function legacyRecoveryLeaseExpiresAt(record, now) {
+  // Older writers always stamped savedAt. Treat malformed legacy rows without
+  // a timestamp as stale instead of giving them a sliding grace period.
+  const savedAt = Number.isFinite(record?.savedAt) && record.savedAt >= 0 ? record.savedAt : 0;
+  return Math.min(now + LEGACY_RECIPE_BATCH_RECOVERY_GRACE_MS, savedAt + LEGACY_RECIPE_BATCH_RECOVERY_GRACE_MS);
+}
+
+function recipeRecoveryLeaseExpiresAt(record, now = Date.now()) {
+  return validRecipeBatchOwnerToken(record?.ownerToken) && Number.isFinite(record?.leaseExpiresAt)
+    ? record.leaseExpiresAt
+    : legacyRecoveryLeaseExpiresAt(record, now);
+}
+
+/** Atomically claim a per-design recovery journal before any batch edit is admitted. */
+export async function claimRecipeBatchRecovery(input = {}, options = {}) {
+  const {
+    expectedOwnerToken,
+    replaceOwnerToken,
+    now = Date.now(),
+    leaseMs = RECIPE_BATCH_RECOVERY_LEASE_MS
+  } = options;
+  const recovery = cloneRecipeBatchRecovery(input);
+  const ownerToken = input.ownerToken;
+  const checksExistingOwner = Object.hasOwn(options, 'expectedOwnerToken');
+  if (!recovery || !validRecipeBatchOwnerToken(ownerToken)
+    || !Number.isFinite(now) || !Number.isFinite(leaseMs) || leaseMs < 1_000 || leaseMs > 24 * 60 * 60_000
+    || (checksExistingOwner && expectedOwnerToken != null && !validRecipeBatchOwnerToken(expectedOwnerToken))
+    || (replaceOwnerToken != null && !validRecipeBatchOwnerToken(replaceOwnerToken))) {
+    throw new TypeError('Invalid image recipe batch recovery data.');
+  }
   const db = await openDatabase();
   const tx = db.transaction('recipeBatchRecovery', 'readwrite');
-  tx.objectStore('recipeBatchRecovery').put({ ...recovery, savedAt: Date.now() });
-  await transactionDone(tx);
+  const store = tx.objectStore('recipeBatchRecovery');
+  const done = transactionDone(tx);
+  let failure = null;
+  let claimed = null;
+  const request = store.get(recovery.documentId);
+  request.onsuccess = () => {
+    const existing = request.result;
+    const storedOwner = validRecipeBatchOwnerToken(existing?.ownerToken) ? existing.ownerToken : null;
+    const leaseExpiresAt = existing ? recipeRecoveryLeaseExpiresAt(existing, now) : null;
+    const leaseIsActive = Boolean(existing && leaseExpiresAt > now);
+    const expectedMatches = checksExistingOwner && storedOwner === (expectedOwnerToken ?? null);
+    const transferMatches = replaceOwnerToken != null && storedOwner === replaceOwnerToken;
+
+    if (!existing && checksExistingOwner) {
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale');
+      return;
+    }
+    if (existing && checksExistingOwner && !expectedMatches) {
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale', leaseExpiresAt);
+      return;
+    }
+    if (existing && replaceOwnerToken != null && !transferMatches) {
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale', leaseExpiresAt);
+      return;
+    }
+    if (existing && leaseIsActive && storedOwner !== ownerToken && !transferMatches) {
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'active', leaseExpiresAt);
+      return;
+    }
+    if (existing && storedOwner !== ownerToken && !transferMatches && !expectedMatches) {
+      // An expired recovery point still belongs to an explicit recovery flow;
+      // ordinary batch starts must not silently erase it.
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'stale', leaseExpiresAt);
+      return;
+    }
+
+    claimed = {
+      ...recovery,
+      ownerToken,
+      leaseExpiresAt: now + leaseMs,
+      savedAt: now
+    };
+    store.put(claimed);
+  };
+  await done;
+  if (failure) throw failure;
+  if (!claimed) throw new Error('The image recipe recovery lease was not acquired.');
+  return { ...claimed };
+}
+
+/** Refresh an owned recovery journal; an expired owner may renew only if no tab has taken it over. */
+export async function saveRecipeBatchRecovery(input = {}, { now = Date.now(), leaseMs = RECIPE_BATCH_RECOVERY_LEASE_MS } = {}) {
+  const recovery = cloneRecipeBatchRecovery(input);
+  const ownerToken = input.ownerToken;
+  if (!recovery || !validRecipeBatchOwnerToken(ownerToken)
+    || !Number.isFinite(now) || !Number.isFinite(leaseMs) || leaseMs < 1_000 || leaseMs > 24 * 60 * 60_000) {
+    throw new TypeError('Invalid image recipe batch recovery data.');
+  }
+  const db = await openDatabase();
+  const tx = db.transaction('recipeBatchRecovery', 'readwrite');
+  const store = tx.objectStore('recipeBatchRecovery');
+  const done = transactionDone(tx);
+  let failure = null;
+  const request = store.get(recovery.documentId);
+  request.onsuccess = () => {
+    const existing = request.result;
+    if (!existing || existing.ownerToken !== ownerToken) {
+      failure = new RecipeBatchRecoveryLeaseError(recovery.documentId, 'owner', existing?.leaseExpiresAt ?? null);
+      return;
+    }
+    store.put({ ...recovery, ownerToken, leaseExpiresAt: now + leaseMs, savedAt: now });
+  };
+  await done;
+  if (failure) throw failure;
+  return { leaseExpiresAt: now + leaseMs };
 }
 
 /** Read a validated local recovery journal without removing corrupt rows. */
@@ -271,23 +432,38 @@ export async function loadRecipeBatchRecovery(documentId) {
   const record = await requestResult(db.transaction('recipeBatchRecovery').objectStore('recipeBatchRecovery').get(documentId));
   if (!record || record.documentId !== documentId) return null;
   const recovery = cloneRecipeBatchRecovery(record);
-  return recovery ? { ...recovery, savedAt: Number.isFinite(record.savedAt) ? record.savedAt : 0 } : null;
+  if (!recovery) return null;
+  const savedAt = Number.isFinite(record.savedAt) ? record.savedAt : 0;
+  return {
+    ...recovery,
+    savedAt,
+    leaseExpiresAt: recovery.ownerToken && recovery.leaseExpiresAt != null
+      ? recovery.leaseExpiresAt
+      : legacyRecoveryLeaseExpiresAt(record, Date.now())
+  };
 }
 
-/** Remove a recovery journal after the batch result is safely resolved. */
-export async function deleteRecipeBatchRecovery(documentId) {
+/** Remove a recovery journal only when the caller still owns its run token. */
+export async function deleteRecipeBatchRecovery(documentId, ownerToken) {
   if (!validRecipeBatchId(documentId)) return false;
+  if (!validRecipeBatchOwnerToken(ownerToken)) throw new TypeError('An image recipe run owner token is required to clear recovery data.');
   const db = await openDatabase();
   const tx = db.transaction('recipeBatchRecovery', 'readwrite');
   const store = tx.objectStore('recipeBatchRecovery');
   let found = false;
   const request = store.get(documentId);
+  let failure = null;
   request.onsuccess = () => {
     if (!request.result) return;
+    if (request.result.ownerToken !== ownerToken) {
+      failure = new RecipeBatchRecoveryLeaseError(documentId, 'owner', request.result.leaseExpiresAt ?? null);
+      return;
+    }
     found = true;
     store.delete(documentId);
   };
   await transactionDone(tx);
+  if (failure) throw failure;
   return found;
 }
 
@@ -296,6 +472,39 @@ export async function loadLatestDocument() {
   const records = await requestResult(db.transaction('documents').objectStore('documents').getAll());
   records.sort((a, b) => b.savedAt - a.savedAt);
   return records[0]?.document ?? null;
+}
+
+/** Load the newest saved document accepted by the supplied parser without changing rejected rows. */
+export async function loadLatestValidDocument(parseDocument) {
+  if (typeof parseDocument !== 'function') throw new TypeError('A document parser is required to load a valid local design.');
+  const db = await openDatabase();
+  const records = await requestResult(db.transaction('documents').objectStore('documents').getAll());
+  const savedAt = record => Number.isFinite(record?.savedAt) ? record.savedAt : 0;
+  records.sort((left, right) => savedAt(right) - savedAt(left)
+    || String(right?.id ?? '').localeCompare(String(left?.id ?? '')));
+  const invalidRecords = [];
+  for (const record of records) {
+    try {
+      const document = parseDocument(record?.document);
+      if (typeof record?.id !== 'string' || record.id !== document.id) {
+        throw new TypeError('Saved design identity does not match its storage record.');
+      }
+      return {
+        document,
+        recordId: record?.id ?? null,
+        savedAt: savedAt(record),
+        revision: Number.isSafeInteger(record?.revision) && record.revision >= 0 ? record.revision : 0,
+        invalidRecords
+      };
+    } catch (error) {
+      invalidRecords.push({
+        id: record?.id ?? null,
+        savedAt: savedAt(record),
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return { document: null, recordId: null, savedAt: null, revision: null, invalidRecords };
 }
 
 function versionOrder(left, right) {
@@ -365,29 +574,51 @@ export async function listSavedDocuments() {
 
 /** Retrieve one saved local design by its stable document ID. */
 export async function loadDocumentById(id) {
-  if (typeof id !== 'string' || !id) return null;
-  const db = await openDatabase();
-  const record = await requestResult(db.transaction('documents').objectStore('documents').get(id));
+  const record = await loadDocumentRecordById(id);
   return record?.document ?? null;
 }
 
+/** Retrieve one saved local design and its concurrency revision by stable ID. */
+export async function loadDocumentRecordById(id) {
+  if (typeof id !== 'string' || !id) return null;
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('documents').objectStore('documents').get(id));
+  if (!record) return null;
+  return {
+    ...record,
+    revision: Number.isSafeInteger(record.revision) && record.revision >= 0 ? record.revision : 0
+  };
+}
+
 /** Rename a saved document. Returns false when the requested ID is absent. */
-export async function renameStoredDocument(id, name) {
+export async function renameStoredDocument(id, name, options = {}) {
   const nextName = String(name ?? '').trim();
   if (!nextName || nextName.length > 120) throw new TypeError('A design name must contain 1–120 characters.');
+  const compareAndSwap = Object.hasOwn(options, 'expectedRevision');
+  const expectedRevision = options.expectedRevision;
+  if (compareAndSwap && !(expectedRevision === null || (Number.isSafeInteger(expectedRevision) && expectedRevision >= 0))) {
+    throw new TypeError('An expected document revision must be null or a non-negative safe integer.');
+  }
   const db = await openDatabase();
   const tx = db.transaction('documents', 'readwrite');
   const store = tx.objectStore('documents');
   let found = false;
+  let conflict = null;
   const done = transactionDone(tx);
   const request = store.get(id);
   request.onsuccess = () => {
     const existing = request.result;
     if (!existing?.document) return;
+    const actualRevision = Number.isSafeInteger(existing.revision) && existing.revision >= 0 ? existing.revision : 0;
+    if (compareAndSwap && actualRevision !== expectedRevision) {
+      conflict = new DocumentSaveConflictError(id, expectedRevision, actualRevision);
+      return;
+    }
     found = true;
-    store.put({ ...existing, savedAt: Date.now(), document: { ...existing.document, name: nextName } });
+    store.put({ ...existing, savedAt: Date.now(), revision: actualRevision + 1, document: { ...existing.document, name: nextName } });
   };
   await done;
+  if (conflict) throw conflict;
   return found;
 }
 
@@ -407,32 +638,45 @@ export async function duplicateStoredDocument(id, name = null) {
     duplicate.id = createId('file');
     const suggestedName = `${String(duplicate.name || 'Untitled').slice(0, 114)} copy`;
     duplicate.name = name == null ? suggestedName : String(name).trim();
-    store.put({ id: duplicate.id, savedAt: Date.now(), document: duplicate });
+    store.put({ id: duplicate.id, savedAt: Date.now(), revision: 0, document: duplicate });
   };
   await done;
   return duplicate && structuredClone(duplicate);
 }
 
-/** Delete a saved design and its local versions atomically; shared asset rows remain owned by the local library. */
+/** Delete a saved design, its local versions, and any interrupted recipe journal atomically. */
 export async function deleteStoredDocument(id) {
   if (typeof id !== 'string' || !id) return false;
   const db = await openDatabase();
-  const tx = db.transaction(['documents', 'versions'], 'readwrite');
+  const tx = db.transaction(['documents', 'versions', 'recipeBatchRecovery'], 'readwrite');
   const store = tx.objectStore('documents');
   const versions = tx.objectStore('versions');
+  const recipeRecovery = tx.objectStore('recipeBatchRecovery');
   let found = false;
+  let operationError = null;
   const done = transactionDone(tx);
   const request = store.get(id);
   request.onsuccess = () => {
     if (!request.result) return;
-    found = true;
-    store.delete(id);
-    const versionRequest = versions.index('byDocument').getAll(id);
-    versionRequest.onsuccess = () => {
-      for (const version of versionRequest.result || []) versions.delete(version.id);
+    const recoveryRequest = recipeRecovery.get(id);
+    recoveryRequest.onsuccess = () => {
+      const recovery = recoveryRequest.result;
+      const leaseExpiresAt = recovery ? recipeRecoveryLeaseExpiresAt(recovery) : null;
+      if (recovery && leaseExpiresAt > Date.now()) {
+        operationError = new RecipeBatchRecoveryLeaseError(id, 'active', leaseExpiresAt);
+        return;
+      }
+      found = true;
+      store.delete(id);
+      recipeRecovery.delete(id);
+      const versionRequest = versions.index('byDocument').getAll(id);
+      versionRequest.onsuccess = () => {
+        for (const version of versionRequest.result || []) versions.delete(version.id);
+      };
     };
   };
   await done;
+  if (operationError) throw operationError;
   return found;
 }
 
@@ -685,6 +929,45 @@ export async function publishStoredComponent(libraryId, component) {
   return result;
 }
 
+/** Publish a complete component set against the latest saved revision atomically. */
+export async function publishStoredComponentSet(libraryId, set) {
+  if (!validComponentLibraryId(libraryId)) throw new TypeError('A valid local component library ID is required.');
+  const snapshot = structuredClone(set);
+  const db = await openComponentLibraryDatabase();
+  const tx = db.transaction('componentLibraries', 'readwrite');
+  const done = transactionDone(tx);
+  const store = tx.objectStore('componentLibraries');
+  let result = null;
+  let operationError = null;
+  const request = store.get(libraryId);
+  request.onsuccess = () => {
+    try {
+      const current = validateStoredComponentLibrary(request.result);
+      const published = publishComponentSet(current, snapshot);
+      const library = structuredClone(published.library);
+      store.put({
+        id: library.id,
+        name: library.name,
+        revision: library.revision,
+        savedAt: Date.now(),
+        library
+      });
+      result = {
+        library,
+        publication: structuredClone(published.publication),
+        publications: structuredClone(published.publications)
+      };
+    } catch (error) {
+      operationError = error;
+      tx.abort();
+    }
+  };
+  try { await done; }
+  catch (error) { throw operationError || error; }
+  if (!result) throw new Error('The local component-set publication did not complete.');
+  return result;
+}
+
 /** Load and validate one saved component library, returning a defensive copy. */
 export async function loadComponentLibrary(id) {
   if (!validComponentLibraryId(id)) return null;
@@ -838,6 +1121,7 @@ export async function importLocalPackage(document, assets, fonts = []) {
     throw new TypeError('Local design package does not contain a valid design.');
   }
   if (!Array.isArray(assets)) throw new TypeError('Local design package assets must be a list.');
+  assertDocumentTreeBounds(document);
   const packageFonts = validatePackageFonts(fonts, { copyBytes: false });
   assertPackageAssetReferences(document, assets);
   const seen = new Set();
@@ -847,6 +1131,14 @@ export async function importLocalPackage(document, assets, fonts = []) {
       throw new TypeError('Local design package contains an invalid or duplicate image asset.');
     }
     seen.add(asset.id);
+    try {
+      // Container parsing stays byte-exact and format-agnostic so packages can
+      // be inspected or round-tripped independently. The durable image store,
+      // however, must never accept bytes the local decoder cannot safely size.
+      assertSafeRasterDimensions(asset.bytes);
+    } catch (error) {
+      throw new TypeError(`Local design package image “${asset.name || asset.id}” is invalid or unsafe: ${error.message}`);
+    }
   }
 
   await Promise.all([migrateAssetMetadataOnce(), migrateFontMetadataOnce()]);
@@ -929,7 +1221,7 @@ export async function importLocalPackage(document, assets, fonts = []) {
         for (const page of importedDocument.pages) {
           visitPackageNodes(page.children || [], node => remapPackageNodeAssets(node, mapping));
         }
-        documentStore.add({ id: importedDocument.id, savedAt: Date.now(), document: importedDocument });
+        documentStore.add({ id: importedDocument.id, savedAt: Date.now(), revision: 0, document: importedDocument });
         resolve({ document: importedDocument, assetIds: mapping, fontIds: fontMapping, fontFamilies: familyAliases });
       } catch (error) {
         fail(error);
@@ -1109,6 +1401,8 @@ export function unpackLocalPackage(input) {
   catch { throw new TypeError('Invalid local design package manifest.'); }
   if (manifest.schema !== 'figma-local/1' || !manifest.document || !Array.isArray(manifest.assets)) throw new TypeError('Unsupported local design package.');
   if (manifest.fonts !== undefined && !Array.isArray(manifest.fonts)) throw new TypeError('Invalid local design package font manifest.');
+  // Bound the untrusted layer tree before the reference walk recurses through it.
+  assertDocumentTreeBounds(manifest.document);
   let offset = 11 + manifestLength;
   const assets = [];
   const seen = new Set();

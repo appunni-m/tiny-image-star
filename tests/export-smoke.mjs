@@ -1,4 +1,4 @@
-import { addNode, createDocument, createNode } from '../src/model.js';
+import { addNode, createDocument, createGradientFill, createNode, findNode } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage } from '../src/image-processing.js';
@@ -120,6 +120,14 @@ try {
     name: 'Image-filled export', x: 220, y: 30, width: 40, height: 40, fill: '#ffffff',
     imageFill: createImageFill(imageAssetId, { fit: 'contain' })
   });
+  const vectorFrame = createNode('frame', { name: 'Vector art one', x: 320, y: 40, width: 120, height: 80, fill: '#ffffff' });
+  const vectorGradient = createGradientFill('linear', '#ff3300');
+  vectorGradient.stops[1].color = '#2244ff';
+  addNode(design, vectorFrame);
+  addNode(design, createNode('rectangle', { name: 'Gradient card', x: 12, y: 10, width: 72, height: 44, fillGradient: vectorGradient }), { parentId: vectorFrame.id });
+  const secondVectorFrame = createNode('frame', { name: 'Vector art two', x: 470, y: 40, width: 90, height: 70, fill: '#ffffff' });
+  addNode(design, secondVectorFrame);
+  addNode(design, createNode('ellipse', { name: 'Blue circle', x: 15, y: 10, width: 56, height: 50, fill: '#3366cc' }), { parentId: secondVectorFrame.id });
   addNode(design, group); addNode(design, artwork, { parentId: group.id });
   addNode(design, caption, { parentId: group.id });
   addNode(design, localImage, { parentId: group.id });
@@ -149,9 +157,10 @@ try {
   updateSetting(app, settingId, 'quality', '84');
   await waitForSaveCycle(app, 'WebP preset');
   const saved = await readDocument(design.id);
-  assert(saved?.pages[0].children[0].children[0].exportSettings?.[0]?.format === 'webp', 'The chosen export format did not persist locally.');
-  assert(saved.pages[0].children[0].children[0].exportSettings[0].scale === 2 && saved.pages[0].children[0].children[0].exportSettings[0].suffix === '@2x', 'The scale and suffix did not persist locally.');
-  assert(saved.pages[0].children[0].children[0].exportSettings[0].quality === 84, 'The output quality did not persist locally.');
+  const savedArtwork = saved ? findNode(saved, artwork.id)?.node : null;
+  assert(savedArtwork?.exportSettings?.[0]?.format === 'webp', 'The chosen export format did not persist locally.');
+  assert(savedArtwork.exportSettings[0].scale === 2 && savedArtwork.exportSettings[0].suffix === '@2x', 'The scale and suffix did not persist locally.');
+  assert(savedArtwork.exportSettings[0].quality === 84, 'The output quality did not persist locally.');
 
   click(app.querySelector('#outline-mode'));
   assert(app.querySelector('#outline-mode')?.getAttribute('aria-pressed') === 'true', 'The outline view should be active while checking export isolation.');
@@ -390,7 +399,31 @@ try {
   assert(bitmap.width === 64 && bitmap.height === 32, `The edited original should keep its full source resolution; received ${bitmap.width} × ${bitmap.height}.`);
   bitmap.close();
   assert(!directQualityCalls.some(call => call.type === 'image/webp'), 'Full-resolution WebP output should preserve WASM-encoded quality without a browser re-encode.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, rasterExportUnaffectedByOutlineView: true })}`;
+  click(app.querySelector(`[data-layer-id="${vectorFrame.id}"]`));
+  const selectedVectorPdfButton = app.querySelector('[data-action="export-vector-pdf"]');
+  assert(selectedVectorPdfButton && Number.parseFloat(view.getComputedStyle(selectedVectorPdfButton).minHeight) >= 40,
+    'The vector PDF export action should be available and finger-sized for a selected frame on mobile.');
+  click(selectedVectorPdfButton);
+  await waitFor(() => downloads.length === 13, 'selected-frame vector PDF');
+  assert(downloads[12].filename === 'Vector art one.pdf' && downloads[12].blob?.type === 'application/pdf',
+    'Selected-frame vector PDF should use a local filename and PDF MIME type.');
+  const selectedPdfText = new TextDecoder('latin1').decode(await downloads[12].blob.arrayBuffer());
+  assert(selectedPdfText.startsWith('%PDF-1.4') && selectedPdfText.includes('/ShadingType 2')
+    && !selectedPdfText.includes('/Subtype /Image'),
+  'Selected-frame PDF should keep the editor gradient as vector shading instead of rasterizing it.');
+
+  click(app.querySelector('#file-menu-button'));
+  const vectorPagePdfButton = [...app.querySelectorAll('#context-menu button')]
+    .find(button => button.textContent.includes('multipage vector PDF'));
+  assert(vectorPagePdfButton, 'The file menu should offer multipage vector PDF export.');
+  click(vectorPagePdfButton);
+  await waitFor(() => downloads.length === 14, 'current-page multipage vector PDF');
+  assert(downloads[13].filename === 'Page 1-frames.pdf' && downloads[13].blob?.type === 'application/pdf',
+    'Current-page vector PDF should use the page name and frames suffix.');
+  const pagePdfText = new TextDecoder('latin1').decode(await downloads[13].blob.arrayBuffer());
+  assert(pagePdfText.includes('/Type /Pages /Count 2') && !pagePdfText.includes('/Subtype /Image'),
+    'Current-page PDF should contain one vector page for each visible top-level frame.');
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg', 'vector-pdf'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, selectedVectorPdf: true, vectorPdfPages: 2, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

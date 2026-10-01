@@ -5,8 +5,13 @@ import {
   parseDocument, prepareBooleanBake, separateBoolean, serializeDocument, validateDocument
 } from '../src/model.js';
 import { History } from '../src/history.js';
-import { setVectorNodePoint, vectorNodePoint } from '../src/vector-path.js';
-import { flattenBooleanContours, polygonBoolean } from '../src/boolean-geometry.js';
+import {
+  appendVectorNetworkPath, setVectorNodePoint, vectorNetworkEdgeForPair,
+  vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors,
+  vectorNetworkVertexPoint, vectorNodePoint
+} from '../src/vector-path.js';
+import { booleanSourceTransform, flattenBooleanContours, flattenBooleanPathContours, polygonBoolean } from '../src/boolean-geometry.js';
+import { containsPointInRoundedRect } from '../src/corner-radii.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 
 test('Boolean combine keeps editable operands and their stacking order', () => {
@@ -181,6 +186,30 @@ function sampledPathContours(node, steps = 64) {
   });
 }
 
+function sampledNetworkContours(node, steps = 64) {
+  const edgesByPair = vectorNetworkEdgePairIndex(node);
+  return node.faces.map(face => {
+    const result = [];
+    for (let index = 0; index < face.vertexIds.length; index += 1) {
+      const fromId = face.vertexIds[index];
+      const toId = face.vertexIds[(index + 1) % face.vertexIds.length];
+      const edge = vectorNetworkEdgeForPair(edgesByPair, fromId, toId);
+      const points = vectorNetworkEdgePoints(node, edge.id, { x: node.x, y: node.y });
+      const reversed = edge.from !== fromId;
+      const [p0, p1, p2, p3] = reversed
+        ? [points[3], points[2], points[1], points[0]] : points;
+      for (let step = 0; step < steps; step += 1) {
+        const t = step / steps; const inverse = 1 - t;
+        result.push({
+          x: inverse ** 3 * p0.x + 3 * inverse ** 2 * t * p1.x + 3 * inverse * t ** 2 * p2.x + t ** 3 * p3.x,
+          y: inverse ** 3 * p0.y + 3 * inverse ** 2 * t * p1.y + 3 * inverse * t ** 2 * p2.y + t ** 3 * p3.y
+        });
+      }
+    }
+    return result;
+  });
+}
+
 function insideSampledContours(point, contours) {
   let inside = false;
   for (const contour of contours) {
@@ -199,6 +228,28 @@ function booleanMembership(operation, first, second, point) {
   if (operation === 'subtract') return a && !b;
   if (operation === 'intersect') return a && b;
   return a !== b;
+}
+
+function nearestEllipseBoundaryDistance(point, ellipse) {
+  const distanceAt = angle => Math.hypot(
+    point.x - (ellipse.cx + Math.cos(angle) * ellipse.rx),
+    point.y - (ellipse.cy + Math.sin(angle) * ellipse.ry)
+  );
+  const samples = 1024;
+  let bestIndex = 0; let bestDistance = Infinity;
+  for (let index = 0; index < samples; index += 1) {
+    const candidate = distanceAt(index * Math.PI * 2 / samples);
+    if (candidate < bestDistance) { bestDistance = candidate; bestIndex = index; }
+  }
+  let low = (bestIndex - 1) * Math.PI * 2 / samples;
+  let high = (bestIndex + 1) * Math.PI * 2 / samples;
+  for (let iteration = 0; iteration < 48; iteration += 1) {
+    const first = (2 * low + high) / 3;
+    const second = (low + 2 * high) / 3;
+    if (distanceAt(first) <= distanceAt(second)) high = second;
+    else low = first;
+  }
+  return distanceAt((low + high) / 2);
 }
 
 test('polygon Boolean boundaries preserve exact overlaps for all four operations', () => {
@@ -293,6 +344,385 @@ test('star Boolean baking matches live star angles and circular radius on a non-
     assert.ok(actual.some(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) < 1e-7),
       `the baked star should preserve the live vertex at ${point.x}, ${point.y}`);
   }
+});
+
+test('ellipse Boolean baking produces a bounded-error editable cubic path', () => {
+  const document = createDocument();
+  const ellipse = createNode('ellipse', { name: 'Ellipse', x: 20, y: 30, width: 100, height: 60 });
+  const separate = createNode('rectangle', { x: 180, y: 35, width: 20, height: 20 });
+  addNode(document, ellipse); addNode(document, separate);
+  const group = combineBoolean(document, [ellipse.id, separate.id], 'union');
+  const baked = bakeBoolean(document, group.id);
+
+  const contours = [baked.points, ...baked.subpaths.map(contour => contour.points)];
+  const ellipsePoints = contours.find(points => points.length === 12);
+  assert.ok(ellipsePoints, 'the ellipse remains a 12-segment editable Bézier contour');
+  assert.ok(ellipsePoints.some(point => Math.hypot(point.in.x, point.in.y) > 1e-5));
+  assert.ok(ellipsePoints.some(point => Math.hypot(point.out.x, point.out.y) > 1e-5));
+  const center = { cx: ellipse.x + ellipse.width / 2, cy: ellipse.y + ellipse.height / 2,
+    rx: ellipse.width / 2, ry: ellipse.height / 2 };
+  const sampled = sampledPathContours(baked, 24)
+    .find(contour => contour.length === 12 * 24);
+  assert.ok(sampled, 'the baked ellipse keeps all cubic spans through path conversion');
+  const maxError = Math.max(...sampled.map(point => nearestEllipseBoundaryDistance({
+    x: point.x - baked.x, y: point.y - baked.y
+  }, center)));
+  assert.ok(maxError < Math.max(center.rx, center.ry) * 1e-6,
+    `ellipse approximation error ${maxError} stays below 1e-6 of its longer semiaxis`);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('rotated ellipse Boolean bake follows source resize transforms and preserves group rotation', () => {
+  const document = createDocument();
+  const ellipse = createNode('ellipse', { x: 30, y: 40, width: 110, height: 65, rotation: 31 });
+  const separate = createNode('rectangle', { x: 260, y: 8, width: 27, height: 23 });
+  addNode(document, ellipse); addNode(document, separate);
+  const group = combineBoolean(document, [ellipse.id, separate.id], 'union');
+  group.width *= 1.7;
+  group.height *= .73;
+  group.rotation = 19;
+  const transform = booleanSourceTransform(group.children, group.width, group.height);
+  const source = group.children.find(child => child.type === 'ellipse');
+  const centerX = source.x + source.width / 2;
+  const centerY = source.y + source.height / 2;
+  const inset = 1 - 5e-7;
+  const expectedAnchors = Array.from({ length: 12 }, (_, index) => {
+    const angle = index * Math.PI / 6;
+    const raw = { x: centerX + source.width / 2 * inset * Math.cos(angle),
+      y: centerY + source.height / 2 * inset * Math.sin(angle) };
+    const radians = source.rotation * Math.PI / 180;
+    const dx = raw.x - centerX; const dy = raw.y - centerY;
+    const rotated = { x: centerX + dx * Math.cos(radians) - dy * Math.sin(radians),
+      y: centerY + dx * Math.sin(radians) + dy * Math.cos(radians) };
+    return { x: (rotated.x - transform.left) * transform.scaleX,
+      y: (rotated.y - transform.top) * transform.scaleY };
+  });
+  const baked = bakeBoolean(document, group.id);
+  assert.equal(baked.rotation, 19, 'the Boolean group rotation stays on the editable path layer');
+  const contours = [baked.points, ...baked.subpaths.map(contour => contour.points)];
+  const ellipsePoints = contours.find(points => points.length === 12);
+  assert.ok(ellipsePoints, 'resizing and rotation preserve the ellipse contour');
+  const actualAnchors = ellipsePoints.map(point => ({ x: point.x * baked.width, y: point.y * baked.height }));
+  for (const expected of expectedAnchors) {
+    assert.ok(actualAnchors.some(actual => Math.hypot(actual.x - expected.x, actual.y - expected.y) < 1e-6),
+      `resized ellipse anchor ${expected.x},${expected.y} should retain its source transform`);
+  }
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('ellipse boundaries participate in all four transversal Boolean operations', () => {
+  for (const operation of ['union', 'subtract', 'intersect', 'exclude']) {
+    const document = createDocument();
+    const ellipse = createNode('ellipse', { x: 10, y: 20, width: 100, height: 60 });
+    const rectangle = createNode('rectangle', { x: 75, y: 25, width: 50, height: 50 });
+    addNode(document, ellipse); addNode(document, rectangle);
+    const group = combineBoolean(document, [ellipse.id, rectangle.id], operation);
+    const source = group.children.map(child => structuredClone(child));
+    const baked = bakeBoolean(document, group.id);
+    const output = sampledPathContours(baked, 32).map(contour => contour.map(point => ({
+      x: point.x - baked.x, y: point.y - baked.y
+    })));
+    const ellipseSource = source[0];
+    const rectSource = source[1];
+    const cx = ellipseSource.x + ellipseSource.width / 2;
+    const cy = ellipseSource.y + ellipseSource.height / 2;
+    const rx = ellipseSource.width / 2;
+    const ry = ellipseSource.height / 2;
+    let checked = 0;
+    for (let y = 2.31; y < group.height - 1; y += 4.93) for (let x = 1.77; x < group.width - 1; x += 4.37) {
+      const ellipseValue = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2;
+      const nearEllipse = Math.abs(Math.sqrt(ellipseValue) - 1) * Math.min(rx, ry) < .25;
+      const nearRectangle = Math.min(Math.abs(x - rectSource.x), Math.abs(x - rectSource.x - rectSource.width),
+        Math.abs(y - rectSource.y), Math.abs(y - rectSource.y - rectSource.height)) < .25;
+      if (nearEllipse || nearRectangle) continue;
+      const a = ellipseValue < 1;
+      const b = x > rectSource.x && x < rectSource.x + rectSource.width
+        && y > rectSource.y && y < rectSource.y + rectSource.height;
+      const expected = operation === 'union' ? a || b
+        : operation === 'subtract' ? a && !b
+          : operation === 'intersect' ? a && b : a !== b;
+      assert.equal(insideSampledContours({ x, y }, output), expected,
+        `${operation} ellipse Boolean output differs at ${x},${y}`);
+      checked += 1;
+    }
+    assert.ok(checked > 100, `${operation} should compare a broad set of interior and exterior points`);
+  }
+});
+
+test('zero-radius rectangle Booleans retain the exact polygon path', () => {
+  const document = createDocument();
+  const first = createNode('rectangle', { x: 10, y: 10, width: 70, height: 50, radius: 0 });
+  const second = createNode('rectangle', { x: 45, y: 30, width: 60, height: 45 });
+  addNode(document, first); addNode(document, second);
+  const group = combineBoolean(document, [first.id, second.id], 'union');
+  const exact = flattenBooleanContours(group);
+  const curves = flattenBooleanPathContours(group);
+  assert.deepEqual(curves.map(contour => contour.map(curve => curve.p0)), exact,
+    'square-corner rectangle results keep the existing polygon vertices exactly');
+  for (const contour of curves) for (const curve of contour) {
+    const dx = curve.p3.x - curve.p0.x;
+    const dy = curve.p3.y - curve.p0.y;
+    assert.ok(Math.abs(curve.p1.x - (curve.p0.x + dx / 3)) < 1e-10);
+    assert.ok(Math.abs(curve.p1.y - (curve.p0.y + dy / 3)) < 1e-10);
+    assert.ok(Math.abs(curve.p2.x - (curve.p0.x + 2 * dx / 3)) < 1e-10);
+    assert.ok(Math.abs(curve.p2.y - (curve.p0.y + 2 * dy / 3)) < 1e-10);
+  }
+});
+
+test('independent rounded-rectangle corners bake as editable cubic curves', () => {
+  const corners = [
+    { key: 'topLeft', outside: [2, 2], inside: [12, 12] },
+    { key: 'topRight', outside: [98, 2], inside: [88, 12] },
+    { key: 'bottomRight', outside: [98, 78], inside: [88, 68] },
+    { key: 'bottomLeft', outside: [2, 78], inside: [12, 68] }
+  ];
+  for (const { key, outside, inside } of corners) {
+    const document = createDocument();
+    const cornerRadii = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0 };
+    cornerRadii[key] = 24;
+    const rounded = createNode('rectangle', { x: 10, y: 20, width: 100, height: 80, cornerRadii });
+    const distant = createNode('rectangle', { x: 160, y: 20, width: 10, height: 10 });
+    addNode(document, rounded); addNode(document, distant);
+    const group = combineBoolean(document, [rounded.id, distant.id], 'union');
+    const baked = bakeBoolean(document, group.id);
+    const contours = sampledPathContours(baked);
+    const output = contours.find(contour => contour.some(point => point.x >= 10 && point.x <= 110
+      && point.y >= 20 && point.y <= 100));
+
+    assert.ok(output, `${key} rounded rectangle contour should remain in the baked path`);
+    const localRadii = { topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0, [key]: 24 };
+    for (const [point, expected] of [[outside, false], [inside, true]]) {
+      const absolute = { x: 10 + point[0], y: 20 + point[1] };
+      assert.equal(insideSampledContours(absolute, [output]), expected,
+        `${key} corner sample ${absolute.x},${absolute.y} should match its quadratic boundary`);
+      assert.equal(containsPointInRoundedRect(point[0], point[1], 100, 80, localRadii), expected);
+    }
+    const pathContours = [baked.points, ...(baked.subpaths || []).map(contour => contour.points)];
+    const roundedPath = pathContours.find(points => points.some(point => {
+      const x = baked.x + point.x * baked.width;
+      const y = baked.y + point.y * baked.height;
+      return x >= 10 && x <= 110 && y >= 20 && y <= 100;
+    }));
+    assert.ok(roundedPath.some(point => Math.hypot(point.in.x, point.in.y) > 1e-6
+      || Math.hypot(point.out.x, point.out.y) > 1e-6), `${key} quadratic must stay an editable cubic span`);
+  }
+});
+
+test('rotated and resized rounded rectangles retain corner curves during Boolean baking', () => {
+  const document = createDocument();
+  const radii = { topLeft: 18, topRight: 9, bottomRight: 23, bottomLeft: 12 };
+  const rounded = createNode('rectangle', {
+    x: 25, y: 40, width: 100, height: 70, rotation: 31, cornerRadii: radii
+  });
+  const distant = createNode('rectangle', { x: 300, y: 10, width: 24, height: 32 });
+  addNode(document, rounded); addNode(document, distant);
+  const group = combineBoolean(document, [rounded.id, distant.id], 'union');
+  group.width *= 1.6;
+  group.height *= .8;
+  group.rotation = 23;
+  const sourceTransform = booleanSourceTransform(group.children, group.width, group.height);
+  const source = group.children.find(child => child.type === 'rectangle' && child.cornerRadii);
+  const sourceGeometry = structuredClone(source);
+  const contours = sampledPathContours(bakeBoolean(document, group.id));
+  const baked = findNode(document, group.id).node;
+  const sourceCenter = { x: sourceGeometry.x + sourceGeometry.width / 2, y: sourceGeometry.y + sourceGeometry.height / 2 };
+  const rotateSourcePoint = (u, v) => {
+    const radians = sourceGeometry.rotation * Math.PI / 180;
+    const dx = sourceGeometry.x + u - sourceCenter.x;
+    const dy = sourceGeometry.y + v - sourceCenter.y;
+    return {
+      x: sourceCenter.x + dx * Math.cos(radians) - dy * Math.sin(radians),
+      y: sourceCenter.y + dx * Math.sin(radians) + dy * Math.cos(radians)
+    };
+  };
+  for (const [local, expected] of [[{ x: 50, y: 35 }, true], [{ x: 1, y: 1 }, false]]) {
+    const point = rotateSourcePoint(local.x, local.y);
+    const mapped = {
+      x: baked.x + (point.x - sourceTransform.left) * sourceTransform.scaleX,
+      y: baked.y + (point.y - sourceTransform.top) * sourceTransform.scaleY
+    };
+    assert.equal(containsPointInRoundedRect(local.x, local.y, sourceGeometry.width, sourceGeometry.height, radii), expected);
+    assert.equal(insideSampledContours(mapped, contours), expected,
+      `resized local point ${local.x},${local.y} should retain its rounded-rectangle membership`);
+  }
+  assert.equal(baked.rotation, 23, 'the live Boolean group rotation remains on the editable path');
+  const points = [baked.points, ...(baked.subpaths || []).map(contour => contour.points)].flat();
+  assert.ok(points.some(point => Math.hypot(point.in.x, point.in.y) > 1e-6
+    || Math.hypot(point.out.x, point.out.y) > 1e-6), 'resizing preserves editable corner handles');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('rounded rectangle boundaries participate in all four Boolean operations', () => {
+  for (const operation of ['union', 'subtract', 'intersect', 'exclude']) {
+    const document = createDocument();
+    const radii = { topLeft: 18, topRight: 24, bottomRight: 8, bottomLeft: 15 };
+    const rounded = createNode('rectangle', { x: 10, y: 10, width: 100, height: 80, cornerRadii: radii });
+    const overlap = createNode('rectangle', { x: 80, y: 25, width: 50, height: 45 });
+    addNode(document, rounded); addNode(document, overlap);
+    const group = combineBoolean(document, [rounded.id, overlap.id], operation);
+    const sourceTransform = booleanSourceTransform(group.children, group.width, group.height);
+    const baked = bakeBoolean(document, group.id);
+    const contours = sampledPathContours(baked);
+    for (const pagePoint of [
+      { x: 35, y: 50 }, // rounded rectangle only
+      { x: 120, y: 50 }, // overlap only
+      { x: 90, y: 50 }, // intersection
+      { x: 12, y: 12 }, // outside at the independently rounded top-left corner
+      { x: 140, y: 100 } // outside both
+    ]) {
+      const inRounded = containsPointInRoundedRect(pagePoint.x - rounded.x, pagePoint.y - rounded.y,
+        rounded.width, rounded.height, radii);
+      const inOverlap = pagePoint.x > overlap.x && pagePoint.x < overlap.x + overlap.width
+        && pagePoint.y > overlap.y && pagePoint.y < overlap.y + overlap.height;
+      const expected = operation === 'union' ? inRounded || inOverlap
+        : operation === 'subtract' ? inRounded && !inOverlap
+          : operation === 'intersect' ? inRounded && inOverlap : inRounded !== inOverlap;
+      const mapped = {
+        x: baked.x + (pagePoint.x - sourceTransform.left) * sourceTransform.scaleX,
+        y: baked.y + (pagePoint.y - sourceTransform.top) * sourceTransform.scaleY
+      };
+      assert.equal(insideSampledContours(mapped, contours), expected,
+        `${operation} rounded rectangle output differs at ${pagePoint.x},${pagePoint.y}`);
+    }
+  }
+});
+
+test('closed network faces bake as editable cubic contours through Boolean operations', () => {
+  const anchors = [
+    { x: 10, y: 10, in: { x: 10, y: 10 }, out: { x: 10, y: 10 } },
+    { x: 100, y: 10, in: { x: 100, y: 10 }, out: { x: 130, y: 30 } },
+    { x: 100, y: 90, in: { x: 130, y: 70 }, out: { x: 100, y: 90 } },
+    { x: 10, y: 90, in: { x: 10, y: 90 }, out: { x: 10, y: 90 } }
+  ];
+  for (const operation of ['union', 'subtract', 'intersect', 'exclude']) {
+    const document = createDocument();
+    const network = createNode('network', vectorNetworkGeometryFromAnchors(anchors, { closed: true }));
+    const rectangle = createNode('rectangle', { x: 110, y: 25, width: 18, height: 50 });
+    addNode(document, network); addNode(document, rectangle);
+    const group = combineBoolean(document, [network.id, rectangle.id], operation);
+    const sourceContours = group.children.map(child => child.type === 'network'
+      ? sampledNetworkContours(child, 96)
+      : [rectangleContour(child.x, child.y, child.width, child.height)]);
+    const baked = bakeBoolean(document, group.id);
+    assert.equal(baked.type, 'path');
+    assert.ok([baked.points, ...(baked.subpaths || []).map(contour => contour.points)]
+      .flat().some(point => Math.hypot(point.in.x, point.in.y) > 1e-5 || Math.hypot(point.out.x, point.out.y) > 1e-5),
+    `${operation} should preserve curved network edge handles`);
+    const outputContours = sampledPathContours(baked, 64).map(contour => contour.map(point => ({
+      x: point.x - baked.x, y: point.y - baked.y
+    })));
+    for (let y = 2.19; y < group.height - 1; y += 5.13) for (let x = 1.67; x < group.width - 1; x += 4.29) {
+      const point = { x, y };
+      const expected = booleanMembership(operation, sourceContours[0], sourceContours[1], point);
+      assert.equal(insideSampledContours(point, outputContours), expected,
+        `${operation} network result differs at ${x},${y}`);
+    }
+    assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  }
+});
+
+test('rotated network face controls follow resized Boolean source geometry', () => {
+  const document = createDocument();
+  const networkGeometry = vectorNetworkGeometryFromAnchors([
+    { x: 10, y: 10, in: { x: 10, y: 10 }, out: { x: 10, y: 10 } },
+    { x: 100, y: 10, in: { x: 100, y: 10 }, out: { x: 130, y: 30 } },
+    { x: 100, y: 90, in: { x: 130, y: 70 }, out: { x: 100, y: 90 } },
+    { x: 10, y: 90, in: { x: 10, y: 90 }, out: { x: 10, y: 90 } }
+  ], { closed: true });
+  const network = createNode('network', { ...networkGeometry, rotation: 23 });
+  const separate = createNode('rectangle', { x: 250, y: 15, width: 20, height: 20 });
+  addNode(document, network); addNode(document, separate);
+  const group = combineBoolean(document, [network.id, separate.id], 'union');
+  group.width *= 1.45;
+  group.height *= .82;
+  group.rotation = 17;
+  const transform = booleanSourceTransform(group.children, group.width, group.height);
+  const source = group.children.find(child => child.type === 'network');
+  const cx = source.x + source.width / 2;
+  const cy = source.y + source.height / 2;
+  const radians = source.rotation * Math.PI / 180;
+  const expected = source.faces[0].vertexIds.map(id => {
+    const point = vectorNetworkVertexPoint(source, id, { x: source.x, y: source.y });
+    const dx = point.x - cx; const dy = point.y - cy;
+    const rotated = { x: cx + dx * Math.cos(radians) - dy * Math.sin(radians),
+      y: cy + dx * Math.sin(radians) + dy * Math.cos(radians) };
+    return { x: (rotated.x - transform.left) * transform.scaleX,
+      y: (rotated.y - transform.top) * transform.scaleY };
+  });
+  const baked = bakeBoolean(document, group.id);
+  assert.equal(baked.rotation, 17);
+  const contours = [baked.points, ...baked.subpaths.map(contour => contour.points)];
+  const networkPoints = contours.find(points => points.length === 4 && expected.every(point => points.some(candidate =>
+    Math.hypot(candidate.x * baked.width - point.x, candidate.y * baked.height - point.y) < 1e-6)));
+  assert.ok(networkPoints, 'the four-vertex network face remains one editable contour');
+  const actual = networkPoints.map(point => ({ x: point.x * baked.width, y: point.y * baked.height }));
+  for (const point of expected) {
+    assert.ok(actual.some(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) < 1e-6),
+      `resized network vertex ${point.x},${point.y} should retain its resolved rotation and source transform`);
+  }
+});
+
+test('disconnected closed network faces bake into compound paths but open or shared topology is refused', () => {
+  const document = createDocument();
+  const networkGeometry = vectorNetworkGeometryFromAnchors([
+    { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 25, y: 35 }
+  ], { closed: true });
+  appendVectorNetworkPath(networkGeometry, [
+    { x: 80, y: 20 }, { x: 110, y: 20 }, { x: 95, y: 45 }
+  ], { x: networkGeometry.x, y: networkGeometry.y }, { closed: true });
+  const network = createNode('network', networkGeometry);
+  const other = createNode('rectangle', { x: 150, y: 10, width: 20, height: 20 });
+  addNode(document, network); addNode(document, other);
+  const group = combineBoolean(document, [network.id, other.id], 'union');
+  const baked = bakeBoolean(document, group.id);
+  assert.equal(1 + baked.subpaths.length, 3, 'two disjoint filled network faces and the rectangle remain separate contours');
+
+  const openDocument = createDocument();
+  const openGeometry = vectorNetworkGeometryFromAnchors([
+    { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 25, y: 35 }
+  ], { closed: true });
+  appendVectorNetworkPath(openGeometry, [{ x: 55, y: 12 }, { x: 75, y: 20 }],
+    { x: openGeometry.x, y: openGeometry.y });
+  const openNetwork = createNode('network', openGeometry);
+  const openOther = createNode('rectangle', { x: 100, y: 10, width: 20, height: 20 });
+  addNode(openDocument, openNetwork); addNode(openDocument, openOther);
+  const openGroup = combineBoolean(openDocument, [openNetwork.id, openOther.id], 'union');
+  const before = serializeDocument(openDocument);
+  assert.throws(() => prepareBooleanBake(openDocument, openGroup.id), /open or unfilled network (vertices|edges)/);
+  assert.equal(serializeDocument(openDocument), before, 'refusing an open network must retain its live graph and Boolean group');
+
+  const sharedDocument = createDocument();
+  const sharedGeometry = vectorNetworkGeometryFromAnchors([
+    { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 40, y: 40 }, { x: 10, y: 40 }
+  ], { closed: true });
+  const sharedTopRight = sharedGeometry.vertices[1].id;
+  const sharedBottomRight = sharedGeometry.vertices[2].id;
+  appendVectorNetworkPath(sharedGeometry, [
+    { x: 40, y: 10, vertexId: sharedTopRight }, { x: 70, y: 10 },
+    { x: 70, y: 40 }, { x: 40, y: 40, vertexId: sharedBottomRight }
+  ], { x: sharedGeometry.x, y: sharedGeometry.y }, { closed: true });
+  const sharedNetwork = createNode('network', sharedGeometry);
+  const sharedOther = createNode('rectangle', { x: 100, y: 10, width: 20, height: 20 });
+  addNode(sharedDocument, sharedNetwork); addNode(sharedDocument, sharedOther);
+  const sharedGroup = combineBoolean(sharedDocument, [sharedNetwork.id, sharedOther.id], 'union');
+  const sharedBefore = serializeDocument(sharedDocument);
+  assert.throws(() => prepareBooleanBake(sharedDocument, sharedGroup.id), /parallel edges|shares junctions between faces/);
+  assert.equal(serializeDocument(sharedDocument), sharedBefore,
+    'refusing shared graph junctions must retain the exact network topology');
+
+  const constrainedDocument = createDocument();
+  const constrainedGeometry = vectorNetworkGeometryFromAnchors([
+    { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 25, y: 35 }
+  ], { closed: true });
+  constrainedGeometry.vertices[0].mode = 'smooth';
+  const constrainedNetwork = createNode('network', constrainedGeometry);
+  const constrainedOther = createNode('rectangle', { x: 100, y: 10, width: 20, height: 20 });
+  addNode(constrainedDocument, constrainedNetwork); addNode(constrainedDocument, constrainedOther);
+  const constrainedGroup = combineBoolean(constrainedDocument, [constrainedNetwork.id, constrainedOther.id], 'union');
+  const constrainedBefore = serializeDocument(constrainedDocument);
+  assert.throws(() => prepareBooleanBake(constrainedDocument, constrainedGroup.id), /constrained handle modes/);
+  assert.equal(serializeDocument(constrainedDocument), constrainedBefore,
+    'refusing constrained graph editing modes must leave the network and Boolean group unchanged');
 });
 
 test('baked polygon bounds include source rotations while the live group transform stays on the path', () => {
@@ -417,10 +847,8 @@ test('an empty Boolean intersection bakes to a valid empty editable path', () =>
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
 });
 
-test('unsupported rounded, transparent, and non-polygonal inputs are refused atomically', () => {
+test('transparent inputs are refused atomically', () => {
   const unsupportedNodes = [
-    [createNode('ellipse', { x: 10, y: 0, width: 30, height: 30 }), /Ellipses/],
-    [createNode('rectangle', { x: 10, y: 0, width: 30, height: 30, radius: 8 }), /rounded corners/],
     [createNode('rectangle', { x: 10, y: 0, width: 30, height: 30, opacity: .5 }), /transparency/]
   ];
   for (const [badOperand, reason] of unsupportedNodes) {
@@ -475,6 +903,7 @@ test('mode-bound rectangle radius is refused even when its raw radius is square'
   assert.equal(bindVariable(document, radiusBound.id, radius.id, 'radius'), true);
   const group = combineBoolean(document, [base.id, radiusBound.id], 'union');
   const before = serializeDocument(document);
+  assert.throws(() => flattenBooleanPathContours(group), /mode-bound radius/);
   assert.throws(() => prepareBooleanBake(document, group.id), /mode-bound geometry/);
   assert.equal(serializeDocument(document), before, 'the refused bake is atomic and retains the live Boolean source');
 });

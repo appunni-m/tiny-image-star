@@ -113,6 +113,12 @@ function keepDesignLocalInteractions(node, context) {
     if (interaction.action === 'change-variant') return false;
     if (context.sourceToEditorId.has(interaction.destinationId)) interaction.destinationId = context.sourceToEditorId.get(interaction.destinationId);
     if (interaction.destinationId && !context.nodeIds.has(interaction.destinationId)) return false;
+    if (interaction.action === 'scroll-to') {
+      const targetSourceId = interaction.scrollTargetId;
+      const editorTargetId = context.sourceToEditorId.get(targetSourceId);
+      if (editorTargetId) interaction.scrollTargetId = editorTargetId;
+      else if (!context.nodeIds.has(targetSourceId)) return false;
+    }
     if (interaction.destinationPageId && !context.pages.has(interaction.destinationPageId)) return false;
     if (interaction.condition?.variableId && !context.variables.has(interaction.condition.variableId)) return false;
     if (interaction.action === 'set-variable-mode') {

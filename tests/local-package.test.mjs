@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDocument, createNode, createFillLayer, addNode, serializeDocument } from '../src/model.js';
-import { buildLocalPackageBlob, localPackageFilename, packLocalPackage, unpackLocalPackage } from '../src/storage.js';
+import { createDocument, createNode, createFillLayer, addNode, MAX_DOCUMENT_TREE_DEPTH, serializeDocument } from '../src/model.js';
+import { buildLocalPackageBlob, importLocalPackage, localPackageFilename, packLocalPackage, unpackLocalPackage } from '../src/storage.js';
 
 test('portable local design restores its metadata and byte-exact image assets', () => {
   const document = createDocument();
@@ -114,4 +114,57 @@ test('package decoder rejects missing sources and duplicate asset IDs in untrust
     { id: 'missing-source', name: 'a.png', type: 'image/png', length: 0 },
     { id: 'missing-source', name: 'b.png', type: 'image/png', length: 0 }
   ])), /duplicate image asset/i);
+});
+
+test('package decoder rejects deeply nested documents before recursive source-reference traversal', () => {
+  const marker = '__deep_layer_tree__';
+  const shallowDocument = createDocument();
+  shallowDocument.pages[0].children = marker;
+  let nestedLayer = '{"id":"deep-layer-5999","type":"group","children":[]}';
+  for (let depth = 5_998; depth >= 0; depth -= 1) {
+    nestedLayer = `{"id":"deep-layer-${depth}","type":"group","children":[${nestedLayer}]}`;
+  }
+  const manifestText = JSON.stringify({ schema: shallowDocument.schema, document: shallowDocument, assets: [] })
+    .replace(JSON.stringify(marker), `[${nestedLayer}]`);
+  const manifest = new TextEncoder().encode(manifestText);
+  const bytes = new Uint8Array(11 + manifest.length);
+  bytes.set([70, 76, 79, 67, 65, 76, 1]);
+  new DataView(bytes.buffer).setUint32(7, manifest.length, true);
+  bytes.set(manifest, 11);
+
+  assert.throws(() => unpackLocalPackage(bytes), error => error instanceof TypeError
+    && error.message.includes(`maximum depth of ${MAX_DOCUMENT_TREE_DEPTH}`),
+  'the package boundary should reject excessive nesting with a controlled TypeError');
+});
+
+test('linked component roots share the document depth budget before package and import walks', async () => {
+  const marker = '__deep_linked_roots__';
+  const shallowDocument = createDocument();
+  shallowDocument.pages[0].children = marker;
+  let linkedRoot = '{"id":"linked-root-5999","type":"group","children":[]}';
+  for (let depth = 5_998; depth >= 0; depth -= 1) {
+    linkedRoot = `{"id":"linked-root-${depth}","type":"group","children":[],"linkedComponent":{"root":${linkedRoot}}}`;
+  }
+  const outerRoot = `{"id":"linked-outer","type":"group","children":[],"linkedComponent":{"root":${linkedRoot}}}`;
+  const manifestText = JSON.stringify({ schema: shallowDocument.schema, document: shallowDocument, assets: [] })
+    .replace(JSON.stringify(marker), `[${outerRoot}]`);
+  const manifest = new TextEncoder().encode(manifestText);
+  const bytes = new Uint8Array(11 + manifest.length);
+  bytes.set([70, 76, 79, 67, 65, 76, 1]);
+  new DataView(bytes.buffer).setUint32(7, manifest.length, true);
+  bytes.set(manifest, 11);
+
+  assert.throws(() => unpackLocalPackage(bytes), error => error instanceof TypeError
+    && error.message.includes(`maximum depth of ${MAX_DOCUMENT_TREE_DEPTH}`),
+  'linked roots must not reset nesting before the package reference walk');
+
+  let linked = { id: 'linked-root-leaf', type: 'group', children: [] };
+  for (let depth = 0; depth < MAX_DOCUMENT_TREE_DEPTH + 10; depth += 1) {
+    linked = { id: `linked-root-import-${depth}`, type: 'group', children: [], linkedComponent: { root: linked } };
+  }
+  const directImport = createDocument();
+  directImport.pages[0].children = [linked];
+  await assert.rejects(importLocalPackage(directImport, []), error => error instanceof TypeError
+    && error.message.includes(`maximum depth of ${MAX_DOCUMENT_TREE_DEPTH}`),
+  'direct package imports must preflight linked trees before their recursive asset-reference scan');
 });

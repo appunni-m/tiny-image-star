@@ -52,6 +52,16 @@ function cssClass(node) {
   return `${cssIdentifier(node.name)}${identity ? `-${identity}` : ''}`;
 }
 
+const codegenEffectNames = Object.freeze({ glass: 'Glass', noise: 'Noise', texture: 'Texture' });
+
+function codegenEffectWarning(node) {
+  const effects = (node?.effects || []).filter(effect => effect && effect.visible !== false
+    && Object.hasOwn(codegenEffectNames, effect.type));
+  if (!effects.length) return null;
+  const names = [...new Set(effects.map(effect => codegenEffectNames[effect.type]))].join(', ');
+  return `Visible ${names} effect${effects.length === 1 ? ' is' : 's are'} preserved in layer data but not reproduced by generated CSS.`;
+}
+
 function escapeMarkup(value) {
   return String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -65,18 +75,6 @@ function cssColor(color, alpha = 1) {
   const channels = [value >> 16, (value >> 8) & 255, value & 255];
   const opacity = Math.max(0, Math.min(1, Number(alpha) || 0));
   return opacity >= 1 ? `#${match[1].toLowerCase()}` : `rgba(${channels.join(', ')}, ${number(opacity)})`;
-}
-
-function absolutePosition(document, entry) {
-  const own = getNodeGeometry(document, entry.node);
-  let x = Number(own.x) || 0;
-  let y = Number(own.y) || 0;
-  for (const parent of entry.parents || []) {
-    const geometry = getNodeGeometry(document, parent);
-    x += Number(geometry.x) || 0;
-    y += Number(geometry.y) || 0;
-  }
-  return { x, y };
 }
 
 function generatedRootPosition(document, entry) {
@@ -95,12 +93,35 @@ function generatedRootRotation(document, entry) {
   return (entry.parents || []).reduce((rotation, parent) => rotation + (Number(getNodeGeometry(document, parent).rotation) || 0), Number(own.rotation) || 0);
 }
 
-function autoLayoutDeclarations(layout) {
+function autoLayoutDeclarations(layout, children = []) {
   if (!layout || typeof layout !== 'object') return [];
   if (layout.axis === 'grid') {
+    const trackCss = (track, fallback = 'fill') => {
+      const mode = ['fixed', 'hug', 'fill'].includes(track?.mode) ? track.mode : fallback;
+      if (mode === 'fixed') return `${number(track.value)}px`;
+      if (mode === 'hug') return 'max-content';
+      return `minmax(0, ${number(track.weight || 1)}fr)`;
+    };
+    const columnCount = Math.max(1, Math.min(64, Math.floor(Number(layout.columns) || 1)));
+    const columns = Array.isArray(layout.columnTracks)
+      ? Array.from({ length: columnCount }, (_, index) => trackCss(layout.columnTracks[index]))
+      : null;
+    const requiredRows = children
+      .filter(child => child.visible !== false && child.layoutPositioning !== 'absolute')
+      .reduce((max, child) => Math.max(max, (Number(child.gridCell?.row) || 1) + Math.max(1, Number(child.gridCell?.rowSpan) || 1) - 1), 0);
+    const rowCount = layout.rows === 'auto' || layout.rows == null
+      ? Math.min(64, requiredRows)
+      : Math.max(Math.min(64, Math.floor(Number(layout.rows) || 1)), Math.min(64, requiredRows));
+    const rowFallback = layout.rows === 'auto' || layout.rows == null ? 'hug' : 'fill';
+    const rows = rowCount && (Array.isArray(layout.rowTracks) || rowFallback === 'fill')
+      ? Array.from({ length: rowCount }, (_, index) => trackCss(layout.rowTracks?.[index], rowFallback))
+      : null;
+    const padding = layout.padding || {};
     return [
       'display: grid;',
-      `grid-template-columns: repeat(${Math.max(1, Math.floor(Number(layout.columns) || 1))}, minmax(0, 1fr));`,
+      columns ? `grid-template-columns: ${columns.join(' ')};` : `grid-template-columns: repeat(${columnCount}, minmax(0, 1fr));`,
+      ...(rows ? [`grid-template-rows: ${rows.join(' ')};`] : ['grid-auto-rows: max-content;']),
+      `padding: ${number(padding.top)}px ${number(padding.right)}px ${number(padding.bottom)}px ${number(padding.left)}px;`,
       `row-gap: ${number(layout.rowGap)}px;`,
       `column-gap: ${number(layout.columnGap)}px;`
     ];
@@ -134,7 +155,8 @@ function strokePatternStyle(node) {
 
 function resolvedStroke(document, node, stroke, index) {
   return {
-    color: index === 0 && node.strokeVariableId ? getNodeColor(document, node, 'stroke') : stroke.color,
+    color: stroke.gradient?.stops?.[0]?.color ?? (index === 0 && node.strokeVariableId ? getNodeColor(document, node, 'stroke') : stroke.color),
+    ...(stroke.gradient ? { gradient: structuredClone(stroke.gradient) } : {}),
     width: stroke.width,
     opacity: stroke.opacity,
     visible: stroke.visible,
@@ -175,6 +197,10 @@ function cssForEntry(document, entry) {
     const cell = node.gridCell || {};
     if (Number.isInteger(cell.column)) declarations.push(`grid-column: ${cell.column} / span ${Math.max(1, Number(cell.columnSpan) || 1)};`);
     if (Number.isInteger(cell.row)) declarations.push(`grid-row: ${cell.row} / span ${Math.max(1, Number(cell.rowSpan) || 1)};`);
+    if (['start', 'center', 'end'].includes(cell.alignX)) declarations.push(`justify-self: ${cell.alignX};`);
+    if (['start', 'center', 'end'].includes(cell.alignY)) declarations.push(`align-self: ${cell.alignY};`);
+    if (node.layoutSizingX === 'fill') declarations.push('width: 100%;');
+    if (node.layoutSizingY === 'fill') declarations.push('height: 100%;');
   } else if (parentLayout) {
     if (node.layoutSizingMain === 'fill') declarations.push('flex: 1 1 0;', ...(parentLayout.axis === 'horizontal' ? [Number.isFinite(node.minWidth) ? '' : 'min-width: 0;'] : [Number.isFinite(node.minHeight) ? '' : 'min-height: 0;']).filter(Boolean));
     else declarations.push('flex: 0 0 auto;');
@@ -184,6 +210,11 @@ function cssForEntry(document, entry) {
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
   const effectFilter = buildLayerEffectFilter(node.effects);
   if (effectFilter !== 'none') declarations.push(`filter: ${effectFilter};`);
+  const unsupportedEffectWarning = codegenEffectWarning(node);
+  if (unsupportedEffectWarning) declarations.push(`/* ${unsupportedEffectWarning} */`);
+  const backdropFilter = (node.effects || []).filter(effect => effect.type === 'background-blur' && effect.visible !== false)
+    .map(effect => `blur(${number(effect.radius)}px)`).join(' ');
+  if (backdropFilter) declarations.push(`backdrop-filter: ${backdropFilter};`);
   const effectBoxShadow = buildLayerEffectBoxShadow(node.effects);
   if (effectBoxShadow !== 'none') declarations.push(`box-shadow: ${effectBoxShadow};`);
   if (node.blendMode && node.blendMode !== 'normal') declarations.push(`mix-blend-mode: ${node.blendMode};`);
@@ -258,6 +289,7 @@ function cssForEntry(document, entry) {
       const stroke = cssColor(primaryStroke.color, primaryStroke.opacity);
       if (stroke) declarations.push(`border: ${number(primaryStroke.width)}px ${primaryStroke.pattern} ${stroke};`);
     }
+    if (primaryStroke?.gradient) declarations.push('/* Linear/radial stroke gradient is preserved in layer JSON; this CSS border uses its first-stop color. */');
     if (primaryStroke?.visible && primaryStroke.width > 0
       && (primaryStroke.cap !== 'butt' || primaryStroke.join !== 'miter' || primaryStroke.miterLimit !== 10)) {
       declarations.push(`/* Vector stroke cap/join/miter limit (${primaryStroke.cap}/${primaryStroke.join}/${primaryStroke.miterLimit}) remain exact in layer JSON. */`);
@@ -269,7 +301,7 @@ function cssForEntry(document, entry) {
 
   if (node.type === 'frame' && node.clip) declarations.push('overflow: hidden;');
   if (getNodePropertyValue(document, node, 'visible') === false) declarations.push('display: none;');
-  declarations.push(...autoLayoutDeclarations(node.autoLayout));
+  declarations.push(...autoLayoutDeclarations(node.autoLayout, node.children || []));
   if (node.type === 'path' || node.type === 'network' || node.type === 'boolean' || node.mask) declarations.push('/* Vector, Boolean, and mask geometry is retained in layer JSON. */');
   return `${selector} {\n${declarations.map(declaration => `  ${declaration}`).join('\n')}\n}${additionalRules.length ? `\n${additionalRules.join('\n')}` : ''}`;
 }
@@ -277,6 +309,8 @@ function cssForEntry(document, entry) {
 function markupForNode(document, node) {
   const className = cssClass(node);
   const type = escapeMarkup(node.type || 'layer');
+  const effectWarning = codegenEffectWarning(node);
+  const warning = effectWarning ? `<!-- ${effectWarning} -->\n` : '';
   if (node.type === 'text') {
     const value = getNodePropertyValue(document, node, 'text') ?? '';
     const styles = normalizedParagraphStyles(value, node.paragraphStyles);
@@ -288,15 +322,15 @@ function markupForNode(document, node) {
           : ` data-list-style="${style.listStyle}" data-list-level="${style.listLevel}" data-list-marker="${escapeMarkup(markers[index])}"`;
         return `<span class="${className}__paragraph"${attributes}>${escapeMarkup(paragraph)}</span>`;
       }).join('');
-    return `<span class="${className}" data-layer-type="text">${paragraphs}</span>`;
+    return `${warning}<span class="${className}" data-layer-type="text">${paragraphs}</span>`;
   }
   if (node.type === 'image') {
     const label = escapeMarkup(node.fileName || node.name || 'Local image');
-    return `<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Set the source to the local image asset in your app. --></div>`;
+    return `${warning}<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Set the source to the local image asset in your app. --></div>`;
   }
   const children = (node.children || []).map(child => markupForNode(document, child)).join('\n');
   const content = children ? `\n${children}\n` : '';
-  return `<div class="${className}" data-layer-type="${type}">${content}</div>`;
+  return `${warning}<div class="${className}" data-layer-type="${type}">${content}</div>`;
 }
 
 function jsxString(value) {
@@ -307,6 +341,8 @@ function jsxForNode(document, node, depth = 0) {
   const indent = '  '.repeat(depth);
   const className = jsxString(cssClass(node));
   const type = jsxString(node.type || 'layer');
+  const effectWarning = codegenEffectWarning(node);
+  const warning = effectWarning ? `${indent}{/* ${effectWarning} */}\n` : '';
   if (node.type === 'text') {
     const value = String(getNodePropertyValue(document, node, 'text') ?? '');
     const styles = normalizedParagraphStyles(value, node.paragraphStyles);
@@ -318,15 +354,15 @@ function jsxForNode(document, node, depth = 0) {
           : ` data-list-style={${jsxString(style.listStyle)}} data-list-level={${style.listLevel}} data-list-marker={${jsxString(markers[index])}}`;
         return `${indent}  <span className={${jsxString(`${cssClass(node)}__paragraph`)}}${attributes}>{${jsxString(paragraph)}}</span>`;
       }).join('\n');
-    return `${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>\n${paragraphs}\n${indent}</span>`;
+    return `${warning}${indent}<span className={${className}} data-layer-type={${jsxString('text')}}>\n${paragraphs}\n${indent}</span>`;
   }
   if (node.type === 'image') {
     const label = jsxString(node.fileName || node.name || 'Local image');
-    return `${indent}<div className={${className}} data-layer-type={${type}} role={${jsxString('img')}} aria-label={${label}}>{/* Set the source to the local image asset in your app. */}</div>`;
+    return `${warning}${indent}<div className={${className}} data-layer-type={${type}} role={${jsxString('img')}} aria-label={${label}}>{/* Set the source to the local image asset in your app. */}</div>`;
   }
   const children = (node.children || []).map(child => jsxForNode(document, child, depth + 1));
-  if (!children.length) return `${indent}<div className={${className}} data-layer-type={${type}} />`;
-  return `${indent}<div className={${className}} data-layer-type={${type}}>\n${children.join('\n')}\n${indent}</div>`;
+  if (!children.length) return `${warning}${indent}<div className={${className}} data-layer-type={${type}} />`;
+  return `${warning}${indent}<div className={${className}} data-layer-type={${type}}>\n${children.join('\n')}\n${indent}</div>`;
 }
 
 function normalizedParagraphStyles(text, paragraphStyles) {
@@ -401,6 +437,8 @@ function vueForNode(document, node, depth = 0) {
   const indent = '  '.repeat(depth);
   const className = escapeMarkup(cssClass(node));
   const type = escapeMarkup(node.type || 'layer');
+  const effectWarning = codegenEffectWarning(node);
+  const warning = effectWarning ? `${indent}<!-- ${effectWarning} -->\n` : '';
   if (node.type === 'text') {
     const value = String(getNodePropertyValue(document, node, 'text') ?? '');
     const styles = normalizedParagraphStyles(value, node.paragraphStyles);
@@ -414,15 +452,15 @@ function vueForNode(document, node, depth = 0) {
         // interpolation delimiters, markup, or directive-looking content.
         return `${indent}  <span class="${escapeMarkup(`${cssClass(node)}__paragraph`)}"${attributes} v-text="${escapeMarkup(vueString(paragraph))}"></span>`;
       }).join('\n');
-    return `${indent}<span class="${className}" data-layer-type="text">\n${paragraphs}\n${indent}</span>`;
+    return `${warning}${indent}<span class="${className}" data-layer-type="text">\n${paragraphs}\n${indent}</span>`;
   }
   if (node.type === 'image') {
     const label = escapeMarkup(node.fileName || node.name || 'Local image');
-    return `${indent}<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Replace with an app asset or bind an image source. --></div>`;
+    return `${warning}${indent}<div class="${className}" data-layer-type="image" role="img" aria-label="${label}"><!-- Replace with an app asset or bind an image source. --></div>`;
   }
   const children = (node.children || []).map(child => vueForNode(document, child, depth + 1));
-  if (!children.length) return `${indent}<div class="${className}" data-layer-type="${type}" />`;
-  return `${indent}<div class="${className}" data-layer-type="${type}">\n${children.join('\n')}\n${indent}</div>`;
+  if (!children.length) return `${warning}${indent}<div class="${className}" data-layer-type="${type}" />`;
+  return `${warning}${indent}<div class="${className}" data-layer-type="${type}">\n${children.join('\n')}\n${indent}</div>`;
 }
 
 function vueSingleFileComponent(css, roots, document) {
@@ -448,7 +486,9 @@ function treeEntries(root) {
 function summaryForEntry(document, entry) {
   const node = entry.node;
   const geometry = getNodeGeometry(document, node);
-  const position = absolutePosition(document, entry);
+  // Match the copyable CSS root position. Summing local x/y values alone
+  // loses the translation introduced by rotated parents.
+  const position = generatedRootPosition(document, entry);
   const fill = getNodeColor(document, node, node.type === 'text' ? 'text' : 'fill');
   const summary = {
     id: node.id,
@@ -457,7 +497,7 @@ function summaryForEntry(document, entry) {
     parent: entry.parents?.at(-1)?.name || 'Page',
     position,
     size: { width: geometry.width, height: geometry.height },
-    rotation: Number(geometry.rotation) || 0,
+    rotation: generatedRootRotation(document, entry),
     opacity: getNodePropertyValue(document, node, 'opacity') ?? 1
   };
   if (fill) summary.color = fill;
@@ -492,6 +532,22 @@ function summaryForEntry(document, entry) {
   }
   if (node.type === 'image') summary.image = { fileName: node.fileName, fit: node.fit, sourceWidth: node.sourceWidth, sourceHeight: node.sourceHeight };
   if (node.autoLayout) summary.autoLayout = node.autoLayout;
+  const parent = entry.parents?.at(-1);
+  if (parent?.autoLayout) {
+    summary.layout = {
+      axis: parent.autoLayout.axis,
+      positioning: node.layoutPositioning === 'absolute' ? 'absolute' : 'flow',
+      sizing: parent.autoLayout.axis === 'grid'
+        ? { width: node.layoutSizingX || 'fixed', height: node.layoutSizingY || 'fixed' }
+        : { main: node.layoutSizingMain || 'fixed', cross: node.layoutSizingCross || 'fixed' },
+      ...(parent.autoLayout.axis === 'grid' ? { gridCell: structuredClone(node.gridCell || {}) } : {})
+    };
+  } else if (parent?.type === 'frame') {
+    summary.constraints = {
+      horizontal: node.constraints?.horizontal || 'left',
+      vertical: node.constraints?.vertical || 'top'
+    };
+  }
   if (node.effects?.length) summary.effects = node.effects;
   const sizeLimits = Object.fromEntries(['minWidth', 'maxWidth', 'minHeight', 'maxHeight'].filter(property => Number.isFinite(node[property])).map(property => [property, node[property]]));
   if (Object.keys(sizeLimits).length) summary.sizeLimits = sizeLimits;

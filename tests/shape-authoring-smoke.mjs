@@ -1,6 +1,6 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
 import { createAutoLayout } from '../src/layout-engine.js';
-import { exportPageToSvg } from '../src/svg-export.js';
+import { exportNodeToSvg, exportPageToSvg } from '../src/svg-export.js';
 import { deleteStoredDocument } from '../src/storage.js';
 
 const result = document.querySelector('#result');
@@ -23,23 +23,23 @@ function click(app, element) {
   assert(element, 'Expected a shape authoring control.');
   element.dispatchEvent(new app.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
 }
-function dispatchPointer(app, canvas, type, point, pointerId, pointerType = 'mouse') {
+function dispatchPointer(app, canvas, type, point, pointerId, pointerType = 'mouse', modifiers = {}) {
   Object.defineProperty(canvas, 'setPointerCapture', { configurable: true, value: () => {} });
   canvas.dispatchEvent(new app.defaultView.PointerEvent(type, {
     bubbles: true, cancelable: true, pointerId, pointerType, button: 0,
-    clientX: point.x, clientY: point.y
+    clientX: point.x, clientY: point.y, ...modifiers
   }));
 }
 function worldScreenPoint(canvas, x, y) {
   const rect = canvas.getBoundingClientRect();
   return { x: rect.left + rect.width / 2 + x, y: rect.top + rect.height / 2 + y };
 }
-function drawShape(app, type, startWorld, endWorld, pointerId) {
+function drawShape(app, type, startWorld, endWorld, pointerId, modifiers = {}) {
   const canvas = app.querySelector('#scene-canvas');
   click(app, app.querySelector(`[data-tool="${type}"]`));
   dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, startWorld.x, startWorld.y), pointerId);
-  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, endWorld.x, endWorld.y), pointerId);
-  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, endWorld.x, endWorld.y), pointerId);
+  dispatchPointer(app, canvas, 'pointermove', worldScreenPoint(canvas, endWorld.x, endWorld.y), pointerId, 'mouse', modifiers);
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, endWorld.x, endWorld.y), pointerId, 'mouse', modifiers);
 }
 function editNumber(app, property, value) {
   const input = app.querySelector(`#inspector-content [data-prop="${property}"]`);
@@ -61,6 +61,29 @@ function readSavedDesign(app, id) {
     };
   });
 }
+async function waitForSavedNode(app, documentId, nodeId, label, context = {}) {
+  const started = performance.now();
+  while (performance.now() - started <= 12000) {
+    const saved = await readSavedDesign(app, documentId);
+    if (findNodeInPages(saved, nodeId)) return saved;
+    await new Promise(resolve => setTimeout(resolve, 35));
+  }
+  const saved = await readSavedDesign(app, documentId);
+  const savedNodes = (saved?.pages || []).flatMap(page => collectNodes(page.children));
+  const status = app.querySelector('#save-state')?.textContent.trim() || 'unavailable';
+  const diagnostic = {
+    targetId: nodeId,
+    documentId,
+    storedDocumentName: saved?.name ?? null,
+    storedPageIds: (saved?.pages || []).map(page => ({ id: page.id, name: page.name })),
+    storedLineNodes: savedNodes.filter(node => node.type === 'line').map(({ id, name, x, y, width, height }) => ({ id, name, x, y, width, height })),
+    storedTargetNode: savedNodes.find(node => node.id === nodeId)?.type ?? null,
+    currentRows: layerRowSnapshot(app),
+    ...context,
+    saveState: status
+  };
+  throw new Error(`Timed out waiting for ${label} to persist: ${JSON.stringify(diagnostic)}`);
+}
 function findNode(nodes, id) {
   for (const node of nodes || []) {
     if (node.id === id) return node;
@@ -68,6 +91,28 @@ function findNode(nodes, id) {
     if (child) return child;
   }
   return null;
+}
+function findNodeInPages(document, id) {
+  for (const page of document?.pages || []) {
+    const node = findNode(page.children, id);
+    if (node) return node;
+  }
+  return null;
+}
+function collectNodes(nodes, output = []) {
+  for (const node of nodes || []) {
+    output.push(node);
+    collectNodes(node.children, output);
+  }
+  return output;
+}
+function layerRowSnapshot(app) {
+  return [...app.querySelectorAll('.layer-row[data-layer-id]')].map(row => ({
+    id: row.dataset.layerId,
+    type: row.dataset.layerType || null,
+    selected: row.classList.contains('is-selected'),
+    text: row.textContent.trim().replace(/\s+/g, ' ').slice(0, 120)
+  }));
 }
 function countNodes(nodes) {
   return (nodes || []).reduce((count, node) => count + 1 + countNodes(node.children), 0);
@@ -173,8 +218,57 @@ try {
   assert(innerRadii.every(radius => Math.abs(radius - 8) < 1e-8), 'SVG export did not preserve the edited 0.25 inner-radius ratio.');
   assert((svg.match(/<polygon points="/g) || []).length === 2, 'SVG export should retain both editable regular shapes.');
 
+  drawShape(app, 'rectangle', { x: 68, y: 82 }, { x: 128, y: 97 }, 218, { shiftKey: true });
+  const squareId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;
+  await waitForSave(app, 'Shift-constrained square creation');
+  let modifierDocument = await readSavedDesign(app, documentId);
+  let square = findNode(modifierDocument.pages[0].children, squareId);
+  assert(square?.type === 'rectangle' && square.width === 60 && square.height === 60,
+    `Shift-drag should constrain a rectangle to a square (${square?.width}×${square?.height}).`);
+
+  drawShape(app, 'ellipse', { x: 190, y: 110 }, { x: 210, y: 120 }, 219, { altKey: true });
+  const centeredEllipseId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;
+  await waitForSave(app, 'Alt center-out ellipse creation');
+  modifierDocument = await readSavedDesign(app, documentId);
+  const centeredEllipse = findNode(modifierDocument.pages[0].children, centeredEllipseId);
+  assert(centeredEllipse?.type === 'ellipse' && centeredEllipse.x === 170 && centeredEllipse.y === 100
+    && centeredEllipse.width === 40 && centeredEllipse.height === 20,
+  `Alt-drag should use the initial pointer as the ellipse center (${centeredEllipse?.x},${centeredEllipse?.y},${centeredEllipse?.width}×${centeredEllipse?.height}).`);
+
+  const lineRowsBefore = layerRowSnapshot(app);
+  const lineIdsBefore = new Set(lineRowsBefore.map(row => row.id));
+  drawShape(app, 'line', { x: 250, y: 100 }, { x: 300, y: 130 }, 220, { shiftKey: true });
+  const lineRowsAfter = layerRowSnapshot(app);
+  const addedLineRows = lineRowsAfter.filter(row => row.type === 'line' && !lineIdsBefore.has(row.id));
+  const selectedLineRow = lineRowsAfter.find(row => row.selected && row.type === 'line');
+  const snappedLineId = addedLineRows.length === 1 ? addedLineRows[0].id : null;
+  const lineDragScreenDistance = Math.hypot(300 - 250, 130 - 100);
+  assert(lineDragScreenDistance > 4, 'the synthetic line drag must exceed the editor’s 4px creation threshold.');
+  assert(snappedLineId && selectedLineRow?.id === snappedLineId,
+    `Shift-snapped line drawing did not create and select exactly one new line layer: ${JSON.stringify({ before: lineRowsBefore, after: lineRowsAfter, addedLineRows, selectedLineRow, lineDragScreenDistance, drawThresholdScreenPixels: 4 })}.`);
+  await waitFor(() => app.querySelector('#inspector-content [data-stroke-field="width"]'), 'line stroke inspector controls');
+  modifierDocument = await waitForSavedNode(app, documentId, snappedLineId, 'Shift-snapped line creation', {
+    newLineRows: addedLineRows,
+    selectedLineRow,
+    lineDragScreenDistance,
+    drawThresholdScreenPixels: 4
+  });
+  const snappedLine = findNodeInPages(modifierDocument, snappedLineId);
+  assert(snappedLine?.type === 'line' && Math.abs(snappedLine.width - snappedLine.height) < 1e-8,
+    `Shift-drag should snap line angles to 45° (${snappedLine?.width}×${snappedLine?.height}).`);
+
+  drawShape(app, 'line', { x: 350, y: 130 }, { x: 400, y: 100 }, 221, { shiftKey: true });
+  const reverseLineId = app.querySelector('.layer-row.is-selected')?.dataset.layerId;
+  await waitForSave(app, 'negative-slope line creation');
+  modifierDocument = await readSavedDesign(app, documentId);
+  const reverseLine = findNode(modifierDocument.pages[0].children, reverseLineId);
+  assert(reverseLine?.type === 'line' && reverseLine.lineReverseY === true
+    && /d="M 0 [\d.]+ L [\d.]+ 0"/.test(exportNodeToSvg(reverseLine)),
+  'A snapped negative-slope line must persist its direction and export the same geometry to SVG.');
+
   const pencilButton = app.querySelector('[data-tool="pencil"]');
-  assert(pencilButton?.getAttribute('aria-label') === 'Pencil · draw freehand', 'the canvas toolbar does not expose an accessible Pencil tool.');
+  assert(pencilButton?.getAttribute('aria-label') === 'Pencil · draw freehand with stylus pressure',
+    'the canvas toolbar does not expose the Pencil tool with its accessible stylus-pressure description.');
   click(app, pencilButton);
   const pencilPath = [{ x: -150, y: 128 }, { x: -126, y: 108 }, { x: -102, y: 140 }, { x: -78, y: 106 }, { x: -54, y: 132 }];
   for (const [index, point] of pencilPath.entries()) {
@@ -248,7 +342,7 @@ try {
   assert(app.querySelector('.layer-row.is-selected')?.dataset.layerId, 'Pencil did not accept the next stroke after lost pointer capture.');
   await waitForSave(app, 'Pencil recovery after lost capture');
 
-result.textContent = `PASS\n${JSON.stringify({ starTool: true, starInspector: true, polygonInspector: true, pencilTouch: true, pencilEditableNetwork: true, pencilLivePreview: true, pencilAutoLayoutPlacement: true, pencilUndoRedo: true, pencilCancellation: true, pencilPointerCancel: true, pencilLostCapture: true, liveCanvasRender: true, undoRedo: true, localPersistence: true, svgGeometry: true, starPoints: finalStar.points, starInnerRadius: finalStar.innerRadius, polygonSides: polygon.points })}`;
+result.textContent = `PASS\n${JSON.stringify({ starTool: true, starInspector: true, polygonInspector: true, shiftSquare: true, altCenterEllipse: true, shiftLineSnap: true, reverseLineDirection: true, pencilTouch: true, pencilEditableNetwork: true, pencilLivePreview: true, pencilAutoLayoutPlacement: true, pencilUndoRedo: true, pencilCancellation: true, pencilPointerCancel: true, pencilLostCapture: true, liveCanvasRender: true, undoRedo: true, localPersistence: true, svgGeometry: true, starPoints: finalStar.points, starInnerRadius: finalStar.innerRadius, polygonSides: polygon.points })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {

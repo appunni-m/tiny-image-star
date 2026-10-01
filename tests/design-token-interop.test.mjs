@@ -77,9 +77,86 @@ test('plain DTCG groups flatten into one collection and support inherited types 
   assert.equal(result.warnings.length, 0);
 });
 
+test('plain DTCG dimensions and durations normalize to local numbers while preserving semantic aliases', () => {
+  const input = {
+    layout: {
+      $type: 'dimension',
+      spacing: { $value: { value: 8, unit: 'px' } },
+      alias: { $value: '{layout.spacing}' }
+    },
+    motion: {
+      delay: { $type: 'duration', $value: { value: 250, unit: 'ms' } },
+      delayAlias: { $type: 'duration', $ref: '#/motion/delay/$value' },
+      quarterSecond: { $type: 'duration', $value: { value: 0.25, unit: 's' } }
+    }
+  };
+  const imported = importDtcgTokens(input);
+  const variables = Object.fromEntries(imported.variables.map(variable => [variable.name, variable]));
+  const modeId = imported.variableCollections[0].defaultModeId;
+
+  assert.equal(variables['layout.spacing'].type, 'number');
+  assert.equal(variables['layout.spacing'].dtcgType, 'dimension');
+  assert.equal(variables['layout.spacing'].valuesByMode[modeId], 8);
+  assert.equal(variables['layout.alias'].dtcgType, 'dimension');
+  assert.equal(variables['layout.alias'].aliasesByMode[modeId], variables['layout.spacing'].id);
+  assert.equal(variables['motion.delay'].type, 'number');
+  assert.equal(variables['motion.delay'].dtcgType, 'duration');
+  assert.equal(variables['motion.delay'].valuesByMode[modeId], 250);
+  assert.equal(variables['motion.delayAlias'].aliasesByMode[modeId], variables['motion.delay'].id);
+  assert.equal(variables['motion.quarterSecond'].valuesByMode[modeId], 250);
+
+  const output = exportDtcgTokens(imported);
+  assert.deepEqual(output['Imported tokens'].layout.spacing, { $type: 'dimension', $value: { value: 8, unit: 'px' } });
+  assert.deepEqual(output['Imported tokens'].layout.alias, { $type: 'dimension', $ref: '#/Imported tokens/layout/spacing/$value' });
+  assert.deepEqual(output['Imported tokens'].motion.delay, { $type: 'duration', $value: { value: 250, unit: 'ms' } });
+  assert.deepEqual(output['Imported tokens'].motion.delayAlias, { $type: 'duration', $ref: '#/Imported tokens/motion/delay/$value' });
+  assert.deepEqual(output['Imported tokens'].motion.quarterSecond, { $type: 'duration', $value: { value: 250, unit: 'ms' } },
+    'duration exports use the local millisecond unit as their lossless canonical representation');
+
+  const merged = mergeDtcgTokens(createDocument(), imported).document;
+  assert.equal(validateDocument(merged), true, 'normalized measurements remain ordinary number variables in the design model');
+  assert.equal(merged.variables.find(variable => variable.name === 'layout.spacing').dtcgType, 'dimension');
+  assert.equal(merged.variables.find(variable => variable.name === 'motion.delay').valuesByMode[
+    merged.variableCollections.find(collection => collection.name === 'Imported tokens').defaultModeId
+  ], 250);
+});
+
+test('dimension and duration values with unsupported units, malformed objects, or lossy conversions fail closed', () => {
+  assert.throws(() => importDtcgTokens({ x: { $type: 'dimension', $value: { value: 8, unit: 'rem' } } }), error => code(error, 'UNSUPPORTED_UNIT'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'duration', $value: { value: 1, unit: 'min' } } }), error => code(error, 'UNSUPPORTED_UNIT'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'dimension', $value: { value: '8', unit: 'px' } } }), error => code(error, 'INVALID_DIMENSION_VALUE'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'duration', $value: { value: 1 } } }), error => code(error, 'INVALID_DURATION_VALUE'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'duration', $value: { value: 153995393276561400, unit: 's' } } }), error => code(error, 'UNSUPPORTED_PRECISION'));
+  assert.throws(() => importDtcgTokens({
+    length: { $type: 'dimension', $value: { value: 8, unit: 'px' } },
+    delay: { $type: 'duration', $value: { value: 8, unit: 'ms' } },
+    alias: { $type: 'dimension', $value: '{delay}' }
+  }), error => code(error, 'TYPE_MISMATCH'), 'number-backed measurements still retain distinct DTCG alias types');
+});
+
+test('local measurement semantics export to standard DTCG and survive extension round-trip', () => {
+  const source = makeVariableDocument();
+  source.variables.push(
+    { id: 'var-layout-width', collectionId: 'collection-layout', name: 'size.width', type: 'number', dtcgType: 'dimension', valuesByMode: { 'mode-layout': 12.5 } },
+    { id: 'var-layout-width-alias', collectionId: 'collection-layout', name: 'size.widthAlias', type: 'number', dtcgType: 'dimension', valuesByMode: { 'mode-layout': 12.5 }, aliasesByMode: { 'mode-layout': 'var-layout-width' } },
+    { id: 'var-layout-delay', collectionId: 'collection-layout', name: 'motion.delay', type: 'number', dtcgType: 'duration', valuesByMode: { 'mode-layout': 1500 } },
+    { id: 'var-layout-delay-alias', collectionId: 'collection-layout', name: 'motion.delayAlias', type: 'number', dtcgType: 'duration', valuesByMode: { 'mode-layout': 1500 }, aliasesByMode: { 'mode-layout': 'var-layout-delay' } }
+  );
+
+  const exported = exportDtcgTokens(source);
+  assert.deepEqual(exported.Layout.size.width, { $type: 'dimension', $value: { value: 12.5, unit: 'px' } });
+  assert.deepEqual(exported.Layout.size.widthAlias, { $type: 'dimension', $ref: '#/Layout/size/width/$value' });
+  assert.deepEqual(exported.Layout.motion.delay, { $type: 'duration', $value: { value: 1500, unit: 'ms' } });
+  assert.deepEqual(exported.Layout.motion.delayAlias, { $type: 'duration', $ref: '#/Layout/motion/delay/$value' });
+
+  const reloaded = importDtcgTokens(stringifyDtcgTokens(source));
+  assert.deepEqual(reloaded.variableCollections, source.variableCollections);
+  assert.deepEqual(reloaded.variables, source.variables, 'the Tiny Image Star extension retains dimension/duration semantics and aliases');
+});
+
 test('invalid JSON, unsupported types, lossy colors, and unsupported DTCG group inheritance fail explicitly', () => {
   assert.throws(() => importDtcgTokens('{not json'), error => code(error, 'INVALID_JSON'));
-  assert.throws(() => importDtcgTokens({ x: { $type: 'dimension', $value: { value: 8, unit: 'px' } } }), error => code(error, 'UNSUPPORTED_TYPE'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'shadow', $value: {} } }), error => code(error, 'UNSUPPORTED_TYPE'));
   assert.throws(() => importDtcgTokens({ x: { $type: 'boolean', $value: true } }), error => code(error, 'UNSUPPORTED_TYPE'));
   assert.throws(() => importDtcgTokens({ x: { $type: 'color', $value: { colorSpace: 'display-p3', components: [1, 0, 0], hex: '#ff0000' } } }), error => code(error, 'UNSUPPORTED_COLOR_SPACE'));
   assert.throws(() => importDtcgTokens({ x: { $type: 'color', $value: { colorSpace: 'srgb', components: [1, 0, 0], alpha: 0.5 } } }), error => code(error, 'UNSUPPORTED_ALPHA'));

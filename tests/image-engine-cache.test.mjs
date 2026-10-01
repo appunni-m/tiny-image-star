@@ -47,6 +47,7 @@ class CacheWorkerMock {
     }
     if (message.type !== 'render') return;
     this.renderRequests.push({
+      requestId: message.requestId,
       assetId: message.assetId,
       hasSourceBytes: message.sourceBytes instanceof ArrayBuffer,
       adjustments: message.adjustments,
@@ -217,6 +218,32 @@ test('repeated worker failures stop after a bounded recovery chain', async () =>
   }, { maxWorkers: 1 });
 });
 
+test('terminal worker failure clears paused queue-group counts with the rejected queue', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.pauseQueueGroup('batch:worker-failure');
+    const jobs = [
+      engine.render('queued-one', pngHeader(1, 1), {}, {}, { queueGroup: 'batch:worker-failure' }),
+      engine.render('queued-two', pngHeader(1, 1), {}, {}, { queueGroup: 'batch:worker-failure' }),
+    ];
+    const settled = Promise.allSettled(jobs);
+    assert.deepEqual(engine.queueGroupMetrics('batch:worker-failure'), { active: 0, queued: 2 });
+
+    let failures = 0;
+    while (engine.workers.length) {
+      engine.workers[0].worker.crash(`queue-group failure ${failures + 1}`);
+      failures += 1;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    assert.equal(failures, 3, 'the queue survives bounded recovery attempts before the pool is declared exhausted');
+    assert.ok((await settled).every(item => item.status === 'rejected'));
+    assert.equal(engine.metrics().queued, 0);
+    assert.deepEqual(engine.queueGroupMetrics('batch:worker-failure'), { active: 0, queued: 0 });
+  }, { maxWorkers: 1, deferRenders: true });
+});
+
 function pngHeader(width, height) {
   const bytes = new Uint8Array(24);
   bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -256,6 +283,55 @@ test('LocalImageEngine propagates active-source intent and preserves a fitting d
     engine.setActiveSource(null);
     assert.equal(worker.cache.activeAssetId, null, 'clearing the selection releases the active-source protection');
   });
+});
+
+test('the selected source receives the shared cache budget so multi-worker editing reuses large decodes', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(4);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.setActiveSource('selected-large');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const workers = engine.workers.map(slot => slot.worker);
+    assert.deepEqual(engine.workers.map(slot => slot.cacheBudget), [10, 0, 0, 0],
+      'the active worker can retain a source larger than an even per-worker share');
+    assert.equal(engine.workers.reduce((sum, slot) => sum + slot.cacheBudget, 0), 10,
+      'worker cache ceilings never exceed the shared engine allowance');
+
+    await engine.render('selected-large', bytesFor(8), {});
+    await engine.render('selected-large', bytesFor(8), { brightness: 12 });
+    assert.deepEqual(workers[0].renderRequests.map(request => request.hasSourceBytes), [true, false],
+      'successive edits use the same worker-local decoded Pillow source');
+    assert.deepEqual(workers.slice(1).map(worker => worker.renderRequests.length), [0, 0, 0]);
+  }, { maxWorkers: 4, maxCachedPixels: 10 });
+});
+
+test('active-source affinity waits for its owner without blocking unrelated batch work', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(3);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    engine.setActiveSource('selected');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const selectedFirst = engine.render('selected', bytesFor(6), {});
+    const selectedAgain = engine.render('selected', bytesFor(6), { brightness: 20 });
+    const batchOther = engine.render('batch-other', bytesFor(2), {}, {}, { queueGroup: 'recipe:one' });
+    assert.equal(engine.workers[0].worker.pendingRenderMessages[0].assetId, 'selected');
+    const batchWorker = engine.workers.find(slot => slot.worker.pendingRenderMessages.some(message => message.assetId === 'batch-other'));
+    assert.ok(batchWorker,
+      'an active-source update waiting for its owner does not prevent a different recipe image from using an idle worker');
+    assert.equal(engine.workers[0].worker.pendingRenderMessages.length, 1,
+      'the active source is never decoded concurrently in a second worker');
+
+    batchWorker.worker.completeNextRender();
+    await batchOther;
+    engine.workers[0].worker.completeNextRender();
+    await selectedFirst;
+    assert.equal(engine.workers[0].worker.pendingRenderMessages[0].assetId, 'selected');
+    engine.workers[0].worker.completeNextRender();
+    await selectedAgain;
+    assert.deepEqual(engine.workers[0].worker.renderRequests.map(request => request.hasSourceBytes), [true, false]);
+  }, { maxWorkers: 3, maxCachedPixels: 10, maxActiveRenderBytes: 8_000_000_000, deferRenders: true });
 });
 
 test('LocalImageEngine transfers raw ArrayBuffers and exact typed-view ranges without detaching originals', async () => {
@@ -431,10 +507,14 @@ test('paused queue groups retain replacement and cancellation behavior', async (
     });
     await oldRejected;
     assert.equal(engine.metrics().queued, 1, 'replacing a paused queued job keeps only the latest request');
+    assert.deepEqual(engine.queueGroupMetrics('batch:replace'), { active: 0, queued: 1 },
+      'replacement transfers the same single queued slot within its group');
     const latestRejected = assert.rejects(latestQueued, { name: 'AbortError' });
     assert.equal(engine.cancelQueuedByKey('preview:layer'), true);
     await latestRejected;
     assert.equal(engine.metrics().queued, 0, 'keyed cancellation removes a paused queue entry');
+    assert.deepEqual(engine.queueGroupMetrics('batch:replace'), { active: 0, queued: 0 },
+      'keyed cancellation decrements the paused group count');
 
     const blocker = engine.workers[0].worker;
     blocker.completeNextRender();
@@ -443,6 +523,34 @@ test('paused queue groups retain replacement and cancellation behavior', async (
       'replaced or canceled paused work never reaches the worker');
     assert.equal(engine.resumeQueueGroup('batch:replace'), true);
   }, { maxWorkers: 1, maxCachedPixels: 10, deferRenders: true });
+});
+
+test('cancel-all clears queued counts for paused recipe groups', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const blocker = engine.render('active-blocker', pngHeader(1, 1), {});
+    engine.pauseQueueGroup('batch:cancel');
+    engine.pauseQueueGroup('batch:other');
+    const canceledJobs = [
+      ...Array.from({ length: 48 }, (_, index) => engine.render(`cancel-${index}`, pngHeader(1, 1), {}, {}, { queueGroup: 'batch:cancel' })),
+      ...Array.from({ length: 7 }, (_, index) => engine.render(`other-${index}`, pngHeader(1, 1), {}, {}, { queueGroup: 'batch:other' })),
+    ];
+    const settled = Promise.allSettled(canceledJobs);
+
+    assert.deepEqual(engine.queueGroupMetrics('batch:cancel'), { active: 0, queued: 48 });
+    assert.deepEqual(engine.queueGroupMetrics('batch:other'), { active: 0, queued: 7 });
+    engine.cancelQueued(new DOMException('Canceled for test.', 'AbortError'));
+    const outcomes = await settled;
+    assert.ok(outcomes.every(item => item.status === 'rejected' && item.reason.name === 'AbortError'));
+    assert.equal(engine.metrics().queued, 0);
+    assert.deepEqual(engine.queueGroupMetrics('batch:cancel'), { active: 0, queued: 0 });
+    assert.deepEqual(engine.queueGroupMetrics('batch:other'), { active: 0, queued: 0 });
+
+    engine.workers[0].worker.completeNextRender();
+    await blocker;
+    assert.equal(engine.metrics().active, 0);
+  }, { maxWorkers: 1, deferRenders: true });
 });
 
 test('queued renders with the same replacement key keep only the latest preview', async () => {
@@ -709,18 +817,32 @@ test('bounded memory bypasses eventually protect an older large render from a sm
 
 test('a high-volume recipe workload drains unique image renders within worker and memory admission bounds', async () => {
   await withEngine(async engine => {
-    const imageCount = 96;
+    const imageCount = 2048;
+    const queueGroup = 'batch:high-volume';
     engine.setConcurrency(3);
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    const completed = Array.from({ length: imageCount }, (_, index) => engine.render(`recipe-image-${index}`, pngHeader(1, 1), {}));
+    const completed = Array.from({ length: imageCount }, (_, index) => engine.render(
+      `recipe-image-${index}`, pngHeader(1, 1), {}, {}, { queueGroup },
+    ));
     assert.equal(engine.metrics().active, 3);
     assert.equal(engine.metrics().queued, imageCount - 3);
     assert.equal(engine.metrics().activeRenderBytes, 168);
+    assert.deepEqual(engine.queueGroupMetrics(queueGroup), { active: 3, queued: imageCount - 3 });
 
+    let terminal = 0;
     while (engine.metrics().active || engine.metrics().queued) {
       let finishedOne = false;
-      for (const slot of engine.workers) finishedOne = slot.worker.completeNextRender() || finishedOne;
+      for (const slot of engine.workers) {
+        if (!slot.worker.completeNextRender()) continue;
+        finishedOne = true;
+        terminal += 1;
+        const remaining = imageCount - terminal;
+        assert.deepEqual(engine.queueGroupMetrics(queueGroup), {
+          active: Math.min(3, remaining),
+          queued: Math.max(0, remaining - 3),
+        }, 'the progress bar can poll exact group counts after every completed image');
+      }
       assert.equal(finishedOne, true, 'every admitted render must have a worker response available');
       assert.ok(engine.metrics().active <= 3, 'active image workers must stay within configured concurrency');
       assert.ok(engine.metrics().activeRenderBytes <= 168, 'parallel image memory must stay within the shared budget');
@@ -728,11 +850,16 @@ test('a high-volume recipe workload drains unique image renders within worker an
     }
 
     const results = await Promise.all(completed);
-    const submittedIds = engine.workers.flatMap(slot => slot.worker.renderRequests.map(request => request.assetId));
+    const submitted = engine.workers.flatMap(slot => slot.worker.renderRequests);
+    const submittedIds = submitted.map(request => request.assetId);
     assert.equal(results.length, imageCount);
     assert.equal(submittedIds.length, imageCount);
     assert.equal(new Set(submittedIds).size, imageCount, 'each selected source image is rendered exactly once');
     assert.deepEqual([...submittedIds].sort(), Array.from({ length: imageCount }, (_, index) => `recipe-image-${index}`).sort());
+    assert.deepEqual(submitted.sort((left, right) => left.requestId - right.requestId).map(request => request.assetId),
+      Array.from({ length: imageCount }, (_, index) => `recipe-image-${index}`),
+      'the queue cursor and compaction retain exact global FIFO submission order');
+    assert.deepEqual(engine.queueGroupMetrics(queueGroup), { active: 0, queued: 0 });
     assert.deepEqual(engine.metrics(), { concurrency: 3, workersReady: 3, active: 0, activeRenderBytes: 0, maxActiveRenderBytes: 168, queued: 0, paused: false });
   }, { maxWorkers: 3, maxCachedPixels: 96, maxActiveRenderBytes: 168, maxSingleRenderBytes: 1024, deferRenders: true });
 });

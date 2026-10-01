@@ -7,8 +7,13 @@ import { validateLinkedInstanceSnapshot } from './component-library.js';
 import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
+import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 
 const clone = value => structuredClone(value);
+/** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
+export const MAX_DOCUMENT_TREE_DEPTH = 256;
+/** A local design may contain at most 100,000 unique layer objects across its trees. */
+export const MAX_DOCUMENT_NODE_COUNT = 100_000;
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
 const variableBindingSpecs = {
   x: { type: 'number' },
@@ -97,7 +102,7 @@ function isValidFontWeight(value) {
   return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
 }
 
-const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration']);
+const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration', 'baselineShift']);
 
 function isValidTextRun(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)
@@ -111,6 +116,7 @@ function isValidTextRun(run) {
   if (run.letterSpacing != null && (typeof run.letterSpacing !== 'number' || !Number.isFinite(run.letterSpacing) || Math.abs(run.letterSpacing) > 10_000)) return false;
   if (run.color != null && (typeof run.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(run.color))) return false;
   if (run.textDecoration != null && !textDecorations.has(run.textDecoration)) return false;
+  if (run.baselineShift != null && (typeof run.baselineShift !== 'number' || !Number.isFinite(run.baselineShift) || Math.abs(run.baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT)) return false;
   return true;
 }
 
@@ -162,6 +168,7 @@ export function createDocument() {
     recipes: [],
     colorStyles: [],
     typographyStyles: [],
+    effectStyles: [],
     variableCollections: [],
     variables: [],
     comments: [],
@@ -183,15 +190,21 @@ const defaults = {
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
   text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
-  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0 }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
+  image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
-const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant']);
+const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
-const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate']);
+const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
 const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
+const prototypeNumericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
+const prototypeConditionOperators = new Set(['equals', 'not-equals', ...prototypeNumericConditionOperators]);
+function isValidPrototypeConditionOperator(operator, type) {
+  return prototypeConditionOperators.has(operator)
+    && (!prototypeNumericConditionOperators.has(operator) || type === 'number');
+}
 function isSafePrototypeLinkUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return false;
   try {
@@ -212,11 +225,15 @@ function hasInvalidPrototypeInteractions(interactions, document) {
       if (!condition || typeof condition !== 'object' || Array.isArray(condition)
         || Object.keys(condition).some(key => !conditionFields.includes(key))
         || typeof condition.variableId !== 'string' || !condition.variableId
-        || !['equals', 'not-equals'].includes(condition.operator)
+        || !isValidPrototypeConditionOperator(condition.operator, condition.type)
         || !variable || condition.type !== variable.type || !isVariableValue(condition.type, condition.value)) return true;
     }
     const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(item.action);
     if (needsDestination ? typeof item.destinationId !== 'string' : item.destinationId != null) return true;
+    if (item.action === 'scroll-to'
+      ? (typeof item.scrollTargetId !== 'string' || !item.scrollTargetId
+        || (item.scrollAlignment != null && !['nearest', 'start', 'center', 'end'].includes(item.scrollAlignment)))
+      : (Object.hasOwn(item, 'scrollTargetId') || Object.hasOwn(item, 'scrollAlignment'))) return true;
     if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;
     if (item.action === 'set-variable-mode'
       ? (typeof item.collectionId !== 'string' || !item.collectionId || (item.modeId != null && (typeof item.modeId !== 'string' || !item.modeId)))
@@ -228,6 +245,8 @@ function hasInvalidPrototypeInteractions(interactions, document) {
     if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
     if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
     if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
+    if (item.transition === 'scroll' && item.action !== 'scroll-to') return true;
+    if (item.action === 'scroll-to' && item.transition != null && !['instant', 'scroll'].includes(item.transition)) return true;
     if (item.duration != null && (!Number.isFinite(Number(item.duration)) || Number(item.duration) < 0 || Number(item.duration) > 2000)) return true;
     if (item.trigger === 'after-delay'
       ? (!['navigate', 'open-overlay', 'swap-overlay'].includes(item.action)
@@ -242,6 +261,51 @@ function hasInvalidPrototypeInteractions(interactions, document) {
     }
     return false;
   });
+}
+const prototypeScrollBehaviors = new Set(['vertical', 'horizontal', 'both']);
+
+function isValidPrototypeScrollTarget(document, page, source, parents, targetId) {
+  const screenFrame = [...parents, source].reverse().find(candidate => candidate.type === 'frame');
+  const target = findNode(document, targetId, page.id);
+  if (!screenFrame || !target) return false;
+  const screenIndex = target.parents.findIndex(candidate => candidate.id === screenFrame.id);
+  return screenIndex >= 0 && target.parents.slice(screenIndex)
+    .some(candidate => candidate.type === 'frame' && prototypeScrollBehaviors.has(candidate.overflowBehavior));
+}
+
+function hasInvalidPrototypeScrollTargets(document) {
+  let invalid = false;
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (invalid) return;
+    if ((node.interactions || []).some(interaction => interaction.action === 'scroll-to'
+      && !isValidPrototypeScrollTarget(document, page, node, parents, interaction.scrollTargetId))) invalid = true;
+  });
+  return invalid;
+}
+
+/** Remove scroll-to routes made invalid by a frame or hierarchy edit. */
+export function reconcilePrototypeScrollInteractions(document, onPrune = null) {
+  let removedCount = 0;
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (!Array.isArray(node.interactions)) return;
+    const retained = node.interactions.filter(interaction => interaction.action !== 'scroll-to'
+      || isValidPrototypeScrollTarget(document, page, node, parents, interaction.scrollTargetId));
+    const removed = node.interactions.length - retained.length;
+    if (!removed) return;
+    removedCount += removed;
+    if (retained.length) node.interactions = retained;
+    else delete node.interactions;
+    if (node.componentSourceId) {
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override && Object.hasOwn(override, 'interactions')) {
+        if (retained.length) override.interactions = clone(retained);
+        else delete override.interactions;
+      }
+    }
+    if (typeof onPrune === 'function') onPrune(node, removed);
+  });
+  return removedCount;
 }
 const exportFormats = new Set(['png', 'jpeg', 'webp']);
 const layoutGuideTypes = new Set(['grid', 'columns', 'rows']);
@@ -267,7 +331,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -349,6 +413,10 @@ export function createLayerEffect(type, overrides = {}) {
   if (type === 'drop-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
   if (type === 'inner-shadow') return { id: createId('effect'), type, visible: true, color: '#000000', opacity: 0.25, offsetX: 0, offsetY: 4, blur: 8, ...overrides };
   if (type === 'layer-blur') return { id: createId('effect'), type, visible: true, radius: 4, ...overrides };
+  if (type === 'background-blur') return { id: createId('effect'), type, visible: true, radius: 12, ...overrides };
+  if (type === 'noise') return { id: createId('effect'), type, visible: true, mode: 'mono', sizeX: 1, sizeY: 1, density: 40, color: '#000000', color2: '#ffffff', opacity: 0.18, ...overrides };
+  if (type === 'texture') return { id: createId('effect'), type, visible: true, sizeX: 0.7, sizeY: 0.7, radius: 20, clipToShape: true, ...overrides };
+  if (type === 'glass') return { id: createId('effect'), type, visible: true, lightAngle: 45, lightIntensity: 50, refraction: 50, depth: 50, dispersion: 0, frost: 0, splay: 0, ...overrides };
   throw new TypeError(`Unsupported layer effect: ${type}`);
 }
 
@@ -526,6 +594,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
     removedNodeIds.add(node.id);
     if (node.isComponent && node.componentId) removedComponents.push(node.componentId);
   });
+  removePrototypeInteractionsUsingNodes(document, removedNodeIds);
   if (Array.isArray(document.prototypeFlows)) {
     document.prototypeFlows = document.prototypeFlows.filter(flow => !(flow.pageId === pageId && removedNodeIds.has(flow.nodeId)));
     const selectedFlow = document.prototypeFlows.find(flow => flow.id === document.prototypeStartFlowId)
@@ -560,6 +629,9 @@ export function updateNode(document, nodeId, patch, pageId = document.activePage
   }
   Object.assign(entry.node, changes);
   if (slotContext && entry.node === slotContext.target) syncSlotChildOrder(slotContext, entry.node.children || []);
+  if (changes && (Object.hasOwn(changes, 'children') || Object.hasOwn(changes, 'overflowBehavior') || Object.hasOwn(changes, 'type'))) {
+    reconcilePrototypeScrollInteractions(document);
+  }
   return true;
 }
 
@@ -590,8 +662,21 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
   requireOverriddenSlotForMutation(slotContext, 'duplicate');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot duplicate a component slot target from its instance.');
   const duplicate = clone(entry.node);
-  const renew = node => { node.id = createId(node.type); node.name = node.name.endsWith(' copy') ? `${node.name.slice(0, -5)} copy 2` : `${node.name} copy`; for (const child of node.children ?? []) renew(child); };
+  const idMap = new Map();
+  const renew = node => {
+    const originalId = node.id;
+    node.id = createId(node.type);
+    idMap.set(originalId, node.id);
+    node.name = node.name.endsWith(' copy') ? `${node.name.slice(0, -5)} copy 2` : `${node.name} copy`;
+    for (const child of node.children ?? []) renew(child);
+  };
   renew(duplicate);
+  walkNodes([duplicate], ({ node }) => {
+    for (const interaction of node.interactions || []) {
+      if (idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
+      if (idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
+    }
+  });
   duplicate.x += 16;
   duplicate.y += 16;
   const list = entry.parent ? entry.parent.children : document.pages.find(page => page.id === pageId).children;
@@ -631,6 +716,7 @@ export function moveNode(document, nodeId, { parentId = null, index, pageId = do
   targetList.splice(insertAt, 0, moving);
   if (entry.parent === sourceContext?.target) syncSlotChildOrder(sourceContext, sourceList);
   if (parent === destinationContext?.target) syncSlotChildOrder(destinationContext, targetList);
+  reconcilePrototypeScrollInteractions(document);
   return true;
 }
 
@@ -1317,6 +1403,24 @@ function removePrototypeInteractionsUsingVariables(document, removedIds) {
   });
 }
 
+function removePrototypeInteractionsUsingNodes(document, removedIds) {
+  for (const page of document.pages) walkNodes(page.children, ({ node, parents }) => {
+    if (!Array.isArray(node.interactions)) return;
+    const retained = node.interactions.filter(interaction => !removedIds.has(interaction.scrollTargetId));
+    if (retained.length === node.interactions.length) return;
+    if (retained.length) node.interactions = retained;
+    else delete node.interactions;
+    if (node.componentSourceId) {
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override && Object.hasOwn(override, 'interactions')) {
+        if (retained.length) override.interactions = clone(retained);
+        else delete override.interactions;
+      }
+    }
+  });
+}
+
 function clearVariableReferencesFromComponentOverrides(document, variableIds, collectionId = null) {
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     if (!node.componentOverrides) return;
@@ -1509,6 +1613,56 @@ export function updateTypographyStyle(document, styleId, nodeId, pageId = docume
   const style = document.typographyStyles?.find(item => item.id === styleId);
   if (!node || node.type !== 'text' || !style) return false;
   Object.assign(style, typographyStyleValues(document, node));
+  return true;
+}
+
+const MAX_EFFECT_STYLES = 1000;
+
+function effectStyleName(name, fallback) {
+  const cleaned = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  const safeFallback = String(fallback ?? 'Effect style').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || 'Effect style';
+  return (cleaned || safeFallback).slice(0, 120);
+}
+
+/** Save the selected layer's complete ordered effect stack as a reusable snapshot. */
+export function createEffectStyle(document, nodeId, name, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!node) throw new Error('Select a layer before saving an effect style.');
+  const effects = node.effects || [];
+  if (!isValidLayerEffects(effects)) throw new TypeError('The selected layer has an invalid effect stack.');
+  document.effectStyles ||= [];
+  if (document.effectStyles.length >= MAX_EFFECT_STYLES) throw new Error(`A design can contain up to ${MAX_EFFECT_STYLES.toLocaleString()} effect styles.`);
+  const style = {
+    id: createId('effect-style'),
+    name: effectStyleName(name, `${node.name} effects`),
+    effects: clone(effects)
+  };
+  document.effectStyles.push(style);
+  return style;
+}
+
+/** Apply a detached copy of a named ordered effect stack to one layer. */
+export function applyEffectStyle(document, nodeId, styleId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.effectStyles?.find(item => item.id === styleId);
+  if (!node || !style || !isValidLayerEffects(style.effects)) return false;
+  node.effects = style.effects.map(effect => ({ ...clone(effect), id: createId('effect') }));
+  return true;
+}
+
+/** Replace a named effect style with the selected layer's current ordered stack. */
+export function updateEffectStyle(document, styleId, nodeId, pageId = document.activePageId) {
+  const node = findNode(document, nodeId, pageId)?.node;
+  const style = document.effectStyles?.find(item => item.id === styleId);
+  if (!node || !style || !isValidLayerEffects(node.effects || [])) return false;
+  style.effects = clone(node.effects || []);
+  return true;
+}
+
+export function deleteEffectStyle(document, styleId) {
+  const index = (document.effectStyles || []).findIndex(style => style.id === styleId);
+  if (index < 0) return false;
+  document.effectStyles.splice(index, 1);
   return true;
 }
 
@@ -1811,6 +1965,7 @@ function cloneSlotContentTrees(document, nodes) {
     if (node.maskSourceId && idMap.has(node.maskSourceId)) node.maskSourceId = idMap.get(node.maskSourceId);
     for (const interaction of node.interactions || []) {
       if (interaction.destinationId && idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
+      if (interaction.scrollTargetId && idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
     }
     if (node.isInstance && node.componentPropertyValues) {
       const component = document.components?.find(item => item.id === node.componentId);
@@ -1973,6 +2128,14 @@ function componentVariantSet(document, setId) {
   return { set, members };
 }
 
+function normalizedComponentVariantValue(rawValue, propertyName) {
+  const value = String(rawValue ?? '').trim();
+  if (!value || value.length > 80 || /[\x00-\x1f\x7f]/u.test(value)) {
+    throw new TypeError(`Variant value for “${propertyName}” must contain 1–80 printable characters.`);
+  }
+  return value;
+}
+
 function normalizedVariantValues(set, sourceComponent, overrides) {
   if (overrides == null) overrides = {};
   if (typeof overrides !== 'object' || Array.isArray(overrides)) throw new TypeError('Variant values must be an object keyed by axis name.');
@@ -1984,11 +2147,7 @@ function normalizedVariantValues(set, sourceComponent, overrides) {
     const raw = Object.hasOwn(overrides, property.name)
       ? overrides[property.name]
       : sourceComponent.variantProperties?.[property.name];
-    const value = String(raw ?? '').trim();
-    if (!value || value.length > 80 || /[\x00-\x1f\x7f]/u.test(value)) {
-      throw new TypeError(`Variant value for “${property.name}” must contain 1–80 printable characters.`);
-    }
-    return [property.name, value];
+    return [property.name, normalizedComponentVariantValue(raw, property.name)];
   }));
   return values;
 }
@@ -2121,9 +2280,10 @@ export function removeComponentVariantFromSet(document, setId, componentId) {
 export function setComponentVariantProperty(document, componentId, propertyName, value) {
   const component = document.components?.find(item => item.id === componentId);
   const set = component && document.componentSets?.find(item => item.id === component.componentSetId);
-  const name = String(propertyName || '').trim(); const nextValue = String(value ?? '').trim();
-  if (!component || !set || !name || !nextValue) throw new Error('Choose a component variant property and value.');
+  const name = String(propertyName || '').trim();
+  if (!component || !set || !name) throw new Error('Choose a component variant property and value.');
   if (!set.properties.some(property => property.name === name)) throw new Error(`Variant property “${name}” does not exist.`);
+  const nextValue = normalizedComponentVariantValue(value, name);
   const proposed = { ...(component.variantProperties || {}), [name]: nextValue };
   const duplicate = set.componentIds.filter(id => id !== componentId).some(id => {
     const other = document.components.find(item => item.id === id);
@@ -2202,6 +2362,7 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
       targetInteractionsOverride.interactions = clone(instance.interactions || []);
     }
   }
+  remapComponentInstanceReferences(document, instance);
   return true;
 }
 
@@ -2299,6 +2460,8 @@ export function createComponentInstance(document, componentId, { pageId = docume
         interaction.destinationId = copiedDestinationId;
         interaction.destinationPageId = pageId;
       }
+      const copiedScrollTargetId = cloneByOriginalId.get(interaction.scrollTargetId) || cloneBySourceId.get(interaction.scrollTargetId);
+      if (copiedScrollTargetId) interaction.scrollTargetId = copiedScrollTargetId;
     }
 
     if (node.isInstance && node.componentPropertyValues) {
@@ -2416,6 +2579,58 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   return target;
 }
 
+function remapComponentInstanceReferences(document, instance) {
+  const instanceEntry = findNodeAcrossPages(document, instance?.id);
+  if (!instanceEntry) return false;
+
+  const sourceToInstanceId = new Map();
+  walkNodes([instance], ({ node }) => {
+    if (typeof node.componentSourceId === 'string' && node.componentSourceId) {
+      sourceToInstanceId.set(node.componentSourceId, node.id);
+    }
+  });
+
+  let changed = false;
+  walkNodes([instance], ({ node, parents }) => {
+    const copiedMaskId = sourceToInstanceId.get(node.maskSourceId);
+    if (copiedMaskId && copiedMaskId !== node.maskSourceId) {
+      node.maskSourceId = copiedMaskId;
+      changed = true;
+    }
+
+    if (!Array.isArray(node.interactions)) return;
+    let interactionsChanged = false;
+    for (const interaction of node.interactions) {
+      for (const property of ['destinationId', 'scrollTargetId', 'instanceId']) {
+        const copiedId = sourceToInstanceId.get(interaction[property]);
+        if (!copiedId || copiedId === interaction[property]) continue;
+        interaction[property] = copiedId;
+        interactionsChanged = true;
+        if (property === 'destinationId') interaction.destinationPageId = instanceEntry.page.id;
+      }
+    }
+
+    const fullParents = [...instanceEntry.parents, ...parents];
+    const retained = node.interactions.filter(interaction => interaction.action !== 'scroll-to'
+      || isValidPrototypeScrollTarget(document, instanceEntry.page, node, fullParents, interaction.scrollTargetId));
+    if (retained.length !== node.interactions.length) {
+      interactionsChanged = true;
+      if (retained.length) node.interactions = retained;
+      else delete node.interactions;
+    }
+    if (!interactionsChanged) return;
+    changed = true;
+
+    const instanceRoot = [...fullParents, node].reverse().find(candidate => candidate.isInstance);
+    const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+    if (override && Object.hasOwn(override, 'interactions')) {
+      if (retained.length) override.interactions = clone(retained);
+      else delete override.interactions;
+    }
+  });
+  return changed;
+}
+
 export function syncComponentInstances(document, componentId) {
   const component = document.components?.find(item => item.id === componentId);
   const master = component && findNodeAcrossPages(document, component.rootNodeId)?.node;
@@ -2437,6 +2652,7 @@ function syncSingleComponentInstance(document, instance, component = document.co
   syncInstanceNode(instance, master, component.id, instance.componentOverrides || {}, true, slotContents);
   if (instance.componentNameIsInherited !== false) instance.name = `${component.name} instance`;
   applyComponentPropertyValues(document, instance);
+  remapComponentInstanceReferences(document, instance);
   return true;
 }
 
@@ -2503,8 +2719,54 @@ function validNetworkGeometry(node) {
   return true;
 }
 
+export function assertDocumentTreeBounds(document) {
+  if (!document || !Array.isArray(document.pages)) return;
+  const pending = [];
+  for (let pageIndex = document.pages.length - 1; pageIndex >= 0; pageIndex -= 1) {
+    const children = document.pages[pageIndex]?.children;
+    if (!Array.isArray(children)) continue;
+    for (let index = children.length - 1; index >= 0; index -= 1) pending.push({ node: children[index], depth: 1 });
+  }
+
+  const visited = new WeakSet();
+  const active = new WeakSet();
+  let nodeCount = 0;
+  while (pending.length) {
+    const entry = pending.pop();
+    if (entry.exit) {
+      active.delete(entry.node);
+      continue;
+    }
+    const { node, depth } = entry;
+    if (!node || typeof node !== 'object' || Array.isArray(node)) throw new TypeError('Invalid or duplicate layer.');
+    if (active.has(node)) throw new TypeError('Layer tree contains a cycle.');
+    if (visited.has(node)) throw new TypeError('Layer tree nodes cannot be shared between positions.');
+    if (depth > MAX_DOCUMENT_TREE_DEPTH) {
+      throw new TypeError(`Design layer nesting exceeds the maximum depth of ${MAX_DOCUMENT_TREE_DEPTH}.`);
+    }
+    nodeCount += 1;
+    if (nodeCount > MAX_DOCUMENT_NODE_COUNT) {
+      throw new TypeError(`Design contains more than ${MAX_DOCUMENT_NODE_COUNT.toLocaleString()} layer nodes.`);
+    }
+    if (node.children != null && !Array.isArray(node.children)) throw new TypeError('Layer children must be a list.');
+
+    visited.add(node);
+    active.add(node);
+    pending.push({ node, exit: true });
+    const linked = node.linkedComponent;
+    const linkedRoots = [linked?.sourceSnapshot?.root, linked?.root];
+    for (const root of linkedRoots) if (root != null) pending.push({ node: root, depth: depth + 1 });
+    for (let index = (node.children?.length || 0) - 1; index >= 0; index -= 1) {
+      pending.push({ node: node.children[index], depth: depth + 1 });
+    }
+  }
+}
+
 export function validateDocument(document) {
-  if (!document || document.schema !== 'figma-local/1' || !Array.isArray(document.pages) || !document.pages.length) throw new TypeError('Invalid local design file.');
+  if (!document || document.schema !== 'figma-local/1'
+    || typeof document.id !== 'string' || !document.id || document.id.trim() !== document.id
+    || !Array.isArray(document.pages) || !document.pages.length) throw new TypeError('Invalid local design file.');
+  assertDocumentTreeBounds(document);
   const pageIds = new Set();
   const nodeIds = new Set();
   for (const page of document.pages) {
@@ -2522,6 +2784,7 @@ export function validateDocument(document) {
         || (node.strokePattern != null && !strokePatterns.has(node.strokePattern))
         || (node.strokeMiterLimit != null && (!Number.isFinite(node.strokeMiterLimit) || node.strokeMiterLimit < 1 || node.strokeMiterLimit > 1000))
         || (node.strokePattern === 'dotted' && node.strokeCap != null && node.strokeCap !== 'round')) throw new TypeError(`Invalid stroke style on layer ${node.name || node.id}.`);
+      if (node.lineReverseY != null && (node.type !== 'line' || typeof node.lineReverseY !== 'boolean')) throw new TypeError(`Invalid line direction on layer ${node.name || node.id}.`);
       if (node.cornerRadii != null && (!['rectangle', 'frame', 'section', 'image'].includes(node.type) || !isValidCornerRadii(node.cornerRadii))) {
         throw new TypeError(`Invalid independent corner radii on layer ${node.name || node.id}.`);
       }
@@ -2611,6 +2874,12 @@ export function validateDocument(document) {
         const validCount = value => Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 64;
         const validGap = value => Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100_000;
         const validFlowGap = value => Number.isFinite(Number(value)) && Number(value) >= (layout.axis === 'grid' ? 0 : -100_000) && Number(value) <= 100_000;
+        const validGridTracks = tracks => tracks === undefined || (Array.isArray(tracks) && tracks.length <= 64 && tracks.every(track => {
+          if (!track || typeof track !== 'object' || Array.isArray(track) || !['fixed', 'hug', 'fill'].includes(track.mode)) return false;
+          if (track.mode === 'fixed') return Number.isFinite(track.value) && track.value >= 0 && track.value <= 100_000 && track.weight === undefined;
+          if (track.mode === 'fill') return track.value === undefined && (track.weight === undefined || (Number.isFinite(track.weight) && track.weight > 0 && track.weight <= 100_000));
+          return track.value === undefined && track.weight === undefined;
+        }));
         const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
         if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)
           || (layout.gap != null && !validFlowGap(layout.gap))
@@ -2618,6 +2887,8 @@ export function validateDocument(document) {
           || (layout.columnGap != null && !validFlowGap(layout.columnGap))
           || (layout.columns != null && !validCount(layout.columns))
           || (layout.rows != null && layout.rows !== 'auto' && !validCount(layout.rows))
+          || ((layout.columnTracks != null || layout.rowTracks != null) && layout.axis !== 'grid')
+          || !validGridTracks(layout.columnTracks) || !validGridTracks(layout.rowTracks)
           || (layout.autoPositioning != null && typeof layout.autoPositioning !== 'boolean')
           || ['top', 'right', 'bottom', 'left'].some(side => padding[side] != null && !validGap(padding[side]))) throw new TypeError(`Invalid auto layout on layer ${node.name || node.id}.`);
       }
@@ -2659,6 +2930,10 @@ export function validateDocument(document) {
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
           if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
           const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
+          if (Object.hasOwn(overrides, 'lineReverseY')
+            && (sourceNode?.type !== 'line' || typeof overrides.lineReverseY !== 'boolean')) {
+            throw new TypeError(`Invalid component line direction override on ${node.name || node.id}.`);
+          }
           if (Object.hasOwn(overrides, 'points')) {
             if (['polygon', 'star'].includes(sourceNode?.type)) {
               if (!Number.isFinite(overrides.points) || overrides.points < 3 || overrides.points > 32) throw new TypeError(`Invalid component shape point-count override on ${node.name || node.id}.`);
@@ -2746,6 +3021,7 @@ export function validateDocument(document) {
       if (node.componentPropertyValues != null && (!node.isInstance || typeof node.componentPropertyValues !== 'object' || Array.isArray(node.componentPropertyValues))) throw new TypeError(`Invalid component property values on ${node.name || node.id}.`);
     });
   }
+  if (hasInvalidPrototypeScrollTargets(document)) throw new TypeError('Prototype scroll-to interactions must target a layer inside a scrollable frame on the same prototype screen.');
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
   if (document.prototypeFlows != null) {
     if (!Array.isArray(document.prototypeFlows) || document.prototypeFlows.length > 1000) throw new TypeError('Prototype flows must be a list of up to 1,000 flows.');
@@ -3026,6 +3302,16 @@ export function validateDocument(document) {
       styleIds.add(style.id);
     }
   }
+  if (document.effectStyles != null) {
+    if (!Array.isArray(document.effectStyles) || document.effectStyles.length > MAX_EFFECT_STYLES) throw new TypeError(`Effect styles must be a list of up to ${MAX_EFFECT_STYLES.toLocaleString()} presets.`);
+    const styleIds = new Set();
+    for (const style of document.effectStyles) {
+      if (!style || typeof style.id !== 'string' || !style.id || styleIds.has(style.id)
+        || typeof style.name !== 'string' || !style.name.trim() || style.name.length > 120 || /[\x00-\x1f\x7f]/.test(style.name)
+        || !isValidLayerEffects(style.effects)) throw new TypeError('Invalid or duplicate effect style.');
+      styleIds.add(style.id);
+    }
+  }
   return true;
 }
 
@@ -3035,7 +3321,11 @@ export function serializeDocument(document) {
 }
 
 export function parseDocument(json) {
-  const document = typeof json === 'string' ? JSON.parse(json) : clone(json);
+  const source = typeof json === 'string' ? JSON.parse(json) : json;
+  // Check before structuredClone: a hostile object graph can be nested deeply
+  // enough to fail inside cloning before ordinary validation gets control.
+  assertDocumentTreeBounds(source);
+  const document = typeof json === 'string' ? source : clone(source);
   // Older local files stored only one prototypeStartPoint. Promote that entry to
   // the named-flow model while retaining the legacy field for older readers.
   if (!Array.isArray(document.prototypeFlows)) document.prototypeFlows = [];

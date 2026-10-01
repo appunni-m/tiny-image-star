@@ -35,6 +35,31 @@ test('duplicatePage inserts a uniquely named deep copy, renews node ids and loca
   assert.equal(document.pages[1].children[0].id, 'frame-a');
 });
 
+test('duplicatePage remaps internal scroll-to anchors without changing the source page', () => {
+  const document = fixture();
+  const sourcePage = document.pages.find(page => page.id === 'b');
+  const sourceFrame = sourcePage.children[0];
+  const scroller = { id: 'scroll-frame', type: 'frame', overflowBehavior: 'vertical', children: [] };
+  const hotspot = { id: 'scroll-hotspot', type: 'rectangle', children: [], interactions: [
+    { id: 'scroll-interaction', action: 'scroll-to', scrollTargetId: 'scroll-target', scrollAlignment: 'center' }
+  ] };
+  const target = { id: 'scroll-target', type: 'text', children: [] };
+  scroller.children.push(hotspot, target);
+  sourceFrame.children.push(scroller);
+  let counter = 0;
+
+  const duplicate = duplicatePage(document, 'b', { createId: prefix => `${prefix}-scroll-${++counter}` });
+  const copiedScroller = duplicate.children[0].children.find(node => node.id.startsWith('frame-scroll-'));
+  const copiedHotspot = copiedScroller.children.find(node => node.type === 'rectangle');
+  const copiedTarget = copiedScroller.children.find(node => node.type === 'text');
+
+  assert.notEqual(copiedHotspot.id, hotspot.id);
+  assert.notEqual(copiedTarget.id, target.id);
+  assert.equal(copiedHotspot.interactions[0].scrollTargetId, copiedTarget.id);
+  assert.equal(copiedHotspot.interactions[0].scrollAlignment, 'center');
+  assert.equal(hotspot.interactions[0].scrollTargetId, target.id, 'the source route remains on the original page and keeps its original anchor');
+});
+
 test('renamePage trims valid names and leaves invalid input unchanged', () => {
   const document = fixture();
   assert.equal(renamePage(document, 'b', '  Checkout  ').name, 'Checkout');

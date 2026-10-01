@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#1b1d22" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#ffffff" />
     <meta name="description" content="Tiny Image Star is a local-first visual design editor. Your files stay on this device." />
     <title>Tiny Image Star</title>
+    <script src="./src/theme-bootstrap.js"></script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -33,21 +33,21 @@
 
       <div class="workspace">
         <aside class="left-panel" id="left-panel" aria-label="Pages and layers" aria-hidden="true" inert>
-          <div class="sidebar-tabs" role="tablist" aria-label="Left sidebar">
-            <button class="sidebar-tab is-active" data-sidebar-tab="layers" role="tab" aria-selected="true">Layers</button>
-            <button class="sidebar-tab" data-sidebar-tab="assets" role="tab" aria-selected="false">Assets</button>
+          <div class="sidebar-tabs" role="tablist" aria-orientation="horizontal" aria-label="Left sidebar">
+            <button class="sidebar-tab is-active" id="sidebar-tab-layers" data-sidebar-tab="layers" role="tab" aria-controls="layers-section" aria-selected="true" tabindex="0">Layers</button>
+            <button class="sidebar-tab" id="sidebar-tab-assets" data-sidebar-tab="assets" role="tab" aria-controls="assets-section" aria-selected="false" tabindex="-1">Assets</button>
           </div>
           <section class="pages-section">
             <div class="section-heading"><span>Pages</span><button class="tiny-icon-button" id="add-page" aria-label="Add page" title="Add page">+</button></div>
             <div id="pages-list" class="pages-list" role="list" aria-label="Pages"></div>
           </section>
-          <section class="layers-section" id="layers-section">
+          <section class="layers-section" id="layers-section" role="tabpanel" aria-labelledby="sidebar-tab-layers" tabindex="0">
             <div class="section-heading layers-heading"><span>Layers</span><div class="heading-actions"><button class="layer-select-mode" id="layer-select-mode" type="button" aria-label="Select multiple layers" aria-pressed="false">Select</button><button class="tiny-icon-button" id="search-layers" aria-label="Search layers" title="Search layers">⌕</button><button class="tiny-icon-button" id="layer-options" aria-label="Layer options" title="Layer options">···</button></div></div>
             <div class="layer-search-wrap" id="layer-search-wrap" hidden><input id="layer-search" placeholder="Search layers" aria-label="Search layers" /></div>
             <div id="layers-list" class="layers-list" role="tree" aria-label="Layers"></div>
             <div class="empty-sidebar" id="empty-layers"><div class="empty-layer-icon">◇</div><strong>No layers yet</strong><span>Draw on the canvas or place an image</span></div>
           </section>
-          <section class="assets-section" id="assets-section" hidden>
+          <section class="assets-section" id="assets-section" role="tabpanel" aria-labelledby="sidebar-tab-assets" tabindex="0" hidden>
             <div class="section-heading"><span>Components</span></div>
             <div id="components-list" class="components-list"></div>
             <div class="section-heading local-component-library-heading"><span>Local component libraries</span><button class="tiny-icon-button" id="create-component-library" type="button" aria-label="Create local component library" title="Create a library on this device">＋</button></div>
@@ -94,6 +94,7 @@
               <label class="text-format-size-label" for="text-format-size">Size<input id="text-format-size" type="number" min="1" max="512" step="1" value="24" aria-label="Selected text font size"></label>
               <label class="text-format-line-height-label" for="text-format-line-height">Line<input id="text-format-line-height" type="number" min="0.05" max="100" step="0.05" value="1.25" aria-label="Selected text line height"></label>
               <label class="text-format-spacing-label" for="text-format-spacing">Spacing<input id="text-format-spacing" type="number" min="-10000" max="10000" step="0.1" value="0" aria-label="Selected text letter spacing"></label>
+              <label class="text-format-baseline-shift-label" for="text-format-baseline-shift">Raise<input id="text-format-baseline-shift" type="number" min="-10000" max="10000" step="0.5" value="0" aria-label="Selected text baseline shift" title="Positive values raise selected text"></label>
               <label class="text-format-decoration-label" for="text-format-decoration">Decoration<select id="text-format-decoration" aria-label="Selected text decoration"><option value="none">None</option><option value="underline">Underline</option><option value="line-through">Strikethrough</option></select></label>
               <label class="text-format-color-label" for="text-format-color">Color<input id="text-format-color" type="color" value="#1e1e1e" aria-label="Selected text color"></label>
               <button class="text-format-done" type="button" data-text-format-done>Done</button>
@@ -115,6 +116,7 @@
           </div>
           <div class="bottom-toolbar" id="bottom-toolbar" aria-label="Design tools">
             <button class="tool-button is-selected" data-tool="select" title="Move / Select (V)" aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button" data-tool="lasso" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
             <button class="tool-button" data-tool="frame" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
             <button class="tool-button" data-tool="section" title="Section (⇧ S)" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
             <span class="toolbar-separator"></span>
@@ -124,8 +126,9 @@
             <button class="tool-button" data-tool="polygon" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
             <button class="tool-button" data-tool="star" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
+            <button class="tool-button" data-tool="eyedropper" title="Eyedropper (I) · sample a color" aria-label="Eyedropper · sample a color"><span data-icon="eye"></span><kbd>I</kbd></button>
             <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
-            <button class="tool-button" data-tool="pencil" title="Pencil · draw freehand" aria-label="Pencil · draw freehand"><span data-icon="pencil"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="pencil" title="Pencil · draw freehand; stylus pressure varies stroke width, hold Shift for uniform" aria-label="Pencil · draw freehand with stylus pressure"><span data-icon="pencil"></span><kbd></kbd></button>
             <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
             <button class="tool-button" data-tool="image" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
@@ -137,13 +140,13 @@
         </main>
 
         <aside class="right-panel" id="right-panel" aria-label="Design properties" aria-hidden="true" inert>
-          <div class="inspector-tabs" role="tablist" aria-label="Properties">
-            <button class="inspector-tab is-active" data-inspector-tab="design" role="tab" aria-selected="true">Design</button>
-            <button class="inspector-tab" data-inspector-tab="prototype" role="tab" aria-selected="false">Prototype</button>
-            <button class="inspector-tab" data-inspector-tab="inspect" role="tab" aria-selected="false">Inspect</button>
-            <button class="inspector-tab" data-inspector-tab="comments" role="tab" aria-selected="false">Comments</button>
+          <div class="inspector-tabs" role="tablist" aria-orientation="horizontal" aria-label="Properties">
+            <button class="inspector-tab is-active" id="inspector-tab-design" data-inspector-tab="design" role="tab" aria-controls="inspector-content" aria-selected="true" tabindex="0">Design</button>
+            <button class="inspector-tab" id="inspector-tab-prototype" data-inspector-tab="prototype" role="tab" aria-controls="inspector-content" aria-selected="false" tabindex="-1">Prototype</button>
+            <button class="inspector-tab" id="inspector-tab-inspect" data-inspector-tab="inspect" role="tab" aria-controls="inspector-content" aria-selected="false" tabindex="-1">Inspect</button>
+            <button class="inspector-tab" id="inspector-tab-comments" data-inspector-tab="comments" role="tab" aria-controls="inspector-content" aria-selected="false" tabindex="-1">Comments</button>
           </div>
-          <div class="inspector-content" id="inspector-content"></div>
+          <div class="inspector-content" id="inspector-content" role="tabpanel" aria-labelledby="inspector-tab-design" tabindex="0"></div>
           <div class="inspector-footer"><button id="export-selection" class="export-button" title="Export selected layer">Export</button><span class="export-hint">Local export</span></div>
         </aside>
       </div>
@@ -165,7 +168,7 @@
         </section>
       </dialog>
 
-      <div class="context-menu" id="context-menu" role="menu" hidden></div>
+      <div class="context-menu" id="context-menu" role="menu" aria-label="Editor actions" hidden></div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />
       <input id="font-input" type="file" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf" hidden />
@@ -184,9 +187,9 @@
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="font-import-confirm" value="import">Install locally</button></div>
         </form>
       </dialog>
-      <dialog class="modal" id="recipe-dialog">
+      <dialog class="modal" id="recipe-dialog" aria-labelledby="recipe-dialog-title">
         <form method="dialog" id="recipe-form">
-          <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2>Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+          <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2 id="recipe-dialog-title">Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
           <p class="modal-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
           <label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required />
           <div class="recipe-output-controls"><label class="field-label" for="recipe-format">Output format</label><select id="recipe-format" class="select-field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select><label class="field-label" for="recipe-quality">Quality <output id="recipe-quality-value">90%</output></label><input id="recipe-quality" type="range" min="1" max="100" step="1" value="90" aria-label="Recipe output quality" /></div>

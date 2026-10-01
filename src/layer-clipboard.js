@@ -280,6 +280,11 @@ function sanitizeExternalReferences(node, fallbacks, document, pageId, idMap, co
     node.interactions = node.interactions.map(interaction => {
       if (!plainRecord(interaction)) return null;
       if (interaction.action === 'close-overlay') return interaction;
+      if (interaction.action === 'scroll-to') {
+        const targetId = idMap.ids.get(interaction.scrollTargetId)
+          || (typeof interaction.scrollTargetId === 'string' && findNode(document, interaction.scrollTargetId, pageId) ? interaction.scrollTargetId : null);
+        return targetId ? { ...interaction, scrollTargetId: targetId } : null;
+      }
       const destination = idMap.ids.get(interaction.destinationId) || (typeof interaction.destinationId === 'string' && findNodeAcrossPages(document, interaction.destinationId) ? interaction.destinationId : null);
       return destination ? { ...interaction, destinationId: destination } : null;
     }).filter(Boolean);
@@ -382,6 +387,22 @@ export function pasteLayerClipboard(document, clipboard, { pageId = document?.ac
       inserted.push(item.node);
     }
   }
+  const pruneInvalidScrollInteractions = node => {
+    const entry = findNode(candidate, node.id, pageId);
+    if (Array.isArray(node.interactions)) {
+      node.interactions = node.interactions.filter(interaction => {
+        if (interaction.action !== 'scroll-to') return true;
+        const target = findNode(candidate, interaction.scrollTargetId, pageId);
+        const sourceFrame = entry && [...entry.parents, entry.node].find(layer => layer.type === 'frame');
+        const targetFrame = target && [...target.parents, target.node].find(layer => layer.type === 'frame');
+        return Boolean(target && sourceFrame && targetFrame?.id === sourceFrame.id
+          && target.parents.some(layer => layer.type === 'frame' && ['vertical', 'horizontal', 'both'].includes(layer.overflowBehavior)));
+      });
+      if (!node.interactions.length) delete node.interactions;
+    }
+    for (const child of node.children || []) pruneInvalidScrollInteractions(child);
+  };
+  for (const node of inserted) pruneInvalidScrollInteractions(node);
   candidate.components.push(...componentRecords);
   validateDocument(candidate);
   return { document: candidate, nodes: inserted, pasteCount: copyPasteNumber };

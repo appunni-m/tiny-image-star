@@ -146,6 +146,57 @@ test('grid fill sizing applies bounds before aligning within its cell', () => {
   assert.deepEqual([tile.x, tile.y, tile.width, tile.height], [17.5, 10, 90, 30]);
 });
 
+test('grid fixed, hug, and weighted fill columns reflow when the frame resizes', () => {
+  const frame = createNode('frame', {
+    width: 400, height: 140,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 4, columnGap: 10, padding: 10, columnTracks: [
+      { mode: 'fixed', value: 100 }, { mode: 'hug' }, { mode: 'fill', weight: 1 }, { mode: 'fill', weight: 2 }
+    ] })
+  });
+  const fixed = createNode('rectangle', { width: 32, height: 20 });
+  const hug = createNode('rectangle', { width: 70, height: 24 });
+  const fillOne = createNode('rectangle', { width: 20, height: 20, layoutSizingX: 'fill' });
+  const fillTwo = createNode('rectangle', { width: 20, height: 20, layoutSizingX: 'fill' });
+  frame.children.push(fixed, hug, fillOne, fillTwo);
+
+  applyAutoLayout(frame);
+  assert.deepEqual([fixed.x, fixed.width, hug.x, hug.width, fillOne.x, fillOne.width, fillTwo.x, fillTwo.width], [10, 32, 120, 70, 200, 60, 270, 120]);
+
+  frame.width = 560;
+  applyAutoLayout(frame);
+  assert.deepEqual([fixed.x, fixed.width, hug.x, hug.width], [10, 32, 120, 70], 'fixed and content tracks keep their authored sizes');
+  assert.deepEqual([fillOne.x, fillOne.width, fillTwo.x, fillTwo.width], [200, 113.33333333333333, 323.3333333333333, 226.66666666666666]);
+});
+
+test('grid row tracks combine fixed, hug, and weighted fill sizing with row spans and child limits', () => {
+  const frame = createNode('frame', {
+    width: 120, height: 300,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 1, rows: 3, rowGap: 10, padding: 0,
+      rowTracks: [{ mode: 'fixed', value: 40 }, { mode: 'hug' }, { mode: 'fill', weight: 2 }] })
+  });
+  const fixed = createNode('rectangle', { width: 20, height: 15, gridCell: { row: 1, column: 1 } });
+  const hug = createNode('rectangle', { width: 20, height: 60, minHeight: 72, maxHeight: 80, gridCell: { row: 2, column: 1 } });
+  const fill = createNode('rectangle', { width: 20, height: 10, layoutSizingY: 'fill', gridCell: { row: 3, column: 1 } });
+  frame.children.push(fixed, hug, fill);
+  applyAutoLayout(frame);
+
+  assert.deepEqual([fixed.y, fixed.height, hug.y, hug.height, fill.y, fill.height], [0, 15, 50, 72, 132, 168]);
+});
+
+test('old grid documents without track definitions keep equal columns and content-sized auto rows', () => {
+  const frame = createNode('frame', { width: 220, height: 100, autoLayout: { axis: 'grid', columns: 2, padding: 10, columnGap: 10 } });
+  delete frame.autoLayout.columnTracks;
+  delete frame.autoLayout.rowTracks;
+  const first = createNode('rectangle', { width: 20, height: 24 });
+  const second = createNode('rectangle', { width: 20, height: 40 });
+  frame.children.push(first, second);
+
+  applyAutoLayout(frame);
+  assert.deepEqual([first.x, first.width, second.x, second.width, first.height, second.height], [10, 20, 115, 20, 24, 40]);
+  assert.deepEqual(frame.autoLayout.columnTracks, [{ mode: 'fill', weight: 1 }, { mode: 'fill', weight: 1 }]);
+  assert.deepEqual(frame.autoLayout.rowTracks, [{ mode: 'hug' }]);
+});
+
 test('wrapped horizontal stacks use distinct row and column gaps', () => {
   const frame = createNode('frame', { width: 120, height: 100, autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, columnGap: 10, rowGap: 20, padding: 10 }) });
   const first = createNode('rectangle', { width: 40, height: 15 });
@@ -231,6 +282,32 @@ test('grid auto layout and cell placement validate and survive document reload',
   misplaced.pages[0].children[0].children[0].autoLayout = null;
   misplaced.pages[0].children[0].autoLayout = null;
   assert.throws(() => validateDocument(misplaced), /Size limits require an auto layout frame/);
+});
+
+test('grid track sizing validates, serializes, and remains optional for older documents', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { autoLayout: createAutoLayout({ axis: 'grid', columns: 3, rows: 2,
+    columnTracks: [{ mode: 'fixed', value: 96 }, { mode: 'hug' }, { mode: 'fill', weight: 1.5 }],
+    rowTracks: [{ mode: 'hug' }, { mode: 'fill', weight: 2 }] }) });
+  addNode(document, frame);
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const invalidMode = structuredClone(document);
+  invalidMode.pages[0].children[0].autoLayout.columnTracks[0].mode = 'content';
+  assert.throws(() => validateDocument(invalidMode), /Invalid auto layout/);
+
+  const invalidValue = structuredClone(document);
+  invalidValue.pages[0].children[0].autoLayout.columnTracks[0].value = -1;
+  assert.throws(() => validateDocument(invalidValue), /Invalid auto layout/);
+
+  const invalidWeight = structuredClone(document);
+  invalidWeight.pages[0].children[0].autoLayout.rowTracks[1].weight = 0;
+  assert.throws(() => validateDocument(invalidWeight), /Invalid auto layout/);
+
+  const legacy = structuredClone(document);
+  delete legacy.pages[0].children[0].autoLayout.columnTracks;
+  delete legacy.pages[0].children[0].autoLayout.rowTracks;
+  assert.equal(validateDocument(legacy), true, 'track definitions remain optional in previously saved documents');
 });
 
 test('negative gaps serialize for linear stacks and are rejected for grids', () => {

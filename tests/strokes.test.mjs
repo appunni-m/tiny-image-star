@@ -15,7 +15,8 @@ test('legacy scalar strokes expose a stable read-only item and materialize witho
   assert.equal(first[0].id, 'legacy-stroke:legacy');
   assert.deepEqual(first[0], {
     id: 'legacy-stroke:legacy', color: '#123456', width: 4, opacity: 1,
-    visible: true, cap: 'square', join: 'miter', pattern: 'dashed', miterLimit: 10
+    visible: true, cap: 'square', join: 'miter', pattern: 'dashed', miterLimit: 10,
+    startDecoration: 'none', endDecoration: 'none'
   });
   assert.equal(Object.hasOwn(node, 'strokes'), false, 'reading a legacy design must not rewrite it');
   assert.deepEqual(ensureStrokeStack(node), first);
@@ -34,6 +35,8 @@ test('stroke stack operations preserve order, enforce a cap, and mirror the prim
   assert.equal(node.stroke, '#abcdef');
   assert.equal(node.strokeWidth, 7);
   assert.equal(node.strokeOpacity, .5);
+  assert.equal(next.startDecoration, 'none');
+  assert.equal(next.endDecoration, 'none');
   assert.equal(removeStroke(node, 'outer').id, 'outer');
   assert.equal(node.stroke, '#102030');
 
@@ -47,15 +50,19 @@ test('stroke edits validate independently and removing the stack clears stale sc
   const stroke = ensureStrokeStack(node)[0];
   assert.equal(detachPrimaryStrokeBinding(node, stroke, '#778899'), true);
   assert.equal(stroke.color, '#778899');
-  updateStroke(node, stroke.id, { color: '#aabbcc', width: 9, opacity: .25, visible: false, pattern: 'dotted', cap: 'round', join: 'bevel', miterLimit: 4 });
+  updateStroke(node, stroke.id, { color: '#aabbcc', width: 9, opacity: .25, visible: false, pattern: 'dotted', cap: 'round', join: 'bevel', miterLimit: 4, startDecoration: 'arrow', endDecoration: 'triangle' });
   assert.equal(stroke.color, '#aabbcc');
   assert.equal(stroke.width, 9);
   assert.equal(stroke.opacity, .25);
+  assert.equal(stroke.startDecoration, 'arrow');
+  assert.equal(stroke.endDecoration, 'triangle');
   assert.equal(isValidStrokeStack(node.strokes, node), true);
   for (const bad of [
     [{ ...stroke, width: -1 }],
     [{ ...stroke, opacity: 1.1 }],
     [{ ...stroke, cap: 'triangle' }],
+    [{ ...stroke, startDecoration: 'circle' }],
+    [{ ...stroke, endDecoration: 'diamond' }],
     [{ ...stroke, pattern: 'dotted', cap: 'butt' }],
     [{ ...stroke }, { ...stroke }]
   ]) assert.equal(isValidStrokeStack(bad, node), false);

@@ -5,6 +5,7 @@ import {
   createComponentLibrary,
   createLinkedInstanceSnapshot,
   publishComponent,
+  publishComponentSet,
   updateLinkedInstanceSnapshot,
   validateComponentLibrary,
   validateLinkedInstanceSnapshot
@@ -23,6 +24,128 @@ function cardRoot({ title = 'Default title', fill = '#ffffff', includeIcon = tru
 function publish(library, root = cardRoot(), name = 'Card') {
   return publishComponent(library, { componentId: 'component-card', name, root });
 }
+
+test('publishing a component set preserves its variant axes, member definitions, and immutable history', () => {
+  const library = createComponentLibrary({ id: 'library-set', name: 'System' });
+  const properties = [
+    { name: 'State', values: ['Default', 'Hover'] },
+    { name: 'Size', values: ['Small'] }
+  ];
+  const variants = [
+    {
+      componentId: 'button-default', name: 'Button/Default', root: cardRoot(),
+      variantProperties: { State: 'Default', Size: 'Small' },
+      componentProperties: [{ id: 'property-label', name: 'Label', type: 'TEXT', targetSourceId: 'card-title', defaultValue: 'Default title' }]
+    },
+    {
+      componentId: 'button-hover', name: 'Button/Hover', root: cardRoot({ fill: '#e5e7eb' }),
+      variantProperties: { State: 'Hover', Size: 'Small' },
+      componentProperties: [{ id: 'property-icon', name: 'Show icon', type: 'BOOLEAN', targetSourceId: 'card-icon', defaultValue: true }]
+    }
+  ];
+  const published = publishComponentSet(library, { componentSetId: 'set-button', name: 'Button', properties, variants });
+  assert.equal(published.library.revision, 2);
+  assert.deepEqual(published.publication.componentIds, ['button-default', 'button-hover']);
+  assert.deepEqual(published.publication.properties, properties);
+  assert.deepEqual(published.publications.map(item => item.variantProperties), variants.map(item => item.variantProperties));
+  assert.deepEqual(published.publications[0].componentProperties, variants[0].componentProperties);
+  assert.equal(validateComponentLibrary(published.library), true);
+  assert.ok(Object.isFrozen(published.library.componentSets[0].versions[0].properties[0].values));
+  assert.throws(() => { published.library.componentSets[0].versions[0].properties[0].values.push('Pressed'); }, TypeError);
+
+  const nextVariants = variants.map((variant, index) => ({
+    ...variant,
+    root: cardRoot({ title: index ? 'Hover label' : 'Default label' })
+  }));
+  const updated = publishComponentSet(published.library, {
+    componentSetId: 'set-button', name: 'Button',
+    properties: [{ name: 'State', values: ['Default', 'Hover', 'Pressed'] }, { name: 'Size', values: ['Small'] }],
+    variants: [
+      ...nextVariants,
+      { componentId: 'button-pressed', name: 'Button/Pressed', root: cardRoot(), variantProperties: { State: 'Pressed', Size: 'Small' } }
+    ]
+  });
+  assert.deepEqual(updated.library.componentSets[0].versions.map(item => item.revision), [2, 5]);
+  assert.deepEqual(updated.library.componentSets[0].versions[0].properties[0].values, ['Default', 'Hover']);
+  assert.deepEqual(updated.library.componentSets[0].versions[1].componentIds, ['button-default', 'button-hover', 'button-pressed']);
+  assert.equal(validateComponentLibrary(updated.library), true);
+});
+
+test('component-set history validates each snapshot against the latest member revision at that point', () => {
+  const library = createComponentLibrary({ id: 'library-axis-history', name: 'System' });
+  const root = id => ({ id, type: 'frame', children: [] });
+  const first = publishComponentSet(library, {
+    componentSetId: 'set-button', name: 'Button',
+    properties: [{ name: 'State', values: ['Default', 'Hover'] }],
+    variants: [
+      { componentId: 'button-default', name: 'Button/Default', root: root('default-v1'), variantProperties: { State: 'Default' } },
+      { componentId: 'button-hover', name: 'Button/Hover', root: root('hover-v1'), variantProperties: { State: 'Hover' } }
+    ]
+  });
+
+  const updated = publishComponentSet(first.library, {
+    componentSetId: 'set-button', name: 'Button',
+    properties: [{ name: 'State', values: ['Base', 'Hover'] }],
+    variants: [
+      { componentId: 'button-default', name: 'Button/Base', root: root('default-v2'), variantProperties: { State: 'Base' } },
+      { componentId: 'button-hover', name: 'Button/Hover', root: root('hover-v2'), variantProperties: { State: 'Hover' } }
+    ]
+  });
+
+  assert.equal(validateComponentLibrary(updated.library), true);
+  assert.deepEqual(updated.library.componentSets[0].versions.map(version => version.properties[0].values), [
+    ['Default', 'Hover'], ['Base', 'Hover']
+  ]);
+  assert.deepEqual(updated.library.components.find(component => component.id === 'button-default').versions.map(version => version.variantProperties.State), ['Default', 'Base']);
+});
+
+test('republishing a set member with the regular component payload preserves its set and property metadata', () => {
+  const library = createComponentLibrary({ id: 'library-preserved-member', name: 'System' });
+  const root = (id, label) => ({
+    id, type: 'frame', children: [{ id: `${id}-label`, type: 'text', text: label, children: [] }]
+  });
+  const published = publishComponentSet(library, {
+    componentSetId: 'set-button', name: 'Button',
+    properties: [{ name: 'State', values: ['Default', 'Hover'] }],
+    variants: [
+      {
+        componentId: 'button-default', name: 'Button/Default', root: root('default-root', 'Go'),
+        variantProperties: { State: 'Default' },
+        componentProperties: [{ id: 'label', name: 'Label', type: 'TEXT', targetSourceId: 'default-root-label', defaultValue: 'Go' }]
+      },
+      { componentId: 'button-hover', name: 'Button/Hover', root: root('hover-root', 'Go'), variantProperties: { State: 'Hover' } }
+    ]
+  });
+
+  // This is the shape sent by the normal editor republish path.
+  const revised = publishComponent(published.library, {
+    componentId: 'button-default', name: 'Button/Default', root: root('default-root', 'Continue')
+  });
+  const latest = revised.library.components.find(component => component.id === 'button-default').versions.at(-1);
+  assert.equal(latest.componentSetId, 'set-button');
+  assert.deepEqual(latest.variantProperties, { State: 'Default' });
+  assert.deepEqual(latest.componentProperties, [{
+    id: 'label', name: 'Label', type: 'TEXT', targetSourceId: 'default-root-label', defaultValue: 'Go'
+  }]);
+  assert.equal(validateComponentLibrary(revised.library), true);
+});
+
+test('component-set publishing rejects incomplete axes, duplicate combinations, and dangling property targets', () => {
+  const library = createComponentLibrary({ id: 'library-invalid-set', name: 'System' });
+  const variants = [
+    { componentId: 'one', name: 'One', root: cardRoot(), variantProperties: { State: 'Default' } },
+    { componentId: 'two', name: 'Two', root: cardRoot(), variantProperties: { State: 'Hover' } }
+  ];
+  assert.throws(() => publishComponentSet(library, { componentSetId: 'set', name: 'Set', properties: [], variants }), /at least one variant axis/);
+  assert.throws(() => publishComponentSet(library, {
+    componentSetId: 'set', name: 'Set', properties: [{ name: 'State', values: ['Default', 'Hover'] }],
+    variants: variants.map(item => ({ ...item, variantProperties: { State: 'Default' } }))
+  }), /unique axis combinations/);
+  assert.throws(() => publishComponentSet(library, {
+    componentSetId: 'set', name: 'Set', properties: [{ name: 'State', values: ['Default', 'Hover'] }],
+    variants: variants.map(item => ({ ...item, componentProperties: [{ id: 'bad', name: 'Label', type: 'TEXT', targetSourceId: 'missing', defaultValue: '' }] }))
+  }), /missing source layer/);
+});
 
 test('libraries require stable identities and validate globally monotonic publication revisions', () => {
   assert.throws(() => createComponentLibrary({ id: '', name: 'Design system' }), /Library ID/);
@@ -108,10 +231,68 @@ test('linked snapshots preserve compatible overrides while reporting changed and
   assert.deepEqual(result.report.addedSourceLayers, [{ sourceLayerId: 'card-badge', name: 'Badge', type: 'rectangle' }]);
   assert.deepEqual(result.report.preservedOverrides.map(item => item.sourceLayerId).sort(), ['card-icon', 'card-title']);
   assert.deepEqual(result.report.droppedOverrides, []);
+  assert.deepEqual(result.report.conflictingOverrides, [
+    {
+      sourceLayerId: 'card-icon',
+      name: 'Icon',
+      properties: [{
+        property: 'fill',
+        base: { present: true, value: '#ffffff' },
+        source: { present: true, value: '#00aaff' },
+        instance: { present: true, value: '#ff0088' }
+      }]
+    },
+    {
+      sourceLayerId: 'card-title',
+      name: 'Title',
+      properties: [{
+        property: 'text',
+        base: { present: true, value: 'Default title' },
+        source: { present: true, value: 'New source title' },
+        instance: { present: true, value: 'Welcome' }
+      }]
+    }
+  ], 'the update report identifies concurrent source and instance edits with their three compared values');
   assert.equal(linked.sourceRevision, 1, 'updating must leave the original linked snapshot untouched');
   assert.equal(linked.root.children[0].text, 'Welcome');
   assert.ok(Object.isFrozen(result.instance.root.children[0]));
   assert.ok(Object.isFrozen(result.report.changedSourceLayers[0]));
+});
+
+test('linked updates distinguish concurrent override conflicts from unchanged or converged values', () => {
+  let library = publish(createComponentLibrary({ id: 'library-conflicts', name: 'Conflicts' })).library;
+  const linked = createLinkedInstanceSnapshot(library, 'component-card', {
+    instanceId: 'instance-conflicts',
+    overrides: {
+      'card-title': { text: 'Default title', color: '#112233' },
+      'card-icon': { fill: '#ff0088' }
+    }
+  });
+  library = publishComponent(library, {
+    componentId: 'component-card', name: 'Card',
+    root: {
+      ...cardRoot({ title: 'Default title', fill: '#ff0088' }),
+      children: [
+        { ...cardRoot().children[0], color: '#112233' },
+        { ...cardRoot().children[1], fill: '#ff0000' }
+      ]
+    }
+  }).library;
+
+  const result = updateLinkedInstanceSnapshot(linked, library);
+  assert.deepEqual(result.report.conflictingOverrides, [{
+    sourceLayerId: 'card-icon',
+    name: 'Icon',
+    properties: [{
+      property: 'fill',
+      base: { present: true, value: '#ffffff' },
+      source: { present: true, value: '#ff0000' },
+      instance: { present: true, value: '#ff0088' }
+    }]
+  }], 'an override equal to the base is unchanged, and one matching the new source is already converged');
+  assert.equal(result.instance.root.children[0].text, 'Default title');
+  assert.equal(result.instance.root.children[0].color, '#112233');
+  assert.equal(result.instance.root.children[1].fill, '#ff0088', 'the existing snapshot policy still preserves the local side of conflicts');
 });
 
 test('updates report removed layers and drop their overrides; a layer type change is incompatible', () => {

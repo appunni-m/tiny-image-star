@@ -1,5 +1,5 @@
 import { addNode, createDocument, createImageRecipe, createNode } from '../src/model.js';
-import { deleteRecipeBatchRecovery, deleteStoredDocument, loadDocumentById, loadRecipeBatchRecovery, saveDocument, saveRecipeBatchRecovery } from '../src/storage.js';
+import { claimRecipeBatchRecovery, deleteRecipeBatchRecovery, deleteStoredDocument, loadDocumentById, loadRecipeBatchRecovery, RECIPE_BATCH_RECOVERY_LEASE_MS, saveDocument } from '../src/storage.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -42,9 +42,10 @@ try {
   design.recipes.push(recipe);
   designId = design.id;
   await saveDocument(design);
-  await saveRecipeBatchRecovery({
-    documentId: design.id, recipe, pageId: design.activePageId, targetIds: [image.id], status: 'running'
-  });
+  const priorOwnerToken = 'run-bulk-retry-fixture';
+  await claimRecipeBatchRecovery({
+    documentId: design.id, ownerToken: priorOwnerToken, recipe, pageId: design.activePageId, targetIds: [image.id], status: 'running'
+  }, { now: Date.now() - RECIPE_BATCH_RECOVERY_LEASE_MS - 1 });
 
   const app = frame.contentDocument;
   await waitFor(() => app?.documentElement.dataset.appReady === 'true', 'editor startup');
@@ -90,7 +91,8 @@ try {
   frame.src = 'about:blank';
   await new Promise(resolve => setTimeout(resolve, 50));
   if (designId) {
-    await deleteRecipeBatchRecovery(designId).catch(() => {});
+    const recovery = await loadRecipeBatchRecovery(designId).catch(() => null);
+    if (recovery?.ownerToken) await deleteRecipeBatchRecovery(designId, recovery.ownerToken).catch(() => {});
     await deleteStoredDocument(designId).catch(() => {});
   }
 }

@@ -1,9 +1,10 @@
 import { addNode, createDocument, createNode } from '../src/model.js';
-import { deleteImageAsset, deleteStoredDocument, listSavedDocuments, loadDocumentById, saveDocument } from '../src/storage.js';
+import { deleteImageAsset, deleteStoredDocument, listSavedDocuments, loadDocumentById, loadImageAsset, saveDocument } from '../src/storage.js';
 import { getTransformHandles, nodeLocalToPage, parentLocalToPageTransform, resizeOrientedRect, transformPoint } from '../src/transform-geometry.js';
 import { resizeSelection, rotateSelection, selectionBounds } from '../src/group-transform.js';
-import { selectionGroupHandles } from '../src/renderer.js';
+import { hitTestPage, selectionGroupHandles } from '../src/renderer.js';
 import { vectorNetworkGeometryFromAnchors, vectorNetworkVertexPoint } from '../src/vector-path.js';
+import { applyAutoLayout } from '../src/layout-engine.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -12,6 +13,13 @@ const testDocumentIds = new Set();
 const testAssetIds = new Set();
 
 function assert(value, message) { if (!value) throw new Error(message); }
+function assertEqual(actual, expected, message) {
+  assert(actual === expected, `${message} (expected ${String(expected)}, received ${String(actual)}).`);
+}
+function assertDeepEqual(actual, expected, message) {
+  const stable = value => value instanceof Set ? [...value].sort() : value;
+  assert(JSON.stringify(stable(actual)) === JSON.stringify(stable(expected)), message);
+}
 function waitFor(test, label, timeout = 20000) {
   const started = performance.now();
   return new Promise((resolve, reject) => {
@@ -51,6 +59,21 @@ function findSavedNode(savedDocument, id) {
   const visit = nodes => {
     for (const node of nodes || []) {
       if (node.id === id) return node;
+      const nested = visit(node.children);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const page of savedDocument?.pages || []) {
+    const found = visit(page.children);
+    if (found) return found;
+  }
+  return null;
+}
+function findSavedNodeByProperty(savedDocument, key, value) {
+  const visit = nodes => {
+    for (const node of nodes || []) {
+      if (node[key] === value) return node;
       const nested = visit(node.children);
       if (nested) return nested;
     }
@@ -124,12 +147,20 @@ async function run(app) {
     });
     const verticalLineA = createNode('line', { name: 'Degenerate vertical A', x: 260, y: -30, width: 0, height: 30 });
     const verticalLineB = createNode('line', { name: 'Degenerate vertical B', x: 260, y: 30, width: 0, height: 30 });
+    const flow = createNode('frame', {
+      name: 'Alt-drag auto layout', x: 350, y: 170, width: 180, height: 76,
+      autoLayout: { axis: 'horizontal', columnGap: 8, padding: 8 }
+    });
+    const flowItem = createNode('rectangle', { name: 'Auto layout item', width: 36, height: 30, fill: '#b8dcff' });
     addNode(original, parent);
     addNode(original, verticalLineA);
     addNode(original, verticalLineB);
+    addNode(original, flow);
+    addNode(original, flowItem, { parentId: flow.id });
     addNode(original, group, { parentId: parent.id });
     addNode(original, target, { parentId: group.id });
     addNode(original, network, { parentId: group.id });
+    applyAutoLayout(flow);
     await saveDocument(original);
     testDocumentIds.add(original.id);
 
@@ -163,8 +194,11 @@ async function run(app) {
     const originalRect = resolved(target);
     result.textContent = 'RUNNING: transformed marquee selection';
     const originalCenter = nodeLocalToPage(originalRect, { x: originalRect.width / 2, y: originalRect.height / 2 }, ancestors);
-    const marqueeStart = screenPoint(app, { x: 80, y: originalCenter.y - 15 });
-    const marqueeEnd = screenPoint(app, { x: originalCenter.x, y: originalCenter.y - 15 });
+    // Start outside the rotated parent and group so the select tool begins a
+    // marquee instead of correctly treating a drag on either container as a
+    // move. Keep the horizontal crossing through the child's visible bounds.
+    const marqueeStart = screenPoint(app, { x: originalCenter.x + 268, y: originalCenter.y - 15 });
+    const marqueeEnd = screenPoint(app, { x: originalCenter.x - 124, y: originalCenter.y - 15 });
     dispatchCanvasPointer(app, canvas, 'pointerdown', marqueeStart, 86);
     dispatchCanvasPointer(app, canvas, 'pointermove', marqueeEnd, 86);
     dispatchCanvasPointer(app, canvas, 'pointerup', marqueeEnd, 86);
@@ -440,6 +474,159 @@ async function run(app) {
     assert(Math.hypot(imageCenterPage.x - imagePage.x, imageCenterPage.y - imagePage.y) <= 2,
       'an image dropped inside rotated ancestors should keep its drop-point center within the browser’s rounded drag-event coordinates.');
 
+    const pastedFileName = `${runId}-clipboard.bmp`;
+    const pastedFile = new app.defaultView.File([fixtureBmp()], pastedFileName, { type: 'image/bmp' });
+    const pasteTransfer = new app.defaultView.DataTransfer();
+    pasteTransfer.items.add(pastedFile);
+    const pasteEvent = new app.defaultView.Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, 'clipboardData', { configurable: true, value: pasteTransfer });
+    app.dispatchEvent(pasteEvent);
+    assert(pasteEvent.defaultPrevented, 'pasting a clipboard image should be handled by the local editor');
+    await waitFor(async () => findSavedNodeByProperty(await readSaved(app, duplicate.id), 'fileName', pastedFileName),
+      'clipboard image placement and local document save');
+    const pastedImageNode = findSavedNodeByProperty(await readSaved(app, duplicate.id), 'fileName', pastedFileName);
+    testAssetIds.add(pastedImageNode.assetId);
+    const pastedAsset = await loadImageAsset(pastedImageNode.assetId);
+    assert(pastedAsset?.name === pastedFileName && pastedAsset?.type === 'image/bmp'
+      && pastedAsset?.bytes?.byteLength === fixtureBmp().byteLength,
+    'clipboard image bytes should be retained in local image storage with their source metadata.');
+
+    result.textContent = 'RUNNING: Alt-drag duplicate, cancel, undo, and redo';
+    click(app, app.querySelector('[data-tool="select"]'));
+    assert(app.querySelector('[data-tool="select"]')?.classList.contains('is-selected'),
+      'Alt-click and Alt-drag duplicate checks must run with the Select tool active.');
+    const beforeAltDrag = await readSaved(app, duplicate.id);
+    const sourceBeforeAltDrag = findSavedNode(beforeAltDrag, target.id);
+    const sourceParents = [parent.id, group.id].map(id => findSavedNode(beforeAltDrag, id));
+    const sourceCenter = nodeLocalToPage(sourceBeforeAltDrag, {
+      x: sourceBeforeAltDrag.width / 2, y: sourceBeforeAltDrag.height / 2
+    }, sourceParents);
+    const activePageBeforeAltDrag = beforeAltDrag.pages.find(page => page.id === beforeAltDrag.activePageId);
+    const targetDragCandidates = [0.25, 0.5, 0.75].flatMap(x => [0.25, 0.5, 0.75].map(y => {
+      const local = { x: sourceBeforeAltDrag.width * x, y: sourceBeforeAltDrag.height * y };
+      const page = nodeLocalToPage(sourceBeforeAltDrag, local, sourceParents);
+      return { local, page, hit: hitTestPage(activePageBeforeAltDrag, page, null, beforeAltDrag) };
+    }));
+    const targetDragStart = targetDragCandidates.find(candidate => candidate.hit?.id === target.id);
+    assert(targetDragStart,
+      `No interior point uniquely hit the Alt-drag target; candidates=${JSON.stringify(targetDragCandidates.map(({ local, page, hit }) => ({ local, page, hitId: hit?.id || null })))}`);
+    const sourceDragScreen = screenPoint(app, targetDragStart.page);
+    const initialLayerIds = [...app.querySelectorAll('#layers-list [data-layer-id]')].map(row => row.dataset.layerId);
+    const initialPageIds = collectPageNodeIds(beforeAltDrag.pages.find(page => page.id === beforeAltDrag.activePageId));
+
+    dispatchCanvasPointer(app, canvas, 'pointerdown', sourceDragScreen, 111, { altKey: true });
+    dispatchCanvasPointer(app, canvas, 'pointerup', sourceDragScreen, 111, { altKey: true });
+    assertDeepEqual([...app.querySelectorAll('#layers-list [data-layer-id]')].map(row => row.dataset.layerId), initialLayerIds,
+      'Alt-click without a drag should not create a duplicate layer.');
+    assertDeepEqual(collectPageNodeIds((await readSaved(app, duplicate.id)).pages.find(page => page.id === beforeAltDrag.activePageId)), initialPageIds,
+      'Alt-click without a drag should leave the saved layer tree unchanged.');
+
+    const cancelEnd = screenPoint(app, { x: targetDragStart.page.x + 30, y: targetDragStart.page.y - 18 });
+    let altDragPointerDownDispatched = false;
+    try {
+      altDragPointerDownDispatched = true;
+      dispatchCanvasPointer(app, canvas, 'pointerdown', sourceDragScreen, 112, { altKey: true });
+      const selectedTargetAfterDown = app.querySelector(`[data-layer-id="${CSS.escape(target.id)}"]`);
+      const altDragDiagnostics = () => ({
+        selectedLayerIds: [...app.querySelectorAll('#layers-list .layer-row.is-selected[data-layer-id]')]
+          .map(row => row.dataset.layerId),
+        activeLayerIds: [...app.querySelectorAll('#layers-list [data-layer-id]')].map(row => row.dataset.layerId),
+        position: app.querySelector('#position-status')?.textContent,
+        toast: app.querySelector('#toast-region')?.textContent?.trim(),
+        start: targetDragStart
+          ? { local: targetDragStart.local, page: targetDragStart.page, hitId: targetDragStart.hit?.id }
+          : null
+      });
+      assert(selectedTargetAfterDown?.classList.contains('is-selected'),
+        `Alt-drag pointerdown should preserve selection of its expected target; diagnostics=${JSON.stringify(altDragDiagnostics())}`);
+
+      dispatchCanvasPointer(app, canvas, 'pointermove', cancelEnd, 112, { altKey: true });
+      const transientLayerIds = [...app.querySelectorAll('#layers-list [data-layer-id]')].map(row => row.dataset.layerId);
+      assert(transientLayerIds.length > initialLayerIds.length,
+        `Alt-drag should create its duplicate once the pointer crosses the drag threshold; diagnostics=${JSON.stringify(altDragDiagnostics())}`);
+    } finally {
+      if (altDragPointerDownDispatched) {
+        try { dispatchCanvasPointer(app, canvas, 'pointercancel', cancelEnd, 112, { altKey: true }); }
+        catch (error) { cleanupErrors.push(`Could not cancel the Alt-drag pointer: ${error.message || error}`); }
+      }
+    }
+    await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'cancelled Alt-drag rollback save');
+    const afterAltCancel = await readSaved(app, duplicate.id);
+    assertDeepEqual(collectPageNodeIds(afterAltCancel.pages.find(page => page.id === beforeAltDrag.activePageId)), initialPageIds,
+      'cancelling an Alt-drag should remove the transient duplicate and preserve its source.');
+    assert(app.querySelector(`[data-layer-id="${CSS.escape(target.id)}"]`)?.classList.contains('is-selected'),
+      'cancelling an Alt-drag should restore selection to the source layer.');
+
+    const dragDelta = { x: 34, y: -22 };
+    const dragEnd = screenPoint(app, { x: targetDragStart.page.x + dragDelta.x, y: targetDragStart.page.y + dragDelta.y });
+    dispatchCanvasPointer(app, canvas, 'pointerdown', sourceDragScreen, 113, { altKey: true });
+    dispatchCanvasPointer(app, canvas, 'pointermove', dragEnd, 113, { altKey: true });
+    dispatchCanvasPointer(app, canvas, 'pointerup', dragEnd, 113, { altKey: true });
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      const ids = collectPageNodeIds(saved?.pages.find(page => page.id === beforeAltDrag.activePageId));
+      return [...ids].some(id => !initialPageIds.has(id));
+    }, 'Alt-drag duplicate persistence');
+    const afterAltDrag = await readSaved(app, duplicate.id);
+    const afterDragIds = collectPageNodeIds(afterAltDrag.pages.find(page => page.id === beforeAltDrag.activePageId));
+    const newDragIds = [...afterDragIds].filter(id => !initialPageIds.has(id));
+    assertEqual(newDragIds.length, 1, 'Alt-drag should create one layer with a fresh ID for the selected source.');
+    const duplicatedTarget = findSavedNode(afterAltDrag, newDragIds[0]);
+    assert(duplicatedTarget && duplicatedTarget.id !== sourceBeforeAltDrag.id,
+      'the dragged copy should have a new layer identity.');
+    const duplicatedCenter = nodeLocalToPage(duplicatedTarget, {
+      x: duplicatedTarget.width / 2, y: duplicatedTarget.height / 2
+    }, sourceParents);
+    assert(Math.hypot(duplicatedCenter.x - sourceCenter.x - dragDelta.x, duplicatedCenter.y - sourceCenter.y - dragDelta.y) < 1e-4,
+      'the duplicate should follow the pointer by the exact page-space drag offset through rotated parents.');
+
+    app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ctrlKey: true }));
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      return !collectPageNodeIds(saved?.pages.find(page => page.id === beforeAltDrag.activePageId)).has(newDragIds[0]);
+    }, 'single-step Alt-drag undo');
+    const afterAltUndo = await readSaved(app, duplicate.id);
+    assertDeepEqual(collectPageNodeIds(afterAltUndo.pages.find(page => page.id === beforeAltDrag.activePageId)), initialPageIds,
+      'one undo should remove both the duplicate and its drag movement.');
+    app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ctrlKey: true, shiftKey: true }));
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      return Boolean(findSavedNode(saved, newDragIds[0]));
+    }, 'single-step Alt-drag redo');
+    const afterAltRedo = await readSaved(app, duplicate.id);
+    const redoneTarget = findSavedNode(afterAltRedo, newDragIds[0]);
+    assert(redoneTarget, 'one redo should restore the duplicate.');
+    const redoneCenter = nodeLocalToPage(redoneTarget, { x: redoneTarget.width / 2, y: redoneTarget.height / 2 }, sourceParents);
+    assert(Math.hypot(redoneCenter.x - sourceCenter.x - dragDelta.x, redoneCenter.y - sourceCenter.y - dragDelta.y) < 1e-4,
+      'redo should restore the duplicate at its completed drag position.');
+
+    const beforeFlowAltDrag = await readSaved(app, duplicate.id);
+    const flowBeforeAltDrag = findSavedNode(beforeFlowAltDrag, flow.id);
+    const flowItemBeforeAltDrag = findSavedNode(beforeFlowAltDrag, flowItem.id);
+    const flowCenter = nodeLocalToPage(flowItemBeforeAltDrag, {
+      x: flowItemBeforeAltDrag.width / 2, y: flowItemBeforeAltDrag.height / 2
+    }, [flowBeforeAltDrag]);
+    const flowStart = screenPoint(app, flowCenter);
+    const flowEnd = screenPoint(app, { x: flowCenter.x + 52, y: flowCenter.y });
+    const beforeFlowIds = collectPageNodeIds(beforeFlowAltDrag.pages.find(page => page.id === beforeFlowAltDrag.activePageId));
+    dispatchCanvasPointer(app, canvas, 'pointerdown', flowStart, 114, { altKey: true });
+    dispatchCanvasPointer(app, canvas, 'pointermove', flowEnd, 114, { altKey: true });
+    dispatchCanvasPointer(app, canvas, 'pointerup', flowEnd, 114, { altKey: true });
+    await waitFor(async () => {
+      const saved = await readSaved(app, duplicate.id);
+      return collectPageNodeIds(saved?.pages.find(page => page.id === beforeAltDrag.activePageId)).size > beforeFlowIds.size;
+    }, 'Alt-drag duplication in auto layout');
+    const afterFlowAltDrag = await readSaved(app, duplicate.id);
+    const afterFlowIds = collectPageNodeIds(afterFlowAltDrag.pages.find(page => page.id === beforeAltDrag.activePageId));
+    const flowCopyIds = [...afterFlowIds].filter(id => !beforeFlowIds.has(id));
+    const flowAfterAltDrag = findSavedNode(afterFlowAltDrag, flow.id);
+    assertEqual(flowCopyIds.length, 1, 'Alt-drag should create one fresh copy of an auto-layout child.');
+    assertEqual(flowAfterAltDrag.children.length, 2, 'the auto-layout parent should contain both the source and duplicate.');
+    assertEqual(flowAfterAltDrag.children[0].id, flowItem.id, 'the source should remain in place before its dragged copy.');
+    assertEqual(flowAfterAltDrag.children[1].id, flowCopyIds[0], 'the duplicate should reorder to the pointer-selected position.');
+    assert(flowAfterAltDrag.children[1].x > flowAfterAltDrag.children[0].x,
+      'auto layout should recompute the duplicate position after the in-place reorder.');
+
     result.textContent = 'RUNNING: page lifecycle controls';
     app.defaultView.prompt = () => `${runId} Home`;
     const firstPageId = (await readSaved(app, duplicate.id)).pages[0].id;
@@ -504,7 +691,7 @@ async function run(app) {
     await waitFor(async () => (await listSavedDocuments()).some(item => !beforeDeleteIds.has(item.id)), 'replacement design save');
     for (const item of await listSavedDocuments()) if (!beforeDeleteIds.has(item.id)) testDocumentIds.add(item.id);
 
-    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], pages: ['rename', 'duplicate-fresh-ids', 'move-up', 'move-down', 'delete-last-page-guard'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'multi-layer resize', 'multi-layer rotate', 'degenerate Shift multi-layer resize', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement'] };
+    checks = { library: ['open', 'duplicate', 'rename', 'delete-active'], pages: ['rename', 'duplicate-fresh-ids', 'move-up', 'move-down', 'delete-last-page-guard'], canvas: ['nested rotated resize', 'opposite handle fixed', 'rotate gesture', 'multi-layer resize', 'multi-layer rotate', 'degenerate Shift multi-layer resize', 'transformed marquee', 'rotated Pen branch', 'rotated group Pen path', 'shape/text/image nested rotated placement', 'clipboard image paste to local source', 'Alt-drag fresh-ID duplicate', 'Alt-click no-op', 'Alt-drag pointer-cancel rollback', 'single-step duplicate-move undo/redo', 'Alt-drag auto-layout duplicate and reorder'] };
   } catch (error) {
     testError = error;
   } finally {

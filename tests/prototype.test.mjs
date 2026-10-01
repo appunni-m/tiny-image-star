@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, findNode, getNodePropertyValue, parseDocument, serializeDocument, switchComponentInstanceVariant, validateDocument } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, serializeDocument, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
@@ -129,6 +129,165 @@ test('prototype links persist as local navigation to a destination frame', () =>
   assert.equal(findNode(reloaded, source.id).node.interactions[0].transition, 'dissolve');
   assert.equal(removePrototypeInteraction(reloaded, source.id, interaction.id), true);
   assert.equal(findNode(reloaded, source.id).node.interactions.length, 0);
+});
+
+test('scroll-to interactions persist, validate their screen, and resolve in presentation', () => {
+  const document = createDocument();
+  const screen = createNode('frame', { name: 'Long screen' });
+  const source = createNode('rectangle', { name: 'Jump to footer' });
+  const scroller = createNode('frame', { name: 'Content', y: 100, width: 300, height: 200, overflowBehavior: 'vertical' });
+  const target = createNode('text', { name: 'Footer', y: 520, width: 120, height: 24, text: 'Footer' });
+  scroller.children.push(target);
+  screen.children.push(source, scroller);
+  addNode(document, screen);
+
+  const interaction = addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id, scrollAlignment: 'center', transition: 'scroll', duration: 450, easing: 'ease-out'
+  });
+  assert.equal(interaction.destinationId, null);
+  assert.equal(interaction.scrollTargetId, target.id);
+  assert.equal(interaction.scrollAlignment, 'center');
+  assert.equal(findClickableInteraction(document, document.activePageId, source.id).interaction.id, interaction.id);
+  const persisted = parseDocument(serializeDocument(document));
+  assert.equal(findNode(persisted, source.id).node.interactions[0].scrollTargetId, target.id);
+  validateDocument(persisted);
+
+  const session = createPrototypeSession({ page: persisted.pages[0], frame: findNode(persisted, screen.id).node });
+  assert.equal(applyPrototypeInteraction(persisted, session, findNode(persisted, source.id).node.interactions[0]), 'scroll-to');
+  assert.equal(session.frameId, screen.id, 'scrolling does not navigate away from the active screen');
+
+  const editable = structuredClone(persisted);
+  const replacementTarget = createNode('rectangle', { name: 'Alternate anchor', y: 720 });
+  addNode(editable, replacementTarget, { parentId: scroller.id });
+  const updated = updatePrototypeInteraction(editable, source.id, interaction.id, null, {
+    action: 'scroll-to', scrollTargetId: replacementTarget.id, scrollAlignment: 'end', transition: 'instant'
+  });
+  assert.equal(updated.id, interaction.id, 'editing keeps the route identity stable');
+  assert.equal(updated.scrollTargetId, replacementTarget.id);
+  assert.equal(updated.scrollAlignment, 'end');
+  validateDocument(editable);
+
+  const otherTarget = createNode('rectangle', { name: 'Outside content' });
+  screen.children.push(otherTarget);
+  assert.throws(() => addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: otherTarget.id
+  }), /scrollable frame on the same prototype screen/);
+  const invalidPersisted = structuredClone(document);
+  findNode(invalidPersisted, source.id).node.interactions[0].scrollTargetId = otherTarget.id;
+  assert.throws(() => validateDocument(invalidPersisted), /Prototype scroll-to interactions/);
+  assert.throws(() => addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id, transition: 'dissolve'
+  }), /only instant or scroll/);
+});
+
+test('nested prototype screens scope scroll-to routes to the nearest active frame', () => {
+  const document = createDocument();
+  const outer = createNode('frame', { name: 'Outer screen', overflowBehavior: 'vertical' });
+  const screen = createNode('frame', { name: 'Nested screen' });
+  const source = createNode('rectangle', { name: 'Jump to section' });
+  const scroller = createNode('frame', { name: 'Nested scroller', overflowBehavior: 'vertical' });
+  const target = createNode('rectangle', { name: 'Section', y: 400 });
+  const outsideTarget = createNode('rectangle', { name: 'Outside nested screen' });
+  scroller.children.push(target);
+  screen.children.push(source, scroller);
+  outer.children.push(screen, outsideTarget);
+  addNode(document, outer);
+
+  const interaction = addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id
+  });
+  assert.equal(getPrototypeStartFrame(document, source.id).frame.id, screen.id);
+  const session = createPrototypeSession({ page: document.pages[0], frame: screen });
+  assert.equal(applyPrototypeInteraction(document, session, interaction), 'scroll-to');
+  assert.throws(() => addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: outsideTarget.id
+  }), /scrollable frame on the same prototype screen/);
+  validateDocument(document);
+});
+
+test('removing the last scrollable ancestor prunes dependent routes before saving', () => {
+  const document = createDocument();
+  const screen = createNode('frame', { name: 'Screen' });
+  const source = createNode('rectangle', { name: 'Jump link' });
+  const scroller = createNode('frame', { name: 'Scrollable section', overflowBehavior: 'vertical' });
+  const target = createNode('rectangle', { name: 'Anchor', y: 400 });
+  scroller.children.push(target);
+  screen.children.push(source, scroller);
+  addNode(document, screen);
+  const interaction = addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id
+  });
+
+  scroller.overflowBehavior = 'none';
+  assert.throws(() => validateDocument(document), /Prototype scroll-to interactions/);
+  assert.equal(reconcilePrototypeScrollInteractions(document), 1);
+  assert.equal(findNode(document, source.id).node.interactions, undefined);
+  validateDocument(document);
+
+  scroller.overflowBehavior = 'vertical';
+  const apiRoute = addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id
+  });
+  assert.equal(updateNode(document, scroller.id, { overflowBehavior: 'none' }), true);
+  assert.equal(findNode(document, source.id).node.interactions, undefined,
+    'the public model update API prunes a route when its only scrollable ancestor is disabled');
+  validateDocument(document);
+
+  screen.overflowBehavior = 'vertical';
+  scroller.overflowBehavior = 'vertical';
+  const replacement = addPrototypeInteraction(document, source.id, null, {
+    action: 'scroll-to', scrollTargetId: target.id
+  });
+  scroller.overflowBehavior = 'none';
+  assert.equal(reconcilePrototypeScrollInteractions(document), 0,
+    'the route remains valid while the active screen still provides a scrollable ancestor');
+  assert.equal(findNode(document, source.id).node.interactions[0].id, replacement.id);
+  assert.notEqual(apiRoute.id, replacement.id);
+  validateDocument(document);
+});
+
+test('moving an anchor outside its prototype screen removes the stale scroll-to route', () => {
+  const document = createDocument();
+  const screen = createNode('frame', { name: 'Screen' });
+  const source = createNode('rectangle', { name: 'Jump link' });
+  const scroller = createNode('frame', { name: 'Scrollable section', overflowBehavior: 'vertical' });
+  const target = createNode('rectangle', { name: 'Anchor', y: 400 });
+  scroller.children.push(target);
+  screen.children.push(source, scroller);
+  addNode(document, screen);
+  addPrototypeInteraction(document, source.id, null, { action: 'scroll-to', scrollTargetId: target.id });
+
+  assert.equal(moveNode(document, target.id, { parentId: null }), true);
+  assert.equal(findNode(document, source.id).node.interactions, undefined);
+  validateDocument(document);
+});
+
+test('scroll-to references follow duplicated content and are removed with deleted targets', () => {
+  const document = createDocument();
+  const screen = createNode('frame', { name: 'Long screen' });
+  const scroller = createNode('frame', { name: 'Scrollable content', width: 300, height: 180, overflowBehavior: 'vertical' });
+  const section = createNode('group', { name: 'Footer section', y: 240 });
+  const source = createNode('rectangle', { name: 'Jump link' });
+  const target = createNode('rectangle', { name: 'Footer anchor' });
+  section.children.push(source, target);
+  scroller.children.push(section);
+  screen.children.push(scroller);
+  addNode(document, screen);
+  addPrototypeInteraction(document, source.id, null, { action: 'scroll-to', scrollTargetId: target.id });
+
+  const duplicate = duplicateNode(document, section.id);
+  const duplicateSource = duplicate.children.find(node => node.name.startsWith('Jump link'));
+  const duplicateTarget = duplicate.children.find(node => node.name.startsWith('Footer anchor'));
+  assert.equal(duplicateSource.interactions[0].scrollTargetId, duplicateTarget.id);
+  validateDocument(document);
+
+  removeNode(document, target.id);
+  assert.equal(findNode(document, source.id).node.interactions, undefined, 'removing an anchor clears actions that referenced it');
+  assert.equal(findNode(document, duplicateSource.id).node.interactions[0].scrollTargetId, duplicateTarget.id,
+    'removing the original anchor preserves the duplicated content’s remapped action');
+  removeNode(document, duplicateTarget.id);
+  assert.equal(findNode(document, duplicateSource.id).node.interactions, undefined);
+  validateDocument(document);
 });
 
 test('prototype interaction edits preserve identity and position while replacing validated settings', () => {
@@ -312,6 +471,28 @@ test('prototype start point and frame hit-testing prefer a nested frame', () => 
   assert.equal(getPrototypeStartFrame(document).frame.id, inner.id);
   assert.equal(findFrameAtPoint(document.pages[0], { x: 50, y: 70 }).id, inner.id);
   assert.equal(findFrameAtPoint(document.pages[0], { x: 350, y: 470 }).id, outer.id);
+});
+
+test('prototype frame hit-testing follows rotated ancestor transforms and frame clipping', () => {
+  const document = createDocument();
+  const rotated = createNode('frame', {
+    name: 'Rotated container', x: 100, y: 100, width: 100, height: 60,
+    rotation: 90, clip: false
+  });
+  const overflow = createNode('frame', {
+    name: 'Overflow destination', x: 40, y: 65, width: 20, height: 20
+  });
+  rotated.children.push(overflow);
+  addNode(document, rotated);
+
+  assert.equal(findFrameAtPoint(document.pages[0], { x: 105, y: 130 }).id, overflow.id,
+    'an unclipped child should be hit at its transformed page-space center');
+  assert.equal(findFrameAtPoint(document.pages[0], { x: 150, y: 130 }).id, rotated.id,
+    'the rotated parent should be hit at its own center');
+
+  rotated.clip = true;
+  assert.equal(findFrameAtPoint(document.pages[0], { x: 105, y: 130 }), null,
+    'a point in the parent’s old axis-aligned box but outside its rotated clip must hit no frame');
 });
 
 test('invalid destinations and transitions are rejected', () => {
@@ -546,6 +727,80 @@ test('prototype routes match typed variable conditions using session modes and c
   assert.equal(findNode(reloaded, source.id).node.interactions[0].condition.value, 'light', 'conditions should survive local document round trips');
 });
 
+test('numeric prototype conditions support strict relational operators across variable modes and persistence', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Numeric routes');
+  const highMode = addVariableMode(document, collection.id, 'High');
+  const score = createVariable(document, collection.id, 'Score', 'number', 10);
+  score.valuesByMode[highMode.id] = 20;
+
+  const home = createNode('frame', { name: 'Home' });
+  addNode(document, home);
+  const operators = [
+    ['greater-than', false, true],
+    ['greater-than-or-equal', true, true],
+    ['less-than', false, false],
+    ['less-than-or-equal', true, false]
+  ];
+  const sources = new Map();
+  for (const [operator] of operators) {
+    const source = createNode('rectangle', { name: `${operator} route` });
+    const destination = createNode('frame', { name: `${operator} destination` });
+    home.children.push(source);
+    addNode(document, destination);
+    const interaction = addPrototypeInteraction(document, source.id, destination.id, {
+      condition: { variableId: score.id, type: 'number', operator, value: 10 }
+    });
+    sources.set(operator, { source, interaction });
+  }
+
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+  for (const [operator, matchesAtBase] of operators) {
+    const { source, interaction } = sources.get(operator);
+    assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id,
+      matchesAtBase ? interaction.id : undefined,
+      `${operator} should compare the exact default value without coercion`);
+  }
+
+  session.variableModes[collection.id] = highMode.id;
+  for (const [operator, , matchesAtHigh] of operators) {
+    const { source, interaction } = sources.get(operator);
+    assert.equal(findClickableInteraction(document, document.activePageId, source.id, 'on-click', session)?.interaction.id,
+      matchesAtHigh ? interaction.id : undefined,
+      `${operator} should evaluate the selected mode's resolved numeric value`);
+  }
+
+  const reloaded = parseDocument(serializeDocument(document));
+  for (const [operator] of operators) {
+    const { source, interaction } = sources.get(operator);
+    const restored = findNode(reloaded, source.id).node.interactions[0];
+    assert.equal(restored.id, interaction.id);
+    assert.deepEqual(restored.condition, { variableId: score.id, type: 'number', operator, value: 10 },
+      `${operator} should round-trip with a numeric operand`);
+  }
+  assert.equal(validateDocument(reloaded), true);
+
+  const nonNumeric = createVariable(document, collection.id, 'Enabled', 'boolean', true);
+  const validRoute = sources.get('greater-than');
+  assert.throws(() => addPrototypeInteraction(document, validRoute.source.id, validRoute.interaction.destinationId, {
+    condition: { variableId: nonNumeric.id, type: 'boolean', operator: 'greater-than', value: true }
+  }), /Invalid prototype interaction condition/,
+  'relational operators are only valid for numeric variables');
+
+  for (const value of ['10', NaN, Infinity]) {
+    assert.throws(() => addPrototypeInteraction(document, validRoute.source.id, validRoute.interaction.destinationId, {
+      condition: { variableId: score.id, type: 'number', operator: 'greater-than', value }
+    }), /Invalid prototype interaction condition/,
+    'relational operands must be finite numbers, without string coercion');
+  }
+  const invalidPersisted = structuredClone(document);
+  findNode(invalidPersisted, home.children[0].id).node.interactions[0].condition = {
+    variableId: nonNumeric.id, type: 'boolean', operator: 'less-than-or-equal', value: true
+  };
+  assert.throws(() => validateDocument(invalidPersisted), /Invalid prototype interactions/,
+    'document validation must reject persisted nonnumeric relational conditions');
+});
+
 test('matching conditional prototype routes take precedence over an earlier unconditional fallback', () => {
   const document = createDocument();
   const collection = createVariableCollection(document, 'Route state');
@@ -593,6 +848,7 @@ test('prototype interaction conditions reject invalid variable, operator, type, 
     { ...interaction.condition, variableId: 'missing-variable' },
     { ...interaction.condition, operator: 'contains' },
     { ...interaction.condition, type: 'string' },
+    { ...interaction.condition, operator: 'greater-than' },
     { ...interaction.condition, value: 'true' },
     { ...interaction.condition, extra: 'unknown field' },
     { variableId: variable.id, type: 'boolean', operator: 'equals' }

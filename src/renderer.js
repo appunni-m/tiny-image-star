@@ -1,22 +1,31 @@
 import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
-import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
+import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
+import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
+import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
+import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLASS_AXIS, MAX_GLASS_PIXELS, refractGlassBackdrop } from './glass-effect.js';
 import { createGradientPaint, fillStackForNode } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { strokeStackForNode } from './strokes.js';
+import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToNodeLocal, transformPoint } from './transform-geometry.js';
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
+import { hitTestVisibleGeometry } from './shape-hit-testing.js';
+import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from './eyedropper.js';
+import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
 const MAX_BOOLEAN_SURFACE_AXIS = 4096;
+const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
+const MAX_BACKGROUND_BLUR_AXIS = 4096;
 
 function booleanSurfaceDimensions(logicalWidth, logicalHeight, requestedScale) {
   const width = Number.isFinite(logicalWidth) && logicalWidth > 0 ? logicalWidth : 1;
@@ -132,6 +141,8 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
 
 const BLUE = '#0d99ff';
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
+const MAX_NOISE_CACHE_PIXELS = 2_000_000;
+const MAX_NOISE_CACHE_ENTRIES = 8;
 
 /** Return the selection outline and all transform handles in page coordinates. */
 export function selectionOverlayGeometry(node, ancestors = [], { zoom = 1, rotateOffset = 24 } = {}) {
@@ -193,7 +204,7 @@ function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
   return true;
 }
 
-export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0) {
+export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0, flipHorizontal = false, flipVertical = false) {
   if (!image || !bounds || bounds.width <= 0 || bounds.height <= 0) return false;
   const turn = ((rotation % 360) + 360) % 360;
   const quarterTurn = turn === 90 || turn === 270;
@@ -201,6 +212,7 @@ export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0) {
   const imageHeight = quarterTurn ? bounds.width : bounds.height;
   ctx.save();
   ctx.translate(x + bounds.left + bounds.width / 2, y + bounds.top + bounds.height / 2);
+  if (flipHorizontal || flipVertical) ctx.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
   ctx.rotate(turn * Math.PI / 180);
   ctx.drawImage(image, -imageWidth / 2, -imageHeight / 2, imageWidth, imageHeight);
   ctx.restore();
@@ -263,7 +275,23 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
         ctx.save();
         if (node.type === 'path') ctx.clip(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
         else ctx.clip();
-        drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
+        const cropOverlay = !state.presenting && state.imageCropMode
+          && state.imageCropOverlay?.kind === 'fill'
+          && state.imageCropOverlay.nodeId === node.id
+          && state.imageCropOverlay.fillId === fill.id
+          ? state.imageCropOverlay : null;
+        const sourceImage = cropOverlay ? assets.get(imageFill.assetId)?.bitmap : null;
+        if (cropOverlay && sourceImage) {
+          drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation,
+            cropOverlay.flipHorizontal, cropOverlay.flipVertical);
+          const preview = state.previews?.get(imagePreviewKey(node.id, fill.id));
+          const previewAssetId = state.previewAssetIds?.get(imagePreviewKey(node.id, fill.id));
+          const previewStatus = state.imageStatus?.get(imagePreviewKey(node.id, fill.id)) || '';
+          if (preview && previewAssetId === imageFill.assetId
+            && (previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated'))) {
+            drawFittedImage(ctx, preview, x, y, width, height, imageFill.fit);
+          }
+        } else drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
         ctx.restore();
       }
     }
@@ -275,18 +303,41 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
   const strokes = strokeStackForNode(node);
   for (let index = 0; index < strokes.length; index += 1) {
     const stroke = strokes[index];
-    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || !stroke.color || stroke.color === 'transparent') continue;
+    if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
     ctx.save();
     ctx.globalAlpha *= stroke.opacity;
     ctx.lineWidth = stroke.width;
     const color = index === 0 && node.strokeVariableId
       ? getNodeColor(document, node, 'stroke')
       : stroke.color;
-    if (!color || color === 'transparent') { ctx.restore(); continue; }
-    ctx.strokeStyle = color;
+    if ((!stroke.gradient && (!color || color === 'transparent'))) { ctx.restore(); continue; }
+    const paint = stroke.gradient ? createGradientPaint(ctx, stroke.gradient, x, y, width, height) : color;
+    if (!paint) { ctx.restore(); continue; }
+    ctx.strokeStyle = paint;
     applyStrokeStyle(ctx, stroke);
     if (tracePath) { ctx.beginPath(); tracePath(ctx); }
     ctx.stroke();
+    drawStrokeEndpointDecorations(ctx, node, stroke, { x, y }, paint);
+    ctx.restore();
+  }
+}
+
+function drawStrokeEndpointDecorations(ctx, node, stroke, origin, color) {
+  for (const item of strokeEndpointDecorations(node, stroke, origin)) {
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineWidth = stroke.width;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(item.points[0].x, item.points[0].y);
+    for (let index = 1; index < item.points.length; index += 1) ctx.lineTo(item.points[index].x, item.points[index].y);
+    if (item.closed) {
+      ctx.closePath();
+      ctx.fill();
+    } else ctx.stroke();
     ctx.restore();
   }
 }
@@ -416,18 +467,13 @@ function traceVectorNetworkEdges(ctx, node, x, y) {
 function traceVectorNetworkFace(ctx, node, face, x, y) {
   const ids = face?.vertexIds || [];
   if (ids.length < 3) return false;
-  const edgesByPair = new Map();
-  for (const edge of node.edges || []) {
-    const forward = `${edge.from}\0${edge.to}`; const reverse = `${edge.to}\0${edge.from}`;
-    if (!edgesByPair.has(forward)) edgesByPair.set(forward, edge);
-    if (!edgesByPair.has(reverse)) edgesByPair.set(reverse, edge);
-  }
+  const edgesByPair = vectorNetworkEdgePairIndex(node);
   const first = vectorNetworkVertexPoint(node, ids[0], { x, y });
   if (!first) return false;
   ctx.moveTo(first.x, first.y);
   for (let index = 0; index < ids.length; index += 1) {
     const fromId = ids[index]; const toId = ids[(index + 1) % ids.length];
-    const edge = edgesByPair.get(`${fromId}\0${toId}`);
+    const edge = vectorNetworkEdgeForPair(edgesByPair, fromId, toId);
     const end = vectorNetworkVertexPoint(node, toId, { x, y });
     if (!edge || !end) return false;
     const points = vectorNetworkEdgePoints(node, edge.id, { x, y });
@@ -561,7 +607,7 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         ctx.font = richFont(style);
         ctx.fillStyle = rgba(style.color, baseStyle.fillOpacity ?? 1);
         const start = offset;
-        drawTrackedText(ctx, text, start, 0, style.letterSpacing);
+        drawTrackedText(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing);
         offset += measureTrackedText(ctx, text, style.letterSpacing);
         if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
         const bounds = partBounds.get(part) || { start, end: offset };
@@ -578,7 +624,7 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         if (!bounds) continue;
         ctx.font = richFont(part.style);
         ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-        drawTextDecoration(ctx, bounds.start, 0, bounds.end - bounds.start, part.style.fontSize, part.style.textDecoration);
+        drawTextDecoration(ctx, bounds.start, -Number(part.style.baselineShift || 0), bounds.end - bounds.start, part.style.fontSize, part.style.textDecoration);
       }
       ctx.restore();
       continue;
@@ -586,8 +632,8 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
     for (const part of line.parts) {
       ctx.font = richFont(part.style);
       ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-      drawTrackedText(ctx, part.text, part.offsetX, 0, part.style.letterSpacing);
-      drawTextDecoration(ctx, part.offsetX, 0, part.width, part.style.fontSize, part.style.textDecoration);
+      drawTrackedText(ctx, part.text, part.offsetX, -Number(part.style.baselineShift || 0), part.style.letterSpacing);
+      drawTextDecoration(ctx, part.offsetX, -Number(part.style.baselineShift || 0), part.width, part.style.fontSize, part.style.textDecoration);
     }
     ctx.restore();
   }
@@ -613,6 +659,9 @@ export class SceneRenderer {
     this.frame = 0;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
+    this.noiseCache = new Map();
+    this.noiseCachePixels = 0;
+    this.samplingSurface = null;
     this.resizeObserver = new ResizeObserver(() => this.invalidate());
     this.resizeObserver.observe(canvas.parentElement);
     this.invalidate();
@@ -633,6 +682,32 @@ export class SceneRenderer {
       this.canvas.height = height;
     }
     return { width, height, dpr, cssWidth: rect.width, cssHeight: rect.height };
+  }
+
+  /** Sample the document scene on a private local surface, without editor overlays. */
+  sampleColor(clientX, clientY) {
+    const state = this.getState();
+    const { width, height, dpr } = this.resize();
+    const point = canvasPixelFromClientPoint({
+      clientX, clientY, rect: this.canvas.getBoundingClientRect(), pixelWidth: width, pixelHeight: height
+    });
+    const page = state.document.pages.find(item => item.id === state.document.activePageId);
+    if (!point || !page) return null;
+    this.samplingSurface = resizeCanvasSurface(this.samplingSurface, width, height, () => (
+      typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(1, 1) : document.createElement('canvas')
+    ));
+    const context = this.samplingSurface.getContext('2d', { alpha: false, willReadFrequently: true });
+    if (!context) throw new Error('This browser cannot sample the local design canvas.');
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.fillStyle = '#e9e9e9';
+    context.fillRect(0, 0, width, height);
+    context.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
+    for (const node of page.children) {
+      this.drawNode(context, node, 0, 0, state.assets, false, false, {
+        outlineMode: false, showLayoutGuides: false, showEmptyFrameHint: false, showImageLoadingPlaceholder: false
+      });
+    }
+    return sampleColorAt(context.getImageData(point.x, point.y, 1, 1), 0, 0);
   }
 
   draw() {
@@ -668,13 +743,33 @@ export class SceneRenderer {
       this.drawPenDraft(ctx, state.penDraft, state.penHover, state.zoom, transform);
     }
     if (state.pencilDraft) this.drawPencilDraft(ctx, state.pencilDraft, state.zoom);
+    if (state.interaction?.kind === 'lasso' && state.interaction.points?.length) {
+      const points = state.interaction.points;
+      ctx.save();
+      ctx.lineWidth = 1.5 / state.zoom;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = BLUE;
+      ctx.fillStyle = 'rgba(13,153,255,.08)';
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+      if (points.length >= 3) {
+        ctx.closePath();
+        ctx.fill('evenodd');
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
     if (state.marquee) {
       const x = Math.min(state.marquee.x1, state.marquee.x2);
       const y = Math.min(state.marquee.y1, state.marquee.y2);
       const w = Math.abs(state.marquee.x2 - state.marquee.x1);
       const h = Math.abs(state.marquee.y2 - state.marquee.y1);
       ctx.save(); ctx.fillStyle = 'rgba(13,153,255,.10)'; ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / state.zoom;
-      ctx.setLineDash([4 / state.zoom, 3 / state.zoom]); ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.restore();
+      const crossing = state.marquee.x2 < state.marquee.x1;
+      ctx.setLineDash(crossing ? [4 / state.zoom, 3 / state.zoom] : []);
+      ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
     if (!page.children.length) this.drawEmptyHint(cssWidth, cssHeight, dpr, state);
   }
@@ -689,7 +784,20 @@ export class SceneRenderer {
     const blendMode = node.blendMode || 'normal';
     const compositeBypassed = renderOptions.compositeBypassNodeId === node.id;
     const cropEditing = !state.presenting && state.imageCropMode && state.imageCropOverlay?.nodeId === node.id;
-    if ((effects.length && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed)
+    const backdropEffect = firstBackdropEffect(effects);
+    if (backdropEffect && renderOptions.backgroundBlurBypassNodeId !== node.id
+      && !draft && !maskMode && !outline && !cropEditing && typeof ctx.filter === 'string') {
+      if (backdropEffect.type === 'background-blur') {
+        this.drawNodeWithBackgroundBlur(ctx, node, parentX, parentY, assets, [backdropEffect], renderOptions);
+        return;
+      }
+      if (glassVisibleForNode(node)) {
+        this.drawNodeWithGlass(ctx, node, parentX, parentY, assets, backdropEffect, renderOptions);
+        return;
+      }
+    }
+    const hasForegroundEffects = effects.some(effect => !['glass', 'background-blur'].includes(effect.type));
+    if ((hasForegroundEffects && renderOptions.effectBypassNodeId !== node.id || blendMode !== 'normal' && !compositeBypassed)
       && !draft && !maskMode && !outline && !cropEditing && typeof ctx.filter === 'string') {
       this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
       return;
@@ -737,7 +845,8 @@ export class SceneRenderer {
         ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
         break;
       case 'line':
-        ctx.moveTo(x, y); ctx.lineTo(x + width, y + height);
+        if (node.lineReverseY === true) { ctx.moveTo(x, y + height); ctx.lineTo(x + width, y); }
+        else { ctx.moveTo(x, y); ctx.lineTo(x + width, y + height); }
         break;
       case 'star':
         starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
@@ -781,7 +890,8 @@ export class SceneRenderer {
       const image = sourceImage || imageForNode(node, assets, state);
       if (image) {
         if (cropOverlay && sourceImage) {
-          drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation);
+          drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation,
+            cropOverlay.flipHorizontal, cropOverlay.flipVertical);
           const cropPreview = state.previews?.get(node.id);
           const previewAssetId = state.previewAssetIds?.get(node.id);
           const previewStatus = state.imageStatus?.get(node.id) || '';
@@ -797,9 +907,11 @@ export class SceneRenderer {
           ctx.restore();
         }
       } else {
-        ctx.fillStyle = '#d9d9d9'; ctx.fill();
-        ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('Loading image…', cx, cy);
+        if (renderOptions.showImageLoadingPlaceholder !== false) {
+          ctx.fillStyle = '#d9d9d9'; ctx.fill();
+          ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText('Loading image…', cx, cy);
+        }
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius));
     } else if (node.type === 'text') {
@@ -883,7 +995,7 @@ export class SceneRenderer {
       applyPresentationScrollOffset(ctx, state, node);
       for (const child of node.children) this.drawNode(ctx, child, x, y, assets, draft, false, renderOptions);
     }
-    if (node.type === 'frame' && !node.children.length && !draft) {
+    if (node.type === 'frame' && !node.children.length && !draft && renderOptions.showEmptyFrameHint !== false) {
       ctx.strokeStyle = 'rgba(30,30,30,.14)'; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.strokeRect(x, y, width, height);
     }
     if (node.type === 'frame' && !draft && !state.presenting && renderOptions.showLayoutGuides !== false) this.drawLayoutGuides(ctx, node, x, y, state);
@@ -926,6 +1038,358 @@ export class SceneRenderer {
     }
   }
 
+  applyNoiseEffects(surface, node, effects, rasterScale, contentWidth, contentHeight, padX, padY, renderOptions = {}) {
+    const noiseEffects = effects.filter(effect => effect?.type === 'noise' && effect.visible !== false);
+    if (!noiseEffects.length) return;
+    const surfaceContext = surface.getContext('2d');
+    if (!surfaceContext) return;
+    const ownerDocument = surface.ownerDocument || globalThis.document;
+    this.noiseCache ||= new Map();
+    this.noiseCachePixels ||= 0;
+    for (const effect of noiseEffects) {
+      const textureIndex = renderOptions.noiseEffectIndices?.get(node.id)?.get(effect.id)
+        ?? (node.effects || []).findIndex(item => item.id === effect.id);
+      const seed = noiseSeedForLayer(node.id, textureIndex);
+      const cacheKey = JSON.stringify([node.id, textureIndex, rasterScale, contentWidth, contentHeight, effect]);
+      let cacheEntry = this.noiseCache.get(cacheKey);
+      if (cacheEntry) {
+        this.noiseCache.delete(cacheKey);
+        this.noiseCache.set(cacheKey, cacheEntry);
+      } else {
+        const grid = createNoisePixelGrid(effect, contentWidth, contentHeight, rasterScale, seed);
+        const texture = typeof OffscreenCanvas === 'function'
+          ? new OffscreenCanvas(grid.width, grid.height)
+          : ownerDocument?.createElement ? Object.assign(ownerDocument.createElement('canvas'), { width: grid.width, height: grid.height }) : null;
+        const textureContext = texture?.getContext('2d');
+        if (!textureContext?.createImageData || !textureContext.putImageData) continue;
+        const imageData = textureContext.createImageData(grid.width, grid.height);
+        imageData.data.set(grid.data);
+        textureContext.putImageData(imageData, 0, 0);
+        cacheEntry = { texture, pixels: grid.width * grid.height };
+        if (cacheEntry.pixels <= MAX_NOISE_CACHE_PIXELS) {
+          while (this.noiseCache.size >= MAX_NOISE_CACHE_ENTRIES
+            || this.noiseCachePixels + cacheEntry.pixels > MAX_NOISE_CACHE_PIXELS) {
+            const oldestKey = this.noiseCache.keys().next().value;
+            if (oldestKey === undefined) break;
+            this.noiseCachePixels -= this.noiseCache.get(oldestKey).pixels;
+            this.noiseCache.delete(oldestKey);
+          }
+          this.noiseCache.set(cacheKey, cacheEntry);
+          this.noiseCachePixels += cacheEntry.pixels;
+        }
+      }
+      surfaceContext.save();
+      surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+      surfaceContext.globalCompositeOperation = 'source-atop';
+      surfaceContext.globalAlpha = 1;
+      surfaceContext.filter = 'none';
+      surfaceContext.imageSmoothingEnabled = false;
+      const texture = cacheEntry.texture;
+      const cellWidth = Math.max(1, Math.round(effect.sizeX * rasterScale));
+      const cellHeight = Math.max(1, Math.round(effect.sizeY * rasterScale));
+      surfaceContext.drawImage(texture, Math.round(padX * rasterScale), Math.round(padY * rasterScale),
+        texture.width * cellWidth, texture.height * cellHeight);
+      surfaceContext.restore();
+    }
+  }
+
+  applyTextureEffects(surface, node, effects, pixelWidth, pixelHeight, rasterScale, renderOptions = {}) {
+    const effect = effects.find(item => item?.type === 'texture' && item.visible !== false);
+    if (!effect) return;
+    const ownerDocument = surface.ownerDocument || globalThis.document;
+    const createCanvas = (width, height) => typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(width, height)
+      : ownerDocument?.createElement ? Object.assign(ownerDocument.createElement('canvas'), { width, height }) : null;
+    const maskScale = Math.min(1, Math.sqrt(MAX_TEXTURE_MASK_PIXELS / Math.max(1, pixelWidth * pixelHeight)), 2048 / pixelWidth, 2048 / pixelHeight);
+    const maskWidth = Math.max(1, Math.floor(pixelWidth * maskScale));
+    const maskHeight = Math.max(1, Math.floor(pixelHeight * maskScale));
+    const effectiveScale = rasterScale * Math.min(maskWidth / pixelWidth, maskHeight / pixelHeight);
+    const baseMask = createCanvas(maskWidth, maskHeight);
+    const baseContext = baseMask?.getContext('2d');
+    if (!baseContext?.createImageData || !baseContext.putImageData) return;
+    baseContext.drawImage(surface, 0, 0, maskWidth, maskHeight);
+    baseContext.globalCompositeOperation = 'source-in';
+    baseContext.fillStyle = '#fff';
+    baseContext.fillRect(0, 0, maskWidth, maskHeight);
+    const baseImageData = baseContext.getImageData(0, 0, maskWidth, maskHeight);
+
+    const blurredMask = createCanvas(maskWidth, maskHeight);
+    const blurredContext = blurredMask?.getContext('2d');
+    if (!blurredContext?.getImageData) return;
+    const blurRadius = Math.max(.5, effect.radius * effectiveScale / 3);
+    blurredContext.filter = `blur(${blurRadius}px)`;
+    blurredContext.drawImage(baseMask, 0, 0);
+    const blurredImageData = blurredContext.getImageData(0, 0, maskWidth, maskHeight);
+    const textureIndex = renderOptions.textureEffectIndices?.get(node.id)?.get(effect.id)
+      ?? (node.effects || []).findIndex(item => item.id === effect.id);
+    const alphas = createTextureEdgeAlphas(baseImageData, blurredImageData, maskWidth, maskHeight, effect,
+      effectiveScale, textureSeedForLayer(node.id, textureIndex));
+
+    const makeAlphaMask = alpha => {
+      const canvas = createCanvas(maskWidth, maskHeight);
+      const context = canvas?.getContext('2d');
+      if (!context?.createImageData || !context.putImageData) return null;
+      const imageData = context.createImageData(maskWidth, maskHeight);
+      for (let index = 0; index < alpha.length; index += 1) {
+        const offset = index * 4;
+        imageData.data[offset] = 255;
+        imageData.data[offset + 1] = 255;
+        imageData.data[offset + 2] = 255;
+        imageData.data[offset + 3] = alpha[index];
+      }
+      context.putImageData(imageData, 0, 0);
+      return canvas;
+    };
+    const insideMask = makeAlphaMask(alphas.inside);
+    const surfaceContext = surface.getContext('2d');
+    if (!insideMask || !surfaceContext) return;
+
+    let outsideTexture = null;
+    if (!effect.clipToShape && alphas.outside.some(alpha => alpha > 0)) {
+      outsideTexture = createCanvas(pixelWidth, pixelHeight);
+      const outsideContext = outsideTexture?.getContext('2d');
+      const outsideMask = makeAlphaMask(alphas.outside);
+      if (!outsideContext || !outsideMask) outsideTexture = null;
+      else {
+        outsideContext.filter = `blur(${blurRadius}px)`;
+        outsideContext.drawImage(surface, 0, 0);
+        outsideContext.filter = 'none';
+        outsideContext.globalCompositeOperation = 'destination-in';
+        outsideContext.imageSmoothingEnabled = true;
+        outsideContext.drawImage(outsideMask, 0, 0, pixelWidth, pixelHeight);
+      }
+    }
+
+    surfaceContext.save();
+    surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+    surfaceContext.globalCompositeOperation = 'destination-in';
+    surfaceContext.imageSmoothingEnabled = true;
+    surfaceContext.drawImage(insideMask, 0, 0, pixelWidth, pixelHeight);
+    if (outsideTexture) {
+      surfaceContext.globalCompositeOperation = 'source-over';
+      surfaceContext.drawImage(outsideTexture, 0, 0);
+    }
+    surfaceContext.restore();
+  }
+
+  drawNodeWithGlass(ctx, node, parentX, parentY, assets, effect, renderOptions = {}) {
+    const source = ctx.canvas;
+    const matrix = ctx.getTransform?.();
+    const drawOwnContent = () => {
+      const copy = { ...node, effects: (node.effects || []).filter(item => !['glass', 'background-blur'].includes(item.type)) };
+      const originalEffectIndices = new Map((node.effects || []).map((item, index) => [item.id, index]));
+      const noiseEffectIndices = new Map(renderOptions.noiseEffectIndices || []);
+      noiseEffectIndices.set(node.id, originalEffectIndices);
+      const textureEffectIndices = new Map(renderOptions.textureEffectIndices || []);
+      textureEffectIndices.set(node.id, originalEffectIndices);
+      this.drawNode(ctx, copy, parentX, parentY, assets, false, false, {
+        ...renderOptions, noiseEffectIndices, textureEffectIndices, backgroundBlurBypassNodeId: node.id
+      });
+    };
+    if (!source || !matrix || !glassVisibleForNode(node)) { drawOwnContent(); return; }
+    const scaleX = Math.hypot(matrix.a, matrix.b);
+    const scaleY = Math.hypot(matrix.c, matrix.d);
+    const displayScale = Math.max(.01, Math.sqrt(scaleX * scaleY));
+    const angle = (Number(node.rotation) || 0) * Math.PI / 180;
+    const centerX = parentX + node.x + node.width / 2;
+    const centerY = parentY + node.y + node.height / 2;
+    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([dx, dy]) => {
+      const px = parentX + node.x + dx - centerX;
+      const py = parentY + node.y + dy - centerY;
+      const localX = centerX + px * Math.cos(angle) - py * Math.sin(angle);
+      const localY = centerY + px * Math.sin(angle) + py * Math.cos(angle);
+      return { x: matrix.a * localX + matrix.c * localY + matrix.e, y: matrix.b * localX + matrix.d * localY + matrix.f };
+    });
+    const pad = glassEffectOverscan(effect) * displayScale;
+    const left = Math.floor(Math.min(...corners.map(point => point.x)) - pad);
+    const top = Math.floor(Math.min(...corners.map(point => point.y)) - pad);
+    const right = Math.ceil(Math.max(...corners.map(point => point.x)) + pad);
+    const bottom = Math.ceil(Math.max(...corners.map(point => point.y)) + pad);
+    const logicalWidth = right - left;
+    const logicalHeight = bottom - top;
+    if (![left, top, logicalWidth, logicalHeight].every(Number.isFinite) || logicalWidth < 1 || logicalHeight < 1) { drawOwnContent(); return; }
+    const rasterScale = Math.min(1, 2 / displayScale,
+      Math.sqrt(MAX_GLASS_PIXELS / (logicalWidth * logicalHeight)),
+      MAX_GLASS_AXIS / logicalWidth, MAX_GLASS_AXIS / logicalHeight);
+    const pixelWidth = Math.max(1, Math.ceil(logicalWidth * rasterScale));
+    const pixelHeight = Math.max(1, Math.ceil(logicalHeight * rasterScale));
+    const createSurface = () => {
+      if (typeof OffscreenCanvas === 'function') return new OffscreenCanvas(pixelWidth, pixelHeight);
+      const ownerDocument = source.ownerDocument || globalThis.document;
+      if (ownerDocument?.createElement) return Object.assign(ownerDocument.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+      return null;
+    };
+    const backdrop = createSurface();
+    const work = createSurface();
+    const shapeMask = createSurface();
+    const backdropContext = backdrop?.getContext('2d');
+    const workContext = work?.getContext('2d');
+    const shapeContext = shapeMask?.getContext('2d');
+    if (!backdropContext?.getImageData || !backdropContext.putImageData
+      || !workContext?.getImageData || !shapeContext) { drawOwnContent(); return; }
+    const sourceLeft = Math.max(0, left);
+    const sourceTop = Math.max(0, top);
+    const sourceRight = Math.min(source.width, right);
+    const sourceBottom = Math.min(source.height, bottom);
+    if (sourceRight > sourceLeft && sourceBottom > sourceTop) {
+      backdropContext.drawImage(source, sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop,
+        (sourceLeft - left) * rasterScale, (sourceTop - top) * rasterScale,
+        (sourceRight - sourceLeft) * rasterScale, (sourceBottom - sourceTop) * rasterScale);
+    }
+
+    const frostRadius = (effect.frost / 100) * 12 * displayScale * rasterScale;
+    workContext.filter = frostRadius > 0 ? `blur(${frostRadius}px)` : 'none';
+    workContext.drawImage(backdrop, 0, 0);
+    let sampledBackdrop;
+    try { sampledBackdrop = workContext.getImageData(0, 0, pixelWidth, pixelHeight); }
+    catch { drawOwnContent(); return; }
+
+    const setMaskTransform = context => context.setTransform(matrix.a * rasterScale, matrix.b * rasterScale,
+      matrix.c * rasterScale, matrix.d * rasterScale, (matrix.e - left) * rasterScale, (matrix.f - top) * rasterScale);
+    const opaqueFills = Array.isArray(node.fills) ? node.fills.map(fill => ({ ...fill, opacity: 1 })) : undefined;
+    const maskNode = {
+      ...node, opacity: 1, fillOpacity: 1, ...(opaqueFills ? { fills: opaqueFills } : {}),
+      variableBindings: {}, blendMode: 'normal', effects: [], children: [],
+      strokes: [], stroke: null, strokeWidth: 0
+    };
+    shapeContext.save();
+    shapeContext.setTransform(1, 0, 0, 1, 0, 0);
+    shapeContext.clearRect(0, 0, pixelWidth, pixelHeight);
+    setMaskTransform(shapeContext);
+    this.drawNode(shapeContext, maskNode, parentX, parentY, assets, false, false, {
+      ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
+      backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
+    });
+    shapeContext.restore();
+
+    const edgeBlur = Math.max(.65, (effect.depth / 100) * 12 * displayScale * rasterScale);
+    workContext.save();
+    workContext.setTransform(1, 0, 0, 1, 0, 0);
+    workContext.clearRect(0, 0, pixelWidth, pixelHeight);
+    setMaskTransform(workContext);
+    workContext.filter = `blur(${edgeBlur}px)`;
+    this.drawNode(workContext, maskNode, parentX, parentY, assets, false, false, {
+      ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
+      backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
+    });
+    workContext.restore();
+    let edgeImageData;
+    try { edgeImageData = workContext.getImageData(0, 0, pixelWidth, pixelHeight); }
+    catch { drawOwnContent(); return; }
+    let refracted;
+    try { refracted = refractGlassBackdrop(sampledBackdrop, edgeImageData, pixelWidth, pixelHeight, effect, displayScale * rasterScale); }
+    catch { drawOwnContent(); return; }
+    backdropContext.putImageData(refracted, 0, 0);
+    backdropContext.save();
+    backdropContext.globalCompositeOperation = 'destination-in';
+    backdropContext.drawImage(shapeMask, 0, 0);
+    backdropContext.restore();
+
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.filter = 'none';
+    ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+    ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
+    ctx.drawImage(backdrop, left, top, logicalWidth, logicalHeight);
+    ctx.restore();
+    drawOwnContent();
+  }
+
+  drawNodeWithBackgroundBlur(ctx, node, parentX, parentY, assets, effects, renderOptions = {}) {
+    const source = ctx.canvas;
+    const matrix = ctx.getTransform?.();
+    const visible = effects.filter(effect => effect.visible !== false);
+    const radius = visible.reduce((maximum, effect) => Math.max(maximum, effect.radius), 0);
+    const drawOwnContent = () => {
+      const copy = { ...node, effects: (node.effects || []).filter(effect => !['background-blur', 'glass'].includes(effect.type)) };
+      const originalNoiseIndices = new Map((node.effects || []).map((effect, index) => [effect.id, index]));
+      const noiseEffectIndices = new Map(renderOptions.noiseEffectIndices || []);
+      noiseEffectIndices.set(node.id, originalNoiseIndices);
+      const textureEffectIndices = new Map(renderOptions.textureEffectIndices || []);
+      textureEffectIndices.set(node.id, originalNoiseIndices);
+      this.drawNode(ctx, copy, parentX, parentY, assets, false, false, { ...renderOptions, noiseEffectIndices, textureEffectIndices, backgroundBlurBypassNodeId: node.id });
+    };
+    if (!source || !matrix || !visible.length || radius <= 0 || !Number.isFinite(radius)) { drawOwnContent(); return; }
+    const scaleX = Math.hypot(matrix.a, matrix.b);
+    const scaleY = Math.hypot(matrix.c, matrix.d);
+    const displayScale = Math.max(.01, Math.sqrt(scaleX * scaleY));
+    const angle = (Number(node.rotation) || 0) * Math.PI / 180;
+    const centerX = parentX + node.x + node.width / 2;
+    const centerY = parentY + node.y + node.height / 2;
+    const corners = [[0, 0], [node.width, 0], [node.width, node.height], [0, node.height]].map(([dx, dy]) => {
+      const px = parentX + node.x + dx - centerX;
+      const py = parentY + node.y + dy - centerY;
+      const localX = centerX + px * Math.cos(angle) - py * Math.sin(angle);
+      const localY = centerY + px * Math.sin(angle) + py * Math.cos(angle);
+      return { x: matrix.a * localX + matrix.c * localY + matrix.e, y: matrix.b * localX + matrix.d * localY + matrix.f };
+    });
+    const pad = radius * displayScale * 3;
+    const left = Math.floor(Math.min(...corners.map(point => point.x)) - pad);
+    const top = Math.floor(Math.min(...corners.map(point => point.y)) - pad);
+    const right = Math.ceil(Math.max(...corners.map(point => point.x)) + pad);
+    const bottom = Math.ceil(Math.max(...corners.map(point => point.y)) + pad);
+    const logicalWidth = right - left;
+    const logicalHeight = bottom - top;
+    if (![left, top, logicalWidth, logicalHeight].every(Number.isFinite) || logicalWidth < 1 || logicalHeight < 1) { drawOwnContent(); return; }
+    const rasterScale = Math.min(1, 2 / displayScale,
+      Math.sqrt(MAX_BACKGROUND_BLUR_PIXELS / (logicalWidth * logicalHeight)),
+      MAX_BACKGROUND_BLUR_AXIS / logicalWidth, MAX_BACKGROUND_BLUR_AXIS / logicalHeight);
+    const pixelWidth = Math.max(1, Math.ceil(logicalWidth * rasterScale));
+    const pixelHeight = Math.max(1, Math.ceil(logicalHeight * rasterScale));
+    const createSurface = () => {
+      if (typeof OffscreenCanvas === 'function') return new OffscreenCanvas(pixelWidth, pixelHeight);
+      const ownerDocument = source.ownerDocument || globalThis.document;
+      if (ownerDocument?.createElement) return Object.assign(ownerDocument.createElement('canvas'), { width: pixelWidth, height: pixelHeight });
+      return null;
+    };
+    const backdrop = createSurface();
+    const result = createSurface();
+    const backdropContext = backdrop?.getContext('2d');
+    const resultContext = result?.getContext('2d');
+    if (!backdropContext || !resultContext) { drawOwnContent(); return; }
+    const sourceLeft = Math.max(0, left);
+    const sourceTop = Math.max(0, top);
+    const sourceRight = Math.min(source.width, right);
+    const sourceBottom = Math.min(source.height, bottom);
+    if (sourceRight > sourceLeft && sourceBottom > sourceTop) {
+      backdropContext.drawImage(source, sourceLeft, sourceTop, sourceRight - sourceLeft, sourceBottom - sourceTop,
+        (sourceLeft - left) * rasterScale, (sourceTop - top) * rasterScale,
+        (sourceRight - sourceLeft) * rasterScale, (sourceBottom - sourceTop) * rasterScale);
+    }
+    resultContext.save();
+    resultContext.filter = `blur(${radius * displayScale * rasterScale}px)`;
+    resultContext.drawImage(backdrop, 0, 0);
+    resultContext.restore();
+    backdropContext.clearRect(0, 0, pixelWidth, pixelHeight);
+    backdropContext.setTransform(matrix.a * rasterScale, matrix.b * rasterScale, matrix.c * rasterScale, matrix.d * rasterScale,
+      (matrix.e - left) * rasterScale, (matrix.f - top) * rasterScale);
+    // Figma-style background blur is exposed by partially transparent fills.
+    // Keep stroke pixels out of the mask: a stroked, unfilled shape must not
+    // reveal a backdrop effect by itself. Raster image layers still contribute
+    // their source alpha through drawNode's normal image-fill path.
+    const maskNode = {
+      ...node, opacity: 1, variableBindings: {}, blendMode: 'normal', effects: [], children: [],
+      strokes: [], stroke: null, strokeWidth: 0
+    };
+    this.drawNode(backdropContext, maskNode, parentX, parentY, assets, false, false, {
+      ...renderOptions, outlineMode: false, showEmptyFrameHint: false, showLayoutGuides: false,
+      backgroundBlurBypassNodeId: node.id, effectBypassNodeId: node.id, compositeBypassNodeId: node.id
+    });
+    resultContext.save();
+    resultContext.globalCompositeOperation = 'destination-in';
+    resultContext.drawImage(backdrop, 0, 0);
+    resultContext.restore();
+
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.filter = 'none';
+    ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+    ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
+    ctx.drawImage(result, left, top, logicalWidth, logicalHeight);
+    ctx.restore();
+    drawOwnContent();
+  }
+
   drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions = {}) {
     const transform = ctx.getTransform?.();
     const displayScale = transform ? Math.hypot(transform.a, transform.b) : Math.max(.1, (window.devicePixelRatio || 1) * (this.getState().zoom || 1));
@@ -953,7 +1417,8 @@ export class SceneRenderer {
       return;
     }
     effectContext.setTransform(rasterScale, 0, 0, rasterScale, padX * rasterScale, padY * rasterScale);
-    const copy = { ...node, x: 0, y: 0, opacity: 1, variableBindings: { ...(node.variableBindings || {}) } };
+    const copy = { ...node, x: 0, y: 0, opacity: 1, variableBindings: { ...(node.variableBindings || {}) },
+      effects: (node.effects || []).filter(effect => !['background-blur', 'glass'].includes(effect.type)) };
     // SVG applies layer opacity to the filtered group result. Keep the Canvas
     // effect surface at full layer opacity too, then apply the resolved value
     // once when the completed surface is composited back to its parent.
@@ -961,7 +1426,10 @@ export class SceneRenderer {
     delete copy.variableBindings.x;
     delete copy.variableBindings.y;
     this.drawNode(effectContext, copy, 0, 0, assets, false, false, { ...renderOptions, effectBypassNodeId: node.id, compositeBypassNodeId: node.id });
+    this.applyTextureEffects(surface, node, effects, pixelWidth, pixelHeight, rasterScale, renderOptions);
     this.applyInnerShadows(surface, effects, rasterScale, pixelWidth, pixelHeight);
+    this.applyNoiseEffects(surface, node, effects, rasterScale,
+      Math.max(1, Math.ceil(node.width * rasterScale)), Math.max(1, Math.ceil(node.height * rasterScale)), padX, padY, renderOptions);
     const x = parentX + node.x; const y = parentY + node.y;
     ctx.save();
     ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
@@ -992,7 +1460,8 @@ export class SceneRenderer {
           ctx.ellipse(cx, cy, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
           break;
         case 'line':
-          ctx.moveTo(x, y); ctx.lineTo(x + width, y + height);
+          if (node.lineReverseY === true) { ctx.moveTo(x, y + height); ctx.lineTo(x + width, y); }
+          else { ctx.moveTo(x, y); ctx.lineTo(x + width, y + height); }
           break;
         case 'star':
           starPath(ctx, cx, cy, Math.min(Math.abs(width), Math.abs(height)) / 2, node.points, node.innerRadius ?? 0.48);
@@ -1251,6 +1720,21 @@ export class SceneRenderer {
     const points = draft?.points || [];
     if (!points.length) return;
     const scale = 1 / Math.max(.08, zoom || 1);
+    if (draft.variableWidth) {
+      const outline = variableStrokeOutlineFromSamples(points, { maxWidth: draft.maxWidth || 8 });
+      if (outline) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(outline[0].x, outline[0].y);
+        for (const point of outline.slice(1)) ctx.lineTo(point.x, point.y);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(13,153,255,.55)';
+        ctx.strokeStyle = BLUE;
+        ctx.lineWidth = 1 / Math.max(.08, zoom || 1);
+        ctx.fill(); ctx.stroke(); ctx.restore();
+      }
+      return;
+    }
     ctx.save();
     ctx.beginPath();
     ctx.moveTo(points[0].x, points[0].y);
@@ -1414,7 +1898,8 @@ export class SceneRenderer {
       !node.locked && !ancestors.some(parent => parent.locked)
       && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
       && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
-    const cropTargetIsRoot = cropEntry && roots.some(entry => entry.node.id === cropEntry.node.id);
+    const cropTargetId = state.imageCropMode ? state.imageCropOverlay?.nodeId : null;
+    const cropTargetIsRoot = cropTargetId && roots.some(entry => entry.node.id === cropTargetId);
     if (roots.length > 1 && groupTransformAllowed && !cropTargetIsRoot) {
       const bounds = selectionBounds(roots);
       const handles = selectionGroupHandles(bounds, { rotateOffset: 24 / zoom });
@@ -1427,7 +1912,7 @@ export class SceneRenderer {
         ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
       }
       ctx.beginPath(); ctx.arc(handles.rotate.x, handles.rotate.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    } else if (roots.length === 1 && roots[0].node.id !== cropEntry?.node.id) {
+    } else if (roots.length === 1 && roots[0].node.id !== cropTargetId) {
       const { node, ancestors } = roots[0];
       const overlay = selectionOverlayGeometry(node, ancestors, { zoom });
       const resizePoints = Object.values(overlay.handles.resize);
@@ -1445,6 +1930,9 @@ export class SceneRenderer {
         const selection = this.getState().selectedVectorPoint;
         const selectedPointIndex = selection?.nodeId === node.id ? selection.index : -1;
         const selectedContourIndex = selection?.nodeId === node.id ? selection.contourIndex || 0 : -1;
+        const selectedAnchorKeys = new Set((this.getState().selectedVectorPoints || [])
+          .filter(anchor => anchor.nodeId === node.id)
+          .map(anchor => `${anchor.contourIndex}\0${anchor.index}`));
         for (const [contourIndex, contour] of vectorPathContours(node).entries()) {
           for (const [index] of contour.points.entries()) {
             const anchor = pagePoint(vectorNodePoint(node, index, 'anchor', { x: 0, y: 0 }, contourIndex));
@@ -1454,7 +1942,9 @@ export class SceneRenderer {
               ctx.beginPath(); ctx.moveTo(anchor.x, anchor.y); ctx.lineTo(control.x, control.y); ctx.stroke();
               ctx.beginPath(); ctx.arc(control.x, control.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
             }
-            ctx.fillStyle = selectedContourIndex === contourIndex && selectedPointIndex === index ? BLUE : '#ffffff';
+            const selectedAnchor = selectedAnchorKeys.has(`${contourIndex}\0${index}`)
+              || (selectedAnchorKeys.size === 0 && selectedContourIndex === contourIndex && selectedPointIndex === index);
+            ctx.fillStyle = selectedAnchor ? BLUE : '#ffffff';
             ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
             ctx.fillStyle = '#ffffff';
           }
@@ -1636,9 +2126,10 @@ export function deepestContainerAtPagePoint(nodes, point, document = null) {
   return result;
 }
 
-export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null) {
+export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1) {
   const hits = [];
   const scrollState = { presentationScrollOffsets };
+  const hitTolerance = 4 / Math.max(.08, Number.isFinite(zoom) ? zoom : 1);
   const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }) => {
     for (const node of nodes) {
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
@@ -1655,9 +2146,9 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
       const localPoint = pageToNodeLocal(resolvedNode, point, ancestors);
       const inBounds = localPoint.x >= 0 && localPoint.y >= 0
         && localPoint.x <= geometry.width && localPoint.y <= geometry.height;
-      if (inBounds) {
-        let contained = true;
-        if (node.type === 'boolean' && containsBoolean) {
+      let contained = false;
+      if (node.type === 'boolean' && containsBoolean) {
+        if (inBounds) {
           // The boolean raster is queried in page coordinates by existing callers.
           // Fold ancestor rotations into the node rotation and use its true page
           // center so that the callback sees the same rigid transform as drawing.
@@ -1666,8 +2157,8 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
           const booleanNode = { ...resolvedNode, rotation };
           contained = containsBoolean(booleanNode, point, center.x - geometry.width / 2, center.y - geometry.height / 2);
         }
-        if (contained) hits.push(resolvedNode);
-      }
+      } else contained = hitTestVisibleGeometry(resolvedNode, localPoint, { tolerance: hitTolerance, document });
+      if (contained) hits.push(resolvedNode);
       if (node.type !== 'boolean') {
         const childScrollOffset = getPresentationScrollOffset(scrollState, resolvedNode);
         visit(node.children || [], [...ancestors, resolvedNode], childScrollOffset);
@@ -1679,8 +2170,8 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
 }
 
 /** Return the visible scroll-frame ancestry of the topmost hit, innermost first. */
-export function scrollableFramePathAtPagePoint(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null) {
-  const hit = hitTestPage(page, point, containsBoolean, document, presentationScrollOffsets);
+export function scrollableFramePathAtPagePoint(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1) {
+  const hit = hitTestPage(page, point, containsBoolean, document, presentationScrollOffsets, zoom);
   if (!hit) return [];
   const scrollState = { presentationScrollOffsets };
   const visit = (nodes, ancestors = [], parentScrollOffset = { x: 0, y: 0 }) => {

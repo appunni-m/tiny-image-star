@@ -638,6 +638,23 @@ export function vectorNetworkEdgePoints(node, edgeId, origin = { x: node.x, y: n
   return [start, networkControlPoint(edge, 'control1', node, origin) || start, networkControlPoint(edge, 'control2', node, origin) || end, end];
 }
 
+/** Index the first edge for each undirected vertex pair, matching face rendering. */
+export function vectorNetworkEdgePairIndex(node) {
+  const edgesByPair = new Map();
+  for (const edge of node?.edges || []) {
+    const forward = `${edge.from}\0${edge.to}`;
+    const reverse = `${edge.to}\0${edge.from}`;
+    if (!edgesByPair.has(forward)) edgesByPair.set(forward, edge);
+    if (!edgesByPair.has(reverse)) edgesByPair.set(reverse, edge);
+  }
+  return edgesByPair;
+}
+
+/** Resolve one directed face side from the stable undirected edge-pair index. */
+export function vectorNetworkEdgeForPair(edgesByPair, fromId, toId) {
+  return edgesByPair?.get(`${fromId}\0${toId}`) || null;
+}
+
 /** Move a shared network junction without breaking its incident edges. */
 export function setVectorNetworkVertexPoint(node, vertexId, position, origin = { x: node.x, y: node.y }) {
   const vertex = node?.vertices?.find(item => item.id === vertexId);
@@ -1010,13 +1027,14 @@ export function removeVectorNetworkVertex(node, vertexId) {
   if (index < 0) return false;
   const vertex = node.vertices[index];
   const incident = node.edges.filter(edge => edge.from === vertexId || edge.to === vertexId);
+  let edges;
   if (vertex.split && incident.length === 2
     && incident.some(edge => edge.id === vertex.split.firstEdgeId)
     && incident.some(edge => edge.id === vertex.split.secondEdgeId)) {
     const restored = { ...vertex.split.originalEdge };
     const remaining = node.edges.filter(edge => edge.id !== vertex.split.firstEdgeId && edge.id !== vertex.split.secondEdgeId);
     if (remaining.some(edge => edge.id === restored.id)) return false;
-    node.edges = [...remaining, restored];
+    edges = [...remaining, restored];
   } else if (incident.length === 2) {
     const other = edge => edge.from === vertexId ? edge.to : edge.from;
     const startId = other(incident[0]); const endId = other(incident[1]);
@@ -1030,20 +1048,25 @@ export function removeVectorNetworkVertex(node, vertexId) {
     const second = orient(incident[1], vertexId, endId);
     const control1 = Math.hypot(first[1].x - first[0].x, first[1].y - first[0].y) > 1e-8 ? normalizedNetworkPoint(first[1], node, origin) : null;
     const control2 = Math.hypot(second[2].x - second[3].x, second[2].y - second[3].y) > 1e-8 ? normalizedNetworkPoint(second[2], node, origin) : null;
-    node.edges = node.edges.filter(edge => edge.id !== incident[0].id && edge.id !== incident[1].id);
-    node.edges.push({ id: incident[0].id, from: startId, to: endId, control1, control2 });
-  } else node.edges = node.edges.filter(edge => edge.from !== vertexId && edge.to !== vertexId);
+    edges = node.edges.filter(edge => edge.id !== incident[0].id && edge.id !== incident[1].id);
+    edges.push({ id: incident[0].id, from: startId, to: endId, control1, control2 });
+  } else edges = node.edges.filter(edge => edge.from !== vertexId && edge.to !== vertexId);
   const vertices = node.vertices.filter(item => item.id !== vertexId);
-  if (vertices.length < 2 || !node.edges.length) return false;
+  // Validate the complete result before changing the live graph. In
+  // particular, deleting an endpoint from the smallest supported network
+  // must not remove its only edge when the operation is refused.
+  if (vertices.length < 2 || !edges.length) return false;
   const faces = [];
   for (const face of node.faces || []) {
     const ring = face.vertexIds || [];
     if (ring.includes(vertexId)) {
       if (incident.length !== 2 || ring.length <= 3) continue;
-      face.vertexIds = ring.filter(id => id !== vertexId);
+      faces.push({ ...face, vertexIds: ring.filter(id => id !== vertexId) });
+      continue;
     }
     faces.push(face);
   }
+  node.edges = edges;
   node.vertices = vertices;
   node.faces = faces;
   return true;

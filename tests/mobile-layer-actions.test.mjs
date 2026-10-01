@@ -23,7 +23,7 @@ test('layer rows expose a named, keyboard-focusable action-menu button', () => {
   assert.match(source, /currentButton\.setAttribute\('aria-expanded', 'true'\)/);
   assert.match(source, /returnFocus\?\.setAttribute\('aria-expanded', 'false'\)/);
   assert.match(source, /menu\._returnFocusElement\?\.setAttribute\('aria-expanded', 'false'\)/);
-  assert.match(source, /menu\.querySelector\('button\[role="menuitem"\]:not\(:disabled\)'\)\?\.focus/);
+  assert.match(source, /focusFirstContextMenuItem\(menu\)/);
 });
 
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
@@ -36,6 +36,8 @@ test('the layer action menu keeps common actions and conditionally adds group/co
   }
   assert.match(builder, /if \(canGroupLayers\(state\.document, rootSelectedIds\(\)\)\).*Group/);
   assert.match(builder, /if \(node\?\.type === 'image'\)[\s\S]*?Save image recipe/);
+  assert.match(builder, /getNodePropertyValue\(state\.document, node, 'visible'\) \? 'Hide layer' : 'Show layer'/,
+    'visibility remains available from the action menu on very narrow phones');
 });
 
 test('mobile and coarse-pointer rows keep layer actions visible and finger-sized', () => {
@@ -56,16 +58,17 @@ test('deep layer rows cap phone indentation and preserve reachable fixed-size co
   assert.match(stylesheet, /\.layer-row \.layer-actions-menu\s*\{[^}]*flex:\s*0 0 40px/);
   assert.match(stylesheet, /\.layer-row \.layer-actions-menu\s*\{[^}]*flex:\s*0 0 44px/);
   assert.match(stylesheet, /@media \(max-width: 360px\)\s*\{[^}]*\.layer-row\s*\{[^}]*gap:\s*2px[^}]*padding-left:\s*min\(var\(--layer-indent\),\s*10px\)\s*!important/);
-  assert.match(stylesheet, /@media \(max-width: 360px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.layer-row \.layer-actions-menu\s*\{[^}]*flex:\s*0 0 40px/);
+  assert.match(stylesheet, /@media \(max-width: 360px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.layer-row \.layer-visibility\s*\{\s*display:\s*none !important/);
+  assert.match(stylesheet, /@media \(max-width: 360px\) and \(pointer: coarse\)\s*\{[\s\S]*?\.layer-row \.layer-actions-menu\s*\{[^}]*flex:\s*0 0 44px/);
 
   // The fixed columns plus the maximum mobile indent fit within the layer
   // panel on narrow 320px and 280px screens, even for a deeply nested row.
   const widePhoneRequired = 18 + 18 + 4 * 44 + 6 * 3 + 18 + 5;
   const widePhoneContent = Math.min(290, 320 * 0.86) - 16;
   assert.ok(widePhoneRequired <= widePhoneContent, '44px coarse-pointer controls fit without flex-shrinking at 320px');
-  const compactPhoneRequired = 14 + 14 + 4 * 40 + 6 * 2 + 10 + 5;
+  const compactPhoneRequired = 14 + 14 + 3 * 44 + 6 * 2 + 10 + 5;
   const compactPhoneContent = Math.min(290, 280 * 0.86) - 16;
-  assert.ok(compactPhoneRequired <= compactPhoneContent, '40px controls fit without clipping at 280px');
+  assert.ok(compactPhoneRequired <= compactPhoneContent, '44px controls fit with visibility available in the action menu at 280px');
 });
 
 test('the phone workflow exercises action discovery, keyboard dismissal, and applicable group actions', () => {

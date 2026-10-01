@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, createComponent, createComponentInstance, createDocument, createImageRecipe, createNode, duplicateNode, findNode, parseDocument, removeNode, serializeDocument, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, createComponent, createComponentInstance, createDocument, createImageRecipe, createNode, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, parseDocument, removeNode, serializeDocument, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -262,6 +262,29 @@ test('stroke cap, join, and pattern settings persist and reject invalid values',
   assert.throws(() => validateDocument(invisibleDots), /Invalid stroke style/);
 });
 
+test('endpoint decorations persist in stroke stacks and reject unknown decoration values', () => {
+  const document = createDocument();
+  const line = createNode('line', { strokes: [
+    { id: 'decorated-line', color: '#123456', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      startDecoration: 'arrow', endDecoration: 'triangle' }
+  ] });
+  addNode(document, line);
+  assert.equal(validateDocument(document), true);
+  assert.deepEqual(parseDocument(serializeDocument(document)).pages[0].children[0].strokes, line.strokes);
+
+  for (const [property, invalid] of [['startDecoration', 'circle'], ['endDecoration', 'diamond']]) {
+    const candidate = structuredClone(document);
+    candidate.pages[0].children[0].strokes[0][property] = invalid;
+    assert.throws(() => validateDocument(candidate), /Invalid stroke stack/);
+  }
+
+  const oldDocument = structuredClone(document);
+  delete oldDocument.pages[0].children[0].strokes[0].startDecoration;
+  delete oldDocument.pages[0].children[0].strokes[0].endDecoration;
+  assert.equal(validateDocument(oldDocument), true, 'older stroke stacks keep an implicit none state');
+});
+
 test('ordered stroke stacks and component overrides persist while legacy scalar strokes remain valid', () => {
   const document = createDocument();
   const master = createNode('frame', { children: [createNode('rectangle', {
@@ -329,8 +352,8 @@ test('node edits, duplication and removal preserve independent identities', () =
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
   const source = createNode('image', {
-    assetId: 'asset-a', adjustments: { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
-    transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 },
+    assetId: 'asset-a', adjustments: { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
+    transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true },
     outputFormat: 'webp', outputQuality: 74,
   });
   const target = createNode('image', { assetId: 'asset-b' });
@@ -341,16 +364,16 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   source.transforms.crop.left = 0.4;
   target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
   assert.equal(applyImageRecipe(document, target.id, recipe), true);
-  assert.deepEqual(target.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
-  assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270 });
+  assert.deepEqual(target.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
+  assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true, flipVertical: false });
   assert.deepEqual([recipe.format, recipe.quality], ['webp', 74]);
-  assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop and quarter-turn rotation');
+  assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop, rotation, and flip');
   assert.deepEqual([target.outputFormat, target.outputQuality], ['webp', 74], 'recipe output format and quality follow the image layer');
   assert.equal(target.assetId, 'asset-b');
 
   const reopened = parseDocument(serializeDocument(document));
   const savedRecipe = reopened.recipes[0];
-  assert.deepEqual(savedRecipe.adjustments, { brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
+  assert.deepEqual(savedRecipe.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual([savedRecipe.format, savedRecipe.quality], ['webp', 74], 'output settings persist with the recipe');
   const reopenedTarget = findNode(reopened, target.id).node;
   assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
@@ -420,15 +443,15 @@ test('image adjustment validation rejects invalid creative tone settings', () =>
   assert.throws(() => validateDocument(document), /Invalid image adjustments/);
 });
 
-test('image layers default to no crop and zero rotation, and persist normalized transforms', () => {
+test('image layers default to no crop, zero rotation and no flips, and persist normalized transforms', () => {
   const document = createDocument();
-  const image = createNode('image', { transforms: { crop: { left: 0.05, top: 0.15, right: 0.95, bottom: 0.8 }, rotation: 180 } });
+  const image = createNode('image', { transforms: { crop: { left: 0.05, top: 0.15, right: 0.95, bottom: 0.8 }, rotation: 180, flipHorizontal: true, flipVertical: true } });
   const untouched = createNode('image');
   addNode(document, image); addNode(document, untouched);
-  assert.deepEqual(untouched.transforms, { crop: null, rotation: 0 });
+  assert.deepEqual(untouched.transforms, { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false });
   const restored = parseDocument(serializeDocument(document));
   assert.deepEqual(restored.pages[0].children[0].transforms, image.transforms);
-  assert.deepEqual(restored.pages[0].children[1].transforms, { crop: null, rotation: 0 });
+  assert.deepEqual(restored.pages[0].children[1].transforms, { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false });
 });
 
 test('image layer validation rejects invalid normalized crop bounds and non-quarter-turn rotation', () => {
@@ -439,6 +462,8 @@ test('image layer validation rejects invalid normalized crop bounds and non-quar
   image.transforms = { crop: { left: 0.5, top: 0.2, right: 0.5, bottom: 0.9 }, rotation: 0 };
   assert.throws(() => validateDocument(document), /Invalid image transforms/);
   image.transforms = { crop: null, rotation: 45 };
+  assert.throws(() => validateDocument(document), /Invalid image transforms/);
+  image.transforms = { crop: null, rotation: 0, flipHorizontal: 1 };
   assert.throws(() => validateDocument(document), /Invalid image transforms/);
 });
 
@@ -471,6 +496,35 @@ test('serialized design validates after reload and rejects duplicate layer ident
   const duplicate = createNode('rectangle');
   reopened.pages[0].children.push(duplicate, structuredClone(duplicate));
   assert.throws(() => validateDocument(reopened), /duplicate layer/);
+});
+
+test('parseDocument rejects hostile layer nesting before cloning or recursive validation', () => {
+  const document = createDocument();
+  const root = createNode('group');
+  document.pages[0].children.push(root);
+  let parent = root;
+  for (let depth = 1; depth < 6_000; depth += 1) {
+    const child = createNode('group');
+    parent.children.push(child);
+    parent = child;
+  }
+
+  assert.throws(() => parseDocument(document), error => error instanceof TypeError
+    && error.message.includes(`maximum depth of ${MAX_DOCUMENT_TREE_DEPTH}`));
+});
+
+test('document validation caps total layer count and still accepts large flat designs', () => {
+  const oversized = createDocument();
+  oversized.pages[0].children = Array.from({ length: MAX_DOCUMENT_NODE_COUNT + 1 }, (_, index) => ({
+    id: `oversized-layer-${index}`, children: []
+  }));
+  assert.throws(() => parseDocument(oversized), error => error instanceof TypeError
+    && error.message.includes(`more than ${MAX_DOCUMENT_NODE_COUNT.toLocaleString()} layer nodes`));
+
+  const large = createDocument();
+  large.pages[0].children = Array.from({ length: 20_000 }, () => createNode('rectangle'));
+  assert.equal(parseDocument(large).pages[0].children.length, 20_000,
+    'large ordinary documents under the published safety ceiling remain loadable');
 });
 
 test('image fills validate and survive a portable design round trip', () => {
@@ -585,4 +639,21 @@ test('history restores both document direction and redo state', () => {
   assert.equal(undone.pages[0].children.length, 0);
   const redone = history.redo(undone);
   assert.equal(redone.pages[0].children.length, 1);
+});
+
+test('negative-slope line direction round-trips and is restricted to line layers', () => {
+  const document = createDocument();
+  const line = createNode('line', { width: 80, height: 45, lineReverseY: true });
+  addNode(document, line);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(findNode(reopened, line.id).node.lineReverseY, true);
+  assert.equal(validateDocument(reopened), true);
+
+  const invalidLine = structuredClone(reopened);
+  findNode(invalidLine, line.id).node.lineReverseY = 'yes';
+  assert.throws(() => validateDocument(invalidLine), /Invalid line direction/);
+
+  const invalidShape = createDocument();
+  addNode(invalidShape, createNode('rectangle', { lineReverseY: true }));
+  assert.throws(() => validateDocument(invalidShape), /Invalid line direction/);
 });

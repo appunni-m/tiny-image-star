@@ -89,15 +89,50 @@ export function transformedImageDimensions(width, height, transforms = {}) {
 export function assertImagePayloadMatchesPreflight({ expectedDimensions, expectedByteLength, actualDimensions, actualByteLength }) {
   const validDimensions = value => value
     && Number.isSafeInteger(value.width) && value.width > 0
-    && Number.isSafeInteger(value.height) && value.height > 0;
+    && Number.isSafeInteger(value.height) && value.height > 0
+    && Number.isSafeInteger(value.width * value.height);
   if (!validDimensions(expectedDimensions) || !validDimensions(actualDimensions)
     || !Number.isSafeInteger(expectedByteLength) || expectedByteLength < 0
     || !Number.isSafeInteger(actualByteLength) || actualByteLength < 0) {
     throw new TypeError('Image preflight and payload measurements are invalid.');
   }
-  if (actualByteLength !== expectedByteLength
-    || actualDimensions.width !== expectedDimensions.width
-    || actualDimensions.height !== expectedDimensions.height) {
+  const hasExpectedOrientation = Object.prototype.hasOwnProperty.call(expectedDimensions, 'orientation');
+  const hasActualOrientation = Object.prototype.hasOwnProperty.call(actualDimensions, 'orientation');
+  const expectedOrientation = expectedDimensions.orientation;
+  const actualOrientation = actualDimensions.orientation;
+  const sameDimensions = actualDimensions.width === expectedDimensions.width
+    && actualDimensions.height === expectedDimensions.height;
+  const samePixelCount = actualDimensions.width * actualDimensions.height
+    === expectedDimensions.width * expectedDimensions.height;
+  const exactAxisSwap = samePixelCount
+    && actualDimensions.width === expectedDimensions.height
+    && actualDimensions.height === expectedDimensions.width;
+  let dimensionsMatch = sameDimensions;
+
+  if (hasExpectedOrientation) {
+    if (expectedOrientation === null) {
+      // The bounded import prefix can know the raw WebP frame dimensions but
+      // stop before its EXIF chunk. Resolve that uncertainty only against the
+      // orientation parsed from the complete source, including the exact
+      // axis swap required by orientations 5–8.
+      dimensionsMatch = hasActualOrientation
+        && Number.isInteger(actualOrientation) && actualOrientation >= 1 && actualOrientation <= 8
+        && (actualOrientation >= 5 ? exactAxisSwap : sameDimensions);
+    } else {
+      dimensionsMatch = hasActualOrientation
+        && actualOrientation === expectedOrientation
+        && sameDimensions;
+    }
+  } else if (!sameDimensions) {
+    // Older stored image metadata predates the orientation field. Accept its
+    // original raw WebP dimensions only when the retained bytes themselves
+    // carry a valid axis-swapping EXIF orientation and the pixel count agrees.
+    dimensionsMatch = hasActualOrientation
+      && Number.isInteger(actualOrientation) && actualOrientation >= 5 && actualOrientation <= 8
+      && exactAxisSwap;
+  }
+
+  if (actualByteLength !== expectedByteLength || !dimensionsMatch) {
     throw new Error('This image changed or was incomplete while it was being imported. Choose it again.');
   }
   return true;

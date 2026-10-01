@@ -86,6 +86,35 @@ test('import payload must match the reserved header dimensions and byte length',
   }
 });
 
+test('pending WebP orientation resolves only to matching metadata and its exact axis swap', () => {
+  const pending = { width: 12, height: 8, orientation: null };
+  const oriented = { width: 8, height: 12, orientation: 6 };
+  assert.equal(assertImagePayloadMatchesPreflight({
+    expectedDimensions: pending, expectedByteLength: 64,
+    actualDimensions: oriented, actualByteLength: 64,
+  }), true);
+  assert.throws(() => assertImagePayloadMatchesPreflight({
+    expectedDimensions: pending, expectedByteLength: 64,
+    actualDimensions: { width: 8, height: 12 }, actualByteLength: 64,
+  }), /changed or was incomplete/, 'a dimension swap without verified orientation is rejected');
+  assert.throws(() => assertImagePayloadMatchesPreflight({
+    expectedDimensions: pending, expectedByteLength: 64,
+    actualDimensions: { width: 8, height: 11, orientation: 6 }, actualByteLength: 64,
+  }), /changed or was incomplete/, 'the oriented pixel count must remain equal');
+  assert.throws(() => assertImagePayloadMatchesPreflight({
+    expectedDimensions: { width: 8, height: 12, orientation: 6 }, expectedByteLength: 64,
+    actualDimensions: { width: 8, height: 12, orientation: 8 }, actualByteLength: 64,
+  }), /changed or was incomplete/, 'known preflight orientation must match the complete payload');
+  assert.equal(assertImagePayloadMatchesPreflight({
+    expectedDimensions: { width: 12, height: 8 }, expectedByteLength: 64,
+    actualDimensions: oriented, actualByteLength: 64,
+  }), true, 'legacy metadata can recover only an orientation-proven axis swap');
+  assert.throws(() => assertImagePayloadMatchesPreflight({
+    expectedDimensions: { width: 12, height: 8 }, expectedByteLength: 64,
+    actualDimensions: { width: 8, height: 12, orientation: 1 }, actualByteLength: 64,
+  }), /changed or was incomplete/);
+});
+
 test('reservations atomically protect capacity across concurrent image jobs', () => {
   const budget = new RetainedImageMemoryBudget({ limitBytes: 100 });
   assert.equal(budget.retain('asset:a', 30, { kind: 'asset' }), true);
