@@ -26,6 +26,19 @@ export function releaseImageMemoryReservations(memoryBudget, reservations) {
   return released;
 }
 
+/** Keep one preview reservation alive through asynchronous render/decode work. */
+export async function withImageMemoryReservation(memoryBudget, reservation, work) {
+  if (!memoryBudget || typeof memoryBudget.releaseReservation !== 'function'
+    || typeof work !== 'function') {
+    throw new TypeError('Image memory work needs a budget and callback.');
+  }
+  try {
+    return await work();
+  } finally {
+    if (reservation) memoryBudget.releaseReservation(reservation);
+  }
+}
+
 /**
  * A cap for decoded image surfaces and the local byte buffers kept by the
  * editor. This is a retained-resource budget, separate from Pillow-RS worker
@@ -67,6 +80,28 @@ export function estimateAssetMemoryBytes({ sourceByteLength, bitmapWidth, bitmap
 export function estimatePreviewMemoryBytes({ width, height, encodedByteLength }) {
   const encodedBytes = checkedBytes(encodedByteLength, 'Preview byte length');
   return checkedBytes(estimateBitmapBytes(width, height) + encodedBytes * 2, 'Preview memory estimate');
+}
+
+/**
+ * Estimate the largest ordinary 8-bit RGBA PNG preview for known dimensions.
+ * PNG adds one filter byte per row, then zlib adds a small bounded amount of
+ * framing data. The returned retained-memory estimate also includes the
+ * decoded browser bitmap and both local encoded-byte owners.
+ */
+export function estimatePreviewMemoryReservationBytes({ width, height }) {
+  const pixelBytes = estimateBitmapBytes(width, height);
+  const filteredBytes = checkedBytes(pixelBytes + height, 'Filtered preview byte length');
+  const deflateOverhead = Math.floor(filteredBytes / 4096)
+    + Math.floor(filteredBytes / 16384)
+    + Math.floor(filteredBytes / 33554432)
+    + 13;
+  // The deflate bound covers an uncompressed RGBA scanline stream; 2048 bytes
+  // covers required chunks, framing, and the largest PNG palette/transparency.
+  const encodedByteLength = checkedBytes(filteredBytes + deflateOverhead + 2048, 'Preview PNG upper bound');
+  return {
+    encodedByteLength,
+    retainedBytes: estimatePreviewMemoryBytes({ width, height, encodedByteLength }),
+  };
 }
 
 export function transformedImageDimensions(width, height, transforms = {}) {

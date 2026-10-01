@@ -22,7 +22,7 @@ import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFra
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
-import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions } from './image-memory-budget.js';
+import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
@@ -560,7 +560,11 @@ function setTool(tool) {
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
   state.tool = tool;
-  $$('.tool-button').forEach(button => button.classList.toggle('is-selected', button.dataset.tool === tool));
+  $$('.tool-button').forEach(button => {
+    const selected = button.dataset.tool === tool;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
   canvas.className = `tool-${tool}`;
   updateSelectionStatus();
   renderInspector();
@@ -5392,52 +5396,60 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   const sourceDimensions = inspectRasterDimensions(asset.sourceBytes);
   if (!sourceDimensions) throw new Error('Tiny Image Star could not verify this image size before rendering.');
   const outputDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
-  const minimumPreviewBytes = estimateBitmapBytes(outputDimensions.width, outputDimensions.height);
-  if (minimumPreviewBytes > imageMemoryBudget.limitBytes) throw retainedImageLimitMessage();
+  const previewAdmission = estimatePreviewMemoryReservationBytes(outputDimensions);
+  if (previewAdmission.retainedBytes > imageMemoryBudget.limitBytes) throw retainedImageLimitMessage();
   let reservation = null;
   let bitmap = null;
   let previewUrl = null;
   let releasedPreviewForCapacity = false;
   try {
-    const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
-    const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
-    const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
-    const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, {
-      replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
-      queueGroup,
-    });
-    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
-    const retainedBytes = estimatePreviewMemoryBytes({ width: result.width, height: result.height, encodedByteLength: result.bytes.byteLength });
     const currentMemoryKey = previewMemoryKey(previewKey);
-    reservation = imageMemoryBudget.reserve(retainedBytes, { kind: 'preview-pending' });
-    if (!reservation && imageMemoryBudget.canFit(retainedBytes, { excluding: [currentMemoryKey] })) {
-      // Replacing a large preview may need its old surface released before the
-      // new one can be decoded. The source bitmap remains available as a
-      // bounded fallback if allocation or decoding of the replacement fails.
+    reservation = imageMemoryBudget.reserve(previewAdmission.retainedBytes, { kind: 'preview-pending' });
+    if (!reservation && imageMemoryBudget.canFit(previewAdmission.retainedBytes, { excluding: [currentMemoryKey] })) {
+      // A replacement may need the old bitmap released before its worker is
+      // dispatched. Keep the original source bitmap as the visible fallback.
       releasePreviewResources(previewKey);
       releasedPreviewForCapacity = true;
       previewsEvictedForCapacity.add(previewKey);
-      reservation = imageMemoryBudget.reserve(retainedBytes, { kind: 'preview-pending' });
+      reservation = imageMemoryBudget.reserve(previewAdmission.retainedBytes, { kind: 'preview-pending' });
     }
     if (!reservation) throw retainedImageLimitMessage();
-    const previewBlob = new Blob([result.bytes], { type: result.mimeType || 'image/png' });
-    bitmap = await createImageBitmap(previewBlob);
-    previewUrl = URL.createObjectURL(previewBlob);
-    if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
-    releasePreviewResources(previewKey);
-    imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes, kind: 'preview' });
-    reservation = null;
-    previewsEvictedForCapacity.delete(previewKey);
-    state.previewUrls.set(previewKey, previewUrl);
-    state.previews.set(previewKey, bitmap);
-    state.previewAssetIds.set(previewKey, assetId);
-    state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
-    previewUrl = null;
-    bitmap = null;
-    state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
-    renderer.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
-    updateSelectedImageStatus(nodeId, previewKey, fillId);
-    return true;
+
+    return await withImageMemoryReservation(imageMemoryBudget, reservation, async () => {
+      const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
+      const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
+      const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
+      const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, {
+        replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
+        queueGroup,
+      });
+      if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
+      if (result.width !== outputDimensions.width || result.height !== outputDimensions.height) {
+        throw new Error('The local image preview dimensions did not match the verified source size.');
+      }
+      if (result.bytes.byteLength > previewAdmission.encodedByteLength) {
+        throw retainedImageLimitMessage();
+      }
+      const retainedBytes = estimatePreviewMemoryBytes({ width: result.width, height: result.height, encodedByteLength: result.bytes.byteLength });
+      const previewBlob = new Blob([result.bytes], { type: result.mimeType || 'image/png' });
+      bitmap = await createImageBitmap(previewBlob);
+      previewUrl = URL.createObjectURL(previewBlob);
+      if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
+      releasePreviewResources(previewKey);
+      imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes, kind: 'preview' });
+      reservation = null;
+      previewsEvictedForCapacity.delete(previewKey);
+      state.previewUrls.set(previewKey, previewUrl);
+      state.previews.set(previewKey, bitmap);
+      state.previewAssetIds.set(previewKey, assetId);
+      state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
+      previewUrl = null;
+      bitmap = null;
+      state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
+      renderer.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
+      updateSelectedImageStatus(nodeId, previewKey, fillId);
+      return true;
+    });
   } catch (error) {
     if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
     if ((releasedPreviewForCapacity || previewsEvictedForCapacity.has(previewKey)) && !state.previews.has(previewKey)) {
@@ -5449,7 +5461,6 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
     }
     throw error;
   } finally {
-    try { if (reservation) imageMemoryBudget.releaseReservation(reservation); } catch { /* finish releasing the bitmap and object URL */ }
     try { bitmap?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
     try { if (previewUrl) URL.revokeObjectURL(previewUrl); } catch { /* URL may already be revoked */ }
   }

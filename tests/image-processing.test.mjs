@@ -1,10 +1,72 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { deflateSync } from 'node:zlib';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage, renderImageOutput } from '../src/image-processing.js';
 import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
+import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
+
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const PNG_CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  return crc >>> 0;
+});
+
+function pngCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = PNG_CRC_TABLE[(crc ^ byte) & 255] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, 'ascii');
+  const length = Buffer.alloc(4); length.writeUInt32BE(data.length);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(pngCrc32(Buffer.concat([typeBytes, data])));
+  return Buffer.concat([length, typeBytes, data, crc]);
+}
+
+function memoryBoundPngFixture(mode, width = 384, height = 257) {
+  const bitDepth = mode === 'I;16' ? 16 : 8;
+  const colorType = ({ RGB: 2, RGBA: 6, P: 3, 'I;16': 0 })[mode];
+  const channels = ({ RGB: 3, RGBA: 4, P: 1, 'I;16': 1 })[mode];
+  const bytesPerSample = bitDepth / 8;
+  let seed = 0x475abf11;
+  const nextByte = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed >>> 24;
+  };
+  const rowBytes = width * channels * bytesPerSample;
+  const raw = Buffer.alloc(height * (rowBytes + 1));
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * (rowBytes + 1);
+    raw[rowOffset] = 0;
+    for (let index = 0; index < rowBytes; index += 1) {
+      if (mode === 'P') raw[rowOffset + index + 1] = nextByte() & 31;
+      else raw[rowOffset + index + 1] = nextByte();
+    }
+  }
+
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
+  header[8] = bitDepth; header[9] = colorType;
+  const chunks = [PNG_SIGNATURE, pngChunk('IHDR', header)];
+  if (mode === 'P') {
+    const palette = Buffer.alloc(256 * 3);
+    for (let index = 0; index < 256; index += 1) {
+      palette[index * 3] = (index * 73) & 255;
+      palette[index * 3 + 1] = (index * 29 + 19) & 255;
+      palette[index * 3 + 2] = (index * 111 + 7) & 255;
+    }
+    const transparency = Buffer.alloc(32);
+    for (let index = 0; index < transparency.length; index += 1) transparency[index] = (index * 7) & 255;
+    chunks.push(pngChunk('PLTE', palette), pngChunk('tRNS', transparency));
+  }
+  chunks.push(pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0)));
+  return new Uint8Array(Buffer.concat(chunks));
+}
 
 function twoPixelBmp() {
   const bytes = Buffer.alloc(62);
@@ -62,9 +124,31 @@ test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG
     const adjusted = renderImage(original, { brightness: -35, contrast: 10, saturation: 18, blur: 1 });
     assert.equal(adjusted.width, 2); assert.equal(adjusted.height, 1);
     assert.ok(adjusted.bytes.length > 50); assert.notDeepEqual(adjusted.bytes, baseline.bytes);
+    assert.ok(adjusted.bytes.byteLength <= estimatePreviewMemoryReservationBytes(adjusted).encodedByteLength,
+      'the preview admission bound covers the actual local Pillow-RS PNG output');
     const reopened = decodeOriginal(pillow, adjusted.bytes);
     assert.equal(reopened.width, 2); assert.equal(reopened.height, 1); reopened.free();
   } finally { original.free(); }
+});
+
+test('preview admission covers actual Pillow-RS RGB, RGBA, palette, and 16-bit PNG outputs', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  for (const [sourceMode, decodedMode] of [['RGB', 'RGB'], ['RGBA', 'RGBA'], ['P', 'P'], ['I;16', 'I;16']]) {
+    const original = decodeOriginal(pillow, memoryBoundPngFixture(sourceMode));
+    try {
+      assert.equal(original.mode, decodedMode);
+      const rendered = renderImage(original, {}, {}, pillow);
+      const admission = estimatePreviewMemoryReservationBytes(rendered);
+      assert.ok(rendered.bytes.byteLength <= admission.encodedByteLength,
+        `${sourceMode} input output (${rendered.bytes.byteLength} bytes) fits the pre-render ${admission.encodedByteLength}-byte PNG estimate`);
+      const reopened = decodeOriginal(pillow, rendered.bytes);
+      try {
+        assert.deepEqual([reopened.width, reopened.height], [rendered.width, rendered.height]);
+        if (sourceMode === 'I;16') assert.equal(reopened.mode, 'RGB', '16-bit browser previews normalize to the reserved 8-bit channel depth');
+      } finally { reopened.free(); }
+    } finally { original.free(); }
+  }
 });
 
 test('recipe output format and quality travel through Pillow jobs without lossy editor previews', async () => {
@@ -274,6 +358,27 @@ test('latest Pillow-RS WASM flips pixels horizontally and vertically after crop 
     } finally { carriedPixels.free(); }
 
     assert.deepEqual(pixel(original, 0, 0), [255, 0, 0], 'flips leave the retained original unchanged');
+  } finally { original.free(); }
+});
+
+test('editor previews normalize high-depth Pillow modes into the reserved 8-bit PNG bound', async () => {
+  await pillow.default();
+  const original = new pillow.Image('I', 2, 1, null);
+  original.putpixel(0, 0, 0x1234, 0, 0, 255);
+  original.putpixel(1, 0, 0xabcd, 0, 0, 255);
+  const originalPixels = [original.getpixel(0, 0), original.getpixel(1, 0)].map(pixel => [...pixel]);
+  try {
+    const rendered = renderImage(original, {}, {}, pillow);
+    assert.ok(rendered.bytes.byteLength <= estimatePreviewMemoryReservationBytes(rendered).encodedByteLength,
+      'the output fits the pre-dispatch upper bound even when the source is high depth');
+    const output = decodeOriginal(pillow, rendered.bytes);
+    try {
+      assert.equal(output.mode, 'RGB', 'the browser preview uses standard 8-bit RGB samples');
+      assert.equal(output.width, 2);
+      assert.equal(output.height, 1);
+    } finally { output.free(); }
+    assert.deepEqual([original.getpixel(0, 0), original.getpixel(1, 0)].map(pixel => [...pixel]), originalPixels,
+      'preview normalization leaves the retained decoded original unchanged');
   } finally { original.free(); }
 });
 

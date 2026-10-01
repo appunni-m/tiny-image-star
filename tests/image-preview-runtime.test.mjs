@@ -191,6 +191,31 @@ test('late editor renders are fenced after both async boundaries before publishi
     'stale errors cannot overwrite the newer preview status');
 });
 
+test('preview memory is reserved before worker dispatch and held through decode and publication', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('async function renderImagePreview(');
+  const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  assert.notEqual(renderStart, -1);
+  assert.notEqual(renderEnd, -1);
+  const body = source.slice(renderStart, renderEnd);
+  const dimensions = body.indexOf('const outputDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);');
+  const estimate = body.indexOf('estimatePreviewMemoryReservationBytes(outputDimensions)');
+  const reserve = body.indexOf('imageMemoryBudget.reserve(previewAdmission.retainedBytes');
+  const reservationScope = body.indexOf('withImageMemoryReservation(imageMemoryBudget, reservation, async () => {');
+  const dispatch = body.indexOf('await imageEngine.render(');
+  const decode = body.indexOf('bitmap = await createImageBitmap(previewBlob);');
+  const commit = body.indexOf('imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes');
+  const publish = body.indexOf('state.previews.set(previewKey, bitmap);');
+
+  assert.ok(dimensions >= 0 && estimate > dimensions && reserve > estimate && reservationScope > reserve && dispatch > reservationScope,
+    'the exact crop/rotation output dimensions must reserve the conservative preview budget before worker dispatch');
+  assert.ok(decode > dispatch && commit > decode && publish > commit,
+    'the reservation stays in force through bitmap decoding and is committed before preview publication');
+  assert.ok(body.indexOf('result.bytes.byteLength > previewAdmission.encodedByteLength') > dispatch
+    && body.indexOf('result.bytes.byteLength > previewAdmission.encodedByteLength') < decode,
+  'the returned PNG must fit the conservative encoded-output reservation before bitmap allocation');
+});
+
 test('pruning deleted nodes cancels timers and releases only orphan preview resources', () => {
   const runtime = runtimeMaps();
   const cancelled = [];

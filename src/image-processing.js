@@ -161,6 +161,15 @@ function encodeImageOutput(image, api, format, quality) {
   return image.saveWithInput(outputEncoderNames[format], null);
 }
 
+function normalizePreviewDepth(image) {
+  // Browser previews display at 8-bit channel depth. Normalize Pillow's
+  // integer/float and 16-bit modes before PNG encoding so the main thread can
+  // reserve a dimension-based RGBA upper bound before dispatching the render.
+  if (!['I', 'F'].includes(image.mode) && !String(image.mode).includes('16')) return image;
+  const hasTransparency = image.getbands().includes('A') || Boolean(image.hasTransparencyData?.());
+  return image.convert(hasTransparency ? 'RGBA' : 'RGB');
+}
+
 /**
  * Resolve an optional normalized crop, clockwise quarter-turn rotation, and
  * visible-axis flips against the original source dimensions. Normalized crop
@@ -249,6 +258,7 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     // Keep editor previews lossless PNG so the chosen export codec never
     // compounds across edits. Standalone exports run their final codec and
     // JPEG/WebP quality settings inside the local Pillow-RS WASM worker.
+    if (mode === 'preview') image = replaceImage(image, normalizePreviewDepth(image));
     const bytes = new Uint8Array(mode === 'export'
       ? encodeImageOutput(image, api, format, quality)
       : image.saveWithInput('PNG', null));

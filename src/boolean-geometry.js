@@ -729,10 +729,23 @@ function findCubicIntersections(first, second, epsilon, intersectionTolerance, b
   return intersections;
 }
 
+function shapesMeetOnlyAtBounds(shapeA, shapeB, tolerance) {
+  const overlapX = Math.min(shapeA.right, shapeB.right) - Math.max(shapeA.left, shapeB.left);
+  const overlapY = Math.min(shapeA.bottom, shapeB.bottom) - Math.max(shapeA.top, shapeB.top);
+  // A cubic curve stays within the convex hull of its control points. If those
+  // enclosing boxes have no interior overlap (or meet only within floating-point
+  // roundoff), the filled shapes cannot cross with positive area. Keeping their
+  // original contours is exact for a tangent union/XOR, an empty intersection,
+  // and a subtraction whose operands only touch.
+  return (Math.abs(overlapX) <= tolerance && overlapY >= -tolerance)
+    || (Math.abs(overlapY) <= tolerance && overlapX >= -tolerance);
+}
+
 function curveBoolean(shapes, operation) {
   if (!operations.has(operation) || !Array.isArray(shapes) || !shapes.length
     || shapes.some(shape => !Array.isArray(shape?.contours))) throw new TypeError('Boolean geometry needs one or more cubic contour sets.');
   const segments = [];
+  const shapeBounds = shapes.map(() => ({ left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }));
   let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity; let maxCoordinate = 0;
   for (const [shapeIndex, shape] of shapes.entries()) for (const [contourIndex, contour] of shape.contours.entries()) {
     if (!Array.isArray(contour) || contour.length < 2) unsupported('a Bézier contour is malformed.');
@@ -742,6 +755,9 @@ function curveBoolean(shapes, operation) {
       for (const point of points) {
         minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y);
         maxCoordinate = Math.max(maxCoordinate, Math.abs(point.x), Math.abs(point.y));
+        const bounds = shapeBounds[shapeIndex];
+        bounds.left = Math.min(bounds.left, point.x); bounds.top = Math.min(bounds.top, point.y);
+        bounds.right = Math.max(bounds.right, point.x); bounds.bottom = Math.max(bounds.bottom, point.y);
       }
       if (distance(curve.p0, curve.p3) > 0 || distance(curve.p0, curve.p1) > 0 || distance(curve.p0, curve.p2) > 0) {
         segments.push({ curve, shapeIndex, contourIndex, segmentIndex, contourLength: contour.length, splits: [0, 1] });
@@ -752,12 +768,15 @@ function curveBoolean(shapes, operation) {
   if (!segments.length) return [];
   const extent = Math.max(maxX - minX, maxY - minY, 1);
   const epsilon = Math.max(extent * 1e-10, maxCoordinate * Number.EPSILON * 64, 1e-10);
+  const contactTolerance = Math.max(maxCoordinate * Number.EPSILON * 64, 1e-12);
   const intersectionTolerance = Math.max(epsilon * 4, extent * 1e-8);
   const budget = { cells: 0 };
   let splitPointCount = segments.length * 2;
   for (let firstIndex = 0; firstIndex < segments.length; firstIndex += 1) {
     for (let secondIndex = firstIndex + 1; secondIndex < segments.length; secondIndex += 1) {
       const first = segments[firstIndex]; const second = segments[secondIndex];
+      if (first.shapeIndex !== second.shapeIndex
+        && shapesMeetOnlyAtBounds(shapeBounds[first.shapeIndex], shapeBounds[second.shapeIndex], contactTolerance)) continue;
       const boundsA = cubicBounds(first.curve); const boundsB = cubicBounds(second.curve);
       if (!cubicBoundsOverlap(boundsA, boundsB, epsilon)) continue;
       const intersections = findCubicIntersections(first, second, epsilon, intersectionTolerance, budget);

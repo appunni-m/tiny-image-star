@@ -6,9 +6,11 @@ import {
   estimateAssetMemoryBytes,
   estimateBitmapBytes,
   estimatePreviewMemoryBytes,
+  estimatePreviewMemoryReservationBytes,
   releaseImageMemoryReservations,
   RetainedImageMemoryBudget,
   transformedImageDimensions,
+  withImageMemoryReservation,
 } from '../src/image-memory-budget.js';
 import { imageCropPixels } from '../src/image-transforms.js';
 
@@ -24,6 +26,91 @@ test('conservative resource estimates include source bytes, decoded pixels and p
   assert.equal(estimateAssetMemoryBytes({ sourceByteLength: 1000, bitmapWidth: 20, bitmapHeight: 10 }), 2800);
   assert.equal(estimatePreviewMemoryBytes({ width: 20, height: 10, encodedByteLength: 100 }), 1000);
   assert.throws(() => estimateBitmapBytes(Number.MAX_SAFE_INTEGER, 2), /safe integer/);
+});
+
+test('preview admission covers an uncompressed RGBA PNG, row filters, and decoded bitmap before rendering', () => {
+  for (const dimensions of [{ width: 1, height: 1 }, { width: 64, height: 32 }, { width: 1600, height: 900 }]) {
+    const reservation = estimatePreviewMemoryReservationBytes(dimensions);
+    const uncompressedPngUpperBound = 4 * dimensions.width * dimensions.height + dimensions.height;
+    assert.ok(reservation.encodedByteLength >= uncompressedPngUpperBound,
+      'the encoded reservation includes RGBA samples and PNG row filter bytes');
+    assert.ok(reservation.retainedBytes >= estimatePreviewMemoryBytes({
+      ...dimensions,
+      encodedByteLength: reservation.encodedByteLength,
+    }));
+  }
+});
+
+test('deferred concurrent preview renders hold admission and reconcile to actual retained bytes', async () => {
+  const dimensions = { width: 10, height: 10 };
+  const estimate = estimatePreviewMemoryReservationBytes(dimensions);
+  const actualBytes = estimatePreviewMemoryBytes({ ...dimensions, encodedByteLength: 100 });
+  const assetBytes = 100;
+  const budget = new RetainedImageMemoryBudget({ limitBytes: assetBytes + actualBytes + estimate.retainedBytes });
+  assert.equal(budget.retain('asset:source', assetBytes, { kind: 'asset' }), true);
+
+  const deferred = [];
+  let dispatched = 0;
+  const startPreview = previewKey => {
+    const reservation = budget.reserve(estimate.retainedBytes, { kind: 'preview-pending' });
+    if (!reservation) return { admitted: false, promise: null };
+    dispatched += 1;
+    let resolve;
+    const rendered = new Promise(accept => { resolve = accept; });
+    deferred.push(resolve);
+    const promise = rendered.then(encodedByteLength => {
+      const retainedBytes = estimatePreviewMemoryBytes({ ...dimensions, encodedByteLength });
+      budget.commit(reservation, `preview:${previewKey}`, { bytes: retainedBytes, kind: 'preview' });
+      return retainedBytes;
+    }).finally(() => budget.releaseReservation(reservation));
+    return { admitted: true, promise };
+  };
+
+  const first = startPreview('first');
+  assert.equal(first.admitted, true);
+  assert.equal(dispatched, 1);
+  assert.equal(budget.metrics().reservations, 1, 'the first deferred output owns its full pre-render reservation');
+
+  const secondWhileFirstPending = startPreview('second');
+  assert.equal(secondWhileFirstPending.admitted, false, 'the same remaining capacity cannot be admitted twice');
+  assert.equal(dispatched, 1, 'a render is not dispatched until retained output capacity is reserved');
+
+  deferred[0](100);
+  assert.equal(await first.promise, actualBytes);
+  assert.equal(budget.metrics().reservations, 0);
+  assert.equal(budget.metrics().usedBytes, assetBytes + actualBytes,
+    'commit replaces the conservative reservation with the actual retained preview size');
+
+  const second = startPreview('second');
+  assert.equal(second.admitted, true, 'reconciling a smaller output returns its unused reservation capacity');
+  assert.equal(dispatched, 2);
+  deferred[1](200);
+  const secondActualBytes = await second.promise;
+  assert.equal(budget.metrics().reservations, 0);
+  assert.equal(budget.metrics().usedBytes, assetBytes + actualBytes + secondActualBytes);
+  assert.ok(budget.metrics().usedBytes <= budget.limitBytes);
+});
+
+test('preview reservations release after stale results and render or decode failures', async () => {
+  const budget = new RetainedImageMemoryBudget({ limitBytes: 4096 });
+  const staleReservation = budget.reserve(1024, { kind: 'preview-pending' });
+  assert.ok(staleReservation);
+  const staleResult = await withImageMemoryReservation(budget, staleReservation, async () => false);
+  assert.equal(staleResult, false);
+  assert.equal(budget.metrics().reservations, 0, 'a stale async result releases its pending capacity');
+  assert.equal(budget.metrics().usedBytes, 0);
+
+  const failureReservation = budget.reserve(2048, { kind: 'preview-pending' });
+  assert.ok(failureReservation);
+  await assert.rejects(
+    withImageMemoryReservation(budget, failureReservation, async () => {
+      await Promise.resolve(); // model the render completing before bitmap decode fails
+      throw new Error('decode failed');
+    }),
+    /decode failed/,
+  );
+  assert.equal(budget.metrics().reservations, 0, 'a rejected render/decode path releases its pending capacity');
+  assert.equal(budget.metrics().usedBytes, 0);
 });
 
 test('crop and right-angle rotation produce safe output dimensions', () => {

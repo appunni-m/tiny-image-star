@@ -115,27 +115,27 @@
             <button class="canvas-action-button fit-button" id="zoom-fit" aria-label="Zoom to fit" title="Zoom to fit selection">⌗</button>
           </div>
           <div class="bottom-toolbar" id="bottom-toolbar" aria-label="Design tools">
-            <button class="tool-button is-selected" data-tool="select" title="Move / Select (V)" aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
-            <button class="tool-button" data-tool="lasso" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
-            <button class="tool-button" data-tool="frame" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
-            <button class="tool-button" data-tool="slice" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
-            <button class="tool-button" data-tool="section" title="Section (⇧ S)" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
+            <button class="tool-button is-selected" data-tool="select" aria-pressed="true" title="Move / Select (V)" aria-label="Move / Select"><span data-icon="cursor"></span><kbd>V</kbd></button>
+            <button class="tool-button" data-tool="lasso" aria-pressed="false" title="Lasso Select (Q) · drag around layers; touch adds to current selection" aria-label="Lasso Select"><span data-icon="lasso"></span><kbd>Q</kbd></button>
+            <button class="tool-button" data-tool="frame" aria-pressed="false" title="Frame (F)" aria-label="Frame"><span data-icon="frame"></span><kbd>F</kbd></button>
+            <button class="tool-button" data-tool="slice" aria-pressed="false" title="Slice (S) · draw an export region" aria-label="Slice · draw an export region"><span data-icon="slice"></span><kbd>S</kbd></button>
+            <button class="tool-button" data-tool="section" aria-pressed="false" title="Section (⇧ S)" aria-label="Section"><span data-icon="section"></span><kbd>⇧S</kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button" data-tool="rectangle" title="Rectangle (R)" aria-label="Rectangle"><span data-icon="rectangle"></span><kbd>R</kbd></button>
-            <button class="tool-button" data-tool="ellipse" title="Ellipse (O)" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
-            <button class="tool-button" data-tool="line" title="Line (L)" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
-            <button class="tool-button" data-tool="polygon" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
-            <button class="tool-button" data-tool="star" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="rectangle" aria-pressed="false" title="Rectangle (R)" aria-label="Rectangle"><span data-icon="rectangle"></span><kbd>R</kbd></button>
+            <button class="tool-button" data-tool="ellipse" aria-pressed="false" title="Ellipse (O)" aria-label="Ellipse"><span data-icon="ellipse"></span><kbd>O</kbd></button>
+            <button class="tool-button" data-tool="line" aria-pressed="false" title="Line (L)" aria-label="Line"><span data-icon="line"></span><kbd>L</kbd></button>
+            <button class="tool-button" data-tool="polygon" aria-pressed="false" title="Polygon" aria-label="Polygon"><span data-icon="polygon"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="star" aria-pressed="false" title="Star" aria-label="Star"><span data-icon="star"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button" data-tool="eyedropper" title="Eyedropper (I) · sample a color" aria-label="Eyedropper · sample a color"><span data-icon="eye"></span><kbd>I</kbd></button>
-            <button class="tool-button" data-tool="pen" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
-            <button class="tool-button" data-tool="pencil" title="Pencil · draw freehand; stylus pressure varies stroke width, hold Shift for uniform" aria-label="Pencil · draw freehand with stylus pressure"><span data-icon="pencil"></span><kbd></kbd></button>
-            <button class="tool-button" data-tool="text" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
-            <button class="tool-button" data-tool="image" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="eyedropper" aria-pressed="false" title="Eyedropper (I) · sample a color" aria-label="Eyedropper · sample a color"><span data-icon="eye"></span><kbd>I</kbd></button>
+            <button class="tool-button" data-tool="pen" aria-pressed="false" title="Pen (P)" aria-label="Pen"><span data-icon="pen"></span><kbd>P</kbd></button>
+            <button class="tool-button" data-tool="pencil" aria-pressed="false" title="Pencil · draw freehand; stylus pressure varies stroke width, hold Shift for uniform" aria-label="Pencil · draw freehand with stylus pressure"><span data-icon="pencil"></span><kbd></kbd></button>
+            <button class="tool-button" data-tool="text" aria-pressed="false" title="Text (T)" aria-label="Text"><span data-icon="text"></span><kbd>T</kbd></button>
+            <button class="tool-button" data-tool="image" aria-pressed="false" title="Place image (⇧ Ctrl K)" aria-label="Place image"><span data-icon="image"></span><kbd></kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button hand-tool" data-tool="hand" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
+            <button class="tool-button hand-tool" data-tool="hand" aria-pressed="false" title="Hand (H / Space)" aria-label="Hand"><span data-icon="hand"></span><kbd>H</kbd></button>
             <span class="toolbar-separator"></span>
-            <button class="tool-button" data-tool="comment" title="Comment (C)" aria-label="Comment"><span data-icon="comment"></span><kbd>C</kbd></button>
+            <button class="tool-button" data-tool="comment" aria-pressed="false" title="Comment (C)" aria-label="Comment"><span data-icon="comment"></span><kbd>C</kbd></button>
           </div>
           <div class="canvas-status"><span id="selection-status">Select an object</span><span class="status-divider"></span><span id="position-status">—</span></div>
         </main>

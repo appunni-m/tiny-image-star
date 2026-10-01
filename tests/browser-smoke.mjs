@@ -220,6 +220,15 @@ try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'isolated editor event handlers');
   const app = frame.contentDocument;
   assert(app.title === 'Tiny Image Star' && app.querySelector('.brand-mark')?.textContent.trim() === '✦', 'the editor branding does not use the Tiny Image Star identity');
+  const selectToolButton = app.querySelector('.tool-button[data-tool="select"]');
+  const rectangleToolButton = app.querySelector('.tool-button[data-tool="rectangle"]');
+  assert(selectToolButton?.getAttribute('aria-pressed') === 'true', 'the active Select tool should be announced on initial editor load');
+  assert([...app.querySelectorAll('.tool-button')].filter(button => button.getAttribute('aria-pressed') === 'true').length === 1,
+    'exactly one canvas tool should be announced as active');
+  dispatchClick(rectangleToolButton);
+  assert(rectangleToolButton.getAttribute('aria-pressed') === 'true' && selectToolButton.getAttribute('aria-pressed') === 'false',
+    'changing tools should update the accessible pressed state');
+  dispatchClick(selectToolButton);
   dispatchClick(app.querySelector('#file-menu-button'));
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(item => item.textContent.includes('New design'));
   assert(newDesign, 'the file menu did not expose a fresh local design for this isolated workflow');

@@ -863,16 +863,33 @@ test('transparent inputs are refused atomically', () => {
   }
 });
 
-test('tangent cubic Boolean contacts are refused atomically instead of approximated', () => {
-  const document = createDocument();
-  const first = cubicCirclePath(0, 0, 40);
-  const second = cubicCirclePath(80, 0, 40);
-  addNode(document, first); addNode(document, second);
-  const group = combineBoolean(document, [first.id, second.id], 'union');
-  const before = serializeDocument(document);
-  assert.throws(() => prepareBooleanBake(document, group.id), /tangent|touching|unstable|precision/);
-  assert.equal(serializeDocument(document), before, 'an unstable tangency must leave the live Boolean sources untouched');
-  assert.equal(group.type, 'boolean');
+test('axis-aligned tangent cubic contours bake exactly without inventing a crossing', () => {
+  for (const contactOffset of [0, 1e-13]) for (const operation of ['union', 'subtract', 'intersect', 'exclude']) {
+    const document = createDocument();
+    const first = cubicCirclePath(0, 0, 40);
+    const second = cubicCirclePath(80 + contactOffset, 0, 40);
+    addNode(document, first); addNode(document, second);
+    const group = combineBoolean(document, [first.id, second.id], operation);
+    const sourceContours = group.children.map(child => sampledPathContours(child));
+
+    const baked = bakeBoolean(document, group.id);
+    assert.equal(baked.type, 'path', `${operation} should bake to an editable path`);
+    assert.equal(baked.points.length === 0, operation === 'intersect',
+      `${operation} should retain an empty result only for the empty intersection`);
+    if (baked.points.length) {
+      assert.ok(baked.points.some(point => [point.in, point.out].some(handle => handle && Math.hypot(handle.x, handle.y) > 1e-5)),
+        `${operation} should preserve editable cubic handles at a tangency`);
+    }
+    const bakedContours = sampledPathContours(baked);
+    for (let y = 2.5; y < 80; y += 5) for (let x = 2.5; x < 160; x += 5) {
+      const point = { x, y };
+      assert.equal(insideSampledContours(point, bakedContours),
+        booleanMembership(operation, sourceContours[0], sourceContours[1], point),
+        `${operation} should match the source membership at ${x},${y}`);
+    }
+    assert.equal(validateDocument(parseDocument(serializeDocument(document))), true,
+      `${operation} should remain a valid editable document after serialization`);
+  }
 });
 
 test('overlapping collinear cubics with non-linear parameterization fail closed', () => {
