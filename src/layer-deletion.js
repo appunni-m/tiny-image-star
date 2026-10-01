@@ -12,6 +12,13 @@ export function layerMenuDeleteTargets(selectedIds, menuLayerId) {
   return selected.includes(menuLayerId) ? selected : [menuLayerId];
 }
 
+/** Keep stale vector-anchor state from intercepting deletion of another layer. */
+export function shouldDeleteSelectedVectorAnchor(selectedIds, selectedVectorPoint) {
+  return Boolean(selectedVectorPoint?.nodeId
+    && selectedIds.length === 1
+    && selectedIds[0] === selectedVectorPoint.nodeId);
+}
+
 /** Remove a set of top-level selections atomically, without leaving a partial delete. */
 export function removeLayersAtomically(document, nodeIds, pageId = document.activePageId) {
   const ids = [...new Set(nodeIds)];

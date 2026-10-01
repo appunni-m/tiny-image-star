@@ -59,6 +59,25 @@ test('choosing a layer row exits vector-anchor editing before layer selection', 
     'clicking a layer row, including the already-selected path, must clear stale anchor selection before Delete');
 });
 
+test('placing imported images resets selection through the shared invariant path', () => {
+  const start = source.indexOf('async function importImageFiles(');
+  const end = source.indexOf('\nasync function restoreImageAssets', start);
+  assert.ok(start >= 0 && end > start, 'image import should have a bounded function body');
+  const importer = source.slice(start, end);
+  assert.match(importer, /let lastPlacedNodeId = null;/,
+    'bulk image import should defer selection updates until all files have been processed');
+  assert.match(importer, /if \(place && lastPlacedNodeId\) setSelection\(\[lastPlacedNodeId\], \{ keepInspector: true, refreshLayers: false \}\)/,
+    'the final placed image must pass through selection cleanup before Delete can run');
+  assert.doesNotMatch(importer, /state\.selectedIds\s*=\s*\[node\.id\]/,
+    'direct selection assignment would preserve stale vector-anchor state');
+
+  const startKeydown = source.indexOf('function onKeyDown(event) {');
+  const endKeydown = source.indexOf('\nfunction ', startKeydown + 1);
+  const keydown = source.slice(startKeydown, endKeydown);
+  assert.match(keydown, /shouldDeleteSelectedVectorAnchor\(state\.selectedIds, state\.selectedVectorPoint\)[\s\S]*?deleteSelectedVectorPoint\(\)/,
+    'Delete should target vector anchors only when their layer is still selected');
+});
+
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
   const start = source.indexOf('function openNodeMenu(');
   const end = source.indexOf('\nfunction combineSelectedBoolean(', start);

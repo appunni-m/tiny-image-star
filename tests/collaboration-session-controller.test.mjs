@@ -143,6 +143,287 @@ test('host sends a snapshot only after HELLO and persists guest snapshot before 
   controller.close();
 });
 
+test('multiple host peers share one durable sequencer and receive revisions without closing siblings', async () => {
+  const firstChannel = new FakeChannel();
+  const secondChannel = new FakeChannel();
+  const stored = fakeDesign();
+  let durable = stored;
+  const commits = [];
+  const snapshots = [];
+  const first = await hostFixture({
+    open: async () => durable,
+    revokeGrant: async () => true,
+    onSnapshot: (_snapshot, head) => snapshots.push(head.sequence),
+    createTransport: async () => ({
+      offerCapsule: 'offer-a', dataChannel: firstChannel,
+      session: { sessionId: 'session-a', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => firstChannel.close()
+    }),
+    commit: async (_workspace, _designId, snapshot, options) => {
+      commits.push(structuredClone(snapshot));
+      durable = {
+        ...durable,
+        document: structuredClone(snapshot),
+        head: { sequence: options.expectedHead.sequence + 1, commitHash: String(options.expectedHead.sequence + 1).padStart(64, '0') }
+      };
+      return durable;
+    }
+  });
+  await first.controller.acceptAnswer('first-answer');
+  const second = await first.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-b', dataChannel: secondChannel,
+      session: { sessionId: 'session-b', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => secondChannel.close()
+    })
+  });
+  await second.acceptAnswer('second-answer');
+  firstChannel.receive(context('HELLO', { lastRevision: 0 }));
+  secondChannel.receive(context('HELLO', { actorId: 'guest-b', sessionId: 'session-b', lastRevision: 0 }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(first.controller.guestCount, 2);
+  assert.deepEqual(firstChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind), ['WELCOME', 'SNAPSHOT']);
+  assert.deepEqual(secondChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind), ['WELCOME', 'SNAPSHOT']);
+
+  const firstEdit = structuredClone(durable.document);
+  firstEdit.name = 'First guest commit';
+  firstChannel.receive(context('OPERATION', {
+    operation: { type: 'ReplaceSnapshot', opId: 'op-first', baseRevision: 2, snapshot: firstEdit }
+  }));
+  await new Promise(resolve => setTimeout(resolve, 15));
+  const firstReplies = firstChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }));
+  const secondReplies = secondChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }));
+  assert.equal(firstReplies.at(-1).kind, 'ACK');
+  assert.equal(firstReplies.at(-1).sessionId, 'session-a');
+  assert.equal(secondReplies.at(-1).kind, 'ROOM_REVISION');
+  assert.equal(secondReplies.at(-1).sessionId, 'session-b');
+  assert.equal(secondReplies.at(-1).revision, 3);
+  assert.equal(secondReplies.at(-1).snapshot.name, 'First guest commit');
+  assert.equal(first.controller.head.sequence, 3);
+  assert.equal(commits.length, 1);
+
+  firstChannel.close();
+  await settle();
+  assert.equal(first.controller.guestCount, 1, 'the primary peer can disconnect without ending its sibling session');
+  const next = structuredClone(durable.document);
+  next.name = 'Second guest remains connected';
+  secondChannel.receive(context('OPERATION', {
+    actorId: 'guest-b', sessionId: 'session-b',
+    operation: { type: 'ReplaceSnapshot', opId: 'op-after-close', baseRevision: 3, snapshot: next }
+  }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(decodeCollaborationMessage(secondChannel.sent.at(-1), { direction: 'host-to-guest' }).kind, 'ACK');
+  assert.equal(first.controller.head.sequence, 4);
+  assert.deepEqual(snapshots, [3, 4], 'the room-owned editor snapshot listener survives the primary peer disconnect');
+  await first.controller.revoke();
+  assert.equal(secondChannel.closed, true, 'revoking the room closes every active peer');
+});
+
+test('a peer disconnect during asynchronous asset approval releases its aggregate room reservation', async () => {
+  const firstChannel = new FakeChannel();
+  const secondChannel = new FakeChannel();
+  let releaseApproval;
+  const pendingApproval = new Promise(resolve => { releaseApproval = resolve; });
+  const first = await hostFixture({
+    maxSessionAssetBytes: 4,
+    approveIncomingAsset: async ({ assetId }) => assetId === 'held-image' ? pendingApproval : true,
+    createTransport: async () => ({
+      offerCapsule: 'offer-a', dataChannel: firstChannel, session: { sessionId: 'session-a' },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => firstChannel.close()
+    })
+  });
+  await first.controller.acceptAnswer('answer-a');
+  firstChannel.receive(context('HELLO', { lastRevision: 0 }));
+  await settle();
+  firstChannel.receive(context('ASSET_BEGIN', {
+    flow: 'guest-to-host', transferId: 'transfer-a', assetId: 'held-image', assetKind: 'image',
+    mimeType: 'image/png', fontMetadata: null, byteLength: 4, chunkCount: 1, sha256: 'a'.repeat(64)
+  }));
+  await settle();
+
+  const second = await first.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-b', dataChannel: secondChannel, session: { sessionId: 'session-b' },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => secondChannel.close()
+    })
+  });
+  await second.acceptAnswer('answer-b');
+  secondChannel.receive(context('HELLO', { actorId: 'guest-b', sessionId: 'session-b', lastRevision: 0 }));
+  await settle();
+
+  first.controller.close();
+  releaseApproval(true);
+  await settle();
+  secondChannel.receive(context('ASSET_BEGIN', {
+    actorId: 'guest-b', sessionId: 'session-b', flow: 'guest-to-host', transferId: 'transfer-b',
+    assetId: 'next-image', assetKind: 'image', mimeType: 'image/png', fontMetadata: null,
+    byteLength: 4, chunkCount: 1, sha256: 'b'.repeat(64)
+  }));
+  await settle();
+  assert.equal(secondChannel.closed, false, 'the second peer can reserve the bytes released by the disconnected peer');
+  second.close();
+});
+
+test('a slow peer asset transfer does not block revision delivery to ready sibling peers', async () => {
+  const channelA = new FakeChannel();
+  const slowChannel = new FakeChannel();
+  const fastChannel = new FakeChannel();
+  let releaseSlow;
+  let signalSlowStarted;
+  const slowStarted = new Promise(resolve => { signalSlowStarted = resolve; });
+  const slowTransfer = new Promise(resolve => { releaseSlow = resolve; });
+  const source = fakeDesign();
+  addNode(source.document, createNode('image', { id: 'image-layer', assetId: 'image-a' }));
+  let durable = source;
+  const host = await hostFixture({
+    open: async () => durable,
+    revokeGrant: async () => true,
+    createTransport: async () => ({
+      offerCapsule: 'offer-a', dataChannel: channelA,
+      session: { sessionId: 'session-a', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => channelA.close()
+    }),
+    readImage: async () => ({ metadata: { mimeType: 'image/png' }, bytes: Uint8Array.of(1, 2, 3) }),
+    sendAsset: async (channel, asset) => {
+      if (channel === slowChannel) {
+        signalSlowStarted();
+        await slowTransfer;
+      }
+      return { transferId: asset.transferId, assetId: asset.assetId, assetKind: asset.assetKind, byteLength: asset.bytes.byteLength };
+    },
+    commit: async (_workspace, _designId, snapshot, options) => {
+      durable = {
+        ...durable,
+        document: structuredClone(snapshot),
+        head: { sequence: options.expectedHead.sequence + 1, commitHash: String(options.expectedHead.sequence + 1).padStart(64, '0') }
+      };
+      return durable;
+    }
+  });
+  await host.controller.acceptAnswer('answer-a');
+  const slowPeer = await host.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-b', dataChannel: slowChannel,
+      session: { sessionId: 'session-b', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => slowChannel.close()
+    })
+  });
+  const fastPeer = await host.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-c', dataChannel: fastChannel,
+      session: { sessionId: 'session-c', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => fastChannel.close()
+    })
+  });
+  await Promise.all([slowPeer.acceptAnswer('answer-b'), fastPeer.acceptAnswer('answer-c')]);
+  channelA.receive(context('HELLO', { lastRevision: 0 }));
+  slowChannel.receive(context('HELLO', { actorId: 'guest-b', sessionId: 'session-b', lastRevision: 0 }));
+  fastChannel.receive(context('HELLO', { actorId: 'guest-c', sessionId: 'session-c', lastRevision: 0 }));
+  await slowStarted;
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(fastChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind).includes('SNAPSHOT'), true);
+
+  const edited = structuredClone(durable.document);
+  edited.name = 'Committed while another peer is syncing';
+  channelA.receive(context('OPERATION', {
+    operation: { type: 'ReplaceSnapshot', opId: 'op-fast-fanout', baseRevision: 2, snapshot: edited }
+  }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const fastKinds = fastChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind);
+  const fastUpdate = fastChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' })).find(message => message.kind === 'ROOM_REVISION');
+  assert.ok(fastKinds.includes('ROOM_REVISION'), 'the ready peer receives the committed update without waiting for the slow channel');
+  assert.equal(fastUpdate.revision, 3);
+  assert.equal(slowChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }).kind).includes('SNAPSHOT'), false);
+
+  releaseSlow();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const slowMessages = slowChannel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }));
+  assert.equal(slowMessages.find(message => message.kind === 'SNAPSHOT').revision, 2);
+  assert.equal(slowMessages.find(message => message.kind === 'ROOM_REVISION').revision, 3);
+  await host.controller.revoke();
+});
+
+test('simultaneous same-head guest edits commit once and preserve the losing proposal as its local fork', async () => {
+  const hostChannelA = new FakeChannel();
+  const hostChannelB = new FakeChannel();
+  const guestChannelA = new FakeChannel();
+  const guestChannelB = new FakeChannel();
+  hostChannelA.peer = guestChannelA;
+  guestChannelA.peer = hostChannelA;
+  hostChannelB.peer = guestChannelB;
+  guestChannelB.peer = hostChannelB;
+  let durable = fakeDesign();
+  let commits = 0;
+  const host = await hostFixture({
+    open: async () => durable,
+    revokeGrant: async () => true,
+    createTransport: async () => ({
+      offerCapsule: 'offer-a', dataChannel: hostChannelA,
+      session: { sessionId: 'session-a', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => hostChannelA.close()
+    }),
+    commit: async (_workspace, _designId, snapshot, options) => {
+      commits += 1;
+      durable = {
+        ...durable,
+        document: structuredClone(snapshot),
+        head: { sequence: options.expectedHead.sequence + 1, commitHash: String(options.expectedHead.sequence + 1).padStart(64, '0') }
+      };
+      return durable;
+    }
+  });
+  await host.controller.acceptAnswer('answer-a');
+  const hostB = await host.controller.addGuestSession({
+    createTransport: async () => ({
+      offerCapsule: 'offer-b', dataChannel: hostChannelB,
+      session: { sessionId: 'session-b', expiresAt: Date.now() + 60_000 },
+      acceptAnswer: async () => {}, waitForOpen: async () => true, close: () => hostChannelB.close()
+    })
+  });
+  await hostB.acceptAnswer('answer-b');
+  const savedForks = [];
+  const guestA = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: guestChannelA, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => guestChannelA.close()
+    }),
+    persistFork: async fork => { savedForks.push(fork); return true; }
+  });
+  const guestB = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-b',
+    createTransport: async () => ({
+      answerCapsule: 'answer-b', dataChannel: guestChannelB, session: { sessionId: 'session-b' },
+      waitForOpen: async () => true, close: () => guestChannelB.close()
+    }),
+    persistFork: async fork => { savedForks.push(fork); return true; }
+  });
+  await Promise.all([guestA.ready, guestB.ready]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(guestA.state, 'connected');
+  assert.equal(guestB.state, 'connected');
+
+  const proposalA = guestA.snapshot;
+  proposalA.name = 'First concurrent proposal';
+  const proposalB = guestB.snapshot;
+  proposalB.name = 'Second concurrent proposal';
+  guestA.proposeSnapshot(proposalA);
+  guestB.proposeSnapshot(proposalB);
+  await new Promise(resolve => setTimeout(resolve, 40));
+
+  assert.equal(commits, 1, 'one revision from the shared base can commit');
+  assert.equal(host.controller.head.sequence, 3);
+  const outcomes = [guestA, guestB].map(guest => guest.state).sort();
+  assert.deepEqual(outcomes, ['connected', 'fork-saved']);
+  assert.equal(savedForks.length, 1);
+  assert.equal(savedForks[0].pendingOperations.length, 1);
+  assert.equal(['First concurrent proposal', 'Second concurrent proposal'].includes(durable.document.name), true);
+  assert.equal(host.controller.guestCount, 1, 'the conflicted guest is isolated while the winning peer stays connected');
+  host.controller.close();
+  guestA.close();
+  guestB.close();
+});
+
 test('live comment create, reply, resolve, and delete sync through durable full-snapshot ACKs', async () => {
   const initial = fakeDesign();
   let stored = {
@@ -380,6 +661,126 @@ test('guest rejects a snapshot whose hash differs from the welcome at the same s
   await settle();
   assert.equal(controller.state, 'disconnected-before-snapshot');
   assert.equal(controller.snapshot, null);
+});
+
+test('guest adopts a committed room revision from another peer and persists the new master snapshot', async () => {
+  const channel = new FakeChannel();
+  const saved = [];
+  const snapshots = [];
+  const initial = fakeDesign().document;
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async fork => { saved.push(fork); return true; },
+    onSnapshot: (snapshot, revision, head, metadata) => snapshots.push({ snapshot, revision, head, source: metadata?.source })
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({
+    v: 1, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a',
+    revision: 2, headHash: 'a'.repeat(64), snapshot: initial
+  });
+  await settle();
+
+  const next = structuredClone(initial);
+  next.name = 'Accepted from another collaborator';
+  channel.receive({
+    v: 1, kind: 'ROOM_REVISION', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a',
+    revision: 3, headHash: 'b'.repeat(64), snapshot: next
+  });
+  await settle();
+  assert.equal(controller.state, 'connected');
+  assert.equal(controller.revision, 3);
+  assert.equal(controller.snapshot.name, next.name);
+  assert.equal(snapshots.length, 2);
+  assert.deepEqual(snapshots.map(item => item.source), ['initial', 'room-revision']);
+  assert.equal(snapshots[1].revision, 3);
+  assert.equal(saved.length, 0);
+  controller.close();
+});
+
+test('guest serializes room-revision installation and forks instead of overwriting a dirty local edit', async () => {
+  const channel = new FakeChannel();
+  const snapshots = [];
+  let releaseInstall;
+  let fork;
+  const initial = fakeDesign().document;
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async value => { fork = value; return true; },
+    onSnapshot: async (snapshot, revision, _head, metadata) => {
+      snapshots.push({ snapshot, revision, source: metadata?.source });
+      if (metadata?.source === 'room-revision' && revision === 3) await new Promise(resolve => { releaseInstall = resolve; });
+    }
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({ ...context('SNAPSHOT', { actorId: 'host-a' }), revision: 2, headHash: 'a'.repeat(64), snapshot: initial });
+  await settle();
+
+  const revisionThree = structuredClone(initial);
+  revisionThree.name = 'Revision three';
+  channel.receive({ ...context('ROOM_REVISION', { actorId: 'host-a' }), revision: 3, headHash: 'b'.repeat(64), snapshot: revisionThree });
+  await settle();
+  assert.equal(typeof releaseInstall, 'function');
+  const revisionFour = structuredClone(revisionThree);
+  revisionFour.name = 'Revision four';
+  channel.receive({ ...context('ROOM_REVISION', { actorId: 'host-a' }), revision: 4, headHash: 'c'.repeat(64), snapshot: revisionFour });
+  await settle();
+  assert.equal(controller.revision, 3, 'the next room revision waits for durable installation of the previous one');
+  assert.deepEqual(snapshots.map(item => item.revision), [2, 3]);
+  releaseInstall();
+  await settle();
+  assert.equal(controller.revision, 4);
+  assert.deepEqual(snapshots.map(item => item.revision), [2, 3, 4]);
+
+  controller.markLocalEditsPending();
+  const revisionFive = structuredClone(revisionFour);
+  revisionFive.name = 'Revision five';
+  channel.receive({ ...context('ROOM_REVISION', { actorId: 'host-a' }), revision: 5, headHash: 'd'.repeat(64), snapshot: revisionFive });
+  await settle();
+  assert.equal(controller.state, 'fork-saved');
+  assert.equal(controller.revision, 4);
+  assert.equal(fork.reason.detail.reason, 'LOCAL_EDITS_PENDING');
+});
+
+test('guest refuses a room revision that references an image the host has not transferred', async () => {
+  const channel = new FakeChannel();
+  const initial = fakeDesign().document;
+  let fork;
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async value => { fork = value; return true; }
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({
+    v: 1, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a',
+    revision: 2, headHash: 'a'.repeat(64), snapshot: initial
+  });
+  await settle();
+  const invalid = structuredClone(initial);
+  addNode(invalid, createNode('image', { id: 'missing-image-node', assetId: 'missing-image' }));
+  channel.receive({
+    v: 1, kind: 'ROOM_REVISION', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a',
+    revision: 3, headHash: 'b'.repeat(64), snapshot: invalid
+  });
+  await settle();
+  assert.equal(controller.state, 'fork-saved');
+  assert.equal(controller.revision, 2);
+  assert.equal(fork.snapshot.pages[0].children.length, initial.pages[0].children.length);
+  controller.close();
 });
 
 test('live sessions transfer referenced images before the snapshot and persist guest assets before accepting edits', async () => {

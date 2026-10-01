@@ -34,6 +34,7 @@ test('back and spring easing preserve bounded layer presence while spatial geome
   const overshootProgress = easePrototypeProgress(0.4, 'spring-bouncy');
   assert.ok(overshootProgress > 1, 'spring-bouncy should retain its endpoint overshoot sample');
   const overshot = interpolateSmartFrame(from, to, overshootProgress, { allowOvershoot: true });
+  const overshotWithoutOptIn = interpolateSmartFrame(from, to, overshootProgress);
   assert.equal(overshot.children.length, 2, 'destination-only layers appear at the destination endpoint');
   assert.ok(overshot.children[0].x > to.children[0].x, 'matched layer position overshoots the destination');
   assert.ok(overshot.children[0].width > to.children[0].width, 'matched layer size overshoots the destination');
@@ -41,9 +42,15 @@ test('back and spring easing preserve bounded layer presence while spatial geome
   assert.equal(overshot.opacity, to.opacity, 'frame opacity remains in [0, 1] at overshoot');
   assert.ok(overshot.children[0].opacity >= 0 && overshot.children[0].opacity <= 1,
     'layer opacity remains valid while geometry overshoots');
+  assert.equal(overshotWithoutOptIn.children[0].x, to.children[0].x,
+    'non-presentation callers retain the historical clamped interpolation behavior');
   assert.equal(overshot.fill, to.fill, 'paint remains the authored destination color');
   assert.ok(overshot.width >= 0 && overshot.height >= 0 && overshot.children[0].width >= 0,
     'eased geometry never produces negative dimensions');
+  assert.deepEqual(interpolateSmartFrame(from, to, 0, { allowOvershoot: true }), from,
+    'the presentation opt-in preserves the exact source endpoint');
+  assert.deepEqual(interpolateSmartFrame(from, to, 1, { allowOvershoot: true }), to,
+    'the presentation opt-in preserves the exact destination endpoint');
 });
 
 test('smart animation interpolates supported size, position, rotation, opacity, and solid-fill changes', () => {

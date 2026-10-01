@@ -132,6 +132,8 @@ export function createGuestForkRecovery({
   let acknowledgedHead = safeJsonCopy(hostHead, 'Host head');
   let pending = [];
   let pendingBytes = 0;
+  let localEditGeneration = 0;
+  let acknowledgedEditGeneration = 0;
   let status = 'connected';
   let freezeReason = null;
   let forkId = null;
@@ -213,6 +215,7 @@ export function createGuestForkRecovery({
       acknowledgedSnapshot: safeJsonCopy(acknowledgedSnapshot, 'Acknowledged replica snapshot'),
       pendingOperations: pending.map(entry => safeJsonCopy(entry.operation, 'Pending operation')),
       pendingBytes,
+      localChangesPending: localEditGeneration > acknowledgedEditGeneration,
       freezeReason: freezeReason == null ? null : safeJsonCopy(freezeReason, 'Freeze reason'),
       forkId,
       saveError,
@@ -231,9 +234,16 @@ export function createGuestForkRecovery({
     if (pending.length + 1 > maxPendingOperations || pendingBytes + bytes > maxPendingBytes) {
       fail('PENDING_LIMIT', 'Pending guest edits reached their safe in-memory limit; stop editing and save a local copy.');
     }
-    pending.push({ operation: copied, bytes });
+    pending.push({ operation: copied, bytes, editGeneration: localEditGeneration });
     pendingBytes += bytes;
     return safeJsonCopy(copied, 'Proposed operation');
+  }
+
+  function markLocalEditsPending() {
+    if (status !== 'connected') return false;
+    if (localEditGeneration >= Number.MAX_SAFE_INTEGER) fail('EDIT_GENERATION_LIMIT', 'The local edit sequence limit was reached.');
+    localEditGeneration += 1;
+    return true;
   }
 
   function acknowledge(message, operationResult) {
@@ -268,7 +278,27 @@ export function createGuestForkRecovery({
     pendingBytes -= first.bytes;
     acknowledgedSnapshot = nextSnapshot;
     acknowledgedRevision = ack.revision;
+    acknowledgedEditGeneration = Math.max(acknowledgedEditGeneration, first.editGeneration);
     if (nextHead !== undefined) acknowledgedHead = safeJsonCopy(nextHead, 'Acknowledged host head');
+    return { accepted: true, state: state() };
+  }
+
+  function adoptRoomRevision(message) {
+    if (status !== 'connected') return { accepted: false, reason: 'SESSION_FROZEN', state: state() };
+    const update = validateCollaborationMessage(message, { direction: 'host-to-guest' });
+    if (update.kind !== 'ROOM_REVISION' || update.designId !== designId || update.sessionId !== sessionId) {
+      fail('INVALID_ROOM_REVISION', 'The room revision does not belong to this guest session.');
+    }
+    if (pending.length) return { accepted: false, reason: 'PENDING_OPERATIONS', state: state() };
+    if (localEditGeneration > acknowledgedEditGeneration) return { accepted: false, reason: 'LOCAL_EDITS_PENDING', state: state() };
+    if (update.revision !== acknowledgedRevision + 1) {
+      fail('ROOM_REVISION_ORDER', 'A room revision must advance the confirmed replica by exactly one.');
+    }
+    const nextSnapshot = copySnapshot(update.snapshot, update.revision, update.headHash, designId, sessionId);
+    acknowledgedSnapshot = safeJsonCopy(nextSnapshot, 'Room revision snapshot');
+    acknowledgedRevision = update.revision;
+    acknowledgedHead = { sequence: update.revision, commitHash: update.headHash };
+    acknowledgedEditGeneration = localEditGeneration;
     return { accepted: true, state: state() };
   }
 
@@ -298,7 +328,9 @@ export function createGuestForkRecovery({
   return Object.freeze({
     get state() { return state(); },
     propose,
+    markLocalEditsPending,
     acknowledge,
+    adoptRoomRevision,
     reject,
     disconnect,
     retrySave

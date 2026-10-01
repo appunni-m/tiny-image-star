@@ -157,6 +157,53 @@ test('checks context, optimistic base revision, targeting, and field allowlist',
   assert.equal(engine.getRevision(), 0);
 });
 
+test('one sequencer admits independent guest sessions and rejects stale same-base edits without overwriting', async () => {
+  const { document, pageId } = fixture();
+  const commits = [];
+  const engine = createHostOperationEngine({
+    designId: document.id,
+    sessionId: 'session-a',
+    hostActorId: 'host-a',
+    guestActorIds: ['guest-a'],
+    snapshot: document,
+    revision: 12,
+    headHash: 'a'.repeat(64),
+    commit: async input => {
+      commits.push(input);
+      return { headHash: String(input.revision).padStart(64, '0') };
+    }
+  });
+  engine.registerGuestSession('guest-b', 'session-b');
+  assert.equal(engine.getGuestSessionCount(), 2);
+
+  const operation = (actorId, sessionId, opId, baseRevision, name) => engine.apply({
+    v: 1, kind: 'OPERATION', designId: document.id, sessionId, actorId,
+    operation: { type: 'SetProperty', opId, baseRevision, pageId, targetId: 'rectangle-a', property: 'name', value: name }
+  });
+  const simultaneous = await Promise.all([
+    operation('guest-a', 'session-a', 'op-a', 12, 'First edit'),
+    operation('guest-b', 'session-b', 'op-b', 12, 'Stale edit')
+  ]);
+  assert.deepEqual(simultaneous.map(result => result.kind), ['ACK', 'REJECT']);
+  assert.equal(simultaneous[0].sessionId, 'session-a');
+  assert.equal(simultaneous[1].sessionId, 'session-b');
+  assert.equal(simultaneous[1].code, 'STALE_REVISION');
+  assert.equal(engine.getSnapshot().pages[0].children.find(node => node.id === 'rectangle-a').name, 'First edit');
+  assert.equal(engine.getRevision(), 13);
+  assert.equal(commits.length, 1);
+
+  const next = await operation('guest-b', 'session-b', 'op-c', 13, 'Second revision');
+  assert.equal(next.kind, 'ACK');
+  assert.equal(next.sessionId, 'session-b');
+  assert.equal(engine.getRevision(), 14);
+  assert.equal(commits.length, 2);
+  assert.equal(engine.removeGuestSession('guest-b', 'session-b'), true);
+  assert.equal(engine.getGuestSessionCount(), 1);
+  const afterRemoval = await operation('guest-b', 'session-b', 'op-d', 14, 'Revoked guest');
+  assert.equal(afterRemoval.kind, 'REJECT');
+  assert.equal(afterRemoval.code, 'PERMISSION_DENIED');
+});
+
 test('rejects prototype paths and leaves the document unchanged', async () => {
   const engine = setup();
   const before = engine.getSnapshot();

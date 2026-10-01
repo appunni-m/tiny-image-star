@@ -54,6 +54,58 @@ test('ACK requires a verified result, then advances snapshot/revision and remove
   assert.equal(recovery.state.canPropose, true);
 });
 
+test('room revisions advance an idle replica and refuse to overwrite any pending guest work', () => {
+  const recovery = createHarness();
+  const nextSnapshot = { pages: [{ id: 'page-1', nodes: [{ id: 'node-1', text: 'from another guest' }] }] };
+  const update = {
+    v: 1, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
+    revision: 5, headHash: 'b'.repeat(64), snapshot: nextSnapshot
+  };
+  const adopted = recovery.adoptRoomRevision(update);
+  assert.equal(adopted.accepted, true);
+  assert.equal(adopted.state.acknowledgedRevision, 5);
+  assert.deepEqual(adopted.state.acknowledgedSnapshot, nextSnapshot);
+  assert.deepEqual(adopted.state.hostHead, { sequence: 5, commitHash: 'b'.repeat(64) });
+  assert.throws(() => recovery.adoptRoomRevision({ ...update, revision: 7 }), { code: 'ROOM_REVISION_ORDER' });
+
+  recovery.propose(operation('op-local', 5));
+  const pendingUpdate = {
+    ...update, revision: 6, headHash: 'c'.repeat(64),
+    snapshot: { pages: [{ id: 'page-1', nodes: [{ id: 'node-1', text: 'another host edit' }] }] }
+  };
+  const refused = recovery.adoptRoomRevision(pendingUpdate);
+  assert.equal(refused.accepted, false);
+  assert.equal(refused.reason, 'PENDING_OPERATIONS');
+  assert.equal(recovery.state.acknowledgedRevision, 5);
+  assert.equal(recovery.state.pendingOperations[0].opId, 'op-local');
+});
+
+test('room revisions refuse dirty local edits and ACKs clear only the edit generation they cover', () => {
+  const recovery = createHarness();
+  const update = {
+    v: 1, kind: 'ROOM_REVISION', designId, sessionId, actorId: 'host',
+    revision: 5, headHash: 'b'.repeat(64), snapshot: initialSnapshot
+  };
+  assert.equal(recovery.markLocalEditsPending(), true);
+  assert.equal(recovery.state.localChangesPending, true);
+  const refused = recovery.adoptRoomRevision(update);
+  assert.equal(refused.accepted, false);
+  assert.equal(refused.reason, 'LOCAL_EDITS_PENDING');
+  assert.equal(recovery.state.acknowledgedRevision, 4);
+
+  recovery.propose(operation('op-local', 4));
+  recovery.markLocalEditsPending();
+  assert.equal(recovery.acknowledge(ack('op-local', 5), {
+    snapshot: initialSnapshot, revision: 5, head: { sequence: 5, commitHash: 'b'.repeat(64) }
+  }).accepted, true);
+  assert.equal(recovery.state.localChangesPending, true, 'an edit after the proposal remains pending after its older ACK');
+  recovery.propose(operation('op-newer', 5));
+  assert.equal(recovery.acknowledge({ ...ack('op-newer', 6), headHash: 'c'.repeat(64) }, {
+    snapshot: initialSnapshot, revision: 6, head: { sequence: 6, commitHash: 'c'.repeat(64) }
+  }).accepted, true);
+  assert.equal(recovery.state.localChangesPending, false);
+});
+
 test('disconnect freezes proposals and persists a fork from the last verified snapshot plus pending ops', async () => {
   const order = [];
   let saved;

@@ -97,39 +97,42 @@ function sessionBudget({ maxSessionAssetBytes, maxSessionAssetCount }) {
  * before SDP is applied; every guest operation rechecks revocation and is ACKed only
  * after `commitDesign` has closed, reopened, and advanced the workspace HEAD.
  */
-export async function createHostSessionController({
-  workspace,
-  designId,
-  iceServers = [],
-  locks = globalThis.navigator?.locks,
-  crypto = globalThis.crypto,
-  now = () => Date.now(),
-  scheduleTimeout = globalThis.setTimeout?.bind(globalThis),
-  cancelTimeout = globalThis.clearTimeout?.bind(globalThis),
-  onState = () => {},
-  onSnapshot = () => {},
-  getViewState = () => null,
-  peerConnectionFactory = globalThis.RTCPeerConnection,
-  createTransport = createHostWebRtcSession,
-  loadGrant = loadShareGrant,
-  createGrant = createShareGrant,
-  revokeGrant = revokeShareGrant,
-  verifyAnswer = verifyAnswerCapsule,
-  consumeAnswer = consumeAnswerSessionOnce,
-  open = openDesign,
-  commit = commitDesign,
-  readImage = readImageAsset,
-  listFonts = listWorkspaceFontAssets,
-  readFont = readWorkspaceFontAsset,
-  acceptImage = saveImageAsset,
-  acceptFont = saveWorkspaceFontAsset,
-  approveIncomingAsset = async () => false,
-  sendAsset = sendCollaborationAsset,
-  onAssetTransfer = () => {},
-  maxSessionAssetBytes = 512 * 1024 * 1024,
-  maxSessionAssetCount = 256,
-  handshakeTimeoutMs = 20_000
-} = {}) {
+export async function createHostSessionController(options = {}) {
+  const {
+    workspace,
+    designId,
+    iceServers = [],
+    locks = globalThis.navigator?.locks,
+    crypto = globalThis.crypto,
+    now = () => Date.now(),
+    scheduleTimeout = globalThis.setTimeout?.bind(globalThis),
+    cancelTimeout = globalThis.clearTimeout?.bind(globalThis),
+    onState = () => {},
+    onSnapshot = () => {},
+    getViewState = () => null,
+    peerConnectionFactory = globalThis.RTCPeerConnection,
+    createTransport = createHostWebRtcSession,
+    loadGrant = loadShareGrant,
+    createGrant = createShareGrant,
+    revokeGrant = revokeShareGrant,
+    verifyAnswer = verifyAnswerCapsule,
+    consumeAnswer = consumeAnswerSessionOnce,
+    open = openDesign,
+    commit = commitDesign,
+    readImage = readImageAsset,
+    listFonts = listWorkspaceFontAssets,
+    readFont = readWorkspaceFontAsset,
+    acceptImage = saveImageAsset,
+    acceptFont = saveWorkspaceFontAsset,
+    approveIncomingAsset = async () => false,
+    sendAsset = sendCollaborationAsset,
+    onAssetTransfer = () => {},
+    maxSessionAssetBytes = 512 * 1024 * 1024,
+    maxSessionAssetCount = 256,
+    maxRoomPeers = 4,
+    handshakeTimeoutMs = 20_000,
+    room: sharedRoom = null
+  } = options;
   requireWorkspace(workspace, locks);
   assertId(designId, 'Design ID');
   if (typeof handshakeTimeoutMs !== 'number' || !Number.isFinite(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 120_000) {
@@ -140,18 +143,48 @@ export async function createHostSessionController({
   }
   sessionBudget({ maxSessionAssetBytes, maxSessionAssetCount });
   let state = 'preparing';
-  let grant = await loadGrant(workspace, designId, { locks, crypto });
+  if (!Number.isSafeInteger(maxRoomPeers) || maxRoomPeers < 1 || maxRoomPeers > 8) throw new RangeError('A live room supports between one and eight guests.');
+  let grant = sharedRoom?.grant ?? await loadGrant(workspace, designId, { locks, crypto });
   if (!grant) grant = await createGrant(workspace, designId, { locks, crypto, now: now() });
-  let durable = await open(workspace, designId, { locks, crypto });
+  let durable = sharedRoom?.durable ?? await open(workspace, designId, { locks, crypto });
   if (durable.designId !== designId || durable.document.id !== designId || !durable.pageIds.length) throw new Error('The opened workspace design identity is inconsistent.');
-  const hostActorId = makeActorId(crypto, 'host');
+  const hostActorId = sharedRoom?.hostActorId ?? makeActorId(crypto, 'host');
+  const roomState = sharedRoom || {
+    workspaceId: workspace.workspaceId,
+    designId,
+    grant,
+    durable,
+    hostActorId,
+    maxPeers: maxRoomPeers,
+    maxAssetBytes: maxSessionAssetBytes,
+    maxAssetCount: maxSessionAssetCount,
+    engine: null,
+    members: new Map(),
+    sessions: new Set(),
+    snapshotListeners: new Set(),
+    primarySnapshotCallback: onSnapshot,
+    primarySnapshotListener: null,
+    viewStateSequence: 0,
+    transferredAssetBytes: 0,
+    transferredAssetCount: 0,
+    stopped: false,
+    stopAll: null
+  };
+  if (roomState.designId !== designId || roomState.workspaceId !== workspace.workspaceId
+    || roomState.grant.shareId !== grant.shareId || roomState.hostActorId !== hostActorId) {
+    throw new Error('The live peer does not belong to the active design room.');
+  }
+  if (roomState.maxAssetBytes !== maxSessionAssetBytes || roomState.maxAssetCount !== maxSessionAssetCount) {
+    throw new Error('Every peer in a live room must use the same aggregate asset budget.');
+  }
+  if (roomState.stopped) throw new Error('This live room has already been stopped.');
+  if (roomState.sessions.size >= roomState.maxPeers) throw new Error(`This live room has reached its ${roomState.maxPeers}-guest limit.`);
+  const sessionSlot = { close: null };
+  roomState.sessions.add(sessionSlot);
   let transport;
-  let engine = null;
+  let engine = roomState.engine;
   let guestActorId = null;
-  let viewStateSequence = 0;
   let assetReceiver = null;
-  let receivedAssetCount = 0;
-  let receivedAssetBytes = 0;
   let incomingReservation = null;
   let disposed = false;
   const messageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
@@ -160,10 +193,47 @@ export async function createHostSessionController({
   const emit = next => { state = next; try { onState(next); } catch {} };
   const sessionId = () => transport?.session?.sessionId;
   const baseContext = () => ({ v: 1, designId, sessionId: sessionId(), actorId: hostActorId });
+  const ownsRoom = !sharedRoom;
+  const snapshotListener = (snapshot, head) => {
+    if (ownsRoom ? !roomState.stopped : !disposed) {
+      try { onSnapshot(safeSnapshot(snapshot), head); } catch {}
+    }
+  };
+  const registeredSnapshotListener = ownsRoom || onSnapshot !== roomState.primarySnapshotCallback;
+  if (ownsRoom) roomState.primarySnapshotListener = snapshotListener;
+  if (registeredSnapshotListener) roomState.snapshotListeners.add(snapshotListener);
+
+  if (!roomState.stopAll) {
+    roomState.stopAll = reason => {
+      if (roomState.stopped) return;
+      roomState.stopped = true;
+      for (const slot of [...roomState.sessions]) {
+        try { slot.close?.(reason); } catch {}
+      }
+      roomState.snapshotListeners.clear();
+      roomState.primarySnapshotListener = null;
+    };
+  }
 
   function close(reason = 'closed') {
     if (disposed) return;
     disposed = true;
+    roomState.sessions.delete(sessionSlot);
+    if (registeredSnapshotListener && !ownsRoom) roomState.snapshotListeners.delete(snapshotListener);
+    if (guestActorId) {
+      const member = roomState.members.get(guestActorId);
+      if (member?.sessionId === sessionId()) {
+        roomState.members.delete(guestActorId);
+        try { member.abortController?.abort(reason); } catch {}
+        member.queuedRevisions.length = 0;
+        member.queuedRevisionBytes = 0;
+      }
+      try { roomState.engine?.removeGuestSession?.(guestActorId, sessionId()); } catch {}
+    }
+    if (incomingReservation) {
+      incomingReservation.release?.();
+      incomingReservation = null;
+    }
     if (handshakeTimer != null) cancelTimeout(handshakeTimer);
     handshakeTimer = null;
     assetReceiver?.cancel?.();
@@ -171,19 +241,23 @@ export async function createHostSessionController({
     try { transport?.close?.(); } catch {}
     emit(reason);
   }
+  sessionSlot.close = close;
 
   function publishViewState(viewState) {
-    if (disposed || !engine || !guestActorId || state !== 'connected') return false;
-    if (!viewState || !engine.hasPageId(viewState.pageId)) return false;
-    if (viewStateSequence >= Number.MAX_SAFE_INTEGER) throw new Error('The live view sequence limit was reached.');
-    const message = {
-      ...baseContext(), kind: 'VIEW_STATE', sequence: viewStateSequence + 1,
-      pageId: viewState.pageId, zoom: viewState.zoom,
-      centerX: viewState.centerX, centerY: viewState.centerY
-    };
-    sendMessage(transport.dataChannel, message, 'host-to-guest');
-    engine.setActivePageId(viewState.pageId);
-    viewStateSequence = message.sequence;
+    if (roomState.stopped || !roomState.engine || roomState.members.size === 0) return false;
+    if (!viewState || !roomState.engine.hasPageId(viewState.pageId)) return false;
+    if (roomState.viewStateSequence >= Number.MAX_SAFE_INTEGER) throw new Error('The live view sequence limit was reached.');
+    const sequence = roomState.viewStateSequence + 1;
+    for (const member of roomState.members.values()) {
+      if (!member.ready) continue;
+      sendMessage(member.channel, {
+        v: 1, kind: 'VIEW_STATE', designId, sessionId: member.sessionId, actorId: hostActorId,
+        sequence, pageId: viewState.pageId, zoom: viewState.zoom,
+        centerX: viewState.centerX, centerY: viewState.centerY
+      }, 'host-to-guest');
+    }
+    roomState.engine.setActivePageId(viewState.pageId);
+    roomState.viewStateSequence = sequence;
     return true;
   }
 
@@ -192,8 +266,8 @@ export async function createHostSessionController({
     try {
       sendMessage(transport?.dataChannel, {
         ...baseContext(), kind: 'REJECT',
-        opId, revision: engine?.getRevision?.() ?? durable.head.sequence,
-        headHash: engine?.getHeadHash?.() ?? durable.head.commitHash, code
+        opId, revision: engine?.getRevision?.() ?? roomState.durable.head.sequence,
+        headHash: engine?.getHeadHash?.() ?? roomState.durable.head.commitHash, code
       }, 'host-to-guest');
     } catch {}
     close(code === 'CONFLICT' || code === 'STALE_REVISION' ? 'diverged' : 'rejected');
@@ -201,18 +275,30 @@ export async function createHostSessionController({
 
   async function activeGrantOrClose() {
     const active = await loadGrant(workspace, designId, { locks, crypto });
-    if (!active || active.shareId !== grant.shareId) {
-      close('revoked');
+    if (!active || active.shareId !== roomState.grant.shareId) {
+      roomState.stopAll('revoked');
       throw new Error('This live sharing link has been revoked.');
     }
   }
 
-  async function acceptIncomingAsset(asset) {
-    if (++receivedAssetCount > maxSessionAssetCount || receivedAssetBytes + asset.byteLength > maxSessionAssetBytes) {
-      asset.bytes.fill(0);
-      throw new Error('The guest exceeded this live session’s asset transfer budget.');
+  function reserveRoomAsset(byteLength) {
+    if (!Number.isSafeInteger(byteLength) || byteLength < 1
+      || roomState.transferredAssetCount + 1 > roomState.maxAssetCount
+      || roomState.transferredAssetBytes + byteLength > roomState.maxAssetBytes) {
+      throw new Error('The live room exceeded its aggregate asset transfer budget.');
     }
-    receivedAssetBytes += asset.byteLength;
+    roomState.transferredAssetCount += 1;
+    roomState.transferredAssetBytes += byteLength;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      roomState.transferredAssetCount = Math.max(0, roomState.transferredAssetCount - 1);
+      roomState.transferredAssetBytes = Math.max(0, roomState.transferredAssetBytes - byteLength);
+    };
+  }
+
+  async function acceptIncomingAsset(asset) {
     try {
       await locks.request(`tiny-image-star-share-edit:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
         await activeGrantOrClose();
@@ -233,33 +319,45 @@ export async function createHostSessionController({
           }, { locks, crypto });
         }
       });
-      try { onAssetTransfer({ phase: 'received', ...asset, bytes: undefined, totalBytes: receivedAssetBytes, count: receivedAssetCount }); } catch {}
+      if (guestActorId) roomState.members.get(guestActorId)?.assetIds.add(asset.assetId);
+      try {
+        onAssetTransfer({ phase: 'received', ...asset, bytes: undefined,
+          totalBytes: roomState.transferredAssetBytes, count: roomState.transferredAssetCount });
+      } catch {}
     } finally {
       asset.bytes.fill(0);
     }
   }
 
-  async function sendSnapshotAssets() {
-    const requirements = collectDesignAssetRequirements(durable.document);
-    let count = 0;
-    let totalBytes = 0;
+  async function sendSnapshotAssets(snapshot, member) {
+    const requirements = collectDesignAssetRequirements(snapshot);
     const transfer = async ({ assetId, assetKind, mimeType, bytes, fontMetadata = null }) => {
-      if (++count > maxSessionAssetCount || totalBytes + bytes.byteLength > maxSessionAssetBytes) {
+      let release;
+      try {
+        release = reserveRoomAsset(bytes.byteLength);
+        emit('sending-assets');
+        const result = await sendAsset(member.channel, {
+          context: { v: 1, designId, sessionId: member.sessionId, actorId: hostActorId },
+          direction: 'host-to-guest',
+          transferId: makeActorId(crypto, 'transfer'), assetId, assetKind, mimeType, fontMetadata,
+          bytes, crypto, signal: member.abortController.signal
+        });
+        member.assetIds.add(assetId);
+        try {
+          onAssetTransfer({ phase: 'sent', ...result,
+            totalBytes: roomState.transferredAssetBytes, count: roomState.transferredAssetCount });
+        } catch {}
+        return result;
+      } catch (error) {
+        release?.();
+        throw error;
+      } finally {
         bytes.fill?.(0);
-        throw new Error('The design assets exceed this live session’s transfer budget.');
       }
-      totalBytes += bytes.byteLength;
-      emit('sending-assets');
-      const result = await sendAsset(transport.dataChannel, {
-        context: { v: 1, designId, sessionId: sessionId(), actorId: hostActorId },
-        direction: 'host-to-guest',
-        transferId: makeActorId(crypto, 'transfer'), assetId, assetKind, mimeType, fontMetadata, bytes, crypto
-      });
-      try { onAssetTransfer({ phase: 'sent', ...result, totalBytes, count }); } catch {}
-      return result;
     };
 
     for (const assetId of requirements.imageAssetIds) {
+      if (member.assetIds.has(assetId)) continue;
       const asset = await readImage(workspace, designId, assetId, { crypto });
       await transfer({ assetId, assetKind: 'image', mimeType: asset.metadata.mimeType, bytes: asset.bytes });
     }
@@ -272,6 +370,7 @@ export async function createHostSessionController({
       const sentFaces = new Set();
       for (const font of fonts) {
         const meta = font.metadata;
+        if (member.assetIds.has(meta.id)) continue;
         const key = `${normalizeFamily(meta.family)}\u0000${meta.weight}\u0000${meta.style}`;
         if (!specKeys.has(key) || sentFaces.has(key)) continue;
         sentFaces.add(key);
@@ -286,6 +385,66 @@ export async function createHostSessionController({
     }
   }
 
+  async function sendRoomRevision(member, entry) {
+    if (!member.ready || roomState.members.get(member.actorId) !== member) return;
+    await sendSnapshotAssets(entry.snapshot, member);
+    if (!member.ready || roomState.members.get(member.actorId) !== member) return;
+    sendMessage(member.channel, {
+      v: 1, kind: 'ROOM_REVISION', designId, sessionId: member.sessionId, actorId: hostActorId,
+      revision: entry.revision, headHash: entry.headHash, snapshot: safeSnapshot(entry.snapshot)
+    }, 'host-to-guest');
+    member.deliveredRevision = entry.revision;
+  }
+
+  function queueMemberRevision(member, entry, { alreadyCounted = false } = {}) {
+    if (roomState.members.get(member.actorId) !== member) return;
+    const bytes = alreadyCounted ? entry.bytes : JSON.stringify(entry.snapshot).length * 3;
+    if (!alreadyCounted) {
+      if (member.queuedRevisionCount + 1 > 8 || member.queuedRevisionBytes + bytes > 4 * 1024 * 1024) {
+        member.close('sync-overflow');
+        return;
+      }
+      member.queuedRevisionCount += 1;
+      member.queuedRevisionBytes += bytes;
+    }
+    if (!member.ready) {
+      if (!alreadyCounted) member.queuedRevisions.push({ ...entry, bytes });
+      return;
+    }
+    if (entry.revision <= member.enqueuedRevision) {
+      member.queuedRevisionCount = Math.max(0, member.queuedRevisionCount - 1);
+      member.queuedRevisionBytes = Math.max(0, member.queuedRevisionBytes - bytes);
+      return;
+    }
+    if (entry.revision !== member.enqueuedRevision + 1) {
+      member.close('stale-sync');
+      return;
+    }
+    member.enqueuedRevision = entry.revision;
+    member.fanoutQueue = member.fanoutQueue.then(async () => {
+      try {
+        await sendRoomRevision(member, entry);
+      } catch {
+        member.close('failed');
+      } finally {
+        member.queuedRevisionCount = Math.max(0, member.queuedRevisionCount - 1);
+        member.queuedRevisionBytes = Math.max(0, member.queuedRevisionBytes - bytes);
+      }
+    });
+  }
+
+  function queueRoomRevision(entry, authorActorId) {
+    for (const member of roomState.members.values()) {
+      if (member.actorId !== authorActorId) queueMemberRevision(member, entry);
+    }
+  }
+
+  function queuePendingRevisions(member) {
+    const pending = member.queuedRevisions.splice(0).sort((left, right) => left.revision - right.revision);
+    for (const entry of pending) queueMemberRevision(member, entry, { alreadyCounted: true });
+    return member.fanoutQueue;
+  }
+
   async function acceptHello(message) {
     if (guestActorId || message.designId !== designId || message.sessionId !== sessionId() || message.lastRevision < 0) {
       rejectGuest(message, 'PERMISSION_DENIED');
@@ -294,28 +453,53 @@ export async function createHostSessionController({
     guestActorId = message.actorId;
     if (handshakeTimer != null) cancelTimeout(handshakeTimer);
     handshakeTimer = null;
-    engine = createHostOperationEngine({
-      designId,
+    if (!roomState.engine) {
+      roomState.engine = createHostOperationEngine({
+        designId,
+        sessionId: sessionId(),
+        hostActorId,
+        guestActorIds: [guestActorId],
+        snapshot: roomState.durable.document,
+        revision: roomState.durable.head.sequence,
+        headHash: roomState.durable.head.commitHash,
+        commit: async input => {
+          await activeGrantOrClose();
+          const current = roomState.durable;
+          const saved = await commit(workspace, designId, input.snapshot, {
+            expectedHead: current.head,
+            pageId: input.snapshot.activePageId || current.pageIds[0],
+            locks,
+            crypto
+          });
+          if (saved.head.sequence !== input.revision) throw new Error('The durable workspace revision moved unexpectedly.');
+          roomState.durable = saved;
+          for (const listener of [...roomState.snapshotListeners]) {
+            try { listener(safeSnapshot(saved.document), saved.head); } catch {}
+          }
+          return saved;
+        },
+        onCommitted: input => queueRoomRevision(input, input.actorId)
+      });
+    } else {
+      roomState.engine.registerGuestSession(guestActorId, sessionId());
+    }
+    engine = roomState.engine;
+    const member = {
+      actorId: guestActorId,
       sessionId: sessionId(),
-      hostActorId,
-      guestActorIds: [guestActorId],
-      snapshot: durable.document,
-      revision: durable.head.sequence,
-      headHash: durable.head.commitHash,
-      commit: async input => {
-        await activeGrantOrClose();
-        const saved = await commit(workspace, designId, input.snapshot, {
-          expectedHead: durable.head,
-          pageId: input.snapshot.activePageId || durable.pageIds[0],
-          locks,
-          crypto
-        });
-        if (saved.head.sequence !== input.revision) throw new Error('The durable workspace revision moved unexpectedly.');
-        durable = saved;
-        try { onSnapshot(safeSnapshot(saved.document), saved.head); } catch {}
-        return saved;
-      }
-    });
+      channel: transport.dataChannel,
+      close,
+      ready: false,
+      assetIds: new Set(),
+      queuedRevisions: [],
+      queuedRevisionBytes: 0,
+      queuedRevisionCount: 0,
+      deliveredRevision: null,
+      enqueuedRevision: null,
+      fanoutQueue: Promise.resolve(),
+      abortController: new AbortController()
+    };
+    roomState.members.set(guestActorId, member);
     assetReceiver = createCollaborationAssetReceiver({
       channel: transport.dataChannel,
       direction: 'guest-to-host',
@@ -323,15 +507,22 @@ export async function createHostSessionController({
       crypto,
       maxBytes: MAX_ASSET_BYTES
     });
+    const initialSnapshot = roomState.engine.getSnapshot();
+    const initialRevision = roomState.engine.getRevision();
+    const initialHeadHash = roomState.engine.getHeadHash();
     sendMessage(transport.dataChannel, {
-      ...baseContext(), kind: 'WELCOME', hostActorId, revision: durable.head.sequence, headHash: durable.head.commitHash
+      ...baseContext(), kind: 'WELCOME', hostActorId, revision: initialRevision, headHash: initialHeadHash
     }, 'host-to-guest');
-    await sendSnapshotAssets();
+    await sendSnapshotAssets(initialSnapshot, member);
     sendMessage(transport.dataChannel, {
-      ...baseContext(), kind: 'SNAPSHOT', revision: durable.head.sequence, headHash: durable.head.commitHash,
-      snapshot: safeSnapshot(durable.document)
+      ...baseContext(), kind: 'SNAPSHOT', revision: initialRevision, headHash: initialHeadHash,
+      snapshot: safeSnapshot(initialSnapshot)
     }, 'host-to-guest');
+    member.deliveredRevision = initialRevision;
+    member.enqueuedRevision = initialRevision;
+    member.ready = true;
     emit('connected');
+    await queuePendingRevisions(member);
     try { publishViewState(getViewState()); } catch { /* A failed initial view hint must not block the authenticated design snapshot. */ }
   }
 
@@ -345,21 +536,33 @@ export async function createHostSessionController({
       if (message.kind.startsWith('ASSET_')) {
         if (!assetReceiver || message.actorId !== guestActorId) { rejectGuest(message, 'PERMISSION_DENIED'); return; }
         if (message.kind === 'ASSET_BEGIN') {
-          if (incomingReservation || receivedAssetCount + 1 > maxSessionAssetCount
-            || receivedAssetBytes + message.byteLength > maxSessionAssetBytes) {
-            throw new Error('The guest exceeded this live session’s asset transfer budget.');
+          if (incomingReservation) throw new Error('This guest already has an active asset transfer.');
+          const release = reserveRoomAsset(message.byteLength);
+          incomingReservation = { transferId: message.transferId, byteLength: message.byteLength, release };
+          try {
+            const approved = await approveIncomingAsset({
+              direction: 'guest-to-host', assetId: message.assetId, assetKind: message.assetKind,
+              mimeType: message.mimeType, byteLength: message.byteLength, fontMetadata: message.fontMetadata
+            });
+            if (disposed) { release(); incomingReservation = null; return; }
+            if (approved !== true) {
+              release();
+              incomingReservation = null;
+              rejectGuest(message, 'PERMISSION_DENIED');
+              return;
+            }
+          } catch (error) {
+            release();
+            if (incomingReservation?.release === release) incomingReservation = null;
+            throw error;
           }
-          const approved = await approveIncomingAsset({
-            direction: 'guest-to-host', assetId: message.assetId, assetKind: message.assetKind,
-            mimeType: message.mimeType, byteLength: message.byteLength, fontMetadata: message.fontMetadata
-          });
-          if (approved !== true) { rejectGuest(message, 'PERMISSION_DENIED'); return; }
-          incomingReservation = { transferId: message.transferId, byteLength: message.byteLength };
         }
         const completed = await assetReceiver.accept(message);
         if (completed) {
+          const reservation = incomingReservation;
           incomingReservation = null;
-          await acceptIncomingAsset(completed);
+          try { await acceptIncomingAsset(completed); }
+          catch (error) { reservation?.release?.(); throw error; }
         }
         return;
       }
@@ -397,7 +600,7 @@ export async function createHostSessionController({
       peerConnectionFactory
     });
   } catch (error) {
-    emit('failed');
+    close('failed');
     throw error;
   }
   const channel = transport.dataChannel;
@@ -426,7 +629,12 @@ export async function createHostSessionController({
     get offerCapsule() { return transport.offerCapsule; },
     get invitation() { return grant.encodedInvite; },
     get shareId() { return grant.shareId; },
-    get head() { return durable.head; },
+    get head() { return roomState.durable.head; },
+    get guestCount() { return roomState.members.size; },
+    addGuestSession: overrides => {
+      if (roomState.stopped) throw new Error('This live room has already been stopped.');
+      return createHostSessionController({ ...options, ...(overrides || {}), room: roomState });
+    },
     acceptAnswer: async answerCapsule => {
       if (disposed || state !== 'waiting-answer') throw new Error('This host session is not waiting for an answer.');
       emit('verifying-answer');
@@ -443,7 +651,10 @@ export async function createHostSessionController({
       if (handshakeTimer != null) cancelTimeout(handshakeTimer);
       handshakeTimer = null;
       const active = await loadGrant(workspace, designId, { locks, crypto });
-      if (!active || active.shareId !== grant.shareId) { close('revoked'); throw new Error('This live sharing link has been revoked.'); }
+      if (!active || active.shareId !== roomState.grant.shareId) {
+        roomState.stopAll('revoked');
+        throw new Error('This live sharing link has been revoked.');
+      }
       emit('connecting');
       try {
         await transport.acceptAnswer(answerCapsule);
@@ -460,7 +671,7 @@ export async function createHostSessionController({
     revoke: async () => {
       return locks.request(`tiny-image-star-share-edit:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
         const revoked = await revokeGrant(workspace, designId, { locks, now: now() });
-        if (revoked) close('revoked');
+        if (revoked) roomState.stopAll('revoked');
         return revoked;
       });
     },
@@ -487,6 +698,7 @@ export async function createGuestSessionController({
   onViewState = () => {},
   onFork = () => {},
   closeSession = () => {},
+  canAdoptRoomRevision = () => true,
   onAsset,
   approveIncomingAsset = async () => false,
   sendAsset = sendCollaborationAsset,
@@ -631,7 +843,7 @@ export async function createGuestSessionController({
           maxPendingBytes
         });
         emit('connected');
-        try { onSnapshot(safeSnapshot(lastSnapshot), hostRevision, { sequence: hostRevision, commitHash: hostHeadHash }); } catch {}
+        await onSnapshot(safeSnapshot(lastSnapshot), hostRevision, { sequence: hostRevision, commitHash: hostHeadHash }, { source: 'initial' });
         return;
       }
       if (recovery.state.pendingOperations.length) {
@@ -641,6 +853,38 @@ export async function createGuestSessionController({
       if (message.revision !== recovery.state.acknowledgedRevision || message.headHash !== recovery.state.hostHead.commitHash) {
         void freezeWithFork({ type: 'diverged', reason: 'host-snapshot-advanced', revision: message.revision });
       }
+      return;
+    }
+    if (message.kind === 'ROOM_REVISION') {
+      if (!recovery || !lastSnapshot) throw new Error('The room advanced before this guest received its authenticated design snapshot.');
+      if (recovery.state.pendingOperations.length) {
+        void freezeWithFork({
+          type: 'diverged',
+          reason: 'room-advanced-with-pending-edits',
+          revision: message.revision
+        });
+        return;
+      }
+      let canAdopt = false;
+      try { canAdopt = canAdoptRoomRevision() === true; } catch {}
+      if (!canAdopt) {
+        void freezeWithFork({ type: 'diverged', reason: 'local-edit-in-progress', revision: message.revision });
+        return;
+      }
+      const nextSnapshot = safeSnapshot(message.snapshot);
+      const requiredImages = collectDesignAssetRequirements(nextSnapshot).imageAssetIds;
+      const missingImages = requiredImages.filter(assetId => !receivedAssetIds.has(assetId));
+      if (missingImages.length) throw new Error(`The room revision is missing ${missingImages.length} referenced image assets.`);
+      const adopted = recovery.adoptRoomRevision(message);
+      if (!adopted.accepted) {
+        void freezeWithFork({ type: 'diverged', reason: adopted.reason, revision: message.revision });
+        return;
+      }
+      lastSnapshot = safeSnapshot(adopted.state.acknowledgedSnapshot);
+      hostRevision = adopted.state.acknowledgedRevision;
+      hostHeadHash = adopted.state.hostHead.commitHash;
+      emit('connected');
+      await onSnapshot(safeSnapshot(lastSnapshot), hostRevision, adopted.state.hostHead, { source: 'room-revision' });
       return;
     }
     if (message.kind === 'ACK') {
@@ -660,7 +904,7 @@ export async function createGuestSessionController({
       hostRevision = message.revision;
       hostHeadHash = message.headHash;
       emit(recovery.state.pendingOperations.length ? 'pending' : 'connected');
-      try { onSnapshot(safeSnapshot(lastSnapshot), hostRevision, recovery.state.hostHead); } catch {}
+      await onSnapshot(safeSnapshot(lastSnapshot), hostRevision, recovery.state.hostHead, { source: 'ack' });
       return;
     }
     if (message.kind === 'REJECT') {
@@ -710,6 +954,7 @@ export async function createGuestSessionController({
     get viewState() { return lastViewState && { ...lastViewState }; },
     get revision() { return recovery?.state.acknowledgedRevision ?? hostRevision; },
     get fork() { return recovery?.state ?? null; },
+    markLocalEditsPending() { return recovery?.markLocalEditsPending() ?? false; },
     ready,
     async sendAsset(asset) {
       if (!recovery || state !== 'connected') throw new Error('The host snapshot is not ready for asset transfer.');
@@ -736,6 +981,7 @@ export async function createGuestSessionController({
         });
         outgoingAssetCount += 1;
         outgoingAssetBytes += asset.bytes.byteLength;
+        if (asset.assetKind === 'image') receivedAssetIds.add(asset.assetId);
         try { onAssetTransfer({ phase: 'sent', ...result, totalBytes: outgoingAssetBytes, count: outgoingAssetCount }); } catch {}
         return result;
       } finally { outgoingAssetInProgress = false; }

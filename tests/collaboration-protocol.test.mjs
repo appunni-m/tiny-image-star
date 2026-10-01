@@ -15,7 +15,7 @@ const digest = 'a'.repeat(64);
 const opBase = { opId: 'op-a', baseRevision: 3, pageId: 'page-a' };
 
 function message(kind, fields = {}) {
-  return { ...context, kind, ...(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT'].includes(kind) ? { headHash: digest } : {}), ...fields };
+  return { ...context, kind, ...(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION'].includes(kind) ? { headHash: digest } : {}), ...fields };
 }
 
 function assertProtocolError(fn, code) {
@@ -46,6 +46,7 @@ test('JSON message types round-trip with strict direction and preserve typed ope
     message('ACK', { opId: 'op-a', revision: 4 }),
     message('REJECT', { opId: 'op-a', revision: 4, code: 'STALE_REVISION' }),
     message('SNAPSHOT', { revision: 4, snapshot: { pages: [{ id: 'page-a', children: [] }] } }),
+    message('ROOM_REVISION', { revision: 5, snapshot: { pages: [{ id: 'page-a', children: [{ id: 'node-a' }] }] } }),
     message('VIEW_STATE', { sequence: 1, pageId: 'page-a', zoom: 1.25, centerX: -300.5, centerY: 640 }),
     message('FORK_NOTICE', { baseRevision: 3, forkId: 'fork-a', reason: 'DISCONNECTED' }),
     message('PING', { nonce: 'ping-a', sentAt: 1_700_000_000_000 }),
@@ -64,6 +65,9 @@ test('JSON message types round-trip with strict direction and preserve typed ope
   assertProtocolError(() => validateCollaborationMessage(messages[1], { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
   assertProtocolError(() => validateCollaborationMessage(viewState, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
   assert.deepEqual(validateCollaborationMessage(viewState, { direction: 'host-to-guest', context }), viewState);
+  const roomRevision = messages.find(item => item.kind === 'ROOM_REVISION');
+  assert.deepEqual(validateCollaborationMessage(roomRevision, { direction: 'host-to-guest', context }), roomRevision);
+  assertProtocolError(() => validateCollaborationMessage(roomRevision, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
   assert.deepEqual(validateCollaborationMessage(messages.at(-2), {
     direction: 'guest-to-host', context
   }), messages.at(-2));

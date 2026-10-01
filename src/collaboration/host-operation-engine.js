@@ -336,7 +336,8 @@ export function createHostOperationEngine({
   snapshot,
   revision,
   headHash = '0'.repeat(64),
-  commit
+  commit,
+  onCommitted = () => {}
 }) {
   assertId(designId, 'Design ID');
   assertId(sessionId, 'Session ID');
@@ -355,16 +356,22 @@ export function createHostOperationEngine({
   assetManifest(document);
   let currentRevision = revision;
   let currentHeadHash = headHash;
-  const guestSet = new Set(guestActorIds);
+  const guestSessions = new Map(guestActorIds.map(actorId => [actorId, sessionId]));
   const accepted = new Map();
   let acceptedBytes = 0;
   let queue = Promise.resolve();
+
+  const responseSessionId = message => (
+    typeof message?.sessionId === 'string' && guestSessions.get(message?.actorId) === message.sessionId
+      ? message.sessionId
+      : sessionId
+  );
 
   const makeReject = (message, code) => ({
     v: PROTOCOL_VERSION,
     kind: 'REJECT',
     designId,
-    sessionId,
+    sessionId: responseSessionId(message),
     actorId: hostActorId,
     opId: typeof message?.operation?.opId === 'string' && ID_PATTERN.test(message.operation.opId)
       ? message.operation.opId
@@ -382,7 +389,7 @@ export function createHostOperationEngine({
       return makeReject(rawMessage, 'INVALID_OPERATION');
     }
     if (message.kind !== 'OPERATION') return makeReject(message, 'INVALID_OPERATION');
-    if (message.designId !== designId || message.sessionId !== sessionId || !guestSet.has(message.actorId)) {
+    if (message.designId !== designId || guestSessions.get(message.actorId) !== message.sessionId) {
       return makeReject(message, 'PERMISSION_DENIED');
     }
     const operation = message.operation;
@@ -422,7 +429,7 @@ export function createHostOperationEngine({
     try {
       durableResult = await commit({
         designId,
-        sessionId,
+        sessionId: message.sessionId,
         actorId: message.actorId,
         hostActorId,
         opId: operation.opId,
@@ -447,12 +454,18 @@ export function createHostOperationEngine({
       v: PROTOCOL_VERSION,
       kind: 'ACK',
       designId,
-      sessionId,
+      sessionId: message.sessionId,
       actorId: hostActorId,
       opId: operation.opId,
       revision: nextRevision,
       headHash: currentHeadHash
     };
+    try {
+      onCommitted({
+        designId, sessionId: message.sessionId, actorId: message.actorId, opId: operation.opId,
+        revision: nextRevision, headHash: currentHeadHash, snapshot: clone(document), operation: clone(operation)
+      });
+    } catch { /* A durable commit and its ACK must not be undone by a presence/fan-out observer. */ }
     accepted.set(acceptedKey, { fingerprint, result });
     acceptedBytes += entryBytes;
     return resultCopy(result);
@@ -474,6 +487,18 @@ export function createHostOperationEngine({
       maxEntries: MAX_ACCEPTED_OPERATION_COUNT,
       maxBytes: MAX_ACCEPTED_OPERATION_BYTES
     }),
+    registerGuestSession(actorId, guestSessionId) {
+      assertId(actorId, 'Guest actor ID');
+      assertId(guestSessionId, 'Guest session ID');
+      if (guestSessions.has(actorId)) throw new TypeError('The guest actor is already registered.');
+      guestSessions.set(actorId, guestSessionId);
+      return true;
+    },
+    removeGuestSession(actorId, guestSessionId) {
+      if (guestSessions.get(actorId) !== guestSessionId) return false;
+      return guestSessions.delete(actorId);
+    },
+    getGuestSessionCount: () => guestSessions.size,
     apply(rawMessage) {
       const result = queue.then(() => applyNow(rawMessage));
       queue = result.then(() => undefined, () => undefined);

@@ -16,7 +16,7 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
 const DEFAULT_RECEIVE_TIMEOUT_MS = 30_000;
 const MAX_TRACKED_TRANSFER_IDS = 4096;
 const UTF8 = new TextEncoder();
-const activeChannels = new WeakSet();
+const activeChannelDirections = new WeakMap();
 
 export class CollaborationAssetTransferError extends Error {
   constructor(code, message, options = {}) {
@@ -77,15 +77,26 @@ function assertChannel(channel) {
   if (!channel || typeof channel !== 'object' || typeof channel.send !== 'function') fail('INVALID_CHANNEL', 'A WebRTC DataChannel is required.');
 }
 
-function claimChannel(channel) {
+function claimChannel(channel, transferDirection) {
   assertChannel(channel);
-  if (activeChannels.has(channel)) fail('TRANSFER_IN_PROGRESS', 'Only one asset transfer may be active on a DataChannel at a time.');
-  activeChannels.add(channel);
+  if (transferDirection !== 'outbound' && transferDirection !== 'inbound') {
+    fail('INVALID_DIRECTION', 'Asset transfer direction must be outbound or inbound.');
+  }
+  let active = activeChannelDirections.get(channel);
+  if (!active) {
+    active = new Set();
+    activeChannelDirections.set(channel, active);
+  }
+  if (active.has(transferDirection)) {
+    fail('TRANSFER_IN_PROGRESS', `An ${transferDirection} asset transfer is already active on this DataChannel.`);
+  }
+  active.add(transferDirection);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    activeChannels.delete(channel);
+    active.delete(transferDirection);
+    if (!active.size) activeChannelDirections.delete(channel);
   };
 }
 
@@ -168,7 +179,7 @@ export async function sendCollaborationAsset(channel, {
   assertBufferOptions(maxBufferedAmount, drainTimeoutMs);
   checkAbort(signal);
 
-  const release = claimChannel(channel);
+  const release = claimChannel(channel, 'outbound');
   const originalLowThreshold = channel.bufferedAmountLowThreshold;
   const stableBytes = source.slice();
   let digest;
@@ -287,7 +298,7 @@ export function createCollaborationAssetReceiver({
       if (seenTransferIds.has(message.transferId)) fail('REPLAYED_TRANSFER', 'This transfer ID has already been used in this session.');
       if (seenTransferIds.size >= MAX_TRACKED_TRANSFER_IDS) fail('TRANSFER_LIMIT', 'The session has reached its bounded asset transfer count.');
       if (message.byteLength > maxBytes) fail('SIZE_LIMIT', 'The incoming asset exceeds the configured receiver bound.');
-      releaseChannel = claimChannel(channel);
+      releaseChannel = claimChannel(channel, 'inbound');
       seenTransferIds.add(message.transferId);
       active = {
         transferId: message.transferId,

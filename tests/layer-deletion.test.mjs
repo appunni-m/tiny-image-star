@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
-import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
+import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from '../src/layer-deletion.js';
 import { hitTestPage } from '../src/renderer.js';
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
@@ -22,6 +22,18 @@ test('a layer menu keeps its opening selection as the delete target', () => {
   assert.deepEqual(layerMenuDeleteTargets(selectedIds, 'menu-layer'), ['menu-layer'],
     'opening a menu on an unselected row makes that row the stable delete target');
   assert.deepEqual(layerMenuDeleteTargets([], 'menu-layer'), ['menu-layer']);
+});
+
+test('only an anchor belonging to the selected path intercepts the Delete key', () => {
+  const selectedAnchor = { nodeId: 'path-1', index: 2, contourIndex: 0 };
+
+  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], selectedAnchor), true);
+  assert.equal(shouldDeleteSelectedVectorAnchor(['image-1'], selectedAnchor), false,
+    'a stale anchor cannot consume Delete after another layer becomes selected');
+  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1', 'image-1'], selectedAnchor), false,
+    'layer multi-selection uses layer deletion, not one stale anchor');
+  assert.equal(shouldDeleteSelectedVectorAnchor([], selectedAnchor), false);
+  assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], null), false);
 });
 
 test('layer deletion removes selections from a new valid document', () => {

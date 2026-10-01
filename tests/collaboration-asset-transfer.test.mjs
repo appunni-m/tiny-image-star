@@ -263,7 +263,53 @@ test('an incoming transfer timeout clears its state and reservation, and rejects
   nextReceiver.cancel();
 });
 
-test('a DataChannel admits one transfer at a time and applies bounded bufferedAmount backpressure', async () => {
+test('one inbound and one outbound asset transfer can coexist while duplicate directions are rejected', async () => {
+  const channel = makeChannel({ drainDelayMs: 3 });
+  const incomingBytes = Uint8Array.of(8, 6, 7, 5, 3, 0, 9);
+  const incomingFrames = transferFrames({
+    bytes: incomingBytes,
+    direction: 'guest-to-host',
+    context: guestContext,
+    transferId: 'guest-transfer',
+    assetId: 'guest-asset',
+    digest: await hash(incomingBytes)
+  });
+  const receiver = createCollaborationAssetReceiver({
+    channel, direction: 'guest-to-host', context: guestContext, crypto: webcrypto
+  });
+  assert.equal(await receiver.accept(incomingFrames[0]), null, 'the inbound transfer reserves its direction');
+
+  const duplicateReceiver = createCollaborationAssetReceiver({
+    channel, direction: 'guest-to-host', context: guestContext, crypto: webcrypto
+  });
+  await assertTransferError(duplicateReceiver.accept(incomingFrames[0]), 'TRANSFER_IN_PROGRESS');
+
+  const outgoingOptions = {
+    context: senderContext,
+    direction: 'host-to-guest',
+    assetKind: 'image',
+    mimeType: 'image/png',
+    crypto: webcrypto,
+    maxBufferedAmount: MAX_ASSET_CHUNK_BYTES + 2055,
+    bytes: new Uint8Array(MAX_ASSET_CHUNK_BYTES * 2 + 7).fill(9)
+  };
+  const outgoing = sendCollaborationAsset(channel, {
+    ...outgoingOptions, transferId: 'host-transfer', assetId: 'host-asset'
+  });
+  await assertTransferError(sendCollaborationAsset(channel, {
+    ...outgoingOptions, transferId: 'host-transfer-duplicate', assetId: 'host-asset-duplicate', bytes: Uint8Array.of(2)
+  }), 'TRANSFER_IN_PROGRESS');
+
+  const incoming = acceptFrames(receiver, incomingFrames.slice(1));
+  const [sent, received] = await Promise.all([outgoing, incoming]);
+  assert.equal(sent.assetId, 'host-asset');
+  assert.equal(received.assetId, 'guest-asset');
+  assert.deepEqual(received.bytes, incomingBytes);
+  assert.ok(channel.peakBufferedAmount <= outgoingOptions.maxBufferedAmount,
+    'the simultaneous inbound work does not bypass outbound DataChannel backpressure');
+});
+
+test('a DataChannel admits one outbound transfer at a time and applies bounded bufferedAmount backpressure', async () => {
   const channel = makeChannel({ drainDelayMs: 3 });
   const options = {
     context: senderContext,

@@ -7,7 +7,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MESSAGE_KINDS = new Set([
-  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'VIEW_STATE', 'FORK_NOTICE',
+  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION', 'VIEW_STATE', 'FORK_NOTICE',
   'PING', 'PONG', 'ASSET_BEGIN', 'ASSET_CHUNK', 'ASSET_END'
 ]);
 const REJECTION_CODES = new Set([
@@ -34,6 +34,7 @@ const MESSAGE_FIELDS = {
   ACK: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'opId', 'revision', 'headHash'],
   REJECT: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'opId', 'revision', 'code', 'headHash'],
   SNAPSHOT: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'revision', 'headHash', 'snapshot'],
+  ROOM_REVISION: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'revision', 'headHash', 'snapshot'],
   VIEW_STATE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'sequence', 'pageId', 'zoom', 'centerX', 'centerY'],
   FORK_NOTICE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'baseRevision', 'forkId', 'reason'],
   PING: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'nonce', 'sentAt'],
@@ -44,7 +45,7 @@ const MESSAGE_FIELDS = {
 };
 
 const GUEST_TO_HOST = new Set(['HELLO', 'OPERATION', 'FORK_NOTICE']);
-const HOST_TO_GUEST = new Set(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT', 'VIEW_STATE']);
+const HOST_TO_GUEST = new Set(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT', 'ROOM_REVISION', 'VIEW_STATE']);
 
 /** A stable, machine-readable failure from the collaboration wire contract. */
 export class CollaborationProtocolError extends Error {
@@ -313,7 +314,8 @@ function validateMessageFields(message) {
       assertHash(message.headHash, 'Host commit hash');
       if (!REJECTION_CODES.has(message.code)) fail('INVALID_MESSAGE', 'Rejection code is unsupported.');
       break;
-    case 'SNAPSHOT': {
+    case 'SNAPSHOT':
+    case 'ROOM_REVISION': {
       assertRevision(message.revision, 'Snapshot revision');
       assertHash(message.headHash, 'Snapshot commit hash');
       const snapshot = assertJsonObject(message.snapshot, 'Snapshot');

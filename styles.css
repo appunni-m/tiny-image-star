@@ -821,6 +821,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .live-collaboration-note { margin: 0 0 16px; color: #666b75; font-size: 12px; line-height: 1.55; }
 .live-capsule-field { display: block; width: 100%; min-height: 66px; margin: 6px 0 8px; resize: vertical; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .live-copy-button { min-height: 38px; margin: 0 0 14px; }
+.live-peer-list { display: grid; gap: 8px; margin: 4px 0 14px; }
+.live-peer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-subtle, #f7f8fa); color: var(--ink); font-size: 11px; line-height: 1.45; }
+.live-peer-row .secondary-button { min-height: 34px; padding: 0 10px; }
 .live-inline-controls { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 12px; }
 .live-stun-option { display: flex; align-items: flex-start; gap: 9px; color: #676b74; font-size: 11px; line-height: 1.45; }
 .live-stun-option input { flex: 0 0 auto; margin: 2px 0 0; accent-color: #7564f6; }
@@ -840,6 +843,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .live-view-dock .select-field { min-width: 84px; max-width: 120px; height: 40px; }
   .live-view-dock label, .live-view-dock button { font-size: 11px; }
   .live-view-dock button { min-height: 40px; padding: 0 8px; }
+  .live-peer-row { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .live-peer-row .secondary-button { width: 100%; }
 }
 .modal-title-row { display: flex; align-items: flex-start; justify-content: space-between; }
 .modal-eyebrow { color: #888; font-size: 9px; font-weight: 650; letter-spacing: .12em; }

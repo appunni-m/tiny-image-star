@@ -266,6 +266,8 @@
             <textarea class="text-field live-capsule-field" id="live-offer-value" readonly spellcheck="false" aria-label="One-time WebRTC offer"></textarea>
             <button class="secondary-button live-copy-button" type="button" data-copy-field="live-offer-value">Copy offer</button>
             <button class="secondary-button live-copy-button" id="live-share-capsules" type="button" hidden>Share invitation and offer…</button>
+            <button class="secondary-button live-copy-button" id="live-add-guest" type="button" hidden>Create another guest offer</button>
+            <div class="live-peer-list" id="live-peer-list" role="list" aria-live="polite" aria-label="Live guest connections"></div>
             <label class="field-label" for="live-answer-value">Guest answer</label>
             <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste the guest’s answer here"></textarea>
             <div class="live-inline-controls"><label class="live-stun-option"><input id="live-stun-opt-in" type="checkbox" /><span>Try Google STUN for internet connections (Google can observe network metadata)</span></label><button class="primary-button" id="live-start-host" type="button">Create session offer</button><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect guest</button></div>

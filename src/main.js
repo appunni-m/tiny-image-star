@@ -49,7 +49,7 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
-import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
+import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from './layer-deletion.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -984,6 +984,11 @@ function setDocumentEditingBlocked(blocked) {
 function queueSave({ refreshLayerTree = true } = {}) {
   if (!state.ready) return;
   state.saveRevision += 1;
+  const liveGuest = state.liveCollaboration;
+  if (liveGuest?.role === 'guest' && liveGuest.replicaReady && liveGuest.controller
+    && ['connected', 'pending'].includes(liveGuest.controller.state)) {
+    liveGuest.controller.markLocalEditsPending();
+  }
   if (syncAllComponentInstances(state.document)) {
     reconcileImagePreviewRuntime();
     if (refreshLayerTree) renderLayers();
@@ -7312,6 +7317,7 @@ async function importImageFiles(files, point = null, { place = true, input = $('
   const defaultWorld = point || { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
   let imported = 0;
   let placedCount = 0;
+  let lastPlacedNodeId = null;
   const memoryLimitedFiles = [];
   for (const [index, file] of inputs.entries()) {
     const fileName = typeof file.name === 'string' && file.name.trim()
@@ -7381,9 +7387,9 @@ async function importImageFiles(files, point = null, { place = true, input = $('
         localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
         placed = true;
         placedCount += 1;
+        lastPlacedNodeId = node.id;
         state.imageStatus.set(node.id, 'Processing locally…');
         renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, imagePreviewFailureStatus(error)); showToast(error.message); });
-        state.selectedIds = [node.id];
       }
     } catch (error) {
       if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
@@ -7410,7 +7416,10 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       if (pillowFallbackUsed && !placed && !retainedInLibrary && assetId) imageEngine.dispose(assetId);
     }
   }
-  if (imported) { renderUI(); queueSave(); }
+  if (imported) {
+    if (place && lastPlacedNodeId) setSelection([lastPlacedNodeId], { keepInspector: true, refreshLayers: false });
+    renderUI(); queueSave();
+  }
   if (memoryLimitedFiles.length) {
     const examples = memoryLimitedFiles.slice(0, 3).join(', ');
     const more = memoryLimitedFiles.length > 3 ? `, and ${memoryLimitedFiles.length - 3} more` : '';
@@ -8794,15 +8803,107 @@ function liveStatus(role, message) {
 function liveTerminal(status) {
   return ['closed', 'revoked', 'failed', 'timeout', 'disconnected', 'overloaded', 'rejected', 'diverged', 'fork-saved', 'fork-unsaved', 'disconnected-before-snapshot'].includes(status);
 }
+function liveHostStatusCopy(status) {
+  return {
+    preparing: 'Preparing the design and signed session offer…',
+    'waiting-answer': 'Offer ready. Send the invitation and offer to your guest.',
+    'verifying-answer': 'Verifying the guest’s answer…',
+    connecting: 'Connecting directly to the guest…',
+    'waiting-guest': 'Connection open. Waiting for the guest to finish joining…',
+    connected: 'Guest connected. Your folder is the canonical saved copy.',
+    'sending-assets': 'Sending required images and fonts over the encrypted peer connection…',
+    revoked: 'Sharing stopped and the invitation was revoked.',
+    closed: 'Live session closed.',
+    failed: 'The live session failed. Check the capsules and try again.',
+    timeout: 'The live session timed out.',
+    overloaded: 'The peer sent too many messages. The session was closed safely.',
+    rejected: 'The guest session was rejected.',
+    diverged: 'The guest diverged from the saved head; their local work was preserved as a fork.'
+  }[status] || `Live session: ${status}.`;
+}
+function renderLiveHostPeers(session) {
+  const list = $('#live-peer-list');
+  if (!list) return;
+  list.replaceChildren();
+  for (const peer of session.peerSessions || []) {
+    const item = document.createElement('div');
+    item.className = 'live-peer-row';
+    item.setAttribute('role', 'listitem');
+    const status = document.createElement('span');
+    status.textContent = `${peer.label}: ${liveHostStatusCopy(peer.status)}`;
+    item.append(status);
+    if (peer.controller && !liveTerminal(peer.status)) {
+      if (peer.status === 'waiting-answer') {
+        const select = document.createElement('button');
+        select.type = 'button';
+        select.className = 'secondary-button';
+        select.textContent = session.currentHostPeer === peer ? 'Selected for answer' : 'Use this guest';
+        select.disabled = session.currentHostPeer === peer;
+        select.setAttribute('aria-pressed', String(session.currentHostPeer === peer));
+        select.setAttribute('aria-label', `${session.currentHostPeer === peer ? 'Selected' : 'Select'} ${peer.label} for answer`);
+        select.addEventListener('click', () => {
+          if (session.currentHostPeer) session.currentHostPeer.answerDraft = $('#live-answer-value').value;
+          session.currentHostPeer = peer;
+          const link = new URL(location.href);
+          link.hash = peer.controller.invitation;
+          $('#live-invite-value').value = link.toString();
+          $('#live-offer-value').value = peer.controller.offerCapsule;
+          $('#live-answer-value').value = peer.answerDraft || '';
+          $('#live-accept-answer').hidden = false;
+          $('#live-share-capsules').hidden = false;
+          liveStatus('host', `${peer.label} selected. Paste that guest’s matching answer capsule to connect.`);
+          renderLiveHostPeers(session);
+        });
+        item.append(select);
+      }
+      const disconnect = document.createElement('button');
+      disconnect.type = 'button';
+      disconnect.className = 'secondary-button';
+      disconnect.textContent = 'Disconnect';
+      disconnect.setAttribute('aria-label', `Disconnect ${peer.label}`);
+      disconnect.addEventListener('click', () => peer.controller.close());
+      item.append(disconnect);
+    }
+    list.append(item);
+  }
+}
+function refreshLiveHostRoomUi(session) {
+  if (session?.role !== 'host') return;
+  const peers = session.peerSessions || [];
+  const connected = peers.filter(peer => peer.status === 'connected').length;
+  const waiting = peers.some(peer => !liveTerminal(peer.status) && peer.status !== 'connected');
+  const allRevoked = peers.length > 0 && peers.every(peer => peer.status === 'revoked');
+  if (connected) {
+    session.status = 'connected';
+    liveStatus('host', `${connected} guest${connected === 1 ? '' : 's'} connected. Your folder is the canonical saved copy.`);
+    setLiveEditorBlocked(false);
+  } else if (waiting) {
+    const active = [...peers].reverse().find(peer => !liveTerminal(peer.status));
+    session.status = active?.status || 'waiting-answer';
+    liveStatus('host', liveHostStatusCopy(session.status));
+  } else if (allRevoked) {
+    session.status = 'revoked';
+    liveStatus('host', liveHostStatusCopy('revoked'));
+    setLiveEditorBlocked(false);
+  } else if (peers.length && peers.every(peer => liveTerminal(peer.status))) {
+    const latest = peers.at(-1)?.status || 'closed';
+    session.status = latest;
+    liveStatus('host', liveHostStatusCopy(latest));
+    setLiveEditorBlocked(false);
+  }
+  renderLiveHostPeers(session);
+  syncLiveViewDock();
+}
 function isLiveHostViewOnly() {
-  return state.liveCollaboration?.role === 'host' && state.liveCollaboration.status === 'connected'
+  return state.liveCollaboration?.role === 'host'
+    && (state.liveCollaboration.status === 'connected' || state.liveCollaboration.controller?.guestCount > 0)
     && !state.pendingRecipeRecovery && !state.workspacePermissionNeeded;
 }
 function syncLiveViewDock() {
   const dock = $('#live-view-dock');
   if (!dock) return;
   const session = state.liveCollaboration;
-  const host = session?.role === 'host' && session.status === 'connected';
+  const host = session?.role === 'host' && isLiveHostViewOnly();
   const guest = session?.role === 'guest' && session.replicaReady
     && (!liveTerminal(session.status) || session.status === 'fork-unsaved');
   dock.hidden = !host && !guest;
@@ -8952,13 +9053,17 @@ async function shareLiveCapsules() {
 
 async function startLiveHost() {
   const current = state.liveCollaboration;
-  if (current?.role === 'host' && !liveTerminal(current.status)) { openLiveDialog('host'); return; }
+  if (current?.role === 'host' && (!liveTerminal(current.status) || current.controller?.guestCount > 0)) { openLiveDialog('host'); return; }
   try {
     assertLiveShareReady();
     if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     await prepareLiveWorkspace();
     if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before sharing it.');
-    const session = { role: 'host', status: 'preparing', controller: null, designId: state.document.id };
+    const firstPeer = { label: 'Guest 1', status: 'preparing', controller: null };
+    const session = {
+      role: 'host', status: 'preparing', controller: null, designId: state.document.id,
+      peerSessions: [firstPeer], currentHostPeer: firstPeer
+    };
     state.liveCollaboration = session;
     liveStatus('host', 'Preparing the design and signed session offer…');
     $('#live-start-host').disabled = true;
@@ -8968,23 +9073,10 @@ async function startLiveHost() {
       designId: state.document.id,
       iceServers: liveIceServers('host'),
       onState: status => {
-        session.status = status;
-        const copy = {
-          'preparing': 'Preparing the session…', 'waiting-answer': 'Offer ready. Send the invitation and offer to your guest.',
-          'verifying-answer': 'Verifying the guest’s answer…', 'connecting': 'Connecting directly to the guest…',
-          'waiting-guest': 'Connection open. Waiting for the guest to finish joining…',
-          'connected': 'Guest connected. Your folder is the canonical saved copy.',
-          'sending-assets': 'Sending required images and fonts over the encrypted peer connection…',
-          'revoked': 'Sharing stopped and the invitation was revoked.', 'closed': 'Live session closed.',
-          'failed': 'The live session failed. Check the capsules and try again.', 'timeout': 'The live session timed out.',
-          'overloaded': 'The peer sent too many messages. The session was closed safely.',
-          'rejected': 'The guest session was rejected.', 'diverged': 'The guest diverged from the saved head; sharing stopped.'
-        };
-        liveStatus('host', copy[status] || `Live session: ${status}.`);
-        if (status === 'connected') setLiveEditorBlocked(false);
-        else if (liveTerminal(status)) {
+        firstPeer.status = status;
+        refreshLiveHostRoomUi(session);
+        if (liveTerminal(status) && !(session.controller?.guestCount > 0)) {
           if (liveViewSyncTimer) { clearTimeout(liveViewSyncTimer); liveViewSyncTimer = 0; }
-          setLiveEditorBlocked(false);
         }
       },
       getViewState: currentLiveHostViewState,
@@ -9009,7 +9101,9 @@ async function startLiveHost() {
       }
     });
     session.controller = controller;
+    firstPeer.controller = controller;
     $('#live-start-host').hidden = true;
+    $('#live-add-guest').hidden = false;
     $('#live-accept-answer').hidden = false;
     const link = new URL(location.href);
     link.hash = controller.invitation;
@@ -9017,6 +9111,7 @@ async function startLiveHost() {
     $('#live-offer-value').value = controller.offerCapsule;
     $('#live-share-capsules').hidden = false;
     $('#live-stop-host').hidden = false;
+    refreshLiveHostRoomUi(session);
     liveStatus('host', 'Offer ready. Send both items to your guest; the offer expires after a few minutes.');
     syncLiveViewDock();
   } catch (error) {
@@ -9025,6 +9120,51 @@ async function startLiveHost() {
     liveStatus('host', error.message || 'Could not prepare this live session.');
     showToast(error.message || 'Could not prepare this live session.');
   } finally { $('#live-start-host').disabled = false; }
+}
+
+async function addLiveHostGuest() {
+  const session = state.liveCollaboration;
+  if (session?.role !== 'host' || !session.controller) {
+    showToast('Create the live design invitation before adding a guest.');
+    return;
+  }
+  const openPeers = session.peerSessions.filter(peer => !liveTerminal(peer.status)).length;
+  if (openPeers >= 4) {
+    showToast('This room already has four active guest sessions. Disconnect one before adding another.');
+    return;
+  }
+  const peer = {
+    label: `Guest ${session.peerSessions.length + 1}`,
+    status: 'preparing',
+    controller: null
+  };
+  session.peerSessions.push(peer);
+  session.currentHostPeer = peer;
+  $('#live-add-guest').disabled = true;
+  refreshLiveHostRoomUi(session);
+  try {
+    const controller = await session.controller.addGuestSession({
+      onState: status => {
+        peer.status = status;
+        refreshLiveHostRoomUi(session);
+      },
+      onSnapshot: () => {}
+    });
+    peer.controller = controller;
+    const link = new URL(location.href);
+    link.hash = controller.invitation;
+    $('#live-invite-value').value = link.toString();
+    $('#live-offer-value').value = controller.offerCapsule;
+    $('#live-answer-value').value = '';
+    $('#live-accept-answer').hidden = false;
+    $('#live-share-capsules').hidden = false;
+    liveStatus('host', `${peer.label} offer ready. Send the invitation and this one-time offer through a channel you trust.`);
+    renderLiveHostPeers(session);
+  } catch (error) {
+    peer.status = 'failed';
+    refreshLiveHostRoomUi(session);
+    showToast(error.message || 'Could not create another guest offer.');
+  } finally { $('#live-add-guest').disabled = false; }
 }
 
 async function ensureLiveReplicaDesign(session) {
@@ -9056,7 +9196,65 @@ async function persistLiveReplicaSnapshot(session, snapshot) {
   return saved;
 }
 
-async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null) {
+async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null, source = 'initial') {
+  if (session.replicaReady && source === 'room-revision') {
+    setLiveEditorBlocked(true);
+    const head = hostHead || session.hostHead;
+    if (!head?.commitHash || !Number.isSafeInteger(head.sequence)) throw new Error('The room update did not include a verified host head.');
+    const localSnapshot = JSON.parse(JSON.stringify(hostSnapshot));
+    localSnapshot.id = session.localDesignId;
+    localSnapshot.settings ||= { unit: 'px', grid: 8, snap: true };
+    localSnapshot.settings.collaborationSource = {
+      designId: session.hostDesignId,
+      sessionId: session.sessionId,
+      sequence: head.sequence,
+      commitHash: head.commitHash,
+      pendingOperationIds: []
+    };
+    const nextDocument = parseDocument(localSnapshot);
+    const nextPreviewAssets = new Map(imageAssetReferencesAcrossPages(localSnapshot).map(reference => [reference.previewKey, reference.assetId]));
+    for (const [previewKey, assetId] of state.previewAssetIds) {
+      if (nextPreviewAssets.get(previewKey) === assetId) continue;
+      const timer = previewTimers.get(previewKey);
+      if (timer) { clearTimeout(timer); previewTimers.delete(previewKey); }
+      const inpaint = state.inpaintControllers.get(previewKey);
+      if (inpaint) { inpaint.abort(); state.inpaintControllers.delete(previewKey); }
+      state.renderVersion.delete(previewKey);
+      state.previewVersions.delete(previewKey);
+      state.imageStatus.delete(previewKey);
+      releasePreviewResources(previewKey);
+    }
+    session.hostHead = { sequence: head.sequence, commitHash: head.commitHash };
+    session.hostRevision = head.sequence;
+    state.imageExportAbortController?.abort();
+    state.documentGeneration += 1;
+    state.document = nextDocument;
+    state.selectedIds = [];
+    clearVectorAnchorSelection();
+    state.pendingCommentAnchor = null;
+    state.activeCommentId = null;
+    history.undoStack.length = history.redoStack.length = 0;
+    reconcileImagePreviewRuntime();
+    reconcileImageAssetRuntime();
+    renderUI();
+    await persistLiveReplicaSnapshot(session, localSnapshot);
+    state.documentStorageRevision = (await loadDocumentRecordById(localSnapshot.id))?.revision ?? null;
+    state.pendingRecipeRecovery = await recipeRecoveryForDocument(localSnapshot.id);
+    await refreshLocalFontAssets({ showFailureToast: true });
+    const missingPreviewAssets = [...new Set(imageAssetReferencesAcrossPages(localSnapshot)
+      .filter(reference => state.previewAssetIds.get(reference.previewKey) !== reference.assetId
+        && !state.renderVersion.has(reference.previewKey))
+      .map(reference => reference.assetId))];
+    await restoreImageAssets(state.documentGeneration, { assetIds: missingPreviewAssets });
+    if (session.latestViewState) applyGuestViewState(session, session.latestViewState);
+    setLiveEditorBlocked(false);
+    if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
+    setSaveState('saved', 'Owner saved changes');
+    liveStatus('guest', 'The owner saved a new room revision. Your local copy is updated and ready to edit.');
+    $('#live-stop-guest').hidden = false;
+    renderer?.invalidate();
+    return;
+  }
   if (session.replicaReady) {
     session.hostRevision = session.controller?.revision ?? session.hostRevision;
     const head = hostHead || session.hostHead;
@@ -9146,6 +9344,10 @@ async function startLiveGuest() {
       expectedInvite: invite,
       offerCapsule,
       iceServers: liveIceServers('guest'),
+      canAdoptRoomRevision: () => !state.interaction && !state.textNodeId && !state.controlEdit
+        && !state.pendingImageImports && !state.bulk && !state.saveTimer && !state.documentTransitioning
+        && !state.documentSaveConflict && !state.draftNode && !state.penDraft && !state.pencilDraft
+        && !state.imageEraseDraft && !state.imageCropDraftSelection && !state.pendingCommentAnchor,
       onState: status => {
         session.status = status;
         const copy = {
@@ -9165,14 +9367,16 @@ async function startLiveGuest() {
         else if (liveTerminal(status)) setLiveEditorBlocked(false);
         if (session.replicaReady && status === 'connected') setSaveState('saved', 'Owner saved changes');
       },
-      onSnapshot: (snapshot, revision, hostHead) => {
+      onSnapshot: async (snapshot, revision, hostHead, metadata = {}) => {
         session.hostRevision = revision;
         session.hostHead = hostHead || session.hostHead;
-        void installLiveReplicaSnapshot(session, snapshot, hostHead).catch(error => {
+        try {
+          await installLiveReplicaSnapshot(session, snapshot, hostHead, metadata.source || 'initial');
+        } catch (error) {
           liveStatus('guest', `Could not save the shared design to this folder: ${error.message || 'storage error'}`);
           showToast(error.message || 'Could not save the shared design to this folder.');
-          void controller.close();
-        });
+          throw error;
+        }
       },
       onViewState: viewState => {
         session.latestViewState = viewState;
@@ -9259,6 +9463,7 @@ async function stopLiveHost() {
     await session.controller.revoke();
     session.status = 'revoked';
     liveStatus('host', 'Sharing stopped and the stable invitation was revoked.');
+    $('#live-add-guest').hidden = true;
     setLiveEditorBlocked(false);
     $('#live-collaboration-dialog').close('revoked');
   } catch (error) { liveStatus('host', error.message || 'Could not revoke this invitation.'); }
@@ -13051,16 +13256,19 @@ function initEvents() {
     void (async () => {
       try { await prepareLiveWorkspace(); }
       catch (error) { showToast(error.message || 'Choose a writable folder before sharing.'); return; }
-      if (state.liveCollaboration?.role === 'host' && !liveTerminal(state.liveCollaboration.status)) openLiveDialog('host');
+      if (state.liveCollaboration?.role === 'host'
+        && (!liveTerminal(state.liveCollaboration.status) || state.liveCollaboration.controller?.guestCount > 0)) openLiveDialog('host');
       else {
         $('#live-start-host').hidden = false;
         $('#live-start-host').disabled = false;
         $('#live-accept-answer').hidden = true;
+        $('#live-add-guest').hidden = true;
         $('#live-stop-host').hidden = true;
         $('#live-answer-value').value = '';
         $('#live-invite-value').value = '';
         $('#live-offer-value').value = '';
         $('#live-share-capsules').hidden = true;
+        $('#live-peer-list').replaceChildren();
         $('#live-transfer-status').textContent = '';
         liveStatus('host', 'Create an offer, then send both capsules to your guest using a trusted channel.');
         openLiveDialog('host');
@@ -13081,17 +13289,28 @@ function initEvents() {
     }
   });
   $('#live-start-host').addEventListener('click', () => { void startLiveHost(); });
+  $('#live-add-guest').addEventListener('click', () => { void addLiveHostGuest(); });
   $('#live-share-capsules').addEventListener('click', () => { void shareLiveCapsules(); });
   $('#live-accept-answer').addEventListener('click', async () => {
-    const controller = state.liveCollaboration?.role === 'host' ? state.liveCollaboration.controller : null;
+    const session = state.liveCollaboration?.role === 'host' ? state.liveCollaboration : null;
+    const peer = session?.currentHostPeer || null;
+    const controller = peer?.controller || session?.controller || null;
     if (!controller) { showToast('Create a session offer first.'); return; }
     const answer = $('#live-answer-value').value.trim();
     if (!answer) { liveStatus('host', 'Paste the guest’s answer capsule first.'); $('#live-answer-value').focus(); return; }
     $('#live-accept-answer').disabled = true;
     liveStatus('host', 'Verifying and applying the one-time guest answer…');
-    try { await controller.acceptAnswer(answer); }
+    try {
+      await controller.acceptAnswer(answer);
+      $('#live-answer-value').value = '';
+      if (peer) peer.answerDraft = '';
+    }
     catch (error) { liveStatus('host', error.message || 'Could not connect this guest.'); showToast(error.message || 'Could not connect this guest.'); }
     finally { $('#live-accept-answer').disabled = false; }
+  });
+  $('#live-answer-value').addEventListener('input', () => {
+    const session = state.liveCollaboration;
+    if (session?.role === 'host' && session.currentHostPeer) session.currentHostPeer.answerDraft = $('#live-answer-value').value;
   });
   $('#live-join-session').addEventListener('click', () => { void startLiveGuest(); });
   $('#live-view-host-page').addEventListener('change', event => {
@@ -14196,7 +14415,7 @@ function onKeyDown(event) {
   if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
   if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
   if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
-  if ((key === 'delete' || key === 'backspace') && state.selectedVectorPoint) {
+  if ((key === 'delete' || key === 'backspace') && shouldDeleteSelectedVectorAnchor(state.selectedIds, state.selectedVectorPoint)) {
     deleteSelectedVectorPoint();
     event.preventDefault();
     return;
