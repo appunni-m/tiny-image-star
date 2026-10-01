@@ -36,7 +36,7 @@ async function canvasContextMenuOnImage(app, imageId) {
   }));
 }
 function setInput(app, input, value) {
-  assert(input, 'The selected image did not expose its brightness adjustment.');
+  assert(input, 'Expected the editor input to be available.');
   input.value = String(value);
   input.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
   input.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
@@ -113,7 +113,10 @@ function installWorkerGate(app) {
           });
         };
       }
-      if (message?.type === 'render') gate.submissions.push({ assetId: message.assetId, requestId: message.requestId, worker: indexes.get(this) });
+      if (message?.type === 'render') gate.submissions.push({
+        assetId: message.assetId, requestId: message.requestId, worker: indexes.get(this),
+        format: message.format, quality: message.quality, outputMode: message.outputMode
+      });
       return nativePostMessage.call(this, message, transfer);
     }
   });
@@ -175,12 +178,17 @@ try {
   const dialog = app.querySelector('#recipe-dialog');
   await waitFor(() => dialog?.open, 'save recipe dialog');
   app.querySelector('#recipe-name').value = 'Desktop context recipe';
+  setInput(app, app.querySelector('#recipe-format'), 'webp');
+  setInput(app, app.querySelector('#recipe-quality'), 73);
   assert(app.querySelector('#recipe-preview-summary').textContent.includes('Brightness -65'),
     'The recipe dialog did not capture the edited image adjustment.');
   click(app, app.querySelector('#save-recipe-confirm'));
   await waitFor(() => !dialog.open, 'recipe dialog close');
   await waitFor(async () => (await latestDocument(app))?.recipes?.some(recipe => recipe.name === 'Desktop context recipe'),
     'saved context-menu recipe');
+  const savedRecipe = (await latestDocument(app)).recipes.find(recipe => recipe.name === 'Desktop context recipe');
+  assert(savedRecipe.format === 'webp' && savedRecipe.quality === 73,
+    'The saved context recipe should retain its selected WebP output format and quality.');
 
   // Hold an unrelated third image render so the second batch render queues in
   // the shared engine behind it. Pause must hold that queued recipe job even
@@ -222,6 +230,9 @@ try {
   const speed = app.querySelector('#bulk-speed');
   const workerBudget = Number(speed.max);
   assert(Number.isSafeInteger(workerBudget) && workerBudget > 0, 'The progress bar reported an invalid worker budget.');
+  const latestBeforeBatch = await latestDocument(app);
+  const targetAssetIds = targetLayerIds.map(id => imageNodes(latestBeforeBatch).find(node => node.id === id)?.assetId);
+  assert(targetAssetIds.every(Boolean), 'Each selected recipe target should retain its source asset identity.');
   const batchStart = workerGate.submissions.length;
   await canvasContextMenuOnImage(app, targetLayerIds[1]);
   const menuLabel = app.querySelector('#context-menu .menu-label')?.textContent.trim();
@@ -303,6 +314,16 @@ try {
       && targetLayerIds.every(id => nodes.find(node => node.id === id)?.adjustments?.brightness === -65)
       && nodes.find(node => node.id === layerIds[2])?.adjustments?.brightness === 17;
   }, 'persisted in-place image recipe results');
+  const appliedImages = imageNodes(await latestDocument(app));
+  assert(targetLayerIds.every(id => {
+    const node = appliedImages.find(item => item.id === id);
+    return node?.outputFormat === 'webp' && node.outputQuality === 73;
+  }), 'Applying the recipe should persist WebP format and quality on each original target image.');
+  for (const assetId of targetAssetIds) {
+    assert(workerGate.submissions.slice(batchStart).some(job => job.assetId === assetId
+      && job.format === 'webp' && job.quality === 73 && job.outputMode === 'preview'),
+    'Each bulk render job should carry recipe format and quality while keeping the working preview in preview mode.');
+  }
   click(app, app.querySelector('#bulk-done'));
   await waitFor(() => app.querySelector('#bulk-bar')?.hidden, 'multi-image recipe result dismissal');
 

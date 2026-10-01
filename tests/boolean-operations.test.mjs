@@ -662,7 +662,7 @@ test('rotated network face controls follow resized Boolean source geometry', () 
   }
 });
 
-test('disconnected closed network faces bake into compound paths but open or shared topology is refused', () => {
+test('disconnected and edge-adjacent closed network faces bake into compound paths; malformed topology is refused', () => {
   const document = createDocument();
   const networkGeometry = vectorNetworkGeometryFromAnchors([
     { x: 10, y: 10 }, { x: 40, y: 10 }, { x: 25, y: 35 }
@@ -676,6 +676,46 @@ test('disconnected closed network faces bake into compound paths but open or sha
   const group = combineBoolean(document, [network.id, other.id], 'union');
   const baked = bakeBoolean(document, group.id);
   assert.equal(1 + baked.subpaths.length, 3, 'two disjoint filled network faces and the rectangle remain separate contours');
+
+  const adjacentDocument = createDocument();
+  const adjacentNetwork = createNode('network', {
+    x: 10, y: 10, width: 60, height: 30, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2,
+    vertices: [
+      { id: 'v1', x: 0, y: 0 }, { id: 'v2', x: .5, y: 0 }, { id: 'v3', x: 1, y: 0 },
+      { id: 'v4', x: 0, y: 1 }, { id: 'v5', x: .5, y: 1 }, { id: 'v6', x: 1, y: 1 }
+    ],
+    edges: [
+      { id: 'e1', from: 'v1', to: 'v2' }, { id: 'e2', from: 'v2', to: 'v3' },
+      { id: 'e3', from: 'v3', to: 'v6' }, { id: 'e4', from: 'v6', to: 'v5' },
+      { id: 'e5', from: 'v5', to: 'v4' }, { id: 'e6', from: 'v4', to: 'v1' },
+      { id: 'e7', from: 'v2', to: 'v5' }
+    ],
+    faces: [
+      { id: 'f1', vertexIds: ['v1', 'v2', 'v5', 'v4'], fill: null, fillOpacity: 1 },
+      { id: 'f2', vertexIds: ['v2', 'v3', 'v6', 'v5'], fill: null, fillOpacity: 1 }
+    ]
+  });
+  const adjacentOther = createNode('rectangle', { x: 100, y: 10, width: 10, height: 10 });
+  addNode(adjacentDocument, adjacentNetwork); addNode(adjacentDocument, adjacentOther);
+  const adjacentGroup = combineBoolean(adjacentDocument, [adjacentNetwork.id, adjacentOther.id], 'union');
+  const adjacentBaked = bakeBoolean(adjacentDocument, adjacentGroup.id);
+  const adjacentContours = [adjacentBaked.points, ...adjacentBaked.subpaths.map(contour => contour.points)];
+  assert.equal(adjacentContours.length, 2, 'two faces sharing an edge merge into one outer contour alongside the disjoint rectangle');
+  assert.deepEqual(adjacentContours.map(points => points.length).sort((a, b) => a - b), [4, 6],
+    'the shared edge is removed while its collinear boundary endpoints remain editable anchors');
+  const sharedEdgeRemains = adjacentContours.some(points => points.some((point, index) => {
+    const next = points[(index + 1) % points.length];
+    return Math.abs(point.x - .3) < 1e-9 && Math.abs(next.x - .3) < 1e-9
+      && Math.abs(Math.abs(point.y - next.y) - 1) < 1e-9;
+  }));
+  assert.equal(sharedEdgeRemains, false, 'the shared interior segment is absent from every baked contour');
+  const adjacentAreas = adjacentContours.map(points => {
+    const coordinates = points.map(point => ({
+      x: point.x * adjacentBaked.width, y: point.y * adjacentBaked.height
+    }));
+    return Math.abs(contourArea(coordinates));
+  }).sort((a, b) => a - b);
+  assert.deepEqual(adjacentAreas, [100, 1800], 'the two adjacent filled faces preserve their union area');
 
   const openDocument = createDocument();
   const openGeometry = vectorNetworkGeometryFromAnchors([
@@ -706,9 +746,9 @@ test('disconnected closed network faces bake into compound paths but open or sha
   addNode(sharedDocument, sharedNetwork); addNode(sharedDocument, sharedOther);
   const sharedGroup = combineBoolean(sharedDocument, [sharedNetwork.id, sharedOther.id], 'union');
   const sharedBefore = serializeDocument(sharedDocument);
-  assert.throws(() => prepareBooleanBake(sharedDocument, sharedGroup.id), /parallel edges|shares junctions between faces/);
+  assert.throws(() => prepareBooleanBake(sharedDocument, sharedGroup.id), /parallel edges/);
   assert.equal(serializeDocument(sharedDocument), sharedBefore,
-    'refusing shared graph junctions must retain the exact network topology');
+    'refusing duplicate parallel edge records must retain the exact network topology');
 
   const constrainedDocument = createDocument();
   const constrainedGeometry = vectorNetworkGeometryFromAnchors([

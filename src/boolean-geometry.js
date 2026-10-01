@@ -168,12 +168,12 @@ function validateNetworkBakeSource(node) {
     if ((face.fillOpacity ?? 1) !== 1) {
       unsupported(`“${node.name || node.type}” has a translucent face; its mask cannot be represented by a binary vector path.`);
     }
-    for (const vertexId of ring) {
-      if (faceVertexUse.has(vertexId)) {
-        unsupported(`“${node.name || node.type}” shares junctions between faces; baking would discard that graph topology.`);
-      }
-      faceVertexUse.add(vertexId);
-    }
+    // Connected planar faces normally share vertices at their junctions. The
+    // bake converts the filled regions to ordinary path contours, so these
+    // graph junctions are safe when every edge remains part of one or two
+    // closed face boundaries. `curveBoolean` below removes internal shared
+    // edges and keeps the visible union as editable path geometry.
+    for (const vertexId of ring) faceVertexUse.add(vertexId);
     for (let index = 0; index < ring.length; index += 1) {
       const fromId = ring[index];
       const toId = ring[(index + 1) % ring.length];
@@ -181,14 +181,19 @@ function validateNetworkBakeSource(node) {
         unsupported(`“${node.name || node.type}” has a face boundary that does not follow a network edge.`);
       }
       const pair = networkEdgePair(fromId, toId);
-      faceEdgeUse.set(pair, (faceEdgeUse.get(pair) || 0) + 1);
-      if (faceEdgeUse.get(pair) > 1) {
-        unsupported(`“${node.name || node.type}” shares network edges between faces; baking would discard that graph topology.`);
-      }
+      const uses = faceEdgeUse.get(pair) || [];
+      uses.push({ fromId, toId });
+      if (uses.length > 2) unsupported(`“${node.name || node.type}” has a network edge shared by more than two faces.`);
+      faceEdgeUse.set(pair, uses);
     }
   }
   if (faceEdgeUse.size !== edges.length || edges.some(edge => !faceEdgeUse.has(networkEdgePair(edge.from, edge.to)))) {
     unsupported(`“${node.name || node.type}” has open or unfilled network edges outside its closed faces.`);
+  }
+  for (const uses of faceEdgeUse.values()) {
+    if (uses.length === 2 && uses[0].fromId === uses[1].fromId && uses[0].toId === uses[1].toId) {
+      unsupported(`“${node.name || node.type}” has a shared face edge with inconsistent direction.`);
+    }
   }
   if (faceVertexUse.size !== vertices.length) {
     unsupported(`“${node.name || node.type}” has isolated network vertices outside its closed faces.`);
