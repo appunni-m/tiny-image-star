@@ -12106,11 +12106,13 @@ function toggleMobilePanel(panel) {
 function syncMobilePanelAccessibility() {
   const mobile = innerWidth <= 820;
   const scrim = $('#mobile-scrim');
+  const appShell = $('.app-shell');
   const canvasRegion = $('#canvas-region');
   const panels = [
     { panel: $('#left-panel'), toggle: $('#sidebar-toggle'), name: 'layers' },
     { panel: $('#right-panel'), toggle: $('#inspector-toggle'), name: 'properties' }
   ];
+  const inspectorOpen = mobile && panels[1].panel.classList.contains('is-open');
   let anyOpen = false;
   for (const { panel, toggle, name } of panels) {
     const open = mobile && panel.classList.contains('is-open');
@@ -12124,6 +12126,7 @@ function syncMobilePanelAccessibility() {
   }
   canvasRegion.inert = anyOpen;
   canvasRegion.setAttribute('aria-hidden', String(anyOpen));
+  appShell.classList.toggle('mobile-inspector-open', inspectorOpen);
   scrim.classList.toggle('is-visible', anyOpen);
 }
 function closeMobilePanels({ restoreFocus = true } = {}) {

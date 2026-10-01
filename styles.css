@@ -2322,3 +2322,27 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .fig-import-content .dialog-actions { display: grid; grid-template-columns: 1fr 1.4fr; }
   .fig-import-content .dialog-actions button { min-height: 44px; }
 }
+
+/* Keep the edited artwork visible above the phone properties sheet. */
+@media (max-width: 820px) {
+  .right-panel {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: min(50dvh, 500px);
+    max-height: calc(100% - 64px);
+    border-radius: 16px 16px 0 0;
+    transform: translateY(105%);
+  }
+  .right-panel.is-open { transform: translateY(0); }
+  .app-shell.mobile-inspector-open > .mobile-scrim.is-visible {
+    top: calc(45px + env(safe-area-inset-top));
+    right: 0;
+    bottom: min(50dvh, 500px);
+    left: 0;
+    background: rgba(20, 24, 32, .08);
+    backdrop-filter: none;
+  }
+}
