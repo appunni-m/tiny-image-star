@@ -241,12 +241,14 @@ export function defaultSingleImageRenderMemoryBudget({ deviceMemory = globalThis
 }
 
 /**
- * Retained decoded images share one engine-wide budget. Prefer a smaller cache
- * on lower-memory devices because Pillow-RS also needs live render copies and
- * output buffers outside this retained-source budget. The 4M/8M/16M pixel
- * tiers are about 16/32/64 MiB at four bytes per pixel; transient render and
- * encoder memory is additional, so this is a retained-cache ceiling, not a
- * total process-memory ceiling.
+ * Retained decoded images share one engine-wide budget. Reported device-memory
+ * tiers derive this ceiling from the hard single-render allowance and the
+ * conservative 32-byte-per-pixel working-set estimate (roughly 6M/10M/16M
+ * pixels, or 24/40/64 MiB at four bytes per retained pixel). The active
+ * selection receives the full allowance in one worker; worker concurrency
+ * never multiplies it. This remains a cache ceiling, not a total process
+ * memory ceiling. Devices that do not report memory keep the smaller
+ * hardware-concurrency fallback.
  */
 export function defaultImageCachePixelBudget({
   deviceMemory = globalThis.navigator?.deviceMemory,
@@ -254,8 +256,14 @@ export function defaultImageCachePixelBudget({
 } = {}) {
   const memory = Number(deviceMemory);
   if (Number.isFinite(memory) && memory > 0) {
-    if (memory <= 4) return 4 * MIB_PIXELS;
-    if (memory <= 8) return 8 * MIB_PIXELS;
+    // The one-image render ceilings admit up to roughly 6M/10M/16M pixels
+    // across these tiers at ACTIVE_BYTES_PER_PIXEL. Give the selected source
+    // enough of the shared cache to survive the next adjustment, while keeping
+    // the total worker-local cache bounded to a modest fraction of the render
+    // ceiling. The active source still gets this one shared allowance in one
+    // worker; batch workers never multiply it.
+    if (memory <= 2) return Math.floor((192 * MIB_BYTES) / ACTIVE_BYTES_PER_PIXEL);
+    if (memory <= 4) return Math.floor((320 * MIB_BYTES) / ACTIVE_BYTES_PER_PIXEL);
     return DEFAULT_DECODED_SOURCE_PIXEL_BUDGET;
   }
   const cores = Number(hardwareConcurrency);

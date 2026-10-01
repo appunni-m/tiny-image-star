@@ -286,6 +286,7 @@ test('LocalImageEngine propagates active-source intent and preserves a fitting d
 });
 
 test('the selected source receives the shared cache budget so multi-worker editing reuses large decodes', async () => {
+  const selectedCacheBudget = defaultImageCachePixelBudget({ deviceMemory: 8, hardwareConcurrency: 8 });
   await withEngine(async engine => {
     engine.setConcurrency(4);
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -293,9 +294,9 @@ test('the selected source receives the shared cache budget so multi-worker editi
     await new Promise(resolve => setTimeout(resolve, 0));
 
     const workers = engine.workers.map(slot => slot.worker);
-    assert.deepEqual(engine.workers.map(slot => slot.cacheBudget), [10, 0, 0, 0],
+    assert.deepEqual(engine.workers.map(slot => slot.cacheBudget), [selectedCacheBudget, 0, 0, 0],
       'the active worker can retain a source larger than an even per-worker share');
-    assert.equal(engine.workers.reduce((sum, slot) => sum + slot.cacheBudget, 0), 10,
+    assert.equal(engine.workers.reduce((sum, slot) => sum + slot.cacheBudget, 0), selectedCacheBudget,
       'worker cache ceilings never exceed the shared engine allowance');
 
     await engine.render('selected-large', bytesFor(8), {});
@@ -303,7 +304,7 @@ test('the selected source receives the shared cache budget so multi-worker editi
     assert.deepEqual(workers[0].renderRequests.map(request => request.hasSourceBytes), [true, false],
       'successive edits use the same worker-local decoded Pillow source');
     assert.deepEqual(workers.slice(1).map(worker => worker.renderRequests.length), [0, 0, 0]);
-  }, { maxWorkers: 4, maxCachedPixels: 10 });
+  }, { maxWorkers: 4, maxCachedPixels: selectedCacheBudget });
 });
 
 test('active-source affinity waits for its owner without blocking unrelated batch work', async () => {
@@ -944,11 +945,39 @@ test('default hard ceiling fails closed for images with unknown dimensions', asy
 });
 
 test('default retained-image budget is conservative for mobile and unknown-memory devices', () => {
-  assert.equal(defaultImageCachePixelBudget({ deviceMemory: 2, hardwareConcurrency: 8 }), 4_000_000);
-  assert.equal(defaultImageCachePixelBudget({ deviceMemory: 8, hardwareConcurrency: 16 }), 8_000_000);
+  assert.equal(defaultImageCachePixelBudget({ deviceMemory: 2, hardwareConcurrency: 8 }), (192 * 1024 * 1024) / 32);
+  assert.equal(defaultImageCachePixelBudget({ deviceMemory: 4, hardwareConcurrency: 8 }), (320 * 1024 * 1024) / 32);
+  assert.equal(defaultImageCachePixelBudget({ deviceMemory: 8, hardwareConcurrency: 16 }), 16_000_000);
   assert.equal(defaultImageCachePixelBudget({ deviceMemory: 16, hardwareConcurrency: 16 }), 16_000_000);
   assert.equal(defaultImageCachePixelBudget({ deviceMemory: null, hardwareConcurrency: 4 }), 4_000_000);
   assert.equal(defaultImageCachePixelBudget({ deviceMemory: null, hardwareConcurrency: null }), 8_000_000);
+});
+
+test('a selected 12MP source stays decoded for repeat edits when the device tier admits it', () => {
+  const budget = defaultImageCachePixelBudget({ deviceMemory: 8, hardwareConcurrency: 8 });
+  const cache = new DecodedSourceCache({ pixelBudget: budget });
+  const original = makeSource(12_000_000);
+  let decodes = 0;
+  cache.setActive('camera-original');
+
+  const first = cache.withSource('camera-original', () => { decodes += 1; return original; }, source => source.width);
+  const second = cache.withSource('camera-original', () => { decodes += 1; throw new Error('the retained source should be reused'); }, source => source.width);
+
+  assert.equal(first.result, 12_000_000);
+  assert.equal(first.retained, true);
+  assert.equal(second.result, 12_000_000);
+  assert.equal(second.retained, true);
+  assert.equal(decodes, 1, 'successive live edits reuse the immutable decoded original');
+  assert.equal(original.freeCalls, 0, 'selection keeps the original alive in the worker cache');
+
+  cache.setActive('next-image');
+  const next = makeSource(5_000_000);
+  const replacement = cache.withSource('next-image', () => next, source => source.width);
+  assert.equal(replacement.retained, true);
+  assert.equal(cache.has('camera-original'), false, 'a deselected source becomes reclaimable under cache pressure');
+  assert.equal(original.freeCalls, 1, 'eviction releases the deselected Pillow image');
+  cache.clear();
+  assert.equal(next.freeCalls, 1, 'worker shutdown releases the replacement source');
 });
 
 test('single-image hard limits account for device tiers while remaining globally bounded', () => {
