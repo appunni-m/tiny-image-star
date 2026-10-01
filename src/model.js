@@ -427,7 +427,7 @@ export function createLayerEffect(type, overrides = {}) {
 }
 
 export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
-  if (!['linear', 'radial'].includes(type)) throw new TypeError(`Unsupported gradient fill: ${type}`);
+  if (!['linear', 'radial', 'angular'].includes(type)) throw new TypeError(`Unsupported gradient fill: ${type}`);
   if (!/^#[0-9a-f]{6}$/i.test(firstColor)) throw new TypeError('Gradient stops require six-digit hex colors.');
   return {
     type, angle: 0,
@@ -439,10 +439,10 @@ export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
 }
 
 export function createFillLayer(type = 'solid', overrides = {}) {
-  if (!['solid', 'linear', 'radial', 'image'].includes(type)) throw new TypeError(`Unsupported fill type: ${type}`);
+  if (!['solid', 'linear', 'radial', 'angular', 'image'].includes(type)) throw new TypeError(`Unsupported fill type: ${type}`);
   const base = { id: createId('fill'), type, visible: true, opacity: 1 };
   if (type === 'solid') return { ...base, color: '#d9d9d9', ...overrides };
-  if (type === 'linear' || type === 'radial') return { ...base, gradient: createGradientFill(type), ...overrides };
+  if (type === 'linear' || type === 'radial' || type === 'angular') return { ...base, gradient: createGradientFill(type), ...overrides };
   if (typeof overrides.assetId !== 'string' && typeof overrides.imageFill?.assetId !== 'string') {
     throw new TypeError('Choose an image already placed in this design.');
   }

@@ -6,7 +6,7 @@ import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLASS_AXIS, MAX_GLASS_PIXELS, refractGlassBackdrop } from './glass-effect.js';
-import { createGradientPaint, fillStackForNode, resolveGradientGeometry } from './fills.js';
+import { createGradientPaint, fillStackForNode, gradientTypes, resolveGradientGeometry } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { strokeStackForNode } from './strokes.js';
@@ -272,7 +272,7 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
         ? colorOverride
         : fillLayerColor(state.document, node, fill, index);
       if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); fillCurrentPath(ctx, node); }
-    } else if (fill.type === 'linear' || fill.type === 'radial') {
+    } else if (gradientTypes.has(fill.type)) {
       const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
       if (paint) { ctx.fillStyle = paint; fillCurrentPath(ctx, node); }
     } else if (fill.type === 'image') {
@@ -1032,7 +1032,7 @@ export class SceneRenderer {
           } else if (fill.type === 'solid') {
             const color = fillLayerColor(document, node, fill, index);
             if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); ctx.fill(); }
-          } else if (fill.type === 'linear' || fill.type === 'radial') {
+          } else if (gradientTypes.has(fill.type)) {
             const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
             if (paint) { ctx.fillStyle = paint; ctx.fill(); }
           } else if (fill.type === 'image') {
@@ -1720,7 +1720,7 @@ export class SceneRenderer {
             const color = fillLayerColor(state.document, node, fillLayer, fillIndex);
             if (!color || color === 'transparent') continue;
             paintContext.fillStyle = color; paintContext.fillRect(0, 0, node.width, node.height);
-          } else if (fillLayer.type === 'linear' || fillLayer.type === 'radial') {
+          } else if (gradientTypes.has(fillLayer.type)) {
             const paint = createGradientPaint(paintContext, fillLayer.gradient, 0, 0, node.width, node.height);
             if (!paint) continue;
             paintContext.fillStyle = paint; paintContext.fillRect(0, 0, node.width, node.height);

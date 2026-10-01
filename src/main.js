@@ -12,7 +12,7 @@ import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFro
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
 import { createFallbackImage, createPillowFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from './image-intake.js';
-import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, syncLegacyFillFields, updateFillLayer } from './fills.js';
+import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, gradientTypes, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
@@ -75,6 +75,8 @@ import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEd
 import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVariantAxis, renameComponentSet, renameComponentVariantAxis } from './component-set-editor.js';
 import { createThemePreferenceController } from './theme-preference.js';
 import { contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
+import { toolbarNavigationTarget } from './toolbar-keyboard.js';
+import { imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
 import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES, migrateImageLibraryEntry, removeImageLibraryEntry } from './image-asset-library.js';
 import { scopeImageAssetReferences } from './image-asset-restoration.js';
@@ -750,6 +752,30 @@ function showToast(message, duration = 2500) {
   clearTimeout(currentToastTimer);
   currentToastTimer = setTimeout(() => toast.remove(), duration);
 }
+function setDesignToolTabStop(target) {
+  if (!target) return;
+  $$('#bottom-toolbar .tool-button').forEach(button => { button.tabIndex = button === target ? 0 : -1; });
+}
+function installDesignToolToolbarKeyboard() {
+  const toolbar = $('#bottom-toolbar');
+  const buttons = () => [...toolbar.querySelectorAll('.tool-button:not(:disabled)')];
+  const selected = toolbar.querySelector('.tool-button[aria-pressed="true"]');
+  setDesignToolTabStop(selected || buttons()[0]);
+  toolbar.addEventListener('focusin', event => {
+    const target = event.target.closest?.('.tool-button');
+    if (target && toolbar.contains(target)) setDesignToolTabStop(target);
+  });
+  toolbar.addEventListener('keydown', event => {
+    const active = event.target.closest?.('.tool-button');
+    if (!active || !toolbar.contains(active)) return;
+    const target = toolbarNavigationTarget(buttons(), active, event.key, getComputedStyle(toolbar).direction);
+    if (!target) return;
+    event.preventDefault();
+    setDesignToolTabStop(target);
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  });
+}
 function setTool(tool) {
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
@@ -759,6 +785,7 @@ function setTool(tool) {
     const selected = button.dataset.tool === tool;
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-pressed', String(selected));
+    if (selected) setDesignToolTabStop(button);
   });
   canvas.className = `tool-${tool}`;
   updateSelectionStatus();
@@ -1004,6 +1031,7 @@ function gradientGeometryTargetMatches(left, right) {
     && (left.strokeId || '') === (right.strokeId || ''));
 }
 function gradientGeometryControls(node, gradient, { fillId = '', strokeId = '' } = {}) {
+  if (gradient.type === 'angular') return '';
   const target = gradientGeometryTargetFor(node, { fillId, strokeId });
   const active = gradientGeometryTargetMatches(state.gradientGeometryTarget, target);
   const ownerData = `data-gradient-node-id="${escapeHtml(node.id)}"${fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : ''}${strokeId ? ` data-stroke-id="${escapeHtml(strokeId)}"` : ''}`;
@@ -1030,7 +1058,7 @@ function gradientFillControls(node, gradient = node.fillGradient, fillId = '') {
   if (!gradient) return '';
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
   const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
-  const angle = gradient.type === 'linear' && !gradient.geometry ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
+  const angle = ['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<div class="property-grid"><div class="property-field"><label>${gradient.type === 'angular' ? 'Start angle' : '°'}</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="${gradient.type === 'angular' ? 'Angular gradient start angle' : 'Gradient angle'}"${node.locked ? ' disabled' : ''}/></div></div>` : '';
   return `${angle}${gradientGeometryControls(node, gradient, { fillId })}<div class="gradient-editor">${gradientStopRail(node, gradient, { fillId })}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${fillData}${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>`;
 }
 function imageFillSources() {
@@ -1151,7 +1179,7 @@ function strokeStackControls(node) {
       : '';
     const opacity = Math.round(stroke.opacity * 100);
     const gradient = stroke.gradient;
-    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient']])}${gradient ? `<div class="stroke-gradient-controls">${gradient.type === 'linear' && !gradient.geometry ? `<label class="stroke-field"><span>Angle</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="1" value="${gradient.angle}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
+    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient']])}${gradient ? `<div class="stroke-gradient-controls">${['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<label class="stroke-field"><span>${gradient.type === 'angular' ? 'Start angle' : 'Angle'}</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="1" value="${gradient.angle}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
     return `<div class="layer-effect-card stroke-stack-card" data-stroke-row="${id}">
       <div class="layer-effect-heading">
         <strong>${name}</strong>
@@ -1174,7 +1202,7 @@ function strokeStackControls(node) {
       ${primaryControls}
     </div>`;
   }).join('');
-  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear/radial gradient, width, opacity, cap, join, and pattern.${supportsEndpointDecorations ? ' Open line ends can use no decoration, an arrow, or a filled triangle.' : ''}</div></div>`;
+  return `<div class="stroke-stack" role="group" aria-label="Ordered strokes">${rows}<div class="image-properties-note">Strokes render in order; later strokes sit above earlier ones. Each stroke keeps its own solid color or linear, radial, or angular gradient, width, opacity, cap, join, and pattern.${supportsEndpointDecorations ? ' Open line ends can use no decoration, an arrow, or a filled triangle.' : ''}</div></div>`;
 }
 function cornerRadiusControls(node) {
   if (!['rectangle', 'frame', 'section', 'image'].includes(node.type)) return '';
@@ -1194,11 +1222,11 @@ function fillStackControls(node) {
   const rows = fills.map((fill, index) => {
     const id = escapeHtml(fill.id);
     const name = fills.length === 1 ? 'Fill' : `Fill ${index + 1}`;
-    const typeOptions = [['solid', 'Solid'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['image', 'Image']]
+    const typeOptions = [['solid', 'Solid'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient'], ['image', 'Image']]
       .map(([value, label]) => `<option value="${value}"${fill.type === value ? ' selected' : ''}${value === 'image' && !sources.length && fill.type !== 'image' ? ' disabled' : ''}>${label}</option>`).join('');
     const paint = fill.type === 'solid'
       ? `<label class="image-fill-source"><span>Color</span><input type="color" data-fill-field="color" data-fill-id="${id}" value="${/^#[0-9a-f]{6}$/i.test(fill.color) ? escapeHtml(fill.color) : '#d9d9d9'}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`
-      : fill.type === 'linear' || fill.type === 'radial'
+      : gradientTypes.has(fill.type)
         ? gradientFillControls(node, fill.gradient, fill.id)
         : imageFillControls(node, fill.imageFill, fill.id);
     const canAddImage = Boolean(sources.length || fill.type === 'image');
@@ -1206,7 +1234,7 @@ function fillStackControls(node) {
   }).join('');
   const disabled = node.locked || fills.length >= 32;
   const imageButton = `<button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="image"${disabled || !sources.length ? ' disabled' : ''}>＋ Image fill</button>`;
-  return `<div class="fill-stack" role="group" aria-label="Ordered fills">${rows}${fills.length >= 32 ? '<div class="image-properties-note">A layer can have up to 32 fills.</div>' : ''}<div class="style-actions fill-stack-actions"><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="solid"${disabled ? ' disabled' : ''}>＋ Solid fill</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="linear"${disabled ? ' disabled' : ''}>＋ Linear</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="radial"${disabled ? ' disabled' : ''}>＋ Radial</button>${imageButton}</div><div class="image-properties-note">Fills render in order; the later fills sit above the earlier ones.</div></div>`;
+  return `<div class="fill-stack" role="group" aria-label="Ordered fills">${rows}${fills.length >= 32 ? '<div class="image-properties-note">A layer can have up to 32 fills.</div>' : ''}<div class="style-actions fill-stack-actions"><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="solid"${disabled ? ' disabled' : ''}>＋ Solid fill</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="linear"${disabled ? ' disabled' : ''}>＋ Linear</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="radial"${disabled ? ' disabled' : ''}>＋ Radial</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="angular"${disabled ? ' disabled' : ''}>＋ Angular</button>${imageButton}</div><div class="image-properties-note">Fills render in order; the later fills sit above the earlier ones.</div></div>`;
 }
 function appearanceSection(node) {
   const hasFill = isFillStackSupported(node);
@@ -1346,7 +1374,7 @@ function exportSettingsSection(node) {
   const vectorPdf = node.type === 'frame'
     ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes and paths editable, embeds untouched PNG/JPEG images as image objects, and renders edited images to local PNG previews. Text, unsupported image formats, filters, masks, blend modes, and unsupported effects need raster PDF.</div>'
     : '';
-  const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
+  const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes supported linear/radial gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Angular gradients are canvas-editable but require raster export because SVG/PDF vector export cannot preserve them. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${rasterPdf}${vectorPdf}${svgExport}`);
 }
 const autoLayoutBindingProperties = [
@@ -5297,7 +5325,7 @@ function updateFillInput(input) {
     }
   }
   else if (field === 'type') {
-    if (!['solid', 'linear', 'radial', 'image'].includes(input.value)) return;
+    if (!['solid', 'linear', 'radial', 'angular', 'image'].includes(input.value)) return;
     let replacement;
     if (input.value === 'image') {
       const source = imageFillSources()[0];
@@ -5333,7 +5361,7 @@ function updateStrokeInput(input) {
   if (!state.controlEdit) { checkpoint('Edit stroke'); state.controlEdit = true; }
   if (field === 'paint') {
     if (input.value === 'solid') updateStroke(node, stroke.id, { gradient: null });
-    else if (['linear', 'radial'].includes(input.value)) {
+    else if (['linear', 'radial', 'angular'].includes(input.value)) {
       if (index === 0) detachPrimaryStrokeBinding(node, stroke, getNodeColor(state.document, node, 'stroke'));
       const gradient = stroke.gradient ? structuredClone(stroke.gradient) : createGradientFill(input.value, /^#[0-9a-f]{6}$/i.test(stroke.color) ? stroke.color : '#1e1e1e');
       gradient.type = input.value;
@@ -6635,7 +6663,12 @@ function resumeInterruptedRecipe() {
 function renderBulkBar() {
   const bar = $('#bulk-bar'); const bulk = state.bulk;
   bar.hidden = !bulk;
-  if (!bulk) { syncBulkBarTicker(); return; }
+  const announcer = $('#bulk-announcer');
+  if (!bulk) {
+    if (announcer.textContent) announcer.textContent = '';
+    syncBulkBarTicker();
+    return;
+  }
   const engineMetrics = imageEngine.metrics();
   const batchMetrics = imageEngine.queueGroupMetrics(bulk.queueGroup);
   const total = bulk.targets.length;
@@ -6646,6 +6679,8 @@ function renderBulkBar() {
   const dismissible = drained && !bulk.savePending && !bulk.journalPending && !bulk.ownershipLost;
   const normalTitle = bulk.cancelled ? 'Recipe stopped' : bulk.done ? (bulk.failed ? 'Recipe finished with errors' : bulk.superseded ? 'Recipe applied · edits preserved' : lockedSkipped ? 'Recipe applied · locked images skipped' : skipped ? 'Recipe finished · unavailable images skipped' : 'Recipe applied') : bulk.paused ? 'Processing paused' : `Applying ${bulk.recipe.name}`;
   $('#bulk-title').textContent = bulk.ownershipLost ? 'Recipe lease lost · reload to recover' : bulk.recoveryError ? 'Saved · recovery cleanup pending' : bulk.saveError ? 'Recipe changes not saved' : bulk.savePending && bulk.done ? 'Saving recipe changes…' : bulk.paused ? 'Processing paused' : bulk.journalPending && !bulk.done ? `Preparing ${bulk.recipe.name}…` : normalTitle;
+  const announcement = imageRecipeBatchAnnouncement(bulk);
+  if (announcer.textContent !== announcement) announcer.textContent = announcement;
   $('#bulk-subtitle').textContent = bulk.ownershipLost
     ? 'Another tab owns this batch now. This tab stopped processing and will not write more recipe changes; reload after the other tab finishes.'
     : bulk.saveError
@@ -7572,6 +7607,7 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { label: 'Import SVG as editable layers…', action: () => $('#svg-input').click() },
     { separator: true },
+    { label: 'Share local design…', action: shareDesignFile },
     { label: 'Save local copy…', shortcut: '⌘⇧S', action: exportDesign },
     { label: 'Copy selected layers', shortcut: '⌘C', action: copySelected, disabled: !rootSelectedIds().length },
     { label: 'Cut selected layers', shortcut: '⌘X', action: cutSelected, disabled: !rootSelectedIds().length },
@@ -11064,6 +11100,7 @@ function initEvents() {
   syncSidebarTabAccessibility();
   $$('.sidebar-tabs, .inspector-tabs').forEach(installHorizontalTabListKeyboard);
   for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
+  installDesignToolToolbarKeyboard();
   document.addEventListener('pointerdown', event => {
     if (!state.interaction || canvas.contains(event.target)) return;
     // A canvas gesture owns the document until it ends. If the user starts a

@@ -64,7 +64,7 @@ test('compound paths with any closed contour support ordered solid and image fil
   assert.equal(isImageFillSupported(path), false);
 });
 
-test('linear and radial gradients survive local design serialization', () => {
+test('linear, radial, and angular gradients survive local design serialization', () => {
   const document = createDocument();
   const linear = createNode('rectangle', { fillGradient: createGradientFill('linear', '#ff0000') });
   linear.fillGradient.stops[1].color = '#0000ff';
@@ -76,10 +76,12 @@ test('linear and radial gradients survive local design serialization', () => {
   radial.fillGradient.geometry = { handles: [
     { x: .5, y: .5 }, { x: .8, y: .5 }, { x: .5, y: .9 }
   ] };
-  addNode(document, linear); addNode(document, radial);
+  const angular = createNode('rectangle', { fillGradient: createGradientFill('angular', '#ff00ff') });
+  angular.fillGradient.angle = 270;
+  addNode(document, linear); addNode(document, radial); addNode(document, angular);
   const restored = parseDocument(serializeDocument(document));
   assert.equal(validateDocument(restored), true);
-  assert.deepEqual(restored.pages[0].children.map(node => node.fillGradient), [linear.fillGradient, radial.fillGradient]);
+  assert.deepEqual(restored.pages[0].children.map(node => node.fillGradient), [linear.fillGradient, radial.fillGradient, angular.fillGradient]);
 });
 
 test('gradient validation rejects invalid types, unsupported layers, and unordered stops', () => {
@@ -109,7 +111,8 @@ test('canvas gradient geometry follows angle and radial center while CSS include
   const calls = [];
   const context = {
     createLinearGradient(...args) { calls.push(['linear', ...args]); return { addColorStop: (...stop) => calls.push(['stop', ...stop]) }; },
-    createRadialGradient(...args) { calls.push(['radial', ...args]); return { addColorStop: (...stop) => calls.push(['stop', ...stop]) }; }
+    createRadialGradient(...args) { calls.push(['radial', ...args]); return { addColorStop: (...stop) => calls.push(['stop', ...stop]) }; },
+    createConicGradient(...args) { calls.push(['conic', ...args]); return { addColorStop: (...stop) => calls.push(['stop', ...stop]) }; }
   };
   const linear = createGradientFill('linear', '#ff0000');
   linear.stops[1].color = '#0000ff';
@@ -120,6 +123,17 @@ test('canvas gradient geometry follows angle and radial center while CSS include
   createGradientPaint(context, radial, 10, 20, 100, 50);
   assert.deepEqual(calls[0], ['radial', 60, 45, 0, 60, 45, Math.hypot(100, 50) / 2]);
   assert.equal(gradientFillToCSS(linear, 0.5), 'linear-gradient(90deg, rgba(255, 0, 0, 0.5) 0%, rgba(0, 0, 255, 0.5) 100%)');
+
+  const angular = createGradientFill('angular', '#ff0000');
+  angular.stops[1].color = '#0000ff';
+  angular.angle = 90;
+  calls.length = 0;
+  createGradientPaint(context, angular, 10, 20, 100, 50);
+  assert.deepEqual(calls[0], ['conic', 0, 60, 45], '90° begins at the right side of the shape and proceeds clockwise');
+  assert.deepEqual(calls.slice(1), [['stop', 0, '#ff0000'], ['stop', 1, '#0000ff']]);
+  assert.equal(gradientFillToCSS(angular, 0.5), 'conic-gradient(from 90deg at 50% 50%, rgba(255, 0, 0, 0.5) 0%, rgba(0, 0, 255, 0.5) 100%)');
+  assert.equal(resolveGradientGeometry(angular, { width: 100, height: 50 }), null,
+    'the initial angular tool exposes a rotation control and uses the layer center instead of pretending to be affine radial geometry');
 });
 
 test('gradient geometry validates finite bounded and well-conditioned affine handles', () => {

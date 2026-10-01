@@ -109,6 +109,19 @@ try {
   let app = frame.contentDocument;
   assert(app.defaultView.innerWidth === 390 && app.defaultView.innerHeight === 844, 'the workflow should run at a 390×844 phone viewport.');
   assert(app.title === 'Tiny Image Star', 'the editor should use the Tiny Image Star product name.');
+  const designToolbar = app.querySelector('#bottom-toolbar');
+  const designTools = [...designToolbar.querySelectorAll('.tool-button')];
+  assert(designToolbar.getAttribute('role') === 'toolbar' && designToolbar.getAttribute('aria-orientation') === 'horizontal',
+    'canvas tools should expose horizontal toolbar semantics.');
+  assert(designTools.filter(button => button.tabIndex === 0).length === 1,
+    'Tab should enter the phone toolbar at one roving-focus tool.');
+  designTools[0].focus();
+  designTools[0].dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+  assert(app.activeElement === designTools[1] && designTools[1].tabIndex === 0,
+    'Right Arrow should move toolbar focus to the next tool.');
+  designTools[1].dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+  assert(app.activeElement === designTools.at(-1) && designTools.at(-1).tabIndex === 0,
+    'End should move focus to the final tool, including a horizontally offscreen tool.');
   for (const [toggleSelector, panelSelector] of [['#sidebar-toggle', '#left-panel'], ['#inspector-toggle', '#right-panel']]) {
     const toggle = app.querySelector(toggleSelector); const panel = app.querySelector(panelSelector);
     assert(toggle.getAttribute('aria-controls') === panel.id && toggle.getAttribute('aria-expanded') === 'false', `${toggleSelector} should identify its closed panel accessibly.`);
@@ -121,6 +134,10 @@ try {
   tap(app, app.querySelector('#main-menu-button'));
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('New design'));
   assert(newDesign, 'the mobile main menu should offer a fresh local design.');
+  assert(app.defaultView.getComputedStyle(app.querySelector('#share-button')).display === 'none',
+    'the compact phone top bar hides the direct Share button.');
+  assert([...app.querySelectorAll('#context-menu [role="menuitem"]')].some(button => button.textContent.includes('Share local design')),
+    'the mobile main menu should make local design sharing available when the direct button is hidden.');
   tap(app, newDesign);
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'new local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');

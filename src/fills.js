@@ -1,7 +1,7 @@
 import { vectorPathContours } from './vector-path.js';
 
-export const gradientTypes = new Set(['linear', 'radial']);
-export const fillTypes = new Set(['solid', 'linear', 'radial', 'image']);
+export const gradientTypes = new Set(['linear', 'radial', 'angular']);
+export const fillTypes = new Set(['solid', 'linear', 'radial', 'angular', 'image']);
 
 const clone = value => structuredClone(value);
 const MAX_GRADIENT_HANDLE_COORDINATE = 1_000_000;
@@ -102,7 +102,7 @@ export function syncLegacyFillFields(node) {
     node.fill = primary.color;
     delete node.fillGradient;
     delete node.imageFill;
-  } else if (primary.type === 'linear' || primary.type === 'radial') {
+  } else if (gradientTypes.has(primary.type)) {
     node.fillGradient = clone(primary.gradient);
     delete node.imageFill;
   } else if (primary.type === 'image') {
@@ -141,7 +141,7 @@ export function isValidFillLayer(fill, node = null, { isValidImageFill = () => f
     || !fillTypes.has(fill.type) || typeof fill.visible !== 'boolean'
     || !Number.isFinite(fill.opacity) || fill.opacity < 0 || fill.opacity > 1) return false;
   if (fill.type === 'solid') return typeof fill.color === 'string' && (/^#[0-9a-f]{6}$/i.test(fill.color) || fill.color === 'transparent');
-  if (fill.type === 'linear' || fill.type === 'radial') return fill.gradient?.type === fill.type && isValidGradientFill(fill.gradient);
+  if (gradientTypes.has(fill.type)) return fill.gradient?.type === fill.type && isValidGradientFill(fill.gradient);
   return Boolean(node && isImageFillSupported(node) && isValidImageFill(fill.imageFill));
 }
 
@@ -193,6 +193,7 @@ function isValidGradientGeometry(type, geometry) {
  */
 export function resolveGradientGeometry(gradient, bounds) {
   if (!isValidGradientFill(gradient) || !bounds || typeof bounds !== 'object' || Array.isArray(bounds)) return null;
+  if (gradient.type === 'angular') return null;
   const x = bounds.x === undefined ? 0 : bounds.x;
   const y = bounds.y === undefined ? 0 : bounds.y;
   let { width, height } = bounds;
@@ -288,6 +289,15 @@ export function insertGradientStop(gradient, position, id) {
 
 export function createGradientPaint(ctx, gradient, x, y, width, height) {
   if (!isValidGradientFill(gradient)) return null;
+  if (gradient.type === 'angular') {
+    if (typeof ctx.createConicGradient !== 'function') return null;
+    width = Math.max(1, width);
+    height = Math.max(1, height);
+    const startAngle = (gradient.angle - 90) * Math.PI / 180;
+    const paint = ctx.createConicGradient(startAngle, x + width / 2, y + height / 2);
+    for (const stop of gradient.stops) paint.addColorStop(stop.position, stop.color);
+    return paint;
+  }
   let paint;
   let geometryStops = false;
   if (Object.hasOwn(gradient, 'geometry')) {
@@ -450,6 +460,10 @@ function geometryGradientToCSS(gradient, opacity, bounds) {
  */
 export function gradientFillToCSS(gradient, opacity = 1, bounds = { width: 100, height: 100 }) {
   if (!isValidGradientFill(gradient)) return null;
+  if (gradient.type === 'angular') {
+    const stops = gradient.stops.map(stop => `${rgba(stop.color, opacity)} ${Number((stop.position * 100).toFixed(3))}%`).join(', ');
+    return `conic-gradient(from ${cssNumber(gradient.angle)}deg at 50% 50%, ${stops})`;
+  }
   if (Object.hasOwn(gradient, 'geometry')) {
     if (!bounds || typeof bounds !== 'object' || Array.isArray(bounds)
       || !Number.isFinite(bounds.width) || bounds.width <= 0

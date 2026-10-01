@@ -1,6 +1,6 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutPlainText, layoutTextRuns, textGraphemes, transformTextCase } from './text-layout.js';
-import { fillStackForNode, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
+import { fillStackForNode, gradientTypes, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { imageCropPixels, isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
@@ -274,6 +274,7 @@ function gradientMatrixNumber(value) {
 function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis-gradient-${index}`) {
   if (!gradient) return null;
   if (!isValidGradientFill(gradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (gradient.type === 'angular') throw new SvgExportError('angular gradients (choose raster export to preserve the appearance)', node);
   const bounds = dimensions(node);
   // Canvas gradient creation clamps zero-sized axes to one pixel. Keep SVG
   // coordinates aligned for open paths and lines, whose authored height or
@@ -740,7 +741,7 @@ function renderNetworkFillStack(node, document, context, index) {
     if (!fill.visible || fill.opacity <= 0) continue;
     let gradientId = null;
     let image = null;
-    if (fill.type === 'linear' || fill.type === 'radial') {
+    if (gradientTypes.has(fill.type)) {
       const gradient = gradientDefinition(node, index, fill.gradient, `tis-gradient-${index}-fill-${fillIndex}`);
       if (gradient) {
         gradientId = gradient.id;

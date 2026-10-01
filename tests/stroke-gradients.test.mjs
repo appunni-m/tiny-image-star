@@ -19,7 +19,7 @@ test('solid strokes remain the default and legacy scalar strokes migrate without
   assert.equal(validateDocument(document), true);
 });
 
-test('linear and radial gradient strokes validate, clone on update, and reject malformed stops', () => {
+test('linear, radial, and angular gradient strokes validate, clone on update, and reject malformed stops', () => {
   const node = createNode('ellipse', { stroke: '#445566', strokeWidth: 2 });
   const stroke = ensureStrokeStack(node)[0];
   const radial = createGradientFill('radial', '#00aa44');
@@ -30,9 +30,13 @@ test('linear and radial gradient strokes validate, clone on update, and reject m
   assert.equal(result.gradient.stops[0].color, '#00aa44', 'stored stops are independent from the caller object');
   assert.equal(isValidStroke(result), true);
   assert.equal(isValidStrokeStack(node.strokes, node), true);
+  const angular = createGradientFill('angular', '#ffaa00');
+  angular.angle = 45;
+  assert.equal(updateStroke(node, stroke.id, { gradient: angular }).gradient.type, 'angular');
+  assert.equal(isValidStrokeStack(node.strokes, node), true);
 
   const invalid = [
-    { ...result, gradient: { ...result.gradient, type: 'conic' } },
+    { ...result, gradient: { ...result.gradient, type: 'sweep' } },
     { ...result, gradient: { ...result.gradient, stops: [{ ...result.gradient.stops[0], color: 'red' }, result.gradient.stops[1]] } },
     { ...result, gradient: { ...result.gradient, stops: [...result.gradient.stops].reverse() } },
     { ...result, gradient: { ...result.gradient, stops: [{ ...result.gradient.stops[0], position: 1.1 }, result.gradient.stops[1]] } }
@@ -58,6 +62,13 @@ test('gradient stroke definitions survive document reload and invalid data block
   assert.equal(validateDocument(restored), true);
   assert.deepEqual(restored.pages[0].children[0].strokes[0].gradient, gradient);
   assert.equal(restored.pages[0].children[0].stroke, '#ff0000', 'the legacy scalar field mirrors the first gradient stop');
+
+  const angular = createGradientFill('angular', '#00aa44');
+  angular.angle = 180;
+  rectangle.strokes[0].gradient = angular;
+  assert.equal(validateDocument(document), true);
+  const angularRestored = parseDocument(serializeDocument(document));
+  assert.equal(angularRestored.pages[0].children[0].strokes[0].gradient.type, 'angular');
 
   const broken = structuredClone(restored);
   broken.pages[0].children[0].strokes[0].gradient.stops[1].position = 2;

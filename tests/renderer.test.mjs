@@ -708,8 +708,8 @@ test('shape rendering applies editable stroke cap, join, and dash patterns', () 
   assert.deepEqual(calls, [['dash', [0, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']], 'dots need a round cap to keep zero-length dash segments visible');
 });
 
-test('shape rendering paints linear and radial stroke gradients through the stroke geometry', () => {
-  for (const type of ['linear', 'radial']) {
+test('shape rendering paints linear, radial, and angular stroke gradients through the stroke geometry', () => {
+  for (const type of ['linear', 'radial', 'angular']) {
     const document = createDocument();
     const gradient = {
       type, angle: 45,
@@ -735,6 +735,10 @@ test('shape rendering paints linear and radial stroke gradients through the stro
       },
       createRadialGradient(...coordinates) {
         const result = { kind: 'radial', coordinates, stops: [], addColorStop(position, color) { this.stops.push([position, color]); } };
+        gradients.push(result); return result;
+      },
+      createConicGradient(...coordinates) {
+        const result = { kind: 'angular', coordinates, stops: [], addColorStop(position, color) { this.stops.push([position, color]); } };
         gradients.push(result); return result;
       },
       stroke() { painted.push({ paint: this.strokeStyle, alpha: this.globalAlpha, width: this.lineWidth }); }

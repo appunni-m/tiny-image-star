@@ -2326,6 +2326,27 @@ try {
   const radialCenter = [...effectContext.getImageData(28, 18, 1, 1).data];
   const radialEdge = [...effectContext.getImageData(9, 18, 1, 1).data];
   assert(radialCenter[0] > radialCenter[2] && radialEdge[2] > radialEdge[0], `radial gradient should radiate from the center (${radialCenter.join(',')} / ${radialEdge.join(',')})`);
+  const angular = createGradientFill('angular', '#ff0000');
+  angular.angle = 90;
+  angular.stops = [
+    { id: 'angular-red', color: '#ff0000', position: 0 },
+    { id: 'angular-green', color: '#00ff00', position: .25 },
+    { id: 'angular-blue', color: '#0000ff', position: .5 },
+    { id: 'angular-white', color: '#ffffff', position: .75 },
+    { id: 'angular-red-end', color: '#ff0000', position: 1 }
+  ];
+  gradientNode.fillGradient = angular;
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, gradientNode, 0, 0, new Map());
+  const angularRight = [...effectContext.getImageData(44, 18, 1, 1).data];
+  const angularBottom = [...effectContext.getImageData(28, 26, 1, 1).data];
+  const angularLeft = [...effectContext.getImageData(12, 18, 1, 1).data];
+  const angularTop = [...effectContext.getImageData(28, 10, 1, 1).data];
+  assert(angularRight[0] > 220 && angularRight[1] < 40
+    && angularBottom[1] > 220 && angularBottom[0] < 40
+    && angularLeft[2] > 220 && angularLeft[0] < 40
+    && angularTop[0] > 220 && angularTop[1] > 220,
+  `angular gradient should follow its clockwise start angle and color stops (${angularRight.join(',')} / ${angularBottom.join(',')} / ${angularLeft.join(',')} / ${angularTop.join(',')})`);
 
   const fillBitmap = await createImageBitmap(new Blob([source], { type: 'image/bmp' }));
   const fillAssetId = 'asset-image-fill-test';

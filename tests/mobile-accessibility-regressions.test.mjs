@@ -36,22 +36,55 @@ test('canvas tool buttons expose the active tool at startup and when it changes'
     className: tag.match(/\bclass="([^"]*)"/)?.[1] || '',
     tool: tag.match(/\bdata-tool="([^"]+)"/)?.[1] || '',
     pressed: tag.match(/\baria-pressed="(true|false)"/)?.[1],
+    tabIndex: tag.match(/\btabindex="(-?\d+)"/)?.[1],
   }));
   assert.ok(toolButtons.length >= 15, 'the toolbar should expose its canvas tools');
+  assert.match(toolbar, /role="toolbar"\s+aria-orientation="horizontal"/);
   for (const button of toolButtons) {
     assert.ok(button.tool, 'each toolbar button should identify its tool');
     assert.notEqual(button.pressed, undefined, `${button.tool} should have an initial pressed state`);
+    assert.notEqual(button.tabIndex, undefined, `${button.tool} should have a roving tab stop state`);
     assert.equal(button.pressed, String(button.className.split(/\s+/).includes('is-selected')),
       `${button.tool} should expose the same initial selection that the UI shows`);
   }
   assert.equal(toolButtons.filter(button => button.pressed === 'true').length, 1,
     'exactly one canvas tool should be active at startup');
+  assert.equal(toolButtons.filter(button => button.tabIndex === '0').length, 1,
+    'Tab should enter the toolbar at one tool instead of stopping on every tool');
+  assert.equal(toolButtons.find(button => button.pressed === 'true').tabIndex, '0',
+    'the selected tool should be the toolbar entry point at startup');
 
   const setTool = main.match(/function setTool\(tool\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(setTool, /button\.setAttribute\('aria-pressed', String\(selected\)\)/,
     'choosing another canvas tool should update its accessible pressed state');
   assert.match(setTool, /const selected = button\.dataset\.tool === tool/,
     'the selected state should follow the active canvas tool');
+  assert.match(setTool, /setDesignToolTabStop\(button\)/,
+    'shortcut or pointer selection should keep one useful toolbar tab stop');
+
+  const keyboard = main.match(/function installDesignToolToolbarKeyboard\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  assert.match(keyboard, /toolbarNavigationTarget/);
+  assert.match(keyboard, /target\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(keyboard, /target\.scrollIntoView\?\.\(\{ block: 'nearest', inline: 'nearest' \}\)/,
+    'keyboard navigation should reveal offscreen tools in the horizontally scrollable phone toolbar');
+});
+
+test('mobile main menu keeps the local design share action reachable', () => {
+  const openMenu = main.match(/function openFileMenu\([\s\S]*?\n\}/)?.[0] || '';
+  assert.match(openMenu, /label: 'Share local design…', action: shareDesignFile/);
+  assert.match(openMenu, /label: 'Save local copy…'.*action: exportDesign/u);
+  assert.match(stylesheet, /\.file-menu-button, \.mode-switcher, \.quiet-button, \.avatar-button, \.save-state \{ display: none; \}/,
+    'the direct Share button is hidden on phones, so the menu route must remain available');
+});
+
+test('bulk controls keep interactions outside the live region and announce milestones only', () => {
+  const bulkBar = html.match(/<div class="bulk-bar" id="bulk-bar"[\s\S]*?<\/div>\s*<dialog class="modal recipe-recovery-dialog"/)?.[0] || '';
+  assert.match(bulkBar, /id="bulk-bar" role="region"[^>]*tabindex="-1" hidden>/);
+  assert.doesNotMatch(bulkBar.match(/<div class="bulk-bar"[^>]*>/)?.[0] || '', /aria-live=/,
+    'the interactive region must not make its slider and buttons a continuously changing live region');
+  assert.match(bulkBar, /id="bulk-announcer" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(main, /const announcement = imageRecipeBatchAnnouncement\(bulk\)[\s\S]*?if \(announcer\.textContent !== announcement\) announcer\.textContent = announcement/,
+    'unchanged milestone text should not be rewritten during frequent progress renders');
 });
 
 test('presentation controls meet the 44px coarse-pointer target without toolbar clipping', () => {

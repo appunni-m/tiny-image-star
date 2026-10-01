@@ -1,4 +1,4 @@
-import { isValidGradientFill } from './fills.js';
+import { gradientTypes, isValidGradientFill } from './fills.js';
 import { isValidLayerEffects } from './layer-effects.js';
 import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
 import { isValidStrokeStack } from './strokes.js';
@@ -134,7 +134,7 @@ function canInterpolateFillStack(fromNode, toNode) {
       if (!fill || !destination || fill.type !== destination.type
           || fill.visible !== destination.visible
           || fillBindingKey(fromNode, fill) !== fillBindingKey(toNode, destination)) return false;
-      if (fill.type === 'linear' || fill.type === 'radial') {
+      if (gradientTypes.has(fill.type)) {
         return canInterpolateGradient(fill.gradient, destination.gradient);
       }
       return ['solid', 'image'].includes(fill.type);
@@ -161,7 +161,7 @@ function interpolateFillStack(fromNode, toNode, progress) {
         if (color) result.color = color;
         else if (progress >= 0.5) result.color = structuredClone(fill.color);
       }
-    } else if (fill.type === 'linear' || fill.type === 'radial') {
+    } else if (gradientTypes.has(fill.type)) {
       const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
       if (!boundPaint) result.gradient = interpolateGradient(start.gradient, fill.gradient, progress);
     } else if (fill.type === 'image') {

@@ -58,9 +58,13 @@ When moving layers, the canvas snaps selection edges and centers to visible peer
 
 Compound vector paths keep each contour editable inside one layer. Select a contour by clicking one of its anchors, then add or remove contours, insert and delete anchors, and change that contour's open or closed state in the Vector inspector. Turn on Select multiple anchors to collect points across contours on a phone or desktop; turn selection mode off and drag a selected point to move the group together. Deleting a group is atomic and refuses the edit if any contour would be left with fewer than two anchors. Closed contours can use the nonzero or even-odd fill rule; SVG import, canvas fills, image-fill clipping, Boolean operands, masks, Smart Animate, local saves, and SVG export preserve the supported contour geometry.
 
+Fills and ordered strokes support editable angular gradients with adjustable start angles and color stops. Canvas rendering and local saves preserve their appearance; editable SVG/PDF export reports when a design needs raster export to retain an angular gradient.
+
 ## Bulk recipe recovery
 
 Before an image recipe batch changes a layer, Tiny Image Star stores a small local recovery record for the recipe, page, and target image layers. If a batch is left open or the browser closes unexpectedly, reopening that design offers two choices: resume the saved recipe across the original targets, or keep the image edits that were already saved. The result bar saves the final document before it clears the recovery record.
+
+The canvas tool strip is a horizontal keyboard toolbar: Tab enters at one tool, arrow keys move across the strip, and Home/End reach its first and last tools. On phones, the main menu keeps **Share local design…** available while the direct top-bar Share button is hidden to preserve canvas space. Batch progress exposes concise announcements for state changes without placing its frequently updated worker controls inside a live region.
 
 ## Run locally
 

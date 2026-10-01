@@ -427,6 +427,20 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
   assert.equal(effectSvg, exportNodeToSvg(effected), 'generated paint and effect IDs remain stable across exports');
 });
 
+test('SVG export rejects angular gradients with an explicit raster-export fallback', () => {
+  const fill = createNode('rectangle', { name: 'Angular fill', fillGradient: createGradientFill('angular', '#ff0000') });
+  assert.throws(() => exportNodeToSvg(fill), error => error instanceof SvgExportError
+    && error.feature === 'angular gradients (choose raster export to preserve the appearance)');
+
+  const stroke = createNode('rectangle', { name: 'Angular stroke', strokes: [
+    { id: 'angular-stroke', color: '#ff0000', width: 3, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
+      gradient: createGradientFill('angular', '#ff0000') }
+  ] });
+  assert.throws(() => exportNodeToSvg(stroke), error => error instanceof SvgExportError
+    && error.feature === 'angular gradients (choose raster export to preserve the appearance)');
+});
+
 test('exports explicit gradient geometry through standard SVG affine gradient transforms', () => {
   const linear = createNode('rectangle', {
     width: 100, height: 50,
