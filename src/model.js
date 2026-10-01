@@ -1148,12 +1148,19 @@ export function renameNode(document, nodeId, name, pageId = document.activePageI
   return updateNode(document, nodeId, { name: String(name).trim() || 'Untitled layer' }, pageId);
 }
 
-export function createImageRecipe(imageNode, name, output = {}) {
+export function createImageRecipe(imageNode, name, output = {}, document = null) {
   if (!imageNode || imageNode.type !== 'image') throw new TypeError('Recipes can only be created from an image layer.');
   const fit = imageNode.fit ?? 'cover';
-  const opacity = imageNode.opacity ?? 1;
+  if (imageNode.variableBindings?.opacity && !document) {
+    throw new TypeError('The design is required to save the visible opacity of a variable-bound image.');
+  }
+  const opacity = document ? getNodePropertyValue(document, imageNode, 'opacity') ?? imageNode.opacity ?? 1 : imageNode.opacity ?? 1;
+  const blendMode = imageNode.blendMode ?? 'normal';
+  const effects = clone(imageNode.effects || []);
   if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
+  if (!isValidLayerBlendMode(blendMode)) throw new TypeError('Image recipe blend mode is invalid.');
+  if (!isValidLayerEffects(effects)) throw new TypeError('Image recipe effect stack is invalid.');
   const format = output.format ?? imageNode.outputFormat ?? 'png';
   const quality = output.quality ?? imageNode.outputQuality ?? 90;
   if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
@@ -1165,6 +1172,8 @@ export function createImageRecipe(imageNode, name, output = {}) {
     transforms: createImageTransforms(imageNode.transforms || {}),
     fit,
     opacity,
+    effects,
+    blendMode,
     format,
     quality,
     createdAt: new Date().toISOString()
@@ -1181,18 +1190,35 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
   const fit = recipe.fit ?? entry.node.fit ?? 'cover';
   const opacity = recipe.opacity ?? entry.node.opacity ?? 1;
+  const hasOpacity = Object.hasOwn(recipe, 'opacity') && recipe.opacity != null;
+  const hasEffects = recipe.effects != null;
+  const blendMode = recipe.blendMode ?? entry.node.blendMode ?? 'normal';
   if (!['cover', 'contain'].includes(fit)) throw new TypeError('Image recipe fit must be Fill or Fit.');
   if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) throw new TypeError('Image recipe opacity must be between 0 and 1.');
+  if (!isValidLayerBlendMode(blendMode)) throw new TypeError('Image recipe blend mode is invalid.');
+  if (hasEffects && !isValidLayerEffects(recipe.effects)) throw new TypeError('Image recipe effect stack is invalid.');
   // Normalize every recipe field before mutation so malformed data cannot leave
   // a partially-applied image look behind.
   const adjustments = normalizeImageAdjustments(recipe.adjustments || {});
   const transforms = createImageTransforms(recipe.transforms || {});
+  const effects = hasEffects
+    ? recipe.effects.map(effect => ({ ...clone(effect), id: createId('effect') }))
+    : null;
+  const variableBindings = entry.node.variableBindings ? { ...entry.node.variableBindings } : null;
+  if (hasOpacity && variableBindings) delete variableBindings.opacity;
+
   entry.node.adjustments = adjustments;
   entry.node.transforms = transforms;
   entry.node.fit = fit;
   entry.node.opacity = opacity;
   entry.node.outputFormat = format;
   entry.node.outputQuality = quality;
+  if (hasEffects) entry.node.effects = effects;
+  if (recipe.blendMode != null) entry.node.blendMode = blendMode;
+  if (hasOpacity && entry.node.variableBindings?.opacity) {
+    if (variableBindings && Object.keys(variableBindings).length) entry.node.variableBindings = variableBindings;
+    else delete entry.node.variableBindings;
+  }
   return true;
 }
 
@@ -3327,6 +3353,12 @@ export function validateDocument(document) {
   if (document.recipes.some(recipe => recipe?.opacity != null
     && (!Number.isFinite(recipe.opacity) || recipe.opacity < 0 || recipe.opacity > 1))) {
     throw new TypeError('Invalid image opacity in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.effects != null && !isValidLayerEffects(recipe.effects))) {
+    throw new TypeError('Invalid image effects in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.blendMode != null && !isValidLayerBlendMode(recipe.blendMode))) {
+    throw new TypeError('Invalid image blend mode in image recipe.');
   }
   if (document.colorStyles != null) {
     if (!Array.isArray(document.colorStyles)) throw new TypeError('Color styles must be a list.');

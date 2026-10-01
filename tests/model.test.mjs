@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createNode, createVariable, createVariableCollection, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -462,14 +462,25 @@ test('node edits, duplication and removal preserve independent identities', () =
 
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
+  const opacityCollection = createVariableCollection(document, 'Image opacity');
+  const sourceOpacity = createVariable(document, opacityCollection.id, 'Source opacity', 'number', 0.37);
+  const targetOpacity = createVariable(document, opacityCollection.id, 'Target opacity', 'number', 0.82);
+  const targetX = createVariable(document, opacityCollection.id, 'Target position', 'number', 24);
   const source = createNode('image', {
     assetId: 'asset-a', adjustments: { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
     transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true },
-    outputFormat: 'webp', outputQuality: 74,
+    opacity: 0.91, outputFormat: 'webp', outputQuality: 74, blendMode: 'multiply',
+    effects: [createLayerEffect('drop-shadow', { color: '#336699', opacity: 0.4, offsetX: 5, blur: 12 })],
   });
-  const target = createNode('image', { assetId: 'asset-b' });
+  const target = createNode('image', {
+    assetId: 'asset-b', opacity: 0.61, blendMode: 'screen',
+    effects: [createLayerEffect('layer-blur', { radius: 8 })]
+  });
   addNode(document, source); addNode(document, target);
-  const recipe = createImageRecipe(source, 'Warm dusk');
+  assert.equal(bindVariable(document, source.id, sourceOpacity.id, 'opacity'), true);
+  assert.equal(bindVariable(document, target.id, targetOpacity.id, 'opacity'), true);
+  assert.equal(bindVariable(document, target.id, targetX.id, 'x'), true);
+  const recipe = createImageRecipe(source, 'Warm dusk', {}, document);
   document.recipes.push(recipe);
   source.adjustments.brightness = 0;
   source.transforms.crop.left = 0.4;
@@ -478,14 +489,27 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   assert.deepEqual(target.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true, flipVertical: false });
   assert.deepEqual([recipe.format, recipe.quality], ['webp', 74]);
+  assert.equal(recipe.opacity, 0.37, 'bound opacity snapshots the source node’s visible, mode-resolved value');
+  assert.equal(recipe.blendMode, 'multiply');
+  assert.deepEqual(recipe.effects, source.effects, 'recipes retain the full ordered editable effect stack');
   assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop, rotation, and flip');
   assert.deepEqual([target.outputFormat, target.outputQuality], ['webp', 74], 'recipe output format and quality follow the image layer');
+  assert.equal(target.opacity, 0.37);
+  assert.equal(target.variableBindings?.opacity, undefined, 'applying the saved visible opacity detaches only the target opacity binding');
+  assert.equal(target.variableBindings?.x, targetX.id, 'unrelated variable bindings remain intact');
+  assert.equal(getNodePropertyValue(document, target, 'opacity'), 0.37, 'the copied opacity stays visually stable if its former variable changes');
+  assert.equal(target.blendMode, 'multiply');
+  assert.deepEqual(target.effects.map(({ id, ...effect }) => effect), recipe.effects.map(({ id, ...effect }) => effect));
+  assert.notEqual(target.effects[0].id, recipe.effects[0].id, 'each application receives fresh per-layer effect identities');
   assert.equal(target.assetId, 'asset-b');
 
   const reopened = parseDocument(serializeDocument(document));
   const savedRecipe = reopened.recipes[0];
   assert.deepEqual(savedRecipe.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual([savedRecipe.format, savedRecipe.quality], ['webp', 74], 'output settings persist with the recipe');
+  assert.deepEqual(savedRecipe.effects, recipe.effects, 'layer effects persist with a serialized recipe');
+  assert.equal(savedRecipe.blendMode, 'multiply');
+  assert.equal(savedRecipe.opacity, 0.37);
   const reopenedTarget = findNode(reopened, target.id).node;
   assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
   assert.deepEqual(reopenedTarget.adjustments, savedRecipe.adjustments, 'creative tone controls round-trip and apply to another source');
@@ -493,14 +517,30 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
 
 test('legacy image recipes default to PNG output and reject invalid format or quality', () => {
   const document = createDocument();
-  const image = createNode('image', { assetId: 'asset-legacy' }); addNode(document, image);
+  const collection = createVariableCollection(document, 'Legacy image opacity');
+  const opacity = createVariable(document, collection.id, 'Opacity', 'number', 0.4);
+  const image = createNode('image', {
+    assetId: 'asset-legacy', opacity: 0.8, blendMode: 'multiply',
+    effects: [createLayerEffect('drop-shadow', { color: '#123456' })]
+  }); addNode(document, image);
+  assert.equal(bindVariable(document, image.id, opacity.id, 'opacity'), true);
+  const priorEffects = structuredClone(image.effects);
   const legacy = { id: 'recipe-legacy', name: 'Legacy', adjustments: {}, transforms: { crop: null, rotation: 0 } };
   document.recipes.push(legacy);
   assert.equal(validateDocument(document), true, 'older saved recipes remain valid without output settings');
   assert.equal(applyImageRecipe(document, image.id, legacy), true);
   assert.deepEqual([image.outputFormat, image.outputQuality], ['png', 90]);
-  assert.throws(() => createImageRecipe(image, 'Bad format', { format: 'gif' }), /PNG, JPEG, or WebP/);
-  assert.throws(() => createImageRecipe(image, 'Bad quality', { quality: 101 }), /1 to 100/);
+  assert.equal(image.blendMode, 'multiply', 'legacy recipes without blend settings preserve the target blend mode');
+  assert.deepEqual(image.effects, priorEffects, 'legacy recipes without effects preserve the target effect stack');
+  assert.equal(image.variableBindings.opacity, opacity.id, 'legacy recipes without opacity preserve target variable bindings');
+  assert.equal(getNodePropertyValue(document, image, 'opacity'), 0.4);
+  assert.equal(applyImageRecipe(document, image.id, { ...legacy, opacity: null }), true);
+  assert.equal(image.variableBindings.opacity, opacity.id, 'null legacy opacity is treated as omitted and does not detach its binding');
+  assert.throws(() => createImageRecipe(image, 'Bad format', { format: 'gif' }, document), /PNG, JPEG, or WebP/);
+  assert.throws(() => createImageRecipe(image, 'Bad quality', { quality: 101 }, document), /1 to 100/);
+  assert.throws(() => createImageRecipe(image, 'Bound opacity without design'), /design is required/);
+  const boundRecipe = createImageRecipe(image, 'Bound opacity with design', {}, document);
+  assert.equal(boundRecipe.opacity, 0.4);
   legacy.format = 'gif';
   assert.throws(() => validateDocument(document), /Invalid image output format in image recipe/);
   legacy.format = 'jpeg'; legacy.quality = 0;
@@ -520,6 +560,8 @@ test('image recipes validate complete fill/output settings before changing an im
     { adjustments: { brightness: -20 }, transforms: { rotation: 45 }, format: 'jpeg', quality: 40 },
     { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, fit: 'stretch' },
     { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, opacity: 1.1 },
+    { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, effects: [{ id: 'bad', type: 'unsupported', visible: true }] },
+    { adjustments: { brightness: -20 }, transforms: { rotation: 90 }, format: 'jpeg', quality: 40, blendMode: 'unsupported' },
   ]) {
     assert.throws(() => applyImageRecipe(document, image.id, invalid));
     assert.deepEqual(image, before, 'a rejected recipe leaves every layer field unchanged');
@@ -537,6 +579,14 @@ test('image recipes validate complete fill/output settings before changing an im
     const corrupted = structuredClone(document);
     Object.assign(corrupted.recipes[0], invalid);
     assert.throws(() => validateDocument(corrupted), /Invalid image (fit mode|opacity)/);
+  }
+  for (const invalid of [
+    { effects: [{ id: 'bad', type: 'unsupported', visible: true }] },
+    { blendMode: 'unsupported' }
+  ]) {
+    const corrupted = structuredClone(document);
+    Object.assign(corrupted.recipes[0], invalid);
+    assert.throws(() => validateDocument(corrupted), /Invalid image (effects|blend mode) in image recipe/);
   }
   image.fit = 'stretch';
   assert.throws(() => createImageRecipe(image, 'Invalid source'), /fit must be Fill or Fit/);

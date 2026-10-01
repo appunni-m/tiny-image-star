@@ -48,6 +48,7 @@ import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePro
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
+import { applyAppearance, snapshotAppearance } from './appearance-clipboard.js';
 import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirection, moveLayerOneVisualRow } from './layer-order.js';
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
@@ -87,7 +88,7 @@ const state = {
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
-  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
+  sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
@@ -6520,7 +6521,8 @@ function renderBulkBar() {
 }
 
 function snapshotRecipeField(object, key) {
-  return { present: Object.hasOwn(object, key), value: object[key] };
+  const present = Object.hasOwn(object, key);
+  return { present, value: present ? structuredClone(object[key]) : undefined };
 }
 
 function snapshotRecipeState(node) {
@@ -6529,13 +6531,22 @@ function snapshotRecipeState(node) {
     transforms: snapshotRecipeField(node, 'transforms'),
     fit: snapshotRecipeField(node, 'fit'),
     opacity: snapshotRecipeField(node, 'opacity'),
+    opacityBinding: snapshotRecipeField(node.variableBindings || {}, 'opacity'),
     outputFormat: snapshotRecipeField(node, 'outputFormat'),
-    outputQuality: snapshotRecipeField(node, 'outputQuality')
+    outputQuality: snapshotRecipeField(node, 'outputQuality'),
+    effects: snapshotRecipeField(node, 'effects'),
+    blendMode: snapshotRecipeField(node, 'blendMode')
   };
+}
+
+function recipeFieldMatches(current, expected) {
+  return current.present === expected.present
+    && (!current.present || JSON.stringify(current.value) === JSON.stringify(expected.value));
 }
 
 function rollbackRecipeStateIfUnchanged(node, before, applied) {
   let changed = false;
+  const changedProperties = new Set();
   const currentAdjustments = { ...(node.adjustments || {}) };
   const adjustmentKeys = new Set([
     ...Object.keys(before.adjustments),
@@ -6549,6 +6560,7 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     if (Object.hasOwn(before.adjustments, key)) currentAdjustments[key] = before.adjustments[key];
     else delete currentAdjustments[key];
     changed = true;
+    changedProperties.add('adjustments');
   }
   if (changed) node.adjustments = currentAdjustments;
 
@@ -6559,6 +6571,7 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     if (before.transforms.present) node.transforms = structuredClone(before.transforms.value);
     else delete node.transforms;
     changed = true;
+    changedProperties.add('transforms');
   }
 
   for (const key of ['fit', 'opacity', 'outputFormat', 'outputQuality']) {
@@ -6569,7 +6582,30 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     if (previous.present) node[key] = previous.value;
     else delete node[key];
     changed = true;
+    changedProperties.add(key);
   }
+  for (const key of ['effects', 'blendMode']) {
+    const current = snapshotRecipeField(node, key);
+    if (!recipeFieldMatches(current, applied[key])) continue;
+    const previous = before[key];
+    if (recipeFieldMatches(current, previous)) continue;
+    if (previous.present) node[key] = structuredClone(previous.value);
+    else delete node[key];
+    changed = true;
+    changedProperties.add(key);
+  }
+  const currentOpacityBinding = snapshotRecipeField(node.variableBindings || {}, 'opacity');
+  if (recipeFieldMatches(currentOpacityBinding, applied.opacityBinding)
+    && !recipeFieldMatches(currentOpacityBinding, before.opacityBinding)) {
+    const variableBindings = { ...(node.variableBindings || {}) };
+    if (before.opacityBinding.present) variableBindings.opacity = before.opacityBinding.value;
+    else delete variableBindings.opacity;
+    if (Object.keys(variableBindings).length) node.variableBindings = variableBindings;
+    else delete node.variableBindings;
+    changed = true;
+    changedProperties.add('variableBindings');
+  }
+  if (changed) recordNodeComponentOverrides(node, [...changedProperties]);
   return changed;
 }
 
@@ -6606,6 +6642,13 @@ function scheduleBulk() {
       bulk.restorePreviews.add(id);
     }
     applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId);
+    const recipeOverrides = ['adjustments', 'transforms', 'fit', 'outputFormat', 'outputQuality'];
+    if (Object.hasOwn(bulk.recipe, 'opacity') && bulk.recipe.opacity != null) recipeOverrides.push('opacity');
+    if (bulk.recipe.effects != null) recipeOverrides.push('effects');
+    if (bulk.recipe.blendMode != null) recipeOverrides.push('blendMode');
+    const appliedOpacityBinding = snapshotRecipeField(node.variableBindings || {}, 'opacity');
+    if (!recipeFieldMatches(before.opacityBinding, appliedOpacityBinding)) recipeOverrides.push('variableBindings');
+    recordNodeComponentOverrides(node, recipeOverrides);
     // Persist in-place recipe state as soon as it is admitted. A slow first
     // render must not leave already-edited targets only in volatile memory.
     queueSave({ refreshLayerTree: false });
@@ -7161,6 +7204,11 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
     { label: 'Copy layers', shortcut: '⌘C', action: copySelected },
     { label: 'Cut layers', shortcut: '⌘X', action: cutSelected },
     { label: 'Paste layers', shortcut: '⌘V', action: () => pasteSelectedLayers(), disabled: !hasClipboardLayers() },
+    ...(node && node.type !== 'slice' ? [
+      { separator: true },
+      { label: 'Copy properties', shortcut: propertyClipboardShortcut('c'), action: () => copyAppearanceFrom(nodeId) },
+      { label: 'Paste properties', shortcut: propertyClipboardShortcut('v'), action: pasteAppearanceToSelection, disabled: !state.appearanceClipboard || !appearanceTargetEntries().length }
+    ] : []),
     { separator: true },
     { label: 'Duplicate', shortcut: '⌘D', action: duplicateSelected },
     { label: 'Rename', shortcut: '↵', action: () => renameSelected() },
@@ -7408,6 +7456,113 @@ function copySelected() {
     reconcileImageAssetRuntime();
     showToast(`Copied ${entries.length} layer${entries.length === 1 ? '' : 's'}.`);
   } catch (error) { showToast(error.message || 'Could not copy these layers.'); }
+}
+function propertyClipboardShortcut(key) {
+  const platform = navigator.userAgentData?.platform || navigator.platform || '';
+  return /mac|iphone|ipad/i.test(platform) ? `⌥⌘${key.toUpperCase()}` : `Ctrl+Alt+${key.toUpperCase()}`;
+}
+function effectiveAppearanceSource(node) {
+  const source = structuredClone(node);
+  source.opacity = getNodePropertyValue(state.document, node, 'opacity') ?? node.opacity;
+  if (node.variableBindings?.radius) source.radius = getNodePropertyValue(state.document, node, 'radius');
+  for (const property of ['fontSize', 'lineHeight', 'letterSpacing']) {
+    if (node.variableBindings?.[property]) source[property] = getNodePropertyValue(state.document, node, property);
+  }
+  if (node.type === 'text' && (node.textVariableId || node.textStyleId)) source.color = getNodeColor(state.document, node, 'text');
+  if (node.fillVariableId || node.fillStyleId) {
+    const fills = fillStackForNode(source);
+    if (fills[0]?.type === 'solid') {
+      fills[0].color = getNodeColor(state.document, node, 'fill');
+      source.fills = fills;
+      syncLegacyFillFields(source);
+    }
+  }
+  if (node.strokeVariableId) {
+    const strokes = strokeStackForNode(source);
+    if (strokes[0]) {
+      strokes[0].color = getNodeColor(state.document, node, 'stroke');
+      source.strokes = strokes;
+      syncLegacyStrokeFields(source);
+    }
+  }
+  return source;
+}
+function copyAppearanceFrom(nodeId = null) {
+  const node = nodeId ? findNode(state.document, nodeId)?.node : selectedNodes()[0];
+  if (!node || node.type === 'slice' || (!nodeId && selectedNodes().length !== 1)) {
+    showToast('Select one editable layer to copy its properties.');
+    return;
+  }
+  try {
+    state.appearanceClipboard = snapshotAppearance(effectiveAppearanceSource(node));
+    showToast(`Copied properties from “${node.name}”.`);
+  } catch (error) {
+    state.appearanceClipboard = null;
+    showToast(error.message || 'Could not copy these properties.');
+  }
+}
+function appearanceTargetEntries() {
+  return selectedEntries().filter(entry => entry.node.type !== 'slice'
+    && !entry.node.locked && !entry.parents.some(parent => parent.locked));
+}
+function pasteAppearanceToSelection() {
+  if (!state.appearanceClipboard) { showToast('Copy properties from a layer first.'); return; }
+  if (state.documentTransitioning || state.pendingRecipeRecovery || state.localPackageBuilding
+    || state.presenting || isImageRecipeBatchActive(state.bulk) || state.interaction) {
+    showToast('Finish the current editor action before pasting properties.');
+    return;
+  }
+  const entries = appearanceTargetEntries();
+  if (!entries.length) { showToast('Select at least one unlocked layer to paste properties.'); return; }
+  try {
+    const results = entries.map(entry => ({ entry, result: applyAppearance(entry.node, state.appearanceClipboard) }))
+      .filter(({ result }) => result.hasChanges)
+      .sort((left, right) => left.entry.depth - right.entry.depth);
+    if (!results.length) {
+      showToast('The selected layers already have these properties or do not support the copied appearance.');
+      return;
+    }
+    checkpoint('Paste properties');
+    const parentsToLayout = new Set();
+    for (const { entry, result } of results) {
+      const liveEntry = findNode(state.document, entry.node.id);
+      const list = liveEntry?.parent ? liveEntry.parent.children : activePage()?.children;
+      if (!liveEntry || !list || list[liveEntry.index] !== liveEntry.node) continue;
+      list[liveEntry.index] = result.node;
+      const changed = new Set(result.changedFamilies);
+      const componentProperties = new Set();
+      if (changed.has('opacity')) componentProperties.add('opacity');
+      if (changed.has('blendMode')) componentProperties.add('blendMode');
+      if (changed.has('fills')) {
+        for (const property of ['fill', 'fills', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId']) componentProperties.add(property);
+      }
+      if (changed.has('strokes')) {
+        for (const property of ['stroke', 'strokes', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId']) componentProperties.add(property);
+      }
+      if (changed.has('effects')) componentProperties.add('effects');
+      if (changed.has('radii')) {
+        componentProperties.add('radius'); componentProperties.add('cornerRadii');
+      }
+      if (changed.has('textStyle')) {
+        for (const property of ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align', 'verticalAlign', 'textCase', 'textDecoration', 'textStyleId', 'textVariableId']) componentProperties.add(property);
+        if (resizeTextNode(result.node)) {
+          componentProperties.add('width'); componentProperties.add('height');
+          if (entry.parent?.autoLayout) parentsToLayout.add(entry.parent.id);
+        }
+      }
+      if (JSON.stringify(entry.node.variableBindings || null) !== JSON.stringify(result.node.variableBindings || null)) componentProperties.add('variableBindings');
+      recordNodeComponentOverrides(result.node, [...componentProperties]);
+    }
+    for (const parentId of parentsToLayout) {
+      const parent = findNode(state.document, parentId)?.node;
+      if (parent) applyAutoLayout(parent);
+    }
+    renderUI(); queueSave(); renderer.invalidate();
+    const skipped = entries.length - results.length;
+    showToast(`Pasted properties to ${results.length} layer${results.length === 1 ? '' : 's'}${skipped ? `; ${skipped} skipped` : ''}.`);
+  } catch (error) {
+    showToast(error.message || 'Could not paste these properties.');
+  }
 }
 function cutSelected() {
   const entries = orderedRootSelectedEntries();
@@ -8682,6 +8837,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.pendingLocalShare = null;
     const generation = ++state.documentGeneration;
     state.clipboard = [];
+    state.appearanceClipboard = null;
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
     state.documentStorageRevision = nextStorageRevision;
@@ -11339,7 +11495,7 @@ function initEvents() {
     const recipe = createImageRecipe(node, $('#recipe-name').value, {
       format: $('#recipe-format').value,
       quality: Number($('#recipe-quality').value),
-    }); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
+    }, state.document); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
     queueSave(); renderInspector(); showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
   });
   $('#recipe-format').addEventListener('change', syncRecipeOutputControls);
@@ -11539,6 +11695,8 @@ function onKeyDown(event) {
   if (state.pencilDraft && key === 'escape') { event.preventDefault(); cancelPencilStroke(); showToast('Pencil stroke cancelled.'); return; }
   if (state.penDraft && key === 'enter') { event.preventDefault(); finishPenPath(false); return; }
   if (state.penDraft && key === 'escape') { event.preventDefault(); cancelPenPath(); showToast('Vector path cancelled.'); return; }
+  if (mod && event.altKey && key === 'c') { event.preventDefault(); copyAppearanceFrom(); return; }
+  if (mod && event.altKey && key === 'v') { event.preventDefault(); pasteAppearanceToSelection(); return; }
   if (mod && key === 'c') { event.preventDefault(); copySelected(); return; }
   if (mod && key === 'x') { event.preventDefault(); cutSelected(); return; }
   // Let the native paste event expose external clipboard image data. The paste
