@@ -58,8 +58,10 @@ test('the design canvas retries empty-space picks against clipped overflow geome
   const end = editorSource.indexOf('\nfunction updateDraftShapeGeometry', start);
   assert.ok(start >= 0 && end > start, 'canvas pointer handling should have a bounded function body');
   const handler = editorSource.slice(start, end);
-  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|\s*hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
-    'a deselected overflow child should remain selectable when ordinary visible picking finds nothing');
+  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
+    'canvas picking should include clipped overflow in the same stacking-order pass');
+  assert.doesNotMatch(handler, /hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|/,
+    'a visible sibling must not short-circuit a higher overflow child');
 });
 
 test('canvas context menus can target clipped overflow layers for layer actions', () => {
@@ -67,8 +69,10 @@ test('canvas context menus can target clipped overflow layers for layer actions'
   const end = editorSource.indexOf("canvasScroll.addEventListener('dragover'", start);
   assert.ok(start >= 0 && end > start, 'canvas context-menu handling should have a bounded event handler');
   const handler = editorSource.slice(start, end);
-  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|\s*hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
-    'canvas right-click should retry clipped overflow geometry after ordinary visible picking');
+  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
+    'canvas right-click should resolve visible and overflow targets in the same stacking-order pass');
+  assert.doesNotMatch(handler, /hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|/,
+    'a visible sibling must not short-circuit context-menu targeting for a higher overflow child');
   assert.match(handler, /if \(hit\) openNodeMenu\(hit\.id,/,
     'right-clicking an overflow layer should open that layer’s action menu, including Delete');
 });
@@ -104,6 +108,33 @@ test('a deselected overflow child can be picked and deleted without removing its
 
   assert.equal(findNode(result.document, child.id), null);
   assert.ok(findNode(result.document, frame.id), 'deleting the child leaves the frame intact');
+  assert.equal(validateDocument(result.document), true);
+});
+
+test('deleting an overflow child under a visible sibling removes the intended layer by stacking order', () => {
+  const document = createDocument();
+  const visibleSibling = createNode('rectangle', {
+    x: 120, y: 10, width: 40, height: 40, fill: '#00ff00', stroke: null, strokeWidth: 0, name: 'Visible sibling'
+  });
+  const frame = createNode('frame', { x: 20, y: 20, width: 100, height: 100, clip: true });
+  const overflowChild = createNode('rectangle', {
+    x: 120, y: 10, width: 40, height: 40, fill: '#ff0000', stroke: null, strokeWidth: 0, name: 'Overflow child'
+  });
+  addNode(document, visibleSibling);
+  addNode(document, frame);
+  addNode(document, overflowChild, { parentId: frame.id });
+  const overlapPoint = { x: 150, y: 40 };
+
+  assert.equal(hitTestPage(document.pages[0], overlapPoint, null, document)?.id, visibleSibling.id,
+    'normal presentation hit testing stays clipped and sees the sibling beneath the frame');
+  const picked = hitTestPage(document.pages[0], overlapPoint, null, document, null, 1, { allowAnyClippedNodes: true });
+  assert.equal(picked?.id, overflowChild.id,
+    'editor hit testing keeps the clipped child reachable according to its layer stacking order');
+
+  const result = removeLayersAtomically(document, [picked.id]);
+  assert.equal(findNode(result.document, overflowChild.id), null, 'Delete removes the overflow child the user targeted');
+  assert.ok(findNode(result.document, visibleSibling.id), 'Delete leaves the visible sibling intact');
+  assert.ok(findNode(result.document, frame.id), 'Delete leaves the clipping frame intact');
   assert.equal(validateDocument(result.document), true);
 });
 
