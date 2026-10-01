@@ -27,6 +27,7 @@ import { summarizeTextRunRange } from './text-run-selection.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
+import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
@@ -168,6 +169,10 @@ const presentationTransitionFrames = new Set();
 let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const inpaintEngine = new LocalInpaintEngine();
+const preparedInpaintCache = new PreparedInpaintCache({
+  memoryBudget: imageMemoryBudget,
+  onDispose: assetId => imageEngine.dispose(assetId)
+});
 const previewTimers = new Map();
 const previewsEvictedForCapacity = new Set();
 let nextImageRenderVersion = 0;
@@ -7144,27 +7149,54 @@ async function renderImageWithEdits(node, asset, adjustments, transforms, option
   const eraseStrokes = inpaintStrokes === undefined ? node?.inpaintStrokes : inpaintStrokes;
   const hasErase = node?.type === 'image' && Array.isArray(eraseStrokes) && eraseStrokes.length > 0;
   const render = output ? imageEngine.renderOutput.bind(imageEngine) : imageEngine.render.bind(imageEngine);
-  if (!hasErase) return render(asset.assetId, asset.sourceBytes, adjustments, transforms, options);
+  if (!hasErase) {
+    if (node?.type === 'image') preparedInpaintCache.invalidateSource(asset.sourceBytes, asset.assetId);
+    return render(asset.assetId, asset.sourceBytes, adjustments, transforms, options);
+  }
   const strokes = normalizeImageEraseStrokes(eraseStrokes);
+  const originalDimensions = assertSafeRasterDimensions(asset.sourceBytes);
+  validateInpaintDimensions(originalDimensions.width, originalDimensions.height);
+  let cachedSource = preparedInpaintCache.acquire(asset.sourceBytes, asset.assetId, strokes, originalDimensions);
   let prepared = null;
   let preparedAssetId = null;
+  let ownsPreparedAsset = false;
   let inpaintReservation = null;
   try {
-    const originalDimensions = assertSafeRasterDimensions(asset.sourceBytes);
-    validateInpaintDimensions(originalDimensions.width, originalDimensions.height);
-    inpaintReservation = imageMemoryBudget.reserve(estimateBitmapBytes(originalDimensions.width, originalDimensions.height, 8), { kind: 'local-object-erase' });
+    const transientBytes = estimateBitmapBytes(originalDimensions.width, originalDimensions.height, 8);
+    inpaintReservation = imageMemoryBudget.reserve(transientBytes, { kind: 'local-object-erase' });
+    if (!inpaintReservation && cachedSource) {
+      cachedSource.release();
+      cachedSource = null;
+      preparedInpaintCache.clear();
+      inpaintReservation = imageMemoryBudget.reserve(transientBytes, { kind: 'local-object-erase' });
+    }
     if (!inpaintReservation) {
       throw new ImageMemoryLimitError('There is not enough free local image memory for object erase. Close another large design or crop the source image, then retry.', 'local-object-erase');
     }
-    prepared = await inpaintEngine.run(asset.sourceBytes, strokes, { signal, onStage: onInpaintStage });
     if (signal?.aborted) throw new DOMException('Object erase was cancelled.', 'AbortError');
-    if (!originalDimensions || prepared.width !== originalDimensions.width || prepared.height !== originalDimensions.height) {
-      throw new Error('The local object-erase model returned dimensions that do not match the original image.');
+    if (!cachedSource) {
+      prepared = await inpaintEngine.run(asset.sourceBytes, strokes, { signal, onStage: onInpaintStage });
+      if (signal?.aborted) throw new DOMException('Object erase was cancelled.', 'AbortError');
+      const preparedDimensions = assertSafeRasterDimensions(prepared.bytes);
+      if (prepared.width !== originalDimensions.width || prepared.height !== originalDimensions.height
+        || preparedDimensions.width !== originalDimensions.width || preparedDimensions.height !== originalDimensions.height) {
+        throw new Error('The local object-erase model returned dimensions that do not match the original image.');
+      }
+      // Another preview can finish the same serialized inference while this
+      // request is waiting. Reuse that entry instead of retaining a duplicate.
+      cachedSource = preparedInpaintCache.acquire(asset.sourceBytes, asset.assetId, strokes, originalDimensions);
+      if (!cachedSource) cachedSource = preparedInpaintCache.store(asset.sourceBytes, asset.assetId, strokes, originalDimensions, prepared.bytes);
+    }
+    if (cachedSource) {
+      preparedAssetId = cachedSource.assetId;
+      return await render(preparedAssetId, cachedSource.bytes, adjustments, transforms, options);
     }
     preparedAssetId = `inpaint-source:${node.id}:${++nextInpaintSourceId}`;
+    ownsPreparedAsset = true;
     return await render(preparedAssetId, prepared.bytes, adjustments, transforms, options);
   } finally {
-    if (preparedAssetId) imageEngine.dispose(preparedAssetId);
+    cachedSource?.release();
+    if (ownsPreparedAsset && preparedAssetId) imageEngine.dispose(preparedAssetId);
     prepared?.bytes?.fill?.(0);
     if (inpaintReservation) imageMemoryBudget.releaseReservation(inpaintReservation);
   }
@@ -7310,7 +7342,7 @@ function reconcileImageAssetRuntime() {
   return pruneImageAssetRuntime({
     liveAssetIds: collectLiveImageAssetIds(snapshots, state.clipboard?.items?.map(item => item.node) || []),
     assets: state.assets,
-    disposeSource: assetId => imageEngine.dispose(assetId),
+    disposeSource: assetId => { preparedInpaintCache.invalidateAsset(assetId); imageEngine.dispose(assetId); },
     releaseMemory: assetId => imageMemoryBudget.release(assetMemoryKey(assetId)),
   });
 }
@@ -11096,6 +11128,7 @@ function releaseImageRuntimeForDocumentSwitch() {
   previewsEvictedForCapacity.clear();
   state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear(); state.previewSignatures.clear();
   state.previewVersions.clear(); state.imageStatus.clear(); state.renderVersion.clear();
+  preparedInpaintCache.clear();
   imageMemoryBudget.releaseEntries();
 }
 
@@ -14682,7 +14715,7 @@ async function boot() {
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
-  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
+  window.addEventListener('beforeunload', () => { preparedInpaintCache.clear(); imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();
