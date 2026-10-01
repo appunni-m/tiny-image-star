@@ -668,6 +668,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   const slotContext = componentSlotMutationContext(document, entry);
   requireOverriddenSlotForMutation(slotContext, 'remove');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot remove a component slot target from its instance.');
+  const removesMaskSource = Boolean(entry.parent?.mask && entry.parent.maskSourceId === entry.node.id);
   if (entry.parent && entry.parent !== slotContext?.target && entry.node.componentSourceId && entry.parent.componentSourceId) {
     const instanceRoot = [...entry.parents].reverse().find(parent => parent.isInstance);
     // A nested component instance has two source identities: componentSourceId
@@ -683,7 +684,15 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
       const deletedChildren = new Set(overrides.__deletedChildren || []);
       deletedChildren.add(sourceChildId);
       overrides.__deletedChildren = [...deletedChildren];
+      if (removesMaskSource) overrides.mask = false;
     }
+  }
+  // A mask group cannot reference a child that no longer exists. Keep the
+  // remaining editable layers together, but turn the group into a regular
+  // group when its source shape is deleted.
+  if (removesMaskSource) {
+    entry.parent.mask = false;
+    delete entry.parent.maskSourceId;
   }
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);

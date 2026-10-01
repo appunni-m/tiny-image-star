@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createNode, findNode, parseDocument, serializeDocument, setComponentSlotContent, syncAllComponentInstances } from '../src/model.js';
+import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
@@ -26,6 +26,49 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.equal(findNode(result.document, second.id), null);
   assert.ok(findNode(document, first.id), 'the active document is left untouched until deletion succeeds');
   assert.deepEqual(result.removedIds, [first.id, second.id]);
+});
+
+test('deleting a mask source removes only that layer and keeps the remaining group editable', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Visible content' });
+  const mask = createNode('ellipse', { name: 'Mask source' });
+  addNode(document, content);
+  addNode(document, mask);
+  const group = createMaskGroup(document, [content.id, mask.id]);
+
+  const result = removeLayersAtomically(document, [mask.id]);
+  const updatedGroup = findNode(result.document, group.id).node;
+
+  assert.equal(findNode(result.document, mask.id), null);
+  assert.equal(findNode(result.document, content.id).parent.id, group.id);
+  assert.equal(updatedGroup.mask, false);
+  assert.equal(Object.hasOwn(updatedGroup, 'maskSourceId'), false);
+  assert.equal(validateDocument(result.document), true);
+});
+
+test('deleting a mask source from a component instance remains deleted after component sync and reload', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Component content' });
+  const mask = createNode('ellipse', { name: 'Component mask' });
+  addNode(document, content);
+  addNode(document, mask);
+  const maskGroup = createMaskGroup(document, [content.id, mask.id]);
+  const component = createComponent(document, maskGroup.id, 'Masked component');
+  const instance = createComponentInstance(document, component.id);
+  const instanceGroup = instance;
+  const instanceMask = instanceGroup.children.find(child => child.type === 'ellipse');
+
+  const result = removeLayersAtomically(document, [instanceMask.id]);
+  syncAllComponentInstances(result.document);
+  validateDocument(result.document);
+  const reloaded = parseDocument(serializeDocument(result.document));
+  syncAllComponentInstances(reloaded);
+  validateDocument(reloaded);
+
+  const reloadedInstanceGroup = findNode(reloaded, instanceGroup.id).node;
+  assert.equal(findNode(reloaded, instanceMask.id), null);
+  assert.equal(reloadedInstanceGroup.mask, false);
+  assert.equal(reloadedInstanceGroup.children.some(child => child.type === 'rectangle'), true);
 });
 
 test('a blocked slot-layer deletion leaves every selected layer intact', () => {
