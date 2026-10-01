@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
   const document = createDocument();
@@ -490,6 +490,57 @@ test('prototype easing curves clamp progress and preserve the legacy smooth defa
   assert.equal(easePrototypeProgress(0.5, 'ease-out'), 0.75);
   assert.equal(easePrototypeProgress(0.5, 'ease-in-out'), 0.5);
   assert.equal(easePrototypeProgress(0.5), 0.5);
+});
+
+test('prototype custom Bézier and spring easings validate and round-trip per interaction', () => {
+  const document = createDocument();
+  const source = createNode('rectangle', { name: 'Open details' });
+  const home = createNode('frame', { name: 'Home' });
+  const destination = createNode('frame', { name: 'Details' });
+  home.children.push(source);
+  addNode(document, home); addNode(document, destination);
+
+  const custom = addPrototypeInteraction(document, source.id, destination.id, {
+    transition: 'smart-animate', easing: 'custom-bezier', easingBezier: [0.42, 0, 0.58, 1], duration: 500
+  });
+  assert.deepEqual(custom.easingBezier, [0.42, 0, 0.58, 1]);
+  assert.equal(easePrototypeProgress(0, custom.easing, custom.easingBezier), 0);
+  assert.equal(easePrototypeProgress(1, custom.easing, custom.easingBezier), 1);
+  assert.equal(easePrototypeProgress(0.5, custom.easing, custom.easingBezier), 0.5);
+  assert.equal(prototypeEasingTimingFunction(custom.easing, custom.easingBezier), 'cubic-bezier(0.42, 0, 0.58, 1)');
+  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].easingBezier[0], 0.42);
+
+  const updated = updatePrototypeInteraction(document, source.id, custom.id, destination.id, {
+    action: 'navigate', trigger: 'on-click', transition: 'smart-animate', easing: 'custom-bezier',
+    easingBezier: [0.25, 0.8, 0.25, 1], duration: 650
+  });
+  assert.equal(updated.id, custom.id);
+  assert.deepEqual(updated.easingBezier, [0.25, 0.8, 0.25, 1], 'editing a route should retain its identity and persist its curve');
+
+  const spring = addPrototypeInteraction(document, source.id, destination.id, {
+    trigger: 'on-press', transition: 'smart-animate', easing: 'spring-bouncy', duration: 700
+  });
+  assert.equal(spring.easing, 'spring-bouncy');
+  for (const easing of ['spring-gentle', 'spring-quick', 'spring-bouncy', 'spring-slow']) {
+    assert.equal(easePrototypeProgress(0, easing), 0);
+    assert.ok(Math.abs(easePrototypeProgress(1, easing) - 1) < 1e-9);
+    const samples = Array.from({ length: 101 }, (_, index) => easePrototypeProgress(index / 100, easing));
+    assert.ok(samples.every(Number.isFinite));
+    assert.ok(Math.min(...samples) >= 0 && Math.max(...samples) <= 1.25, 'spring presets should overshoot without extreme jumps');
+  }
+  assert.ok(easePrototypeProgress(0.4, 'spring-bouncy') > 1, 'the bouncy spring should visibly overshoot the destination');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+  assert.equal(findNode(parseDocument(serializeDocument(document)), source.id).node.interactions[0].easingBezier[1], 0.8);
+  assert.throws(() => addPrototypeInteraction(document, source.id, destination.id, {
+    easing: 'custom-bezier', easingBezier: [1.2, 0, 0.2, 1]
+  }), /Unsupported prototype easing settings/);
+
+  const invalidCurve = structuredClone(document);
+  findNode(invalidCurve, source.id).node.interactions[0].easingBezier = [0.42, 3, 0.58, 1];
+  assert.throws(() => validateDocument(invalidCurve), /Invalid prototype interactions/);
+  const unexpectedCurve = structuredClone(document);
+  findNode(unexpectedCurve, source.id).node.interactions[1].easingBezier = [0.25, 0.1, 0.25, 1];
+  assert.throws(() => validateDocument(unexpectedCurve), /Invalid prototype interactions/);
 });
 
 test('prototype start point and frame hit-testing prefer a nested frame', () => {

@@ -6,6 +6,7 @@ import {
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
 import { evaluatePrototypeExpression } from './prototype-expressions.js';
+import { DEFAULT_PROTOTYPE_BEZIER } from './prototype-easing.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { clipboardImageFilename, routeClipboardPaste } from './image-clipboard.js';
 import { createImageTransforms, flipImageTransforms, rotateImageTransforms } from './image-transforms.js';
@@ -126,7 +127,7 @@ const state = {
   pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
-  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
+  prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
   prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
   prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
@@ -2250,8 +2251,14 @@ function prototypeInspector() {
       'greater-than-or-equal': 'is at least', 'less-than': 'is less than', 'less-than-or-equal': 'is at most'
     }[interaction.condition?.operator] || 'is';
     const conditionLabel = conditionVariable ? ` · If ${conditionVariable.name} ${conditionOperatorText} ${String(interaction.condition.value)}` : '';
+    const easingLabel = ({
+      'ease-in-out': 'Ease in and out', linear: 'Linear', 'ease-in': 'Ease in', 'ease-out': 'Ease out',
+      'ease-in-back': 'Ease in · back', 'ease-out-back': 'Ease out · back', 'ease-in-out-back': 'Ease in and out · back',
+      'spring-gentle': 'Spring · gentle', 'spring-quick': 'Spring · quick', 'spring-bouncy': 'Spring · bouncy',
+      'spring-slow': 'Spring · slow', 'custom-bezier': 'Custom Bézier'
+    })[interaction.easing] || 'Ease in and out';
     const selected = interaction.id === state.prototypeEditingInteractionId;
-    return `<div class="prototype-interaction-row${selected ? ' is-editing' : ''}"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : interaction.action === 'scroll-to' ? '↓' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(interaction.easing || 'ease-in-out')}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="prototype-edit-button" type="button" data-action="edit-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Edit ${escapeHtml(triggerLabel)} ${escapeHtml(actionLabel)} interaction">${selected ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
+    return `<div class="prototype-interaction-row${selected ? ' is-editing' : ''}"><span class="prototype-interaction-icon">${interaction.action === 'close-overlay' ? '×' : interaction.action === 'back' ? '←' : interaction.action === 'open-overlay' || interaction.action === 'swap-overlay' ? '▱' : interaction.action === 'scroll-to' ? '↓' : '↗'}</span><span class="prototype-interaction-copy"><strong>${escapeHtml(triggerLabel)} · ${escapeHtml(actionLabel)}</strong><small>${escapeHtml(destinationLabel)}${interaction.transition && interaction.transition !== 'instant' ? ` · ${escapeHtml(easingLabel)}` : ''}${escapeHtml(conditionLabel)}</small></span><button class="prototype-edit-button" type="button" data-action="edit-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Edit ${escapeHtml(triggerLabel)} ${escapeHtml(actionLabel)} interaction">${selected ? 'Editing' : 'Edit'}</button><button class="tiny-icon-button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove interaction" title="Remove interaction">×</button></div>`;
   }).join('');
   const needsDestination = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
   const needsScrollTarget = state.prototypeAction === 'scroll-to' && !selectedScrollTarget;
@@ -2262,9 +2269,18 @@ function prototypeInspector() {
     : [['instant', 'Instant'], ['dissolve', 'Dissolve'], ['move-left', 'Move in · left'], ['move-right', 'Move in · right'], ...(state.prototypeAction === 'navigate' ? [['smart-animate', 'Smart animate']] : [])];
   const transitionOptions = transitionChoices
     .map(([value, label]) => `<option value="${value}"${state.prototypeTransition === value ? ' selected' : ''}>${label}</option>`).join('');
-  const easingOptions = [['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out']]
+  const easingOptions = [
+    ['ease-in-out', 'Ease in and out'], ['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'],
+    ['ease-in-back', 'Ease in · back'], ['ease-out-back', 'Ease out · back'], ['ease-in-out-back', 'Ease in and out · back'],
+    ['spring-gentle', 'Spring · gentle'], ['spring-quick', 'Spring · quick'], ['spring-bouncy', 'Spring · bouncy'], ['spring-slow', 'Spring · slow'],
+    ['custom-bezier', 'Custom Bézier']
+  ]
     .map(([value, label]) => `<option value="${value}"${state.prototypeEasing === value ? ' selected' : ''}>${label}</option>`).join('');
-  const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>`;
+  const bezierValues = Array.isArray(state.prototypeEasingBezier) && state.prototypeEasingBezier.length === 4
+    ? state.prototypeEasingBezier : DEFAULT_PROTOTYPE_BEZIER;
+  const bezierControl = state.prototypeEasing === 'custom-bezier'
+    ? `<div class="prototype-bezier-controls" aria-label="Custom Bézier control points">${bezierValues.map((value, index) => `<label>${['X1', 'Y1', 'X2', 'Y2'][index]}<input class="text-input" id="prototype-easing-bezier-${index}" type="number" step="0.01" min="${index % 2 === 0 ? 0 : -2}" max="${index % 2 === 0 ? 1 : 2}" value="${escapeHtml(value)}" aria-label="Bézier ${['X1', 'Y1', 'X2', 'Y2'][index]}" /></label>`).join('')}</div>` : '';
+  const easingControl = state.prototypeTransition === 'instant' ? '' : `<label>Easing<select id="prototype-easing" class="select-field">${easingOptions}</select></label>${bezierControl}`;
   const hasTimedTransition = needsDestination || state.prototypeAction === 'scroll-to';
   const variableCollections = state.document.variableCollections || [];
   const canUseDelayTrigger = ['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction);
@@ -4254,6 +4270,7 @@ function onCanvasPointerDown(event) {
         delay: state.prototypeDelay,
         transition: state.prototypeTransition,
         easing: state.prototypeEasing,
+        easingBezier: state.prototypeEasingBezier,
         duration: state.prototypeDuration,
         condition,
         overlayPosition: state.prototypeOverlayPosition,
@@ -9816,21 +9833,44 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     delete $('#present-dialog').dataset.smartProgress;
   }
   $('#present-dialog').style.setProperty('--present-duration', `${Math.max(0, interaction?.duration ?? 240)}ms`);
-  $('#present-dialog').style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction?.easing || 'ease-in-out'));
+  $('#present-dialog').style.setProperty('--present-easing', prototypeEasingTimingFunction(interaction?.easing || 'ease-in-out', interaction?.easingBezier));
   if (interaction?.transition === 'smart-animate') {
+    $('#present-canvas').style.transition = '';
     $('#present-canvas').style.opacity = '1';
     $('#present-canvas').style.transform = 'translateX(0)';
     presentRenderer?.invalidate();
   } else if (interaction?.transition && interaction.transition !== 'instant' && interaction.duration > 0) {
     const enterFrom = interaction.transition === 'move-left' ? 'translateX(22px)' : interaction.transition === 'move-right' ? 'translateX(-22px)' : 'translateX(0)';
     const canvasElement = $('#present-canvas');
+    canvasElement.style.transition = 'none';
     canvasElement.style.opacity = '0';
     canvasElement.style.transform = enterFrom;
     requestPresentationTransitionFrame(() => {
       presentRenderer?.invalidate();
-      requestPresentationTransitionFrame(() => { canvasElement.style.opacity = '1'; canvasElement.style.transform = 'translateX(0)'; });
+      requestPresentationTransitionFrame(() => {
+        const duration = Math.max(0, Number(interaction.duration) || 0);
+        const startTime = performance.now();
+        const animate = now => {
+          if (!state.presenting || !canvasElement.isConnected) { presentationAnimationFrame = 0; return; }
+          const linear = duration ? Math.min(1, (now - startTime) / duration) : 1;
+          const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
+          canvasElement.style.opacity = String(interaction.transition === 'dissolve'
+            ? Math.max(0, Math.min(1, eased)) : linear);
+          const offset = interaction.transition === 'move-left' ? 22 : interaction.transition === 'move-right' ? -22 : 0;
+          canvasElement.style.transform = `translateX(${offset * (1 - eased)}px)`;
+          if (linear < 1) presentationAnimationFrame = requestAnimationFrame(animate);
+          else {
+            presentationAnimationFrame = 0;
+            canvasElement.style.transition = '';
+            canvasElement.style.opacity = '1';
+            canvasElement.style.transform = 'translateX(0)';
+          }
+        };
+        presentationAnimationFrame = requestAnimationFrame(animate);
+      });
     });
   } else {
+    $('#present-canvas').style.transition = '';
     $('#present-canvas').style.opacity = '1';
     $('#present-canvas').style.transform = 'translateX(0)';
     presentRenderer?.invalidate();
@@ -9842,6 +9882,12 @@ function cancelPresentationAnimation() {
   presentationAnimationFrame = 0;
   for (const frame of presentationTransitionFrames) cancelAnimationFrame(frame);
   presentationTransitionFrames.clear();
+  const canvasElement = $('#present-canvas');
+  if (canvasElement) {
+    canvasElement.style.transition = '';
+    canvasElement.style.opacity = '1';
+    canvasElement.style.transform = 'translateX(0)';
+  }
 }
 
 function requestPresentationTransitionFrame(callback) {
@@ -9888,7 +9934,7 @@ function animateSmartTransition(fromFrame, interaction) {
   const tick = now => {
     if (!state.presenting) { presentationAnimationFrame = 0; return; }
     const linear = Math.min(1, (now - startTime) / duration);
-    const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out');
+    const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
     renderPresentationFrame(interaction, fromFrame, eased);
     if (linear < 1) presentationAnimationFrame = requestAnimationFrame(tick);
     else {
@@ -10012,7 +10058,7 @@ function navigatePresentation(interaction) {
         const tick = now => {
           if (!state.presenting || !presentRenderState) { presentationAnimationFrame = 0; return; }
           const linear = Math.min(1, (now - startTime) / duration);
-          const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out');
+          const eased = easePrototypeProgress(linear, interaction.easing || 'ease-in-out', interaction.easingBezier);
           const offsets = new Map(plan.offsets);
           for (const update of plan.updates) offsets.set(update.frameId, {
             x: update.from.x + (update.to.x - update.from.x) * eased,
@@ -12364,6 +12410,7 @@ function applyInspectorAction(action, details = {}) {
     state.prototypeTrigger = interaction.trigger;
     state.prototypeTransition = interaction.transition || 'instant';
     state.prototypeEasing = interaction.easing || 'ease-in-out';
+    state.prototypeEasingBezier = interaction.easingBezier ? [...interaction.easingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
     state.prototypeDuration = Number.isFinite(interaction.duration) ? interaction.duration : 300;
     state.prototypeDelay = Number.isFinite(interaction.delay) ? interaction.delay : 1000;
     state.prototypeUrl = interaction.url || 'https://';
@@ -12405,7 +12452,7 @@ function applyInspectorAction(action, details = {}) {
         const variablePayload = state.prototypeAction === 'set-variable' ? buildPrototypeVariableValue() : {};
         const updateOptions = {
           action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
-          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
+          transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
           condition, url: $('#prototype-url')?.value ?? state.prototypeUrl,
           ...variablePayload,
           collectionId: selectedCollection?.id, modeId: selectedMode?.id,
@@ -12445,7 +12492,7 @@ function applyInspectorAction(action, details = {}) {
         const updatedDocument = structuredClone(state.document);
         addPrototypeInteraction(updatedDocument, node.id, null, {
           action: state.prototypeAction, trigger: state.prototypeTrigger,
-          transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
+          transition: state.prototypeTransition, easing: state.prototypeEasing, easingBezier: state.prototypeEasingBezier, duration: state.prototypeDuration,
           condition, ...variablePayload,
           url: state.prototypeUrl,
           collectionId: selectedCollection?.id,
@@ -13121,6 +13168,14 @@ function initEvents() {
     if (event.target.id === 'motion-playhead') { setMotionPlayhead(event.target.value); return; }
     if (event.target.id === 'prototype-variable-value') { state.prototypeVariableValue = event.target.value; return; }
     if (event.target.id === 'prototype-variable-expression') { state.prototypeVariableExpression = event.target.value; return; }
+    const easingBezierField = /^prototype-easing-bezier-(\d)$/.exec(event.target.id);
+    if (easingBezierField) {
+      const index = Number(easingBezierField[1]);
+      const values = Array.isArray(state.prototypeEasingBezier) ? [...state.prototypeEasingBezier] : [...DEFAULT_PROTOTYPE_BEZIER];
+      values[index] = Number(event.target.value);
+      state.prototypeEasingBezier = values;
+      return;
+    }
     const gradientGeometryField = event.target.closest('[data-gradient-geometry-field]');
     if (gradientGeometryField) { updateGradientGeometryInput(gradientGeometryField); return; }
     const strokeField = event.target.closest('[data-stroke-field]');
@@ -13311,7 +13366,7 @@ function initEvents() {
     if (event.target.id === 'prototype-trigger') { state.prototypeTrigger = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-url') state.prototypeUrl = event.target.value;
     if (event.target.id === 'prototype-transition') { state.prototypeTransition = event.target.value; renderInspector(); }
-    if (event.target.id === 'prototype-easing') state.prototypeEasing = event.target.value;
+    if (event.target.id === 'prototype-easing') { state.prototypeEasing = event.target.value; renderInspector(); }
     if (event.target.id === 'prototype-duration') state.prototypeDuration = Number(event.target.value);
     if (event.target.id === 'prototype-delay') state.prototypeDelay = Number(event.target.value);
     if (event.target.id === 'prototype-overlay-position') state.prototypeOverlayPosition = event.target.value;

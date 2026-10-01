@@ -11,6 +11,7 @@ import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
+import { isValidPrototypeEasing } from './prototype-easing.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -215,7 +216,6 @@ const defaults = {
 const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
-const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const prototypeOverlayPositions = new Set(['center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center', 'bottom-left', 'bottom-center', 'bottom-right']);
 const prototypeNumericConditionOperators = new Set(['greater-than', 'greater-than-or-equal', 'less-than', 'less-than-or-equal']);
 const prototypeConditionOperators = new Set(['equals', 'not-equals', ...prototypeNumericConditionOperators]);
@@ -312,7 +312,8 @@ function hasInvalidPrototypeInteractions(interactions, document) {
       : (Object.hasOwn(item, 'instanceId') || Object.hasOwn(item, 'targetVariantId'))) return true;
     if (item.destinationPageId != null && typeof item.destinationPageId !== 'string') return true;
     if (item.transition != null && !prototypeTransitions.has(item.transition)) return true;
-    if (item.easing != null && !prototypeEasings.has(item.easing)) return true;
+    if (item.easing != null && !isValidPrototypeEasing(item.easing, item.easingBezier)) return true;
+    if (item.easing == null && Object.hasOwn(item, 'easingBezier')) return true;
     if (item.transition === 'smart-animate' && item.action !== 'navigate') return true;
     if (item.transition === 'scroll' && item.action !== 'scroll-to') return true;
     if (item.action === 'scroll-to' && item.transition != null && !['instant', 'scroll'].includes(item.transition)) return true;

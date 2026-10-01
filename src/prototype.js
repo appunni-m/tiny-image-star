@@ -1,6 +1,9 @@
 import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolvePrototypeExpressionVariables, resolveVariableValueWithModeOverrides, setVariableValue, switchComponentInstanceVariant, variableModeForNode, walkNodes } from './model.js';
 import { pageToNodeLocal } from './transform-geometry.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS } from './prototype-expressions.js';
+import { DEFAULT_PROTOTYPE_BEZIER, isValidPrototypeEasing } from './prototype-easing.js';
+
+export { easePrototypeProgress, prototypeEasingTimingFunction } from './prototype-easing.js';
 
 const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
@@ -8,7 +11,6 @@ const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-over
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
 const maxPrototypeDelay = 10_000;
-const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const overlayPositions = new Set([
   'center', 'top-left', 'top-center', 'top-right', 'left-center', 'right-center',
   'bottom-left', 'bottom-center', 'bottom-right'
@@ -185,18 +187,6 @@ export function deletePrototypeFlow(document, flowId) {
   return true;
 }
 
-export function easePrototypeProgress(progress, easing = 'ease-in-out') {
-  const value = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
-  if (easing === 'linear') return value;
-  if (easing === 'ease-in') return value * value;
-  if (easing === 'ease-out') return 1 - (1 - value) ** 2;
-  return value * value * (3 - 2 * value);
-}
-
-export function prototypeEasingTimingFunction(easing = 'ease-in-out') {
-  return easings.has(easing) ? easing : 'ease-in-out';
-}
-
 export function normalizePrototypeLinkUrl(value) {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
@@ -257,6 +247,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   trigger = 'on-click',
   transition = 'instant',
   easing = 'ease-in-out',
+  easingBezier = DEFAULT_PROTOTYPE_BEZIER,
   duration = 300,
   overlayPosition = 'center',
   overlayOutsideClick = true,
@@ -282,7 +273,10 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     throw new TypeError('After-delay interactions need a destination action and a whole-number delay from 100 to 10,000 ms.');
   }
   if (!transitions.has(transition)) throw new TypeError('Unsupported prototype transition.');
-  if (!easings.has(easing)) throw new TypeError('Unsupported prototype easing.');
+  const normalizedEasingBezier = easing === 'custom-bezier'
+    ? [...(easingBezier ?? DEFAULT_PROTOTYPE_BEZIER)]
+    : null;
+  if (!isValidPrototypeEasing(easing, normalizedEasingBezier)) throw new TypeError('Unsupported prototype easing settings.');
   if (transition === 'smart-animate' && action !== 'navigate') throw new TypeError('Smart animate can only be used for frame navigation.');
   if (transition === 'scroll' && action !== 'scroll-to') throw new TypeError('Scroll transitions can only be used with scroll-to actions.');
   if (action === 'scroll-to' && transition !== 'scroll' && transition !== 'instant') throw new TypeError('Scroll-to actions support only instant or scroll transitions.');
@@ -363,6 +357,8 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (existing) {
     existing.transition = transition;
     existing.easing = easing;
+    if (normalizedEasingBezier) existing.easingBezier = normalizedEasingBezier;
+    else delete existing.easingBezier;
     existing.duration = Math.max(0, Math.min(2000, Number(duration) || 0));
     if (action === 'open-overlay') {
       existing.overlayPosition = overlayPosition;
@@ -400,6 +396,7 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     easing,
     duration: Math.max(0, Math.min(2000, Number(duration) || 0))
   };
+  if (normalizedEasingBezier) interaction.easingBezier = normalizedEasingBezier;
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
   if (action === 'set-variable') {

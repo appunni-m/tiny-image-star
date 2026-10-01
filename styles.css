@@ -705,6 +705,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .prototype-controls #prototype-variable-expression { width: 100%; min-height: 40px; }
 .prototype-controls > .prototype-hint code { color: var(--ink); }
 .prototype-controls .select-field { width: 100%; min-height: 38px; }
+.prototype-bezier-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.prototype-controls .prototype-bezier-controls label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; color: #777; font-size: 9px; text-align: center; }
+.prototype-bezier-controls .text-input { width: 100%; min-width: 0; min-height: 34px; padding-inline: 4px; text-align: center; font-size: 10px; }
 .prototype-controls label:has(#prototype-delay) { grid-template-columns: 1fr auto; }
 .prototype-controls #prototype-delay { grid-column: 1 / -1; width: 100%; margin: -4px 0 0; accent-color: #0d99ff; }
 .prototype-controls label:has(#prototype-duration) { grid-template-columns: 1fr auto; }
