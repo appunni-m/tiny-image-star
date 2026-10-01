@@ -70,6 +70,16 @@ function assertLocalValue(type, value, label) {
   }
 }
 
+function assertTokenMetadata(token, label) {
+  if (token.description !== undefined && typeof token.description !== 'string') {
+    fail(`${label} description must be a string.`, 'INVALID_METADATA');
+  }
+  if (token.deprecated !== undefined
+    && typeof token.deprecated !== 'boolean' && typeof token.deprecated !== 'string') {
+    fail(`${label} deprecated metadata must be a boolean or string.`, 'INVALID_METADATA');
+  }
+}
+
 function localDtcgType(variable) {
   return variable.dtcgType ?? variable.type;
 }
@@ -222,6 +232,7 @@ function validateLocalDocument(document) {
       && (!localMeasurementTypes.has(variable.dtcgType) || variable.type !== 'number')) {
       fail(`Variable "${variable.name}" has an invalid DTCG measurement type.`, 'INVALID_LOCAL_TYPE');
     }
+    assertTokenMetadata(variable, `Variable "${variable.name}"`);
     const nameKey = variable.name.toLowerCase();
     const seenNames = namesByCollection.get(collection.id) || new Set();
     if (seenNames.has(nameKey)) fail(`Collection "${collection.name}" has case-insensitive duplicate variable name "${variable.name}".`, 'AMBIGUOUS_VARIABLE_NAME');
@@ -329,6 +340,8 @@ export function exportDtcgTokens(document) {
       const path = [collection.name, ...segments];
       const modeId = collection.defaultModeId;
       const token = { $type: outputDtcgType(variable) };
+      if (variable.description !== undefined) token.$description = variable.description;
+      if (variable.deprecated !== undefined) token.$deprecated = variable.deprecated;
       const defaultAliasId = variable.aliasesByMode?.[modeId];
       if (defaultAliasId) {
         const target = byId.get(defaultAliasId);
@@ -366,9 +379,6 @@ function collectTokens(document) {
     if (hasOwn(group, '$type') && typeof group.$type !== 'string') fail(`Group "${path.join('.')}" has a non-string $type.`, 'INVALID_TYPE');
     const groupType = group.$type ?? inheritedType;
     if (group.$extends !== undefined) fail(`Group "${path.join('.')}" uses $extends, which is not supported by this local adapter.`, 'UNSUPPORTED_GROUP_EXTENSION');
-    if (group.$description !== undefined || group.$deprecated !== undefined) {
-      fail(`Group metadata on "${path.join('.')}" cannot be preserved by the Tiny Image Star variable model.`, 'UNSUPPORTED_METADATA');
-    }
     if (group.$extensions !== undefined && path.length > 0) warnings.push(`Ignored non-root extensions on group "${path.join('.')}".`);
     const tokenLike = hasOwn(group, '$value') || hasOwn(group, '$ref');
     const children = Object.keys(group).filter(key => !key.startsWith('$'));
@@ -379,12 +389,21 @@ function collectTokens(document) {
           fail(`Token "${path.join('.')}" uses unsupported property ${key}.`, 'UNSUPPORTED_PROPERTY');
         }
       }
-      if (group.$description !== undefined || group.$deprecated !== undefined) fail(`Token metadata on "${path.join('.')}" cannot be preserved by the Tiny Image Star variable model.`, 'UNSUPPORTED_METADATA');
+      if (group.$description !== undefined && typeof group.$description !== 'string') {
+        fail(`Token "${path.join('.')}" has a non-string $description.`, 'INVALID_METADATA');
+      }
+      if (group.$deprecated !== undefined
+        && typeof group.$deprecated !== 'boolean' && typeof group.$deprecated !== 'string') {
+        fail(`Token "${path.join('.')}" has invalid $deprecated metadata.`, 'INVALID_METADATA');
+      }
       if (hasOwn(group, '$value') && hasOwn(group, '$ref')) fail(`Token "${path.join('.')}" cannot have both $value and $ref.`, 'INVALID_TOKEN');
       if (!hasOwn(group, '$value') && typeof group.$ref !== 'string') fail(`Token "${path.join('.')}" has an invalid $ref.`, 'INVALID_REFERENCE');
       if (hasOwn(group, '$type') && typeof group.$type !== 'string') fail(`Token "${path.join('.')}" has a non-string $type.`, 'INVALID_TYPE');
       tokens.push({ path, node: group, inheritedType: group.$type ?? inheritedType, aliasPath: null, type: null, value: null });
       return;
+    }
+    if (group.$description !== undefined || group.$deprecated !== undefined) {
+      fail(`Group metadata on "${path.join('.')}" cannot be preserved by the Tiny Image Star variable model.`, 'UNSUPPORTED_METADATA');
     }
     for (const key of Object.keys(group)) {
       if (key.startsWith('$')) {
@@ -490,6 +509,8 @@ function parseExternalDocument(document, options, warnings) {
     const variable = {
       id: newId('variable'), collectionId: collection.id, name, type: token.type,
       valuesByMode: { [mode.id]: structuredClone(token.value) },
+      ...(token.node.$description !== undefined ? { description: token.node.$description } : {}),
+      ...(token.node.$deprecated !== undefined ? { deprecated: token.node.$deprecated } : {}),
       ...(localMeasurementTypes.has(token.dtcgType) ? { dtcgType: token.dtcgType } : {})
     };
     idsByPath.set(makePathKey(token.path), variable.id);
@@ -535,6 +556,12 @@ function assertExtensionDocument(extension, tokens, warnings = []) {
     pathById.set(entry.id, entry.path);
     const token = tokenByPath.get(key);
     if (!token) fail(`The extension refers to missing DTCG token "${entry.path.join('.')}".`, 'INVALID_EXTENSION');
+    for (const [localKey, tokenKey] of [['description', '$description'], ['deprecated', '$deprecated']]) {
+      if (hasOwn(entry, localKey) !== hasOwn(token.node, tokenKey)
+        || (hasOwn(entry, localKey) && entry[localKey] !== token.node[tokenKey])) {
+        fail(`DTCG ${tokenKey} metadata for "${entry.name}" disagrees with its Tiny Image Star extension.`, 'INVALID_EXTENSION');
+      }
+    }
     const collectionMode = collection.defaultModeId;
     const aliasId = entry.aliasesByMode?.[collectionMode];
     const tokenAlias = resolveAliasPath(token, tokenByPath);

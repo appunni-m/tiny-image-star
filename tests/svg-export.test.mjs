@@ -26,6 +26,17 @@ test('page SVG omits slice overlays from artwork bounds and standalone slices re
   assert.throws(() => exportNodeToSvg(slice), error => error instanceof SvgExportError && /raster slice exports/.test(error.message));
 });
 
+test('SVG export composes affine residuals with center rotation and layer position', () => {
+  const rectangle = createNode('rectangle', {
+    name: 'Affine layer', x: 10, y: 20, width: 40, height: 20, rotation: 30,
+    affineTransform: { a: 1, b: 0.2, c: 0.5, d: 1 },
+    fill: '#abcdef', stroke: null, strokeWidth: 0
+  });
+  const svg = exportNodeToSvg(rectangle);
+
+  assert.match(svg, /transform="matrix\(1\.11602540378 0\.673205080757 -0\.0669872981078 0\.766025403784 3\.34936490539 -7\.12435565298\)"/);
+});
+
 test('SVG text export lays out explicit line-height units in pixels', () => {
   const measureText = text => [...String(text)].length * 5;
   for (const [lineHeight, lineHeightUnit, expectedY] of [

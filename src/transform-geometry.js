@@ -24,6 +24,13 @@ function assertGeometry(node, label = 'Node') {
   if (!finiteGeometry(node) || Number(node.width) < 0 || Number(node.height) < 0) {
     throw new TypeError(`${label} transform needs finite x, y, width, height, and rotation values.`);
   }
+  if (node.affineTransform != null) {
+    const { a, b, c, d } = node.affineTransform;
+    const determinant = a * d - b * c;
+    if (![a, b, c, d, determinant].every(Number.isFinite) || Math.abs(determinant) <= EPSILON) {
+      throw new TypeError(`${label} affine transform must be finite and invertible.`);
+    }
+  }
 }
 
 /** Return left ∘ right for Canvas-style affine matrices. */
@@ -83,7 +90,12 @@ export function nodeToParentTransform(node) {
     e: cx - cosine * cx + sine * cy,
     f: cy - sine * cx - cosine * cy
   };
-  return multiplyAffine({ ...IDENTITY_AFFINE, e: Number(node.x), f: Number(node.y) }, rotationAboutCenter);
+  const linear = node.affineTransform || IDENTITY_AFFINE;
+  const affine = { a: linear.a, b: linear.b, c: linear.c, d: linear.d, e: 0, f: 0 };
+  return multiplyAffine(
+    multiplyAffine({ ...IDENTITY_AFFINE, e: Number(node.x), f: Number(node.y) }, affine),
+    rotationAboutCenter
+  );
 }
 
 /**
@@ -196,14 +208,8 @@ export function resizeOrientedRect(rect, handle, pointerPage, ancestors = [], { 
   const fixedPage = nodeLocalToPage(original, fixedLocal, ancestors);
   const parentTransform = parentLocalToPageTransform(ancestors);
   const fixedParent = transformPoint(invertAffine(parentTransform), fixedPage);
-  const radians = resized.rotation * Math.PI / 180;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  const center = { x: width / 2, y: height / 2 };
-  const dx = nextFixedLocal.x - center.x;
-  const dy = nextFixedLocal.y - center.y;
-  const rotatedFixedOffset = { x: cosine * dx - sine * dy, y: sine * dx + cosine * dy };
-  resized.x = fixedParent.x - center.x - rotatedFixedOffset.x;
-  resized.y = fixedParent.y - center.y - rotatedFixedOffset.y;
+  const fixedOffset = transformPoint(nodeToParentTransform(resized), nextFixedLocal);
+  resized.x = fixedParent.x - fixedOffset.x;
+  resized.y = fixedParent.y - fixedOffset.y;
   return resized;
 }

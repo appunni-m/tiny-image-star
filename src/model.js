@@ -3154,6 +3154,16 @@ export function validateDocument(document) {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      if (node.affineTransform != null) {
+        const matrix = node.affineTransform;
+        const determinant = matrix?.a * matrix?.d - matrix?.b * matrix?.c;
+        if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)
+          || Object.keys(matrix).some(key => !['a', 'b', 'c', 'd'].includes(key))
+          || !['a', 'b', 'c', 'd'].every(key => Number.isFinite(matrix[key]))
+          || !Number.isFinite(determinant) || Math.abs(determinant) <= 1e-12) {
+          throw new TypeError(`Invalid affine transform on layer ${node.name || node.id}.`);
+        }
+      }
       if (node.type === 'slice' && (parent || node.width <= 0 || node.height <= 0 || node.rotation !== 0
         || node.children?.length || node.isComponent || node.isInstance || node.mask)) {
         throw new TypeError(`Slices are positive-size, unrotated, top-level export regions without children or components (${node.name || node.id}).`);

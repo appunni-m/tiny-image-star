@@ -203,16 +203,34 @@ function localTransform(source, report) {
   const transform = source.transform || {};
   const m00 = finite(transform.m00, 1); const m01 = finite(transform.m01, 0);
   const m10 = finite(transform.m10, 0); const m11 = finite(transform.m11, 1);
-  const xScale = Math.hypot(m00, m10); const yScale = Math.hypot(m01, m11);
-  const dot = m00 * m01 + m10 * m11;
-  const reflected = m00 * m11 - m01 * m10 < 0;
-  if (Math.abs(xScale - 1) > EPSILON || Math.abs(yScale - 1) > EPSILON || Math.abs(dot) > EPSILON || reflected) {
-    warn(report, 'flattened', 'TRANSFORM', source.name, 'Scale, shear, or reflection was simplified; review this layer’s size and orientation.');
+  const determinant = m00 * m11 - m01 * m10;
+  const position = { x: finite(transform.m02), y: finite(transform.m12) };
+  if (Math.abs(determinant) > 1e-12) {
+    // For positive determinants, the polar angle isolates the closest pure
+    // rotation and leaves a symmetric scale/shear residual. A reflection has
+    // no unique polar rotation; use the first column's direction as a stable,
+    // deterministic angle and retain the reflection in the residual matrix.
+    const radians = determinant > 0
+      ? Math.atan2(m10 - m01, m00 + m11)
+      : Math.atan2(m10, m00);
+    const cosine = Math.cos(radians);
+    const sine = Math.sin(radians);
+    const residual = {
+      a: m00 * cosine - m01 * sine,
+      b: m10 * cosine - m11 * sine,
+      c: m00 * sine + m01 * cosine,
+      d: m10 * sine + m11 * cosine
+    };
+    const isIdentity = Math.abs(residual.a - 1) <= EPSILON && Math.abs(residual.b) <= EPSILON
+      && Math.abs(residual.c) <= EPSILON && Math.abs(residual.d - 1) <= EPSILON;
+    return {
+      ...position,
+      rotation: radians * 180 / Math.PI,
+      ...(!isIdentity ? { affineTransform: residual } : {})
+    };
   }
-  return {
-    x: finite(transform.m02), y: finite(transform.m12),
-    rotation: Math.atan2(m10, m00) * 180 / Math.PI
-  };
+  warn(report, 'flattened', 'TRANSFORM', source.name, 'A singular transform was reduced to its closest rotation.');
+  return { ...position, rotation: Math.atan2(m10, m00) * 180 / Math.PI };
 }
 
 function vectorContours(svgPath) {

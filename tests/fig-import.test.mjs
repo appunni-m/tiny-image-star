@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { zipSync } from 'fflate';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
+import { parseDocument, serializeDocument } from '../src/model.js';
+import { nodeLocalToPageTransform } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout } from '../src/layout-engine.js';
 
@@ -85,6 +87,90 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.equal(frame.children[0].type, 'group');
   assert.ok(frame.children[0].children.length >= 2);
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
+});
+
+test('preserves imported scale, shear, and reflection in the node affine transform', () => {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { name: 'Page 1' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Affine rectangle',
+        transform: { m00: -1.5, m01: 0.4, m02: 23, m10: 0.25, m11: 2, m12: -8 }
+      })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'affine.fig', formatVersion: 106 });
+  const rectangle = imported.document.pages[0].children[0];
+
+  assert.notEqual(rectangle.rotation, 0);
+  assert.ok(rectangle.affineTransform.a * rectangle.affineTransform.d
+    - rectangle.affineTransform.b * rectangle.affineTransform.c < 0,
+  'a reflected transform keeps its negative determinant in the affine residual');
+  const composed = nodeLocalToPageTransform(rectangle);
+  for (const [key, expected] of Object.entries({ a: -1.5, b: 0.25, c: 0.4, d: 2 })) {
+    assert.ok(Math.abs(composed[key] - expected) < 1e-10, `${key} should retain the imported linear transform`);
+  }
+  assert.deepEqual([rectangle.x, rectangle.y], [23, -8]);
+  assert.equal(imported.report.flattenedTypes.TRANSFORM, undefined);
+});
+
+test('decomposes pure rotation and positive-determinant matrices without losing their full affine', () => {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const angle = 37 * Math.PI / 180;
+  const pureRotation = { m00: Math.cos(angle), m01: -Math.sin(angle), m10: Math.sin(angle), m11: Math.cos(angle) };
+  const positiveDeterminant = { m00: 2, m01: 0.6, m10: 0.4, m11: 1.5 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { name: 'Page 1' }),
+      node('RECTANGLE', 2, pageGuid, 'a', { name: 'Rotated', transform: { ...pureRotation, m02: 0, m12: 0 } }),
+      node('RECTANGLE', 3, pageGuid, 'b', { name: 'Positive affine', transform: { ...positiveDeterminant, m02: 0, m12: 0 } })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'decomposed.fig', formatVersion: 106 });
+  const [rotated, positive] = imported.document.pages[0].children;
+  assert.ok(Math.abs(rotated.rotation - 37) < 1e-10);
+  assert.equal(rotated.affineTransform, undefined, 'a pure rotation needs no residual transform');
+
+  const reconstructed = nodeLocalToPageTransform(positive);
+  for (const [key, expected] of Object.entries({
+    a: positiveDeterminant.m00, b: positiveDeterminant.m10,
+    c: positiveDeterminant.m01, d: positiveDeterminant.m11
+  })) assert.ok(Math.abs(reconstructed[key] - expected) < 1e-10, `${key} should recompose exactly`);
+  assert.ok(Math.abs(positive.affineTransform.b - positive.affineTransform.c) < 1e-10,
+    'the positive-determinant polar residual is symmetric');
+});
+
+test('retains affine transforms on imported component children through serialization and validation', () => {
+  const pageGuid = { sessionID: 1, localID: 1 };
+  const componentGuid = { sessionID: 1, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { name: 'Page 1' }),
+      node('COMPONENT', 2, pageGuid, 'a', {
+        name: 'Card component', transform: { m00: 1.2, m01: 0.2, m02: 10, m10: 0.1, m11: 1, m12: 12 }
+      }),
+      node('RECTANGLE', 3, componentGuid, 'a', {
+        name: 'Reflected child', transform: { m00: -1, m01: 0.3, m02: 8, m10: 0, m11: 1, m12: 4 }
+      })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'component-affine.fig', formatVersion: 106 });
+  const restored = parseDocument(serializeDocument(imported.document));
+  const component = restored.pages[0].children[0];
+  const child = component.children[0];
+
+  assert.equal(component.name, 'Card component');
+  assert.ok(component.affineTransform);
+  assert.ok(child.affineTransform);
+  assert.equal(child.affineTransform.a * child.affineTransform.d
+    - child.affineTransform.b * child.affineTransform.c < 0, true);
 });
 
 test('preflight rejects truncated, corrupt, path-traversal, and over-budget archives before parser execution', async () => {

@@ -51,6 +51,49 @@ test('DTCG round-trip preserves collections, all modes, primitive types, and per
   assert.doesNotMatch(json, /https?:\/\//, 'the adapter does not upload or reference remote data');
 });
 
+test('DTCG token descriptions and deprecation metadata survive import, local merge, and export', () => {
+  const plain = {
+    palette: {
+      ink: { $type: 'color', $description: 'Primary text and icon color.', $value: { colorSpace: 'srgb', components: [0, 0, 0], hex: '#000000' } },
+      oldInk: { $type: 'color', $deprecated: 'Use {palette.ink} instead.', $value: { colorSpace: 'srgb', components: [0, 0, 0], hex: '#000000' } },
+      liveInk: { $type: 'color', $deprecated: false, $value: { colorSpace: 'srgb', components: [0, 0, 0], hex: '#000000' } }
+    }
+  };
+  const imported = importDtcgTokens(plain);
+  const variables = Object.fromEntries(imported.variables.map(variable => [variable.name, variable]));
+  assert.equal(variables['palette.ink'].description, 'Primary text and icon color.');
+  assert.equal(variables['palette.oldInk'].deprecated, 'Use {palette.ink} instead.');
+  assert.equal(variables['palette.liveInk'].deprecated, false);
+
+  const output = exportDtcgTokens(imported);
+  assert.equal(output['Imported tokens'].palette.ink.$description, 'Primary text and icon color.');
+  assert.equal(output['Imported tokens'].palette.oldInk.$deprecated, 'Use {palette.ink} instead.');
+  assert.equal(output['Imported tokens'].palette.liveInk.$deprecated, false);
+  const roundTrip = importDtcgTokens(stringifyDtcgTokens(imported));
+  assert.deepEqual(roundTrip.variables, imported.variables);
+
+  const merged = mergeDtcgTokens(createDocument(), imported).document;
+  assert.equal(merged.variables.find(variable => variable.name === 'palette.oldInk').deprecated, 'Use {palette.ink} instead.');
+});
+
+test('DTCG metadata is validated and Tiny Image Star extension projections must match', () => {
+  assert.throws(() => importDtcgTokens({ x: { $type: 'number', $description: 4, $value: 1 } }), error => code(error, 'INVALID_METADATA'));
+  assert.throws(() => importDtcgTokens({ x: { $type: 'number', $deprecated: 1, $value: 1 } }), error => code(error, 'INVALID_METADATA'));
+  assert.throws(() => importDtcgTokens({ group: { $description: 'Description of the group.', token: { $type: 'number', $value: 1 } } }), error => code(error, 'UNSUPPORTED_METADATA'));
+
+  const local = importDtcgTokens({ x: { $type: 'number', $description: 'A number.', $deprecated: true, $value: 1 } });
+  const extensionProjection = exportDtcgTokens(local);
+  const token = extensionProjection['Imported tokens'].x;
+  token.$description = 'Tampered description';
+  assert.throws(() => importDtcgTokens(extensionProjection), error => code(error, 'INVALID_EXTENSION'));
+  token.$description = 'A number.';
+  extensionProjection.$extensions[TINY_IMAGE_STAR_DTCG_EXTENSION].variables[0].deprecated = 'tampered';
+  assert.throws(() => importDtcgTokens(extensionProjection), error => code(error, 'INVALID_EXTENSION'));
+
+  local.variables[0].deprecated = 1;
+  assert.throws(() => exportDtcgTokens(local), error => code(error, 'INVALID_METADATA'));
+});
+
 test('plain DTCG groups flatten into one collection and support inherited types and both token alias syntaxes', () => {
   const input = {
     palette: {

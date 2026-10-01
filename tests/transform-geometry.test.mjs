@@ -40,6 +40,18 @@ test('point and vector transforms distinguish translation and invert consistentl
   assert.deepEqual(transformPoint(multiplyAffine(matrix, invertAffine(matrix)), point), point);
 });
 
+test('node affine transforms preserve shear and reflection through page-space conversion', () => {
+  const node = {
+    x: 12, y: -7, width: 30, height: 20, rotation: 0,
+    affineTransform: { a: -1, b: 0.25, c: 0.5, d: 1 }
+  };
+  const local = { x: 9, y: 14 };
+  const page = nodeLocalToPage(node, local);
+  closePoint(page, { x: 12 - 9 + 7, y: -7 + 9 * 0.25 + 14 });
+  closePoint(pageToNodeLocal(node, page), local);
+  assert.throws(() => nodeLocalToPage({ ...node, affineTransform: { a: 1, b: 2, c: 2, d: 4 } }, local), /invertible/);
+});
+
 test('shortest angle steps cross the wrap boundary and accumulate rotations beyond one turn', () => {
   const radians = degrees => degrees * Math.PI / 180;
   assert.ok(Math.abs(shortestAngleDelta(radians(179), radians(-179)) - radians(2)) < 1e-12);
@@ -75,6 +87,22 @@ test('oriented east resize preserves the opposite handle under rotation and nest
   assert.equal(resized.height, rect.height);
   closePoint(getTransformHandles(resized, ancestors).resize.w, originalHandles.resize.w);
   closePoint(getTransformHandles(resized, ancestors).resize.e, pointer);
+});
+
+test('oriented resize keeps an affine reflected handle fixed through a transformed parent', () => {
+  const ancestors = [{ x: 40, y: -12, width: 120, height: 80, rotation: 17 }];
+  const rect = {
+    x: 12, y: 18, width: 80, height: 50, rotation: 11,
+    affineTransform: { a: -1.2, b: 0.3, c: 0.45, d: 0.9 }
+  };
+  const before = getTransformHandles(rect, ancestors);
+  const pointer = nodeLocalToPage(rect, { x: 125, y: rect.height / 2 }, ancestors);
+  const resized = resizeOrientedRect(rect, 'e', pointer, ancestors);
+  const after = getTransformHandles(resized, ancestors);
+
+  assert.ok(Math.abs(resized.width - 125) < 1e-9);
+  closePoint(after.resize.w, before.resize.w);
+  closePoint(after.resize.e, pointer);
 });
 
 test('oriented corner resize keeps its opposite corner fixed and clamps handle crossing', () => {

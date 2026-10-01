@@ -913,6 +913,12 @@ export class SceneRenderer {
     ctx.save();
     if (blendMode !== 'normal' && !compositeBypassed) ctx.globalCompositeOperation = canvasBlendOperation(blendMode);
     ctx.globalAlpha *= opacity ?? 1;
+    if (node.affineTransform) {
+      const { a, b, c, d } = node.affineTransform;
+      ctx.translate(x, y);
+      ctx.transform(a, b, c, d, 0, 0);
+      ctx.translate(-x, -y);
+    }
     if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
     if (!draft && !state.presenting && (renderOptions.outlineMode ?? state.outlineMode)) {
       this.drawNodeOutline(ctx, node, x, y, assets, renderOptions);

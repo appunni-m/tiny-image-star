@@ -251,6 +251,8 @@ try {
   tap(app, app.querySelector(`[data-layer-id="${duplicateId}"] [data-action="layer-actions-menu"]`));
   tap(app, [...nodeMenu.querySelectorAll('[role="menuitem"]')].find(button => menuItemLabel(button) === 'Delete'));
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 3, 'delete from mobile layer actions');
+  assert(!app.querySelector(`[data-layer-id="${duplicateId}"]`), 'Delete should remove the exact layer whose menu was opened.');
+  assert(imageIds.every(id => app.querySelector(`[data-layer-id="${id}"]`)), 'deleting a duplicate should preserve the original image layers.');
   // Layer rows are stacked in reverse insertion order, so save the recipe from
   // the first import while the pixel assertion below samples the third import.
   tap(app, app.querySelector(`[data-layer-id="${imageIds[2]}"]`));

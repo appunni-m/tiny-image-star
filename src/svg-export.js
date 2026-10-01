@@ -208,7 +208,16 @@ function nodeMatrix(node, { includePosition = true } = {}) {
   const sin = Math.sin(radians);
   const cx = width / 2;
   const cy = height / 2;
-  return [cos, sin, -sin, cos, x + cx - cos * cx + sin * cy, y + cy - sin * cx - cos * cy];
+  const centeredRotation = [cos, sin, -sin, cos, cx - cos * cx + sin * cy, cy - sin * cx - cos * cy];
+  const affine = node.affineTransform || { a: 1, b: 0, c: 0, d: 1 };
+  const determinant = affine.a * affine.d - affine.b * affine.c;
+  if (![affine.a, affine.b, affine.c, affine.d, determinant].every(Number.isFinite)
+    || Math.abs(determinant) <= 1e-12) {
+    throw new TypeError(`SVG export requires a finite, invertible affine transform on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  return multiply([1, 0, 0, 1, x, y], multiply(
+    [affine.a, affine.b, affine.c, affine.d, 0, 0], centeredRotation
+  ));
 }
 
 function matrixAttribute(matrix) {
