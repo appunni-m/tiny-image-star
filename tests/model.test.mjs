@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createNode, createVariable, createVariableCollection, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createNode, createVariable, createVariableCollection, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -8,7 +8,42 @@ test('new file has an active page and a valid empty layer tree', () => {
   const document = createDocument();
   assert.equal(document.pages.length, 1);
   assert.equal(document.pages[0].id, document.activePageId);
+  assert.deepEqual(document.pages[0].guides, []);
   assert.equal(validateDocument(document), true);
+});
+
+test('page ruler guides validate, persist, and remain optional for legacy pages', () => {
+  const document = createDocument();
+  document.pages[0].guides = [
+    { id: 'guide-x', axis: 'x', position: -1_000_000_000 },
+    { id: 'guide-y', axis: 'y', position: 24.5 }
+  ];
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.pages[0].guides, document.pages[0].guides);
+  assert.equal(validateDocument(reopened), true);
+
+  const legacy = structuredClone(document);
+  delete legacy.pages[0].guides;
+  assert.equal(validateDocument(legacy), true, 'older pages without ruler guides remain valid');
+  assert.equal(validateDocument(parseDocument(serializeDocument(legacy))), true);
+});
+
+test('page ruler guides reject malformed records, duplicate ids, invalid coordinates, and excess entries', () => {
+  const invalidCases = [
+    ['not a list', null],
+    ['empty id', [{ id: ' ', axis: 'x', position: 1 }]],
+    ['unsupported field', [{ id: 'guide', axis: 'x', position: 1, color: '#ff0000' }]],
+    ['duplicate id', [{ id: 'same', axis: 'x', position: 1 }, { id: 'same', axis: 'y', position: 2 }]],
+    ['unsupported axis', [{ id: 'guide', axis: 'z', position: 1 }]],
+    ['non-finite coordinate', [{ id: 'guide', axis: 'x', position: Infinity }]],
+    ['coordinate beyond the supported bound', [{ id: 'guide', axis: 'y', position: 1_000_000_001 }]],
+    ['too many guides', Array.from({ length: MAX_PAGE_RULER_GUIDES + 1 }, (_, index) => ({ id: `guide-${index}`, axis: 'x', position: index }))]
+  ];
+  for (const [label, guides] of invalidCases) {
+    const document = createDocument();
+    document.pages[0].guides = guides;
+    assert.throws(() => validateDocument(document), /Invalid ruler guides/, label);
+  }
 });
 
 test('slice export regions stay top-level, positive-size, unrotated, and survive round-trip', () => {

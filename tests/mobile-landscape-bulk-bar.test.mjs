@@ -35,10 +35,14 @@ test('short landscape phones keep the live image-recipe bar compact and its cont
   assert.match(phoneLandscape, /\.speed-control\s*\{[^}]*grid-column:\s*2[^}]*grid-row:\s*2/);
   assert.match(phoneLandscape, /\.bulk-actions \.bar-action\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
   assert.match(phoneLandscape, /\.speed-control input\s*\{[^}]*min-height:\s*44px/);
+  assert.match(phoneLandscape, /\.speed-control output\s*\{[^}]*font-size:\s*9px/,
+    'the compact worker-count readout should remain legible in landscape');
   assert.doesNotMatch(phoneLandscape, /\.bulk-info span\s*\{[^}]*display:\s*none/,
     'status and live rate remain visible while the panel is compact');
 
   for (const id of ['bulk-title', 'bulk-subtitle', 'bulk-rate', 'bulk-progress-label', 'bulk-speed', 'bulk-pause', 'bulk-cancel']) {
     assert.match(html, new RegExp(`id="${id}"`), `the mobile batch bar should retain ${id}`);
   }
+  assert.match(html, /<span>Workers<\/span><input id="bulk-speed"[^>]*aria-label="Maximum concurrent image workers"/,
+    'the batch slider should describe the worker limit it actually controls');
 });

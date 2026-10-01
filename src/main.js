@@ -66,6 +66,8 @@ import {
   reverseVectorPathContour, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors, vectorNetworkGeometryFromFreehandSamples, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours
 } from './vector-path.js';
 import { snapToAlignmentGuides } from './smart-guides.js';
+import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
+import { generateRulerTicks } from './ruler-scale.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
@@ -87,7 +89,7 @@ const state = {
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
   componentSetSelectedVariants: new Map(),
-  bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, outlineMode: false,
+  bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
   documentSaveConflict: null, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
@@ -141,6 +143,186 @@ let pendingFontImport = null;
 let gradientStopDrag = null;
 
 function activePage() { return getActivePage(state.document); }
+function pageGuides(page = activePage()) { return Array.isArray(page?.guides) ? page.guides : []; }
+function clampGuidePosition(position) { return Math.max(-1e9, Math.min(1e9, position)); }
+function guidePositionForClient(event, axis) {
+  const rect = canvas.getBoundingClientRect();
+  return clampGuidePosition(clientToPageGuidePosition({
+    client: { x: event.clientX, y: event.clientY }, rect,
+    pan: { x: state.panX, y: state.panY }, zoom: state.zoom, axis
+  }));
+}
+function guideAtClientPoint(event) {
+  if (!state.showRulers || state.presenting || state.documentTransitioning) return null;
+  const guides = pageGuides();
+  const hit = ['x', 'y'].map(axis => {
+    const position = guidePositionForClient(event, axis);
+    const nearest = findNearestGuideWithinCssTolerance(position,
+      guides.filter(guide => guide.axis === axis).map(guide => guide.position),
+      { zoom: state.zoom, tolerancePx: 7 });
+    return nearest ? guides.find(guide => guide.axis === axis && guide.position === nearest.position) : null;
+  }).filter(Boolean);
+  return hit[0] || null;
+}
+function rulerDropZoneContains(event, axis) {
+  const rect = canvas.getBoundingClientRect();
+  return axis === 'x' ? event.clientY < rect.top + 24 : event.clientX < rect.left + 26;
+}
+function rulerGestureHasEnteredCanvas(event, axis) {
+  const rect = canvas.getBoundingClientRect();
+  return axis === 'x' ? event.clientY >= rect.top + 24 : event.clientX >= rect.left + 26;
+}
+function updateRulerGuideGesture(event) {
+  const interaction = state.interaction;
+  if (!interaction || !['ruler-guide-create', 'ruler-guide-move'].includes(interaction.kind)
+    || interaction.pointerId !== event.pointerId) return;
+  const page = state.document.pages.find(item => item.id === interaction.pageId);
+  if (!page) { cancelCanvasInteraction({ pointerId: event.pointerId }); return; }
+  if (!interaction.guideId && interaction.kind === 'ruler-guide-create' && rulerGestureHasEnteredCanvas(event, interaction.axis)) {
+    if (pageGuides(page).length >= 500) {
+      showToast('A page can have up to 500 ruler guides.');
+      cancelCanvasInteraction({ pointerId: event.pointerId });
+      return;
+    }
+    interaction.historyTransaction = beginCanvasHistoryTransaction('Add ruler guide');
+    page.guides ||= [];
+    const guide = { id: createId('guide'), axis: interaction.axis, position: guidePositionForClient(event, interaction.axis) };
+    page.guides.push(guide);
+    interaction.guideId = guide.id;
+    interaction.changed = true;
+    state.selectedRulerGuideId = guide.id;
+  } else if (interaction.guideId) {
+    const guide = pageGuides(page).find(item => item.id === interaction.guideId);
+    if (!guide) { cancelCanvasInteraction({ pointerId: event.pointerId }); return; }
+    const position = guidePositionForClient(event, interaction.axis);
+    interaction.changed ||= !Object.is(guide.position, position);
+    guide.position = position;
+  }
+  renderer.invalidate();
+}
+function finishRulerGuideGesture(event) {
+  const interaction = state.interaction;
+  if (!interaction || !['ruler-guide-create', 'ruler-guide-move'].includes(interaction.kind)
+    || interaction.pointerId !== event.pointerId) return false;
+  updateRulerGuideGesture(event);
+  if (state.interaction !== interaction) return true;
+  const page = state.document.pages.find(item => item.id === interaction.pageId);
+  const guides = pageGuides(page);
+  const droppedBack = interaction.guideId && rulerDropZoneContains(event, interaction.axis);
+  if (droppedBack) {
+    page.guides = guides.filter(guide => guide.id !== interaction.guideId);
+    state.selectedRulerGuideId = null;
+  }
+  state.interaction = null;
+  const committed = commitCanvasHistoryTransaction(interaction);
+  if (committed) queueSave();
+  renderer.invalidate();
+  return true;
+}
+function handleRulerPointerDown(event, axis) {
+  if (event.button !== 0 || !state.showRulers || state.documentTransitioning || state.presenting || state.imageCropMode
+    || isImageRecipeBatchActive(state.bulk) || state.interaction || state.tool !== 'select') return;
+  event.preventDefault();
+  event.currentTarget.focus({ preventScroll: true });
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  state.interaction = {
+    kind: 'ruler-guide-create', axis, pointerId: event.pointerId,
+    pageId: state.document.activePageId, guideId: null, historyTransaction: null, changed: false
+  };
+}
+function handleRulerKeyboard(event) {
+  if (!state.showRulers || state.documentTransitioning || state.presenting || state.imageCropMode || isImageRecipeBatchActive(state.bulk)) return;
+  const axis = event.currentTarget === $('#ruler-horizontal') ? 'x' : 'y';
+  if (event.key === 'Escape') {
+    state.selectedRulerGuideId = null;
+    renderer.invalidate();
+    event.preventDefault(); event.stopPropagation();
+    return;
+  }
+  const guides = pageGuides();
+  const selected = guides.find(guide => guide.id === state.selectedRulerGuideId);
+  if (event.key === 'Enter') {
+    if (guides.length >= 500) { showToast('A page can have up to 500 ruler guides.'); return; }
+    const length = axis === 'x' ? canvas.clientWidth : canvas.clientHeight;
+    const pan = axis === 'x' ? state.panX : state.panY;
+    checkpoint('Add ruler guide');
+    const guide = { id: createId('guide'), axis, position: clampGuidePosition((length / 2 - pan) / state.zoom) };
+    activePage().guides ||= [];
+    activePage().guides.push(guide);
+    state.selectedRulerGuideId = guide.id;
+    queueSave(); renderer.invalidate();
+    event.preventDefault(); event.stopPropagation();
+    return;
+  }
+  if ((event.key === 'Delete' || event.key === 'Backspace') && selected) {
+    checkpoint('Remove ruler guide');
+    activePage().guides = guides.filter(guide => guide.id !== selected.id);
+    state.selectedRulerGuideId = null;
+    queueSave(); renderer.invalidate();
+    event.preventDefault(); event.stopPropagation();
+    return;
+  }
+  const direction = axis === 'x'
+    ? (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0)
+    : (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0);
+  if (!selected || selected.axis !== axis || !direction) return;
+  checkpoint('Move ruler guide');
+  selected.position = clampGuidePosition(selected.position + direction * (event.shiftKey ? 10 : 1));
+  queueSave(); renderer.invalidate();
+  event.preventDefault(); event.stopPropagation();
+}
+function drawRulerScales(currentState) {
+  if (!currentState.showRulers) return;
+  drawRulerScale($('#ruler-horizontal'), 'x', currentState);
+  drawRulerScale($('#ruler-vertical'), 'y', currentState);
+}
+function drawRulerScale(rail, axis, currentState) {
+  const surface = rail?.querySelector('canvas');
+  if (!surface) return;
+  const rect = rail.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const width = Math.max(1, Math.round(rect.width * ratio));
+  const height = Math.max(1, Math.round(rect.height * ratio));
+  if (surface.width !== width) surface.width = width;
+  if (surface.height !== height) surface.height = height;
+  const context = surface.getContext('2d');
+  if (!context) return;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, rect.width, rect.height);
+  const horizontal = axis === 'x';
+  const viewportLength = horizontal ? rect.width : rect.height;
+  const screenPan = horizontal ? currentState.panX : currentState.panY;
+  const ticks = generateRulerTicks({ viewportLength, zoom: currentState.zoom, screenPan }).ticks;
+  const color = getComputedStyle(rail).color;
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.lineWidth = 1;
+  context.font = '9px system-ui, sans-serif';
+  context.textBaseline = 'top';
+  for (const tick of ticks) {
+    context.beginPath();
+    if (horizontal) {
+      context.moveTo(Math.round(tick.position) + .5, rect.height);
+      context.lineTo(Math.round(tick.position) + .5, rect.height - (tick.major ? 7 : 3));
+      context.stroke();
+      if (tick.major) context.fillText(tick.label, tick.position + 2, 2);
+    } else {
+      context.moveTo(rect.width, Math.round(tick.position) + .5);
+      context.lineTo(rect.width - (tick.major ? 7 : 3), Math.round(tick.position) + .5);
+      context.stroke();
+      if (tick.major) {
+        context.save();
+        context.translate(12, tick.position);
+        context.rotate(-Math.PI / 2);
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(tick.label, 0, 0);
+        context.restore();
+      }
+    }
+  }
+}
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
 function selectedNodes() { return selectedEntries().map(entry => entry.node); }
 function resolvedGeometry(node) { return getNodeGeometry(state.document, node); }
@@ -3230,6 +3412,19 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
   if (state.tool === 'pencil') { startPencilStroke(world, event); event.preventDefault(); return; }
   if (state.tool === 'select') {
+    if (state.showRulers && !state.presenting) {
+      const guide = guideAtClientPoint(event);
+      if (guide) {
+        state.selectedRulerGuideId = guide.id;
+        $(`#ruler-${guide.axis === 'x' ? 'horizontal' : 'vertical'}`).focus({ preventScroll: true });
+        state.interaction = {
+          kind: 'ruler-guide-move', axis: guide.axis, guideId: guide.id,
+          pageId: state.document.activePageId, pointerId: event.pointerId,
+          historyTransaction: beginCanvasHistoryTransaction('Move ruler guide'), changed: false
+        };
+        renderer.invalidate(); event.preventDefault(); return;
+      }
+    }
     const gradientHandle = gradientGeometryHandleAt(event);
     if (gradientHandle) {
       const handles = normalizedGradientHandles(gradientHandle);
@@ -3355,6 +3550,7 @@ function onCanvasPointerMove(event) {
     if (state.penDraft && state.tool === 'pen') { state.penHover = screenToWorld(event, canvas, state); renderer.invalidate(); }
     return;
   }
+  if (interaction.kind === 'ruler-guide-move') { updateRulerGuideGesture(event); return; }
   if (interaction.kind === 'pinch' && state.pointerMap.size >= 2) {
     const points = [...state.pointerMap.values()];
     const distance = checkPointDistance(points[0], points[1]);
@@ -3606,6 +3802,7 @@ function onCanvasPointerUp(event) {
   state.pointerMap.delete(event.pointerId);
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'ruler-guide-move') { finishRulerGuideGesture(event); return; }
   if (interaction.kind === 'image-fill-crop') {
     if (interaction.mode === 'pinch' && interaction.pointerIds?.includes(event.pointerId) && state.pointerMap.size) {
       const [pointerId, point] = state.pointerMap.entries().next().value;
@@ -3861,6 +4058,8 @@ function cancelCanvasInteraction(event) {
     }
   }
   state.interaction = null;
+  if (interaction.kind.startsWith('ruler-guide-')
+    && !pageGuides().some(guide => guide.id === state.selectedRulerGuideId)) state.selectedRulerGuideId = null;
   if (interaction.kind === 'pan') { state.panX = interaction.panX; state.panY = interaction.panY; }
   if (interaction.kind === 'pinch') {
     state.zoom = interaction.zoom; state.panX = interaction.panX; state.panY = interaction.panY;
@@ -6299,8 +6498,12 @@ function renderBulkBar() {
   const timing = imageRecipeBatchTiming(bulk);
   $('#bulk-rate').title = `Average batch throughput. Paused time and paused completions are excluded.${timing.etaSeconds === null ? '' : ` Estimated ${Math.ceil(timing.etaSeconds)} seconds of active batch time remain.`}`;
   $('#bulk-speed').value = bulk.concurrency;
-  $('#bulk-speed-value').textContent = `${bulk.concurrency} max worker${bulk.concurrency === 1 ? '' : 's'} · ${engineMetrics.active} active · ${engineMetrics.workersReady} ready`;
-  $('#bulk-speed-value').title = `Engine limit: ${engineMetrics.concurrency} worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued in this batch; ${engineMetrics.active} total active jobs. Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
+  const speedValue = $('#bulk-speed-value');
+  speedValue.textContent = `${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}`;
+  speedValue.dataset.activeWorkers = String(engineMetrics.active);
+  speedValue.dataset.workersReady = String(engineMetrics.workersReady);
+  speedValue.setAttribute('aria-label', `${bulk.concurrency} maximum workers; ${engineMetrics.active} active; ${engineMetrics.workersReady} ready`);
+  speedValue.title = `Engine limit: ${engineMetrics.concurrency} worker${engineMetrics.concurrency === 1 ? '' : 's'} configured. Batch cap: ${bulk.concurrency} worker${bulk.concurrency === 1 ? '' : 's'}; ${batchMetrics.active} active and ${batchMetrics.queued} queued in this batch; ${engineMetrics.active} total active jobs. Estimated shared WASM working set: ${Math.round(engineMetrics.activeRenderBytes / 1048576)} of ${Math.round(engineMetrics.maxActiveRenderBytes / 1048576)} MiB; memory admission can lower actual parallelism.`;
   $('#bulk-spinner').classList.toggle('is-done', bulk.done || bulk.cancelled);
   $('#bulk-spinner').classList.toggle('is-paused', bulk.paused);
   $('#bulk-pause').hidden = bulk.done || bulk.cancelled;
@@ -7664,7 +7867,7 @@ function newDesign() {
   return switchToDocument(createDocument(), { message: 'New local design created.', versionLabel: 'New design' });
 }
 function addPage() {
-  const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [] };
+  const page = { id: createId('page'), name: `Page ${state.document.pages.length + 1}`, children: [], guides: [] };
   checkpoint('Add page'); state.document.pages.push(page); state.document.activePageId = page.id; state.selectedIds = []; clearVectorAnchorSelection(); state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI(); queueSave();
 }
 function renamePage(pageId) {
@@ -10448,6 +10651,17 @@ function initEvents() {
   canvas.addEventListener('lostpointercapture', event => {
     if (state.interaction && (state.pointerMap.has(event.pointerId) || state.interaction.kind === 'pinch')) cancelCanvasInteraction(event);
   });
+  for (const [rail, axis] of [['#ruler-horizontal', 'x'], ['#ruler-vertical', 'y']]) {
+    const element = $(rail);
+    element.addEventListener('pointerdown', event => handleRulerPointerDown(event, axis));
+    element.addEventListener('pointermove', updateRulerGuideGesture);
+    element.addEventListener('pointerup', finishRulerGuideGesture);
+    element.addEventListener('pointercancel', cancelCanvasInteraction);
+    element.addEventListener('lostpointercapture', event => {
+      if (state.interaction?.pointerId === event.pointerId && state.interaction.kind === 'ruler-guide-create') cancelCanvasInteraction(event);
+    });
+    element.addEventListener('keydown', handleRulerKeyboard);
+  }
   canvas.addEventListener('dblclick', event => {
     if (state.tool !== 'select') return;
     const world = screenToWorld(event, canvas, state);
@@ -11211,7 +11425,16 @@ function initEvents() {
   recoveryDialog.addEventListener('cancel', event => event.preventDefault());
   $('#recipe-recovery-keep').addEventListener('click', () => { void keepInterruptedRecipeChanges(); });
   $('#recipe-recovery-resume').addEventListener('click', resumeInterruptedRecipe);
-  $('#toggle-rulers').addEventListener('click', event => { const visible = $('#ruler-horizontal').hidden; $('#ruler-horizontal').hidden = !visible; $('#ruler-vertical').hidden = !visible; event.currentTarget.classList.toggle('is-active', visible); });
+  $('#toggle-rulers').addEventListener('click', event => {
+    if (state.interaction?.kind?.startsWith('ruler-guide-')) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.showRulers = !state.showRulers;
+    $('#ruler-horizontal').hidden = !state.showRulers;
+    $('#ruler-vertical').hidden = !state.showRulers;
+    event.currentTarget.classList.toggle('is-active', state.showRulers);
+    event.currentTarget.setAttribute('aria-pressed', String(state.showRulers));
+    if (!state.showRulers) state.selectedRulerGuideId = null;
+    renderer.invalidate();
+  });
   $('#outline-mode').addEventListener('click', toggleOutlineMode);
   $('#local-info').addEventListener('click', () => showToast('Design metadata and source images are stored in this browser only.'));
   $('#sidebar-toggle').addEventListener('click', () => toggleMobilePanel('left'));
@@ -11388,7 +11611,7 @@ async function boot() {
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
   try { await refreshLocalFontAssets({ showFailureToast: true }); }
   catch (error) { console.warn('Could not restore local fonts', error); }
-  renderer = new SceneRenderer(canvas, () => state);
+  renderer = new SceneRenderer(canvas, () => state, drawRulerScales);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   initEvents(); renderUI(); state.ready = true;
   if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);

@@ -659,10 +659,11 @@ function richTextStyleForMarker(baseStyle) {
 }
 
 export class SceneRenderer {
-  constructor(canvas, getState) {
+  constructor(canvas, getState, onDraw = null) {
     this.canvas = canvas;
     this.context = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.getState = getState;
+    this.onDraw = typeof onDraw === 'function' ? onDraw : null;
     this.frame = 0;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
@@ -726,7 +727,7 @@ export class SceneRenderer {
     ctx.fillStyle = '#e9e9e9';
     ctx.fillRect(0, 0, width, height);
     const page = state.document.pages.find(item => item.id === state.document.activePageId);
-    if (!page) return;
+    if (!page) { this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }
     ctx.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
     this.drawSelection(ctx, page.children, state.selectedIds, 0, 0);
@@ -779,6 +780,32 @@ export class SceneRenderer {
       ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.restore();
     }
     if (!page.children.length) this.drawEmptyHint(cssWidth, cssHeight, dpr, state);
+    if (!state.presenting && state.showRulers && Array.isArray(page.guides)) this.drawRulerGuides(ctx, page.guides, state, cssWidth, cssHeight);
+    this.onDraw?.(state, { cssWidth, cssHeight, dpr });
+  }
+
+  drawRulerGuides(ctx, guides, state, cssWidth, cssHeight) {
+    ctx.save();
+    ctx.lineWidth = 1 / Math.max(.08, state.zoom);
+    ctx.setLineDash([]);
+    for (const guide of guides) {
+      if (!guide || (guide.axis !== 'x' && guide.axis !== 'y') || !Number.isFinite(guide.position)) continue;
+      const selected = guide.id === state.selectedRulerGuideId;
+      const coordinate = guide.position;
+      ctx.strokeStyle = 'rgba(255,255,255,.92)';
+      ctx.lineWidth = (selected ? 3 : 2) / Math.max(.08, state.zoom);
+      ctx.beginPath();
+      if (guide.axis === 'x') { ctx.moveTo(coordinate, -state.panY / state.zoom); ctx.lineTo(coordinate, (cssHeight - state.panY) / state.zoom); }
+      else { ctx.moveTo(-state.panX / state.zoom, coordinate); ctx.lineTo((cssWidth - state.panX) / state.zoom, coordinate); }
+      ctx.stroke();
+      ctx.strokeStyle = selected ? '#006fc4' : '#0d99ff';
+      ctx.lineWidth = 1 / Math.max(.08, state.zoom);
+      ctx.beginPath();
+      if (guide.axis === 'x') { ctx.moveTo(coordinate, -state.panY / state.zoom); ctx.lineTo(coordinate, (cssHeight - state.panY) / state.zoom); }
+      else { ctx.moveTo(-state.panX / state.zoom, coordinate); ctx.lineTo((cssWidth - state.panX) / state.zoom, coordinate); }
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   drawNode(ctx, node, parentX, parentY, assets, draft = false, maskMode = false, renderOptions = {}) {
@@ -2174,8 +2201,9 @@ export class SceneRenderer {
 
   drawEmptyHint(width, height, dpr, state) {
     const ctx = this.context;
+    ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.save(); ctx.fillStyle = 'rgba(30,30,30,.52)'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(30,30,30,.52)'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = '500 13px Inter, Arial, sans-serif';
     ctx.fillText('Create a frame, draw a shape, or drop an image to begin', width / 2, height - 34);
     ctx.restore();

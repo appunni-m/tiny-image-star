@@ -60,6 +60,49 @@ test('duplicatePage remaps internal scroll-to anchors without changing the sourc
   assert.equal(hotspot.interactions[0].scrollTargetId, target.id, 'the source route remains on the original page and keeps its original anchor');
 });
 
+test('duplicatePage deep-clones ruler guides and assigns new guide ids', () => {
+  const document = fixture();
+  const source = document.pages.find(page => page.id === 'b');
+  source.guides = [
+    { id: 'guide-x', axis: 'x', position: -12.5 },
+    { id: 'guide-y', axis: 'y', position: 80 }
+  ];
+  const originalGuides = structuredClone(source.guides);
+  let counter = 0;
+  const duplicate = duplicatePage(document, 'b', { createId: prefix => `${prefix}-copy-${++counter}` });
+
+  assert.deepEqual(source.guides, originalGuides);
+  assert.equal(duplicate.guides.length, 2);
+  assert.deepEqual(duplicate.guides.map(({ axis, position }) => ({ axis, position })), [
+    { axis: 'x', position: -12.5 },
+    { axis: 'y', position: 80 }
+  ]);
+  assert.ok(duplicate.guides.every(guide => guide.id.startsWith('guide-copy-')));
+  assert.notEqual(duplicate.guides[0].id, source.guides[0].id);
+  assert.notEqual(duplicate.guides[0], source.guides[0]);
+  duplicate.guides[0].position = 4;
+  assert.equal(source.guides[0].position, -12.5, 'editing a copied guide does not change the source page');
+});
+
+test('duplicatePage rejects invalid and duplicate generated ruler guide ids without inserting a partial page', () => {
+  const makeDocument = () => ({ pages: [{ id: 'source', name: 'Source', children: [], guides: [
+    { id: 'guide-a', axis: 'x', position: 10 },
+    { id: 'guide-b', axis: 'y', position: 20 }
+  ] }] });
+  const idFactory = guideId => prefix => prefix === 'page' ? 'new-page'
+    : prefix === 'guide' ? guideId
+      : `${prefix}-copy`;
+
+  for (const guideId of ['', '   ']) {
+    const document = makeDocument();
+    assert.throws(() => duplicatePage(document, 'source', { createId: idFactory(guideId) }), /Guide id factory/);
+    assert.equal(document.pages.length, 1);
+  }
+  const document = makeDocument();
+  assert.throws(() => duplicatePage(document, 'source', { createId: idFactory('same-guide') }), /Guide id factory/);
+  assert.equal(document.pages.length, 1);
+});
+
 test('renamePage trims valid names and leaves invalid input unchanged', () => {
   const document = fixture();
   assert.equal(renamePage(document, 'b', '  Checkout  ').name, 'Checkout');

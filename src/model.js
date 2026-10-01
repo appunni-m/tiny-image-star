@@ -14,6 +14,8 @@ const clone = value => structuredClone(value);
 export const MAX_DOCUMENT_TREE_DEPTH = 256;
 /** A local design may contain at most 100,000 unique layer objects across its trees. */
 export const MAX_DOCUMENT_NODE_COUNT = 100_000;
+/** Each page may contain at most 500 persistent ruler guides. */
+export const MAX_PAGE_RULER_GUIDES = 500;
 const variableTypes = new Set(['color', 'number', 'string', 'boolean']);
 const variableBindingSpecs = {
   x: { type: 'number' },
@@ -163,7 +165,7 @@ export function createDocument() {
     id: createId('file'),
     name: 'Untitled',
     activePageId: pageId,
-    pages: [{ id: pageId, name: 'Page 1', children: [] }],
+    pages: [{ id: pageId, name: 'Page 1', children: [], guides: [] }],
     components: [],
     componentSets: [],
     recipes: [],
@@ -2814,6 +2816,18 @@ export function validateDocument(document) {
   for (const page of document.pages) {
     if (!page.id || pageIds.has(page.id) || !Array.isArray(page.children)) throw new TypeError('Invalid or duplicate page.');
     pageIds.add(page.id);
+    if (Object.hasOwn(page, 'guides')) {
+      const guideIds = new Set();
+      if (!Array.isArray(page.guides) || page.guides.length > MAX_PAGE_RULER_GUIDES || page.guides.some(guide => {
+        if (!guide || typeof guide !== 'object' || Array.isArray(guide)
+          || Object.keys(guide).some(key => !['id', 'axis', 'position'].includes(key))
+          || typeof guide.id !== 'string' || !guide.id.trim() || guide.id.trim() !== guide.id || guideIds.has(guide.id)
+          || !['x', 'y'].includes(guide.axis)
+          || typeof guide.position !== 'number' || !Number.isFinite(guide.position) || Math.abs(guide.position) > 1_000_000_000) return true;
+        guideIds.add(guide.id);
+        return false;
+      })) throw new TypeError(`Invalid ruler guides on page ${page.name || page.id}.`);
+    }
     walkNodes(page.children, ({ node, parent }) => {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);

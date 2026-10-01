@@ -151,8 +151,8 @@ function releaseResults(gate, count = Infinity) {
   for (let index = 0; index < count && gate.held.length; index += 1) gate.held.shift().deliver();
 }
 function activeWorkers(app) {
-  const match = app.querySelector('#bulk-speed-value')?.textContent.match(/(\d+) active/);
-  return match ? Number(match[1]) : -1;
+  const count = app.querySelector('#bulk-speed-value')?.dataset.activeWorkers;
+  return count === undefined ? -1 : Number(count);
 }
 function requestedWorkers(app) { return Number(app.querySelector('#bulk-speed')?.value); }
 function assertWorkerAndMemoryBounds(app, label) {

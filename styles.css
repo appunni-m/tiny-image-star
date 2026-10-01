@@ -333,9 +333,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 }
 .prototype-connect-prompt button:hover { background: var(--surface-hover); }
 .prototype-connect-prompt button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.canvas-ruler { z-index: 2; position: absolute; background: rgba(255,255,255,.88); box-shadow: 0 0 1px rgba(0,0,0,.3); pointer-events: none; }
-.ruler-horizontal { top: 0; left: 0; right: 0; height: 14px; }
-.ruler-vertical { left: 0; top: 0; bottom: 0; width: 14px; }
+.canvas-ruler { z-index: 3; position: absolute; overflow: hidden; color: #686868; background: rgba(255,255,255,.94); box-shadow: 0 0 1px rgba(0,0,0,.3); touch-action: none; user-select: none; }
+.canvas-ruler:focus-visible { outline: 2px solid #0d99ff; outline-offset: -2px; }
+.canvas-ruler canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
+.ruler-horizontal { top: 0; left: 0; right: 0; height: 24px; cursor: ns-resize; }
+.ruler-vertical { left: 0; top: 0; bottom: 0; width: 26px; cursor: ew-resize; }
+.ruler-vertical { z-index: 4; }
 .zoom-controls { z-index: 2; position: absolute; right: 18px; bottom: 58px; height: 35px; display: flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid #e1e1e1; border-radius: 7px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
 .zoom-readout { min-width: 46px; height: 27px; border-radius: 5px; font-size: 10px; color: #555; }
 .zoom-readout:hover { background: #f2f2f2; }
@@ -1922,7 +1925,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     font-size: 9px;
   }
   .speed-control input { min-width: 28px; min-height: 44px; }
-  .speed-control output { font-size: 8px; }
+  .speed-control output { font-size: 9px; }
 }
 
 /* Keep labels and helper text readable on surfaces that have their own colors

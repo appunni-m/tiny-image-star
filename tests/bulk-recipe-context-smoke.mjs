@@ -18,19 +18,21 @@ function click(app, element, options = {}) {
   assert(element, 'Expected a control in the editor.');
   element.dispatchEvent(new app.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...options }));
 }
-function contextMenu(app, element) {
-  assert(element, 'Expected an image layer for the context menu.');
-  element.dispatchEvent(new app.defaultView.MouseEvent('contextmenu', {
-    bubbles: true, cancelable: true, button: 2, clientX: 180, clientY: 160
-  }));
-}
-function canvasContextMenu(app) {
+async function canvasContextMenuOnImage(app, imageId) {
+  await waitFor(async () => imageNodes(await latestDocument(app)).some(node => node.id === imageId), 'image geometry to persist before canvas context click');
+  const image = imageNodes(await latestDocument(app)).find(node => node.id === imageId);
+  assert(image && Number.isFinite(image.x) && Number.isFinite(image.y), 'Could not locate the requested image on the canvas.');
   const canvas = app.querySelector('#scene-canvas');
   const rect = canvas.getBoundingClientRect();
+  const transform = canvas.getContext('2d').getTransform();
+  const pixelRatio = canvas.width / rect.width;
+  const zoom = transform.a / pixelRatio;
+  const panX = transform.e / pixelRatio;
+  const panY = transform.f / pixelRatio;
   canvas.dispatchEvent(new app.defaultView.MouseEvent('contextmenu', {
     bubbles: true, cancelable: true, button: 2,
-    clientX: rect.left + rect.width / 2 + 32,
-    clientY: rect.top + rect.height / 2 + 24
+    clientX: rect.left + panX + (image.x + image.width / 2) * zoom,
+    clientY: rect.top + panY + (image.y + image.height / 2) * zoom
   }));
 }
 function setInput(app, input, value) {
@@ -122,8 +124,8 @@ function releaseResults(gate) {
   while (gate.held.length) gate.held.shift().deliver();
 }
 function activeWorkers(app) {
-  const match = app.querySelector('#bulk-speed-value')?.textContent.match(/(\d+) active/);
-  return match ? Number(match[1]) : -1;
+  const count = app.querySelector('#bulk-speed-value')?.dataset.activeWorkers;
+  return count === undefined ? -1 : Number(count);
 }
 
 let workerGate;
@@ -165,7 +167,7 @@ try {
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'),
     'edited source image preview');
 
-  contextMenu(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${sourceId}"]`));
+  await canvasContextMenuOnImage(app, sourceId);
   const saveAction = [...app.querySelectorAll('#context-menu button')]
     .find(button => button.textContent.trim().includes('Save image recipe'));
   assert(saveAction, 'Right-clicking the edited image did not offer recipe saving.');
@@ -205,11 +207,23 @@ try {
   const originalLayerIds = [...app.querySelectorAll('#layers-list .layer-row[data-layer-type="image"]')]
     .map(row => row.dataset.layerId);
 
+  await canvasContextMenuOnImage(app, layerIds[2]);
+  assert(app.querySelector('#context-menu .menu-label')?.textContent.trim() === 'Apply recipe to 1 image',
+    'Right-clicking an unselected canvas image should target only that image.');
+  app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  click(app, app.querySelector(`#layers-list .layer-row[data-layer-id="${layerIds[2]}"]`));
+  for (const id of targetLayerIds) {
+    const row = app.querySelector(`#layers-list .layer-row[data-layer-id="${id}"]`);
+    if (!row.classList.contains('is-selected')) click(app, row);
+  }
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected[data-layer-type="image"]').length === targetLayerIds.length,
+    'The recipe target multi-selection was not restored after testing an unselected canvas image.');
+
   const speed = app.querySelector('#bulk-speed');
   const workerBudget = Number(speed.max);
   assert(Number.isSafeInteger(workerBudget) && workerBudget > 0, 'The progress bar reported an invalid worker budget.');
   const batchStart = workerGate.submissions.length;
-  canvasContextMenu(app);
+  await canvasContextMenuOnImage(app, targetLayerIds[1]);
   const menuLabel = app.querySelector('#context-menu .menu-label')?.textContent.trim();
   assert(menuLabel === `Apply recipe to ${targetLayerIds.length} images`,
     `The canvas context menu lost the multi-selection (${menuLabel || 'no target label'}).`);
@@ -261,7 +275,7 @@ try {
 
   speed.value = String(workerBudget);
   speed.dispatchEvent(new app.defaultView.Event('input', { bubbles: true }));
-  assert(app.querySelector('#bulk-speed-value').textContent.includes(`${workerBudget} max worker`),
+  assert(app.querySelector('#bulk-speed-value').textContent.includes(`${workerBudget} worker`),
     'Changing the paused speed control did not update its live worker readout.');
   workerGate.hold = false;
   click(app, app.querySelector('#bulk-pause'));
@@ -323,6 +337,7 @@ try {
     images: IMAGE_COUNT,
     recipeTargets: targetLayerIds.length,
     savedRecipe: true,
+    unselectedCanvasRightClickTargetsOnlyThatImage: true,
     canvasMenuKeptMultiSelection: true,
     progressBar: true,
     pauseHeldQueuedBatchWork: true,

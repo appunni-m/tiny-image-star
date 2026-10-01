@@ -25,20 +25,41 @@ export function duplicatePage(document, pageId, { createId = prefix => `${prefix
   if (index < 0) return null;
   const source = document.pages[index];
   const duplicate = clone(source);
+  const usedIds = new Set();
+  for (const page of document.pages) {
+    if (typeof page.id === 'string') usedIds.add(page.id);
+    for (const guide of page.guides || []) if (typeof guide?.id === 'string') usedIds.add(guide.id);
+    const collectNodeIds = nodes => {
+      for (const node of nodes || []) {
+        if (typeof node?.id === 'string') usedIds.add(node.id);
+        collectNodeIds(node?.children);
+      }
+    };
+    collectNodeIds(page.children);
+  }
   const newPageId = createId('page');
-  if (typeof newPageId !== 'string' || !newPageId || document.pages.some(page => page.id === newPageId)) throw new TypeError('Page id factory must return a unique non-empty id.');
+  if (typeof newPageId !== 'string' || !newPageId.trim() || newPageId.trim() !== newPageId || usedIds.has(newPageId)) throw new TypeError('Page id factory must return a unique non-empty id.');
+  usedIds.add(newPageId);
   duplicate.id = newPageId;
   duplicate.name = makeUniquePageName(document.pages, source.name);
   const ids = new Map();
   const renew = node => {
     const oldId = node.id;
     const nextId = createId(node.type || 'layer');
-    if (typeof nextId !== 'string' || !nextId || ids.has(nextId)) throw new TypeError('Layer id factory must return unique non-empty ids.');
+    if (typeof nextId !== 'string' || !nextId.trim() || nextId.trim() !== nextId || usedIds.has(nextId)) throw new TypeError('Layer id factory must return unique non-empty ids.');
+    usedIds.add(nextId);
     ids.set(oldId, nextId);
     node.id = nextId;
     for (const child of node.children || []) renew(child);
   };
   for (const node of duplicate.children || []) renew(node);
+  if (Object.hasOwn(source, 'guides') && !Array.isArray(source.guides)) throw new TypeError('Cannot duplicate a page with invalid ruler guides.');
+  duplicate.guides = (duplicate.guides || []).map(guide => {
+    const nextId = createId('guide');
+    if (typeof nextId !== 'string' || !nextId.trim() || nextId.trim() !== nextId || usedIds.has(nextId)) throw new TypeError('Guide id factory must return unique non-empty ids.');
+    usedIds.add(nextId);
+    return { id: nextId, axis: guide.axis, position: guide.position };
+  });
   for (const node of duplicate.children || []) {
     const rewrite = item => {
       for (const interaction of item.interactions || []) {

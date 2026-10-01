@@ -73,7 +73,7 @@
         <main class="canvas-region" id="canvas-region" aria-label="Design canvas">
           <div class="canvas-topline">
             <div class="canvas-breadcrumb"><span class="crumb-file" id="canvas-file-name">Untitled</span><span class="crumb-separator">/</span><span id="canvas-page-name">Page 1</span><span class="crumb-chevron">⌄</span></div>
-            <div class="canvas-top-actions"><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Toggle rulers">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
+            <div class="canvas-top-actions"><button class="canvas-action-button" id="outline-mode" title="Show outline view" aria-label="Toggle outline view" aria-pressed="false">◧</button><button class="canvas-action-button" id="toggle-rulers" title="Show rulers and guides" aria-label="Toggle rulers and guides" aria-pressed="false">▥</button><button class="canvas-action-button" id="canvas-menu" title="Canvas options">···</button></div>
           </div>
           <div class="canvas-scroll" id="canvas-scroll">
             <canvas id="scene-canvas" aria-label="Design canvas" tabindex="0"></canvas>
@@ -104,8 +104,8 @@
               <span class="prototype-connect-message" id="prototype-connect-message" role="status" aria-live="polite"></span>
               <button type="button" id="prototype-connect-cancel" aria-label="Cancel prototype connection">Cancel</button>
             </div>
-            <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" hidden></div>
-            <div class="canvas-ruler ruler-vertical" id="ruler-vertical" hidden></div>
+            <div class="canvas-ruler ruler-horizontal" id="ruler-horizontal" role="toolbar" tabindex="0" aria-label="Horizontal ruler. Drag into the canvas to add a vertical guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowLeft ArrowRight Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
+            <div class="canvas-ruler ruler-vertical" id="ruler-vertical" role="toolbar" tabindex="0" aria-label="Vertical ruler. Drag into the canvas to add a horizontal guide. Press Enter to add a guide at the viewport center; use arrow keys to move a selected guide; Delete removes it." aria-keyshortcuts="Enter ArrowUp ArrowDown Delete Backspace Escape" hidden><canvas aria-hidden="true"></canvas></div>
           </div>
           <div class="zoom-controls">
             <button class="canvas-action-button" id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
@@ -155,7 +155,7 @@
       <div class="bulk-bar" id="bulk-bar" role="region" aria-label="Image recipe batch controls" tabindex="-1" hidden aria-live="polite">
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span><span id="bulk-rate" class="bulk-rate" aria-live="off" aria-label="Batch processing speed and estimated time remaining">Starting…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
-        <label class="speed-control" for="bulk-speed"><span>Speed</span><input id="bulk-speed" type="range" min="1" max="4" value="2" /><output id="bulk-speed-value">2 workers</output></label>
+        <label class="speed-control" for="bulk-speed"><span>Workers</span><input id="bulk-speed" type="range" min="1" max="4" value="2" aria-label="Maximum concurrent image workers" /><output id="bulk-speed-value" aria-label="2 maximum workers; 0 active; 0 ready">2 workers</output></label>
         <div class="bulk-actions"><button class="bar-action" id="bulk-pause">Pause</button><button class="bar-action" id="bulk-cancel">Cancel</button><button class="bar-action" id="bulk-retry" hidden>Retry failed</button><button class="bar-action primary" id="bulk-done" hidden>Done</button></div>
       </div>
 
