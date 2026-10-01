@@ -1507,6 +1507,13 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
   .left-panel { border-radius: 0 14px 14px 0; }
   .right-panel { border-radius: 14px 0 0 14px; }
+  /* Keep image and effect sliders easy to scrub in narrow mobile layouts,
+     including browser previews that do not report a coarse pointer. */
+  .inspector-content input[type="range"] {
+    box-sizing: border-box;
+    min-height: 44px;
+    padding-block: 8px;
+  }
   .sidebar-tabs {
     height: auto;
     flex: 0 0 52px;
@@ -1787,6 +1794,35 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     white-space: normal;
   }
   .prototype-controls #prototype-overlay-color { min-height: 44px; height: 44px; }
+}
+
+/* Landscape phones have very little canvas height. Keep the live recipe
+   controls to two rows so the image remains visible while a batch runs. */
+@media (max-width: 820px) and (max-height: 520px) {
+  .bulk-bar {
+    bottom: calc(66px + env(safe-area-inset-bottom));
+    grid-template-columns: minmax(0, 1fr) minmax(130px, 1fr);
+    grid-template-rows: auto auto;
+    gap: 4px 8px;
+    padding: 6px 8px;
+  }
+  .bulk-info { grid-column: 1; grid-row: 1; gap: 7px; }
+  .bulk-info strong { font-size: 10px; }
+  .bulk-info span { margin-top: 2px; font-size: 9px; }
+  .bulk-spinner { width: 18px; height: 18px; flex: 0 0 18px; }
+  .bulk-progress-wrap { grid-column: 2; grid-row: 1; min-width: 0; gap: 5px; font-size: 9px; }
+  .bulk-actions { grid-column: 1; grid-row: 2; min-width: 0; max-width: 100%; gap: 3px; overflow-x: auto; overscroll-behavior-x: contain; }
+  .bulk-actions .bar-action { min-width: 44px; min-height: 44px; padding-inline: 5px; white-space: nowrap; }
+  .speed-control {
+    grid-column: 2;
+    grid-row: 2;
+    grid-template-columns: auto minmax(28px, 1fr) 54px;
+    gap: 4px;
+    min-height: 44px;
+    font-size: 9px;
+  }
+  .speed-control input { min-width: 28px; min-height: 44px; }
+  .speed-control output { font-size: 8px; }
 }
 
 /* Keep labels and helper text readable on surfaces that have their own colors

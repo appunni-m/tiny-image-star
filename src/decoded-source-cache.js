@@ -186,7 +186,10 @@ export class DecodedSourceCache {
     // A worker may finish loading WASM after the main thread has disposed an
     // asset. Such a render can still complete for orderly promise settlement,
     // but it must not repopulate the worker cache with an orphaned source.
-    if (!retain) this.delete(assetId);
+    // Drop only a resident entry here: dispose owns clearing active selection
+    // state. A newer setActive() for the same ID can arrive while this render
+    // waits for WASM, and this stale render must not clear that newer intent.
+    if (!retain) this.#remove(assetId, true);
 
     const source = createSource();
     let pixels;

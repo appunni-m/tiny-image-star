@@ -246,6 +246,11 @@ try {
   setInput(app, sharpness, 40);
   sharpness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'phone sharpness preview');
+  const highlights = app.querySelector('[data-prop="adjustments.highlights"]');
+  const shadows = app.querySelector('[data-prop="adjustments.shadows"]');
+  assert(highlights && shadows, 'the phone image inspector should expose highlights and shadows controls.');
+  assertTouchTarget(app, highlights, 'Highlights control', 34);
+  assertTouchTarget(app, shadows, 'Shadows control', 34);
   const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="layer"]');
   assert(cropLeft, 'the phone image inspector should expose normalized crop bounds.');
   assertTouchTarget(app, cropLeft, 'Crop left control', 34);

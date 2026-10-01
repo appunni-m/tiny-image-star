@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, serializeDocument, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
@@ -450,6 +450,37 @@ test('after-delay prototype routes validate, persist, schedule once, and cancel 
   schedulePrototypeDelay(interaction, () => { completed += 1; }, timers);
   scheduledCallback();
   assert.equal(completed, 1, 'an active delay should invoke its route exactly once');
+});
+
+test('after-delay routes ignore hidden subtrees and honor presentation visibility modes', () => {
+  const document = createDocument();
+  const home = createNode('frame', { name: 'Visibility-aware home' });
+  const hiddenGroup = createNode('frame', { name: 'Hidden section', visible: false });
+  const hiddenTrigger = createNode('rectangle', { name: 'Hidden timed route' });
+  const modeTrigger = createNode('rectangle', { name: 'Mode-controlled timed route' });
+  const fallbackTrigger = createNode('rectangle', { name: 'Visible timed route' });
+  const destination = createNode('frame', { name: 'Destination' });
+  hiddenGroup.children.push(hiddenTrigger);
+  home.children.push(hiddenGroup, modeTrigger, fallbackTrigger);
+  addNode(document, home);
+  addNode(document, destination);
+
+  const collection = createVariableCollection(document, 'Presentation');
+  const hiddenMode = addVariableMode(document, collection.id, 'Hidden');
+  const visibility = createVariable(document, collection.id, 'Show route', 'boolean', true);
+  setVariableValue(document, visibility.id, false, hiddenMode.id);
+  assert.equal(bindVariable(document, modeTrigger.id, visibility.id, 'visible'), true);
+  const hiddenRoute = addPrototypeInteraction(document, hiddenTrigger.id, destination.id, { trigger: 'after-delay', delay: 200 });
+  const modeRoute = addPrototypeInteraction(document, modeTrigger.id, destination.id, { trigger: 'after-delay', delay: 300 });
+  const visibleRoute = addPrototypeInteraction(document, fallbackTrigger.id, destination.id, { trigger: 'after-delay', delay: 400 });
+  const session = createPrototypeSession({ page: document.pages[0], frame: home });
+
+  assert.equal(findPrototypeDelayInteraction(document, document.activePageId, home.id, session).interaction.id, modeRoute.id,
+    'an invisible parent suppresses its descendant timer, while a visible mode-bound source remains eligible');
+  session.variableModes[collection.id] = hiddenMode.id;
+  assert.equal(findPrototypeDelayInteraction(document, document.activePageId, home.id, session).interaction.id, visibleRoute.id,
+    'presentation mode overrides must suppress timers on layers that resolve to hidden');
+  assert.notEqual(hiddenRoute.id, visibleRoute.id);
 });
 
 test('prototype easing curves clamp progress and preserve the legacy smooth default', () => {

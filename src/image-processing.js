@@ -74,6 +74,8 @@ function photographicLut(settings, channelCount) {
   const exposureStops = clamp(settings.exposure, -100, 100) / 50;
   const temperature = clamp(settings.temperature, -100, 100) / 100;
   const tint = clamp(settings.tint, -100, 100) / 100;
+  const highlights = clamp(settings.highlights, -100, 100) / 100;
+  const shadows = clamp(settings.shadows, -100, 100) / 100;
   const values = new Uint8Array(channelCount * 256);
   for (let channelIndex = 0; channelIndex < channelCount; channelIndex += 1) {
     const exposure = channelIndex === 3 ? 0 : exposureStops;
@@ -86,9 +88,15 @@ function photographicLut(settings, channelCount) {
       : channelIndex < 3 ? tint * 0.18 : 0;
     const gain = 2 ** (exposure + temperatureStops + tintStops);
     for (let value = 0; value < 256; value += 1) {
-      values[channelIndex * 256 + value] = channelIndex === 3
-        ? value
-        : linearToSrgb(srgbToLinear(value) * gain);
+      if (channelIndex === 3) {
+        values[channelIndex * 256 + value] = value;
+        continue;
+      }
+      const linear = srgbToLinear(value);
+      const shadowWeight = (1 - linear) ** 2;
+      const highlightWeight = linear ** 2;
+      const tonalGain = 2 ** (shadows * shadowWeight * 0.85 + highlights * highlightWeight * 0.85);
+      values[channelIndex * 256 + value] = linearToSrgb(linear * gain * tonalGain);
     }
   }
   return values;
@@ -227,7 +235,9 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     if (normalizedTransforms.flipHorizontal) image = replaceImage(image, image.transpose('FLIP_LEFT_RIGHT'));
     if (normalizedTransforms.flipVertical) image = replaceImage(image, image.transpose('FLIP_TOP_BOTTOM'));
     if (settings.autoContrast) image = replaceImage(image, applyToneEffect(api, image, 'autoContrast'));
-    if (settings.exposure || settings.temperature || settings.tint) image = replaceImage(image, applyPhotographicAdjustments(image, settings));
+    if (settings.exposure || settings.temperature || settings.tint || settings.highlights || settings.shadows) {
+      image = replaceImage(image, applyPhotographicAdjustments(image, settings));
+    }
     if (brightness) image = replaceImage(image, image.enhanceBrightness(1 + brightness / 100));
     if (contrast) image = replaceImage(image, image.enhanceContrast(1 + contrast / 100));
     if (saturation) image = replaceImage(image, image.enhanceColor(1 + saturation / 100));

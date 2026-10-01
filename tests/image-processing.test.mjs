@@ -366,6 +366,32 @@ test('Pillow-RS photographic exposure, temperature, and tint work in linear ligh
   } finally { original.free(); }
 });
 
+test('Pillow-RS highlight and shadow controls target their tonal ranges and preserve alpha', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, fourPixelRgbaPng());
+  const sourcePixels = Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]);
+  const highlights = decodeOriginal(pillow, renderImage(original, { highlights: 100 }, {}, pillow).bytes);
+  const shadows = decodeOriginal(pillow, renderImage(original, { shadows: 100 }, {}, pillow).bytes);
+  const reducedHighlights = decodeOriginal(pillow, renderImage(original, { highlights: -100 }, {}, pillow).bytes);
+  const reducedShadows = decodeOriginal(pillow, renderImage(original, { shadows: -100 }, {}, pillow).bytes);
+  const colorDelta = (left, right) => left.slice(0, 3).reduce((sum, channel, index) => sum + Math.abs(channel - right[index]), 0);
+  try {
+    assert.ok(colorDelta([...highlights.getpixel(3, 0)], sourcePixels[3]) > colorDelta([...highlights.getpixel(1, 0)], sourcePixels[1]),
+      'highlight lift affects bright source pixels more than dark source pixels');
+    assert.ok(colorDelta([...shadows.getpixel(1, 0)], sourcePixels[1]) > colorDelta([...shadows.getpixel(3, 0)], sourcePixels[3]),
+      'shadow lift affects dark source pixels more than bright source pixels');
+    assert.ok(reducedHighlights.getpixel(3, 0)[0] < sourcePixels[3][0], 'negative highlights lower bright source pixels');
+    assert.ok(reducedShadows.getpixel(1, 0)[0] < sourcePixels[1][0], 'negative shadows lower dark source pixels');
+    for (const output of [highlights, shadows, reducedHighlights, reducedShadows]) {
+      assert.deepEqual(Array.from({ length: 4 }, (_, x) => output.getpixel(x, 0)[3]), sourcePixels.map(pixel => pixel[3]),
+        'zero, partial, and opaque alpha samples stay exact');
+    }
+    assert.deepEqual(Array.from({ length: 4 }, (_, x) => [...original.getpixel(x, 0)]), sourcePixels,
+      'tonal adjustments are always rendered from the retained original');
+  } finally { highlights.free(); shadows.free(); reducedHighlights.free(); reducedShadows.free(); original.free(); }
+});
+
 test('RGBA tone-effect setup frees the color intermediate when alpha extraction fails', () => {
   let colorFreed = false;
   const color = { free() { colorFreed = true; } };
@@ -390,7 +416,7 @@ test('creative tone settings validate and image-fill recipes use the same local 
     for (const settings of [
       { autoContrast: 1 }, { posterizeBits: -1 }, { posterizeBits: 2.5 },
       { solarize: true, solarizeThreshold: 256 }, { invert: 'yes' }, { inventedTone: true },
-      { exposure: 101 }, { temperature: -101 }, { tint: NaN },
+      { exposure: 101 }, { temperature: -101 }, { tint: NaN }, { highlights: 101 }, { shadows: -101 },
     ]) assert.throws(() => renderImage(original, settings, {}, pillow), /invalid setting/);
     assert.throws(() => renderImage(original, { invert: true }), /does not provide the requested tone effect/);
 

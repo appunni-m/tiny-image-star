@@ -10,13 +10,15 @@ export const imageFillAdjustmentRanges = Object.freeze({
   contrast: [-100, 100],
   saturation: [-100, 100],
   sharpness: [-100, 100],
+  highlights: [-100, 100],
+  shadows: [-100, 100],
   blur: [0, 24],
   posterizeBits: [0, 8],
   solarizeThreshold: [0, 255]
 });
 export const defaultImageAdjustments = Object.freeze({
   exposure: 0, temperature: 0, tint: 0,
-  brightness: 0, contrast: 0, saturation: 0, sharpness: 0, blur: 0,
+  brightness: 0, contrast: 0, saturation: 0, sharpness: 0, highlights: 0, shadows: 0, blur: 0,
   autoContrast: false, posterizeBits: 0, solarize: false, solarizeThreshold: 0, invert: false
 });
 const booleanAdjustmentFields = new Set(['autoContrast', 'solarize', 'invert']);

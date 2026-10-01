@@ -81,6 +81,11 @@ test('common inspector geometry, fill, opacity, effect, and range controls are f
   assert.match(coarsePhone, /\.inspector-content \.gradient-stop-row \.tiny-icon-button,[\s\S]*?width:\s*44px[\s\S]*?min-height:\s*44px/);
 });
 
+test('narrow mobile inspector sliders have finger-sized hit areas even without coarse-pointer emulation', () => {
+  const mobileViewport = mediaBlock('(max-width: 820px)', 3);
+  assert.match(mobileViewport, /.inspector-content input\[type="range"\]\s*\{[^}]*min-height:\s*44px[^}]*padding-block:\s*8px/);
+});
+
 test('grid track controls expose sizing and weighted fill with phone-sized controls', () => {
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
   assert.match(mainSource, /function gridTrackEditor\(node, axis, count, tracks, fallbackMode\)/);

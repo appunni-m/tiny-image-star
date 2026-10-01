@@ -17,6 +17,8 @@ test('untouched local PNG and JPEG sources remain byte-preserving PDF image inpu
 test('pixel edits, crop, rotation, and flips request a lossless local PNG preview', () => {
   const cases = [
     { adjustments: { brightness: 20 } },
+    { adjustments: { highlights: 20 } },
+    { adjustments: { shadows: -15 } },
     { adjustments: { solarize: true, solarizeThreshold: 128 } },
     { adjustments: { posterizeBits: 3 } },
     { transforms: { crop: { left: .1, top: 0, right: .9, bottom: 1 } } },

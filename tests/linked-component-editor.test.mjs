@@ -198,6 +198,36 @@ test('recording a linked property edit updates only that snapshot layer and rema
   assert.equal(updated.instance.root.children[0].text, 'Local');
 });
 
+test('linked override helpers reject editor-owned and prototype-mutating fields consistently', () => {
+  const initial = createLinkedInstanceSnapshot(makeLibrary(), 'component-card', { instanceId: 'link-safe-overrides' });
+  const reserved = ['id', 'type', 'children', 'componentSourceId', 'linkedComponent', '__proto__'];
+
+  for (const property of reserved) {
+    const before = structuredClone(initial);
+    assert.throws(() => withLinkedComponentOverride(initial, 'source-title', property, 'unsafe'), /supported source property/);
+    assert.deepEqual(initial, before, `immutable override rejects ${property} without touching the input`);
+
+    const mutable = structuredClone(initial);
+    const originalPrototype = Object.getPrototypeOf(mutable.overrides);
+    assert.throws(() => recordLinkedComponentOverride(mutable, 'source-title', property, 'unsafe'), /supported source property/);
+    assert.deepEqual(mutable, before, `pointer-time override rejects ${property} without changing snapshot data`);
+    assert.equal(Object.getPrototypeOf(mutable.overrides), originalPrototype, 'rejected edits never alter override-map prototypes');
+  }
+});
+
+test('recordLinkedComponentOverride ignores inherited override-map entries when creating a local entry', () => {
+  const snapshot = structuredClone(createLinkedInstanceSnapshot(makeLibrary(), 'component-card', { instanceId: 'link-own-overrides' }));
+  const inherited = { 'source-title': { text: 'inherited value' } };
+  snapshot.overrides = Object.assign(Object.create(inherited), snapshot.overrides);
+
+  recordLinkedComponentOverride(snapshot, 'source-title', 'text', 'Local value');
+
+  assert.equal(Object.hasOwn(snapshot.overrides, 'source-title'), true);
+  assert.equal(snapshot.overrides['source-title'].text, 'Local value');
+  assert.equal(inherited['source-title'].text, 'inherited value', 'writing an override must never mutate a prototype entry');
+  assert.equal(snapshot.root.children[0].text, 'Local value');
+});
+
 test('cross-design publication materializes source variable and style values without dangling IDs', () => {
   const sourceDocument = createDocument();
   const collection = createVariableCollection(sourceDocument, 'Brand colors');

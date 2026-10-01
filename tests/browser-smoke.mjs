@@ -267,6 +267,9 @@ try {
   sharpness.value = '100'; sharpness.dispatchEvent(new Event('input', { bubbles: true })); sharpness.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'Pillow-RS sharpness preview');
   await waitForSaveCycle(app, 'sharpness adjustment');
+  for (const field of ['highlights', 'shadows']) {
+    assert(app.querySelector(`[data-prop="adjustments.${field}"]`), `the selected image did not expose the ${field} adjustment`);
+  }
 
   let selectedRow = app.querySelector('.layer-row.is-selected[data-layer-id]');
   assert(selectedRow, 'the imported image layer was not selected');
@@ -436,6 +439,8 @@ try {
   assert(fillBrightness, 'image fills did not expose local WASM adjustments');
   const fillSharpness = app.querySelector('[data-image-fill-field="adjustments.sharpness"]');
   assert(fillSharpness, 'image fills did not expose Pillow-RS sharpness');
+  assert(app.querySelector('[data-image-fill-field="adjustments.highlights"]'), 'image fills did not expose tonal highlights');
+  assert(app.querySelector('[data-image-fill-field="adjustments.shadows"]'), 'image fills did not expose tonal shadows');
   const desktopFrameSize = { width: frame.style.width, height: frame.style.height };
   frame.style.width = '390px'; frame.style.height = '844px';
   await new Promise(resolve => app.defaultView.requestAnimationFrame(resolve));

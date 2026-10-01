@@ -28,7 +28,7 @@ export function addVectorPdfEmbeddedImageBytes(currentBytes, additionalBytes, { 
 
 /** Report whether an SVG image must use a rendered pixel preview to preserve its edited appearance. */
 export function hasRasterImageEdits(adjustments = {}, transforms = {}) {
-  return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'saturation', 'sharpness', 'blur']
+  return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur']
     .some(key => Number(adjustments[key] || 0) !== 0)
     || Boolean(adjustments.autoContrast || adjustments.solarize || adjustments.invert)
     || Number(adjustments.posterizeBits || 0) > 0

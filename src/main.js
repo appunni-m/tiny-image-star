@@ -815,7 +815,7 @@ function imageFillControls(node, imageFill = node.imageFill, fillId = '') {
   const adjustments = { ...defaultImageAdjustments, ...imageFill.adjustments };
   const previewKey = imagePreviewKey(node.id, fillId || null);
   const geometry = resolvedGeometry(node);
-  const fields = [['exposure', 'Exposure', -100, 100], ['temperature', 'Temperature', -100, 100], ['tint', 'Tint', -100, 100], ['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}"${fillData} aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
+  const fields = [['exposure', 'Exposure', -100, 100], ['temperature', 'Temperature', -100, 100], ['tint', 'Tint', -100, 100], ['brightness', 'Brightness', -100, 100], ['contrast', 'Contrast', -100, 100], ['saturation', 'Saturation', -100, 100], ['highlights', 'Highlights', -100, 100], ['shadows', 'Shadows', -100, 100], ['sharpness', 'Sharpness', -100, 100], ['blur', 'Blur', 0, 24]].map(([field, label, min, max]) => `<div class="slider-row"><label>${label}</label><input type="range" min="${min}" max="${max}" step="1" value="${adjustments[field]}" data-image-fill-field="adjustments.${field}"${fillData} aria-label="Image fill ${label.toLowerCase()}"${node.locked ? ' disabled' : ''}/><output>${adjustments[field]}</output></div>`).join('');
   const transforms = imageTransformControls(imageFill.transforms, 'fill', node.locked, fillId);
   const asset = state.assets.get(imageFill.assetId);
   const fillCropActive = state.imageCropMode && state.imageFillCropTarget?.nodeId === node.id && state.imageFillCropTarget?.fillId === fillId;
@@ -995,7 +995,7 @@ function imageAdjustmentsSection(node) {
   const adjustments = { ...defaultImageAdjustments, ...node.adjustments };
   const status = state.imageStatus.get(node.id) || 'Ready · Pillow-RS WebAssembly';
   const statusClass = status.startsWith('Updated') || status.startsWith('Ready') ? 'image-engine-status' : '';
-  const body = `${imageTransformControls(node.transforms, 'layer', node.locked, '', node.id)}${sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked)}${sliderField('Temperature', 'adjustments.temperature', adjustments.temperature, -100, 100, 1, node.locked)}${sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
+  const body = `${imageTransformControls(node.transforms, 'layer', node.locked, '', node.id)}${sliderField('Exposure', 'adjustments.exposure', adjustments.exposure, -100, 100, 1, node.locked)}${sliderField('Temperature', 'adjustments.temperature', adjustments.temperature, -100, 100, 1, node.locked)}${sliderField('Tint', 'adjustments.tint', adjustments.tint, -100, 100, 1, node.locked)}${sliderField('Brightness', 'adjustments.brightness', adjustments.brightness, -100, 100, 1, node.locked)}${sliderField('Contrast', 'adjustments.contrast', adjustments.contrast, -100, 100, 1, node.locked)}${sliderField('Highlights', 'adjustments.highlights', adjustments.highlights, -100, 100, 1, node.locked)}${sliderField('Shadows', 'adjustments.shadows', adjustments.shadows, -100, 100, 1, node.locked)}${sliderField('Saturation', 'adjustments.saturation', adjustments.saturation, -100, 100, 1, node.locked)}${sliderField('Sharpness', 'adjustments.sharpness', adjustments.sharpness, -100, 100, 1, node.locked)}${sliderField('Blur', 'adjustments.blur', adjustments.blur, 0, 24, 1, node.locked)}${imageToneControls(adjustments, { disabled: node.locked })}<div class="image-engine-status ${statusClass}" id="image-engine-status">${escapeHtml(status)}</div><p class="image-properties-note">Every preview starts from the original image held in memory. Your image never leaves this device.</p>`;
   return section('Image adjustments', body);
 }
 function isActiveImageRecipeTarget(nodeId) {
@@ -6180,7 +6180,7 @@ function saveRecipeFor(nodeId) {
   if (!node || node.type !== 'image') return;
   pendingRecipeNodeId = nodeId;
   const adjustments = node.adjustments || {};
-  const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
+  const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
     .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
   if (adjustments.autoContrast) active.push('Auto contrast');
   if (Number(adjustments.posterizeBits) > 0) active.push(`Posterize ${adjustments.posterizeBits} bit`);
@@ -8517,7 +8517,7 @@ function createSvgTextMeasurer() {
 }
 
 function hasImageAdjustmentEdits(adjustments = {}) {
-  return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'saturation', 'sharpness', 'blur']
+  return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur']
     .some(key => Number(adjustments[key] || 0) !== 0)
     || Boolean(adjustments.autoContrast || adjustments.solarize || adjustments.invert)
     || Number(adjustments.posterizeBits || 0) > 0;

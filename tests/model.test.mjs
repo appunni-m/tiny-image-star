@@ -352,7 +352,7 @@ test('node edits, duplication and removal preserve independent identities', () =
 test('image recipes snapshot adjustments and apply to another source layer', () => {
   const document = createDocument();
   const source = createNode('image', {
-    assetId: 'asset-a', adjustments: { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
+    assetId: 'asset-a', adjustments: { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true },
     transforms: { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true },
     outputFormat: 'webp', outputQuality: 74,
   });
@@ -364,7 +364,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   source.transforms.crop.left = 0.4;
   target.transforms = { crop: { left: 0, top: 0, right: 0.5, bottom: 0.5 }, rotation: 90 };
   assert.equal(applyImageRecipe(document, target.id, recipe), true);
-  assert.deepEqual(target.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
+  assert.deepEqual(target.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual(recipe.transforms, { crop: { left: 0.1, top: 0.2, right: 0.85, bottom: 0.9 }, rotation: 270, flipHorizontal: true, flipVertical: false });
   assert.deepEqual([recipe.format, recipe.quality], ['webp', 74]);
   assert.deepEqual(target.transforms, recipe.transforms, 'applying a recipe restores its crop, rotation, and flip');
@@ -373,7 +373,7 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
 
   const reopened = parseDocument(serializeDocument(document));
   const savedRecipe = reopened.recipes[0];
-  assert.deepEqual(savedRecipe.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
+  assert.deepEqual(savedRecipe.adjustments, { exposure: 28, temperature: -20, tint: 15, brightness: -12, contrast: 25, highlights: 42, shadows: -18, saturation: 7, sharpness: 41, blur: 2, autoContrast: true, posterizeBits: 4, solarize: true, solarizeThreshold: 96, invert: true });
   assert.deepEqual([savedRecipe.format, savedRecipe.quality], ['webp', 74], 'output settings persist with the recipe');
   const reopenedTarget = findNode(reopened, target.id).node;
   assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);

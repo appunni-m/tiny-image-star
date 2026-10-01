@@ -131,6 +131,19 @@ test('a disposed asset cannot be repopulated after an in-flight first WASM load'
   assert.equal(sourceLoadedAfterReady.freeCalls, 1, 'the ephemeral decoded source is still freed after rendering');
 });
 
+test('an ephemeral stale render cannot clear a newer active-source intent', () => {
+  const cache = new DecodedSourceCache({ pixelBudget: 10 });
+  const decoded = source(4);
+  cache.setActive('reused-asset-id');
+
+  const rendered = cache.withSource('reused-asset-id', () => decoded, value => value.width, { retain: false });
+
+  assert.deepEqual(rendered, { result: 4, retained: false, evictedAssetIds: [] });
+  assert.equal(cache.activeAssetId, 'reused-asset-id', 'render retention policy must not mutate selection ownership');
+  assert.equal(cache.has('reused-asset-id'), false, 'the stale render remains ephemeral');
+  assert.equal(decoded.freeCalls, 1, 'the ephemeral WASM image is freed after rendering');
+});
+
 test('retained renders report exact cache evictions and reuse the same decoded object', () => {
   const cache = new DecodedSourceCache({ pixelBudget: 5 });
   const a = source(3), b = source(3);

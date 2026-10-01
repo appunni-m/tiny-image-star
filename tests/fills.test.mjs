@@ -10,9 +10,10 @@ test('image fills default to uncropped upright pixels and validate crop, rotatio
   assert.deepEqual(defaults.adjustments, defaultImageAdjustments);
   assert.equal(isValidImageFill(defaults), true);
 
-  const creativeFill = createImageFill('asset-photo', { adjustments: { autoContrast: true, posterizeBits: 5, solarize: true, solarizeThreshold: 80, invert: true } });
+  const creativeFill = createImageFill('asset-photo', { adjustments: { highlights: 34, shadows: -28, autoContrast: true, posterizeBits: 5, solarize: true, solarizeThreshold: 80, invert: true } });
   assert.equal(isValidImageFill(creativeFill), true);
   assert.equal(isValidImageFill({ ...creativeFill, adjustments: { ...creativeFill.adjustments, posterizeBits: 9 } }), false);
+  assert.equal(isValidImageFill({ ...creativeFill, adjustments: { ...creativeFill.adjustments, highlights: 101 } }), false);
 
   const cropped = createImageFill('asset-photo', {
     transforms: { crop: { left: 0.12, top: 0.08, right: 0.92, bottom: 0.88 }, rotation: 90, flipHorizontal: true }

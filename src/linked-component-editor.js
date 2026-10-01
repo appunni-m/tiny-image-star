@@ -10,6 +10,25 @@ const editorLinkFields = [
 ];
 const reservedOverrides = new Set(editorLinkFields.concat(['id', 'type', 'children']));
 
+function assertOverrideAddress(sourceLayerId, property) {
+  if (typeof sourceLayerId !== 'string' || !sourceLayerId || sourceLayerId === '__proto__'
+    || typeof property !== 'string' || !property || property === '__proto__' || reservedOverrides.has(property)) {
+    throw new TypeError('A linked override needs a supported source property.');
+  }
+}
+
+function ownPropertiesFor(object, key) {
+  if (!Object.hasOwn(object, key)) {
+    Object.defineProperty(object, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: {}
+    });
+  }
+  return object[key];
+}
+
 function stripLinkFields(node) {
   for (const property of editorLinkFields) delete node[property];
 }
@@ -151,15 +170,18 @@ function prepareTreeForDesign(nodes, document, sourceToEditorId = new Map()) {
 /** Record a supported local property edit in the immutable linked snapshot. */
 export function withLinkedComponentOverride(snapshot, sourceLayerId, property, value) {
   validateLinkedInstanceSnapshot(snapshot);
-  if (typeof sourceLayerId !== 'string' || !sourceLayerId || typeof property !== 'string' || !property) {
-    throw new TypeError('A linked override needs a source layer and property.');
-  }
+  assertOverrideAddress(sourceLayerId, property);
   const next = clone(snapshot);
-  next.overrides[sourceLayerId] ||= {};
-  next.overrides[sourceLayerId][property] = value === undefined ? null : clone(value);
+  const properties = ownPropertiesFor(next.overrides, sourceLayerId);
+  Object.defineProperty(properties, property, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: value === undefined ? null : clone(value)
+  });
   const apply = node => {
-    const properties = next.overrides[node.id];
-    if (properties) Object.assign(node, clone(properties));
+    const local = Object.hasOwn(next.overrides, node.id) ? next.overrides[node.id] : null;
+    if (local) Object.assign(node, clone(local));
     for (const child of node.children || []) apply(child);
   };
   next.root = clone(next.sourceSnapshot.root);
@@ -173,9 +195,7 @@ export function recordLinkedComponentOverride(snapshot, sourceLayerId, property,
   if (!snapshot || typeof snapshot !== 'object' || snapshot.schema !== 'tiny-image-star/linked-component-instance/1') {
     throw new TypeError('Invalid linked component snapshot.');
   }
-  if (typeof sourceLayerId !== 'string' || !sourceLayerId || typeof property !== 'string' || !property || reservedOverrides.has(property)) {
-    throw new TypeError('A linked override needs a supported source property.');
-  }
+  assertOverrideAddress(sourceLayerId, property);
   let target = null;
   const visit = node => {
     if (node.id === sourceLayerId) { target = node; return; }
@@ -184,9 +204,19 @@ export function recordLinkedComponentOverride(snapshot, sourceLayerId, property,
   visit(snapshot.root);
   if (!target) throw new TypeError(`Override refers to missing source layer “${sourceLayerId}”.`);
   const nextValue = value === undefined ? null : clone(value);
-  snapshot.overrides[sourceLayerId] ||= {};
-  snapshot.overrides[sourceLayerId][property] = nextValue;
-  target[property] = clone(nextValue);
+  const properties = ownPropertiesFor(snapshot.overrides, sourceLayerId);
+  Object.defineProperty(properties, property, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: nextValue
+  });
+  Object.defineProperty(target, property, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: clone(nextValue)
+  });
   return snapshot;
 }
 

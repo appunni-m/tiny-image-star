@@ -364,18 +364,36 @@ export function createPrototypeSession(start) {
   return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, variantSelections: {}, lastHoverInteractionId: null };
 }
 
+function isPrototypeNodeVisible(document, node, session) {
+  const variableId = node.variableBindings?.visible;
+  const variable = variableId && document.variables?.find(item => item.id === variableId);
+  if (variable?.type === 'boolean') {
+    const value = resolveVariableValueWithModeOverrides(document, variableId, session?.variableModes, node);
+    if (typeof value === 'boolean') return value;
+  }
+  return getNodePropertyValue(document, node, 'visible') !== false;
+}
+
 export function findPrototypeDelayInteraction(document, pageId, frameId, session = null) {
   const frame = findNode(document, frameId, pageId)?.node;
   if (!frame || frame.type !== 'frame') return null;
   let match = null;
-  walkNodes([frame], ({ node }) => {
-    if (match) return;
-    const interaction = node.interactions?.find(item => item.trigger === 'after-delay'
-      && delayedActions.has(item.action)
-      && Number.isInteger(item.delay) && item.delay >= minPrototypeDelay && item.delay <= maxPrototypeDelay
-      && prototypeConditionMatches(document, item.condition, session, node));
-    if (interaction) match = { source: node, interaction };
-  });
+  const visitVisibleNodes = nodes => {
+    for (const node of nodes) {
+      if (!isPrototypeNodeVisible(document, node, session)) continue;
+      const interaction = node.interactions?.find(item => item.trigger === 'after-delay'
+        && delayedActions.has(item.action)
+        && Number.isInteger(item.delay) && item.delay >= minPrototypeDelay && item.delay <= maxPrototypeDelay
+        && prototypeConditionMatches(document, item.condition, session, node));
+      if (interaction) {
+        match = { source: node, interaction };
+        return true;
+      }
+      if (visitVisibleNodes(node.children || [])) return true;
+    }
+    return false;
+  };
+  visitVisibleNodes([frame]);
   return match;
 }
 
