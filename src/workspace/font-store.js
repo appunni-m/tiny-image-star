@@ -1,6 +1,6 @@
 import { WorkspaceStoreError } from './workspace-store.js';
 import { MAX_LOCAL_FONT_BYTES, validateLocalFontAsset } from '../font-assets.js';
-import { listDesignAssetReferences } from './design-store.js';
+import { assertDesignNotDeleted, listDesignAssetReferences } from './design-store.js';
 
 export const FONT_STORE_FORMAT_VERSION = 1;
 export const MAX_FONT_METADATA_BYTES = 8 * 1024;
@@ -182,6 +182,7 @@ export async function saveWorkspaceFontAsset(workspace, designId, font, {
   const bytes = validated.bytes;
   const contentHash = await hashBytes(bytes, crypto);
   return locks.request(`tiny-image-star-fonts:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, designId);
     await requireWritePermission(workspace);
     const dirs = await fontDirectories(workspace, designId, true);
     let existing;

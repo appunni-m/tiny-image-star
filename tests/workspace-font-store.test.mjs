@@ -98,6 +98,16 @@ test('font bytes round-trip exactly and metadata has a content hash and byte siz
   assert.ok(Object.isFrozen(loaded.metadata));
 });
 
+test('font asset writes fail closed after workspace design deletion is marked', async () => {
+  const { workspace, designId } = await fixture();
+  const handle = await workspace.designsDirectory.getFileHandle(`${designId}.deleted.json`, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(JSON.stringify({ formatVersion: 1, designId, deletedAt: 1 }));
+  await writable.close();
+  await assert.rejects(saveWorkspaceFontAsset(workspace, designId, font('late-font'), options),
+    error => error.code === 'DESIGN_DELETED');
+});
+
 test('stable font IDs retry idempotently and different IDs deduplicate bytes per design', async () => {
   const { workspace, designId } = await fixture();
   const first = await saveWorkspaceFontAsset(workspace, designId, font('same'), { ...options, now: 10 });

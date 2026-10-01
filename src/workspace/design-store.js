@@ -139,6 +139,25 @@ async function clearPending(metadata) {
   try { await metadata.removeEntry('PENDING.json'); }
   catch (error) { if (!notFound(error)) throw error; }
 }
+async function readDeletionMarker(workspace, designId) {
+  const name = `${designId}.deleted.json`;
+  let marker;
+  try { marker = await readJson(workspace.designsDirectory, name, 4096, 'DESIGN_DELETE_MARKER_MISSING', 'DESIGN_DELETE_MARKER_INVALID'); }
+  catch (error) {
+    if (error.code === 'DESIGN_DELETE_MARKER_MISSING') return null;
+    throw error;
+  }
+  if (!marker || Object.keys(marker).length !== 3 || marker.formatVersion !== DESIGN_STORE_FORMAT_VERSION
+    || marker.designId !== designId || !Number.isSafeInteger(marker.deletedAt) || marker.deletedAt < 0) {
+    fail('DESIGN_DELETE_MARKER_INVALID', 'The design deletion record is invalid. The folder was left untouched.');
+  }
+  return marker;
+}
+export async function assertDesignNotDeleted(workspace, designId) {
+  if (!workspace?.workspaceId || !workspace.designsDirectory?.getFileHandle) fail('INVALID_WORKSPACE', 'A verified workspace is required.');
+  designId = assertId(designId, 'design ID');
+  if (await readDeletionMarker(workspace, designId)) fail('DESIGN_DELETED', 'This design has been marked for deletion and cannot be reopened or saved.');
+}
 function assertHead(head, designId) {
   if (!head || head.formatVersion !== DESIGN_STORE_FORMAT_VERSION || head.designId !== designId
     || !HASH.test(head.commitHash) || !Number.isSafeInteger(head.sequence) || head.sequence < 1) {
@@ -387,6 +406,7 @@ export async function createDesign(workspace, sourceDocument, { crypto = globalT
   const creationMarker = { formatVersion: DESIGN_STORE_FORMAT_VERSION, designId, createdAt: now,
     pageIds, initialCommitHash: initialCommit.hash };
   return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, designId);
     let designDirectory;
     let resuming = false;
     let storedCreation = creationMarker;
@@ -432,6 +452,61 @@ export async function createDesign(workspace, sourceDocument, { crypto = globalT
     await writeHead(dirs.metadata, head);
     return Object.freeze({ designId, pageIds: Object.freeze([...pageIds]), document: verified.document, head: Object.freeze(head) });
   });
+}
+
+/** Delete one verified app-owned design folder and its per-design pages, history, and assets. */
+export async function deleteDesign(workspace, designId, { locks = globalThis.navigator?.locks } = {}) {
+  assertWorkspace(workspace, locks);
+  const safeDesignId = assertId(designId, 'design ID');
+  if (typeof workspace.designsDirectory.removeEntry !== 'function') {
+    fail('DESIGN_DELETE_UNSUPPORTED', 'This browser cannot remove a design folder safely.');
+  }
+  const directoryHandle = workspace.directoryHandle;
+  if (typeof directoryHandle?.queryPermission !== 'function') {
+    fail('UNSUPPORTED_PERMISSION_API', 'This browser cannot verify workspace write permission.');
+  }
+  const lockNames = [
+    `tiny-image-star-share-edit:${workspace.workspaceId}:${safeDesignId}`,
+    `tiny-image-star-design:${workspace.workspaceId}:${safeDesignId}`,
+    `tiny-image-star-assets:${workspace.workspaceId}:${safeDesignId}`,
+    `tiny-image-star-fonts:${workspace.workspaceId}:${safeDesignId}`
+  ];
+  const withNextLock = index => index === lockNames.length
+    ? removeOwnedDesignFolder()
+    : locks.request(lockNames[index], { mode: 'exclusive' }, () => withNextLock(index + 1));
+
+  async function removeOwnedDesignFolder() {
+    let permission;
+    try { permission = await directoryHandle.queryPermission({ mode: 'readwrite' }); }
+    catch (error) { fail('PERMISSION_CHECK_FAILED', 'Could not verify access to the selected workspace folder.', error); }
+    if (permission !== 'granted') fail('PERMISSION_REQUIRED', 'Workspace write access is needed before deleting a design.');
+
+    const deletionMarker = await readDeletionMarker(workspace, safeDesignId);
+    let designDirectory;
+    try { designDirectory = await workspace.getDesignDirectoryHandle(safeDesignId, { create: false }); }
+    catch (error) {
+      if (deletionMarker && error?.code === 'DESIGN_NOT_FOUND') return Object.freeze({ designId: safeDesignId, deleted: true });
+      throw error;
+    }
+    if (!deletionMarker) {
+      const marker = await readJson(designDirectory, 'CREATE.json', 16 * 1024, null, 'CREATE_MARKER_INVALID');
+      if (!marker || Object.keys(marker).length !== 5 || marker.formatVersion !== DESIGN_STORE_FORMAT_VERSION
+        || marker.designId !== safeDesignId || !Number.isSafeInteger(marker.createdAt) || marker.createdAt < 0
+        || !HASH.test(marker.initialCommitHash) || !Array.isArray(marker.pageIds) || !marker.pageIds.length
+        || marker.pageIds.length > 10_000 || new Set(marker.pageIds).size !== marker.pageIds.length
+        || marker.pageIds.some(id => typeof id !== 'string' || !ID.test(id) || id === '.' || id === '..')) {
+        fail('CREATE_MARKER_INVALID', 'The selected folder is not a verified Tiny Image Star design. It was left untouched.');
+      }
+      await writeImmutableJson(workspace.designsDirectory, `${safeDesignId}.deleted.json`, {
+        formatVersion: DESIGN_STORE_FORMAT_VERSION, designId: safeDesignId, deletedAt: Date.now()
+      }, 4096);
+    }
+    try { await workspace.designsDirectory.removeEntry(safeDesignId, { recursive: true }); }
+    catch (error) { fail('DESIGN_DELETE_PENDING', 'The design is marked for deletion, but its folder cleanup did not finish. Retry deletion after checking workspace access.', error); }
+    return Object.freeze({ designId: safeDesignId, deleted: true });
+  }
+
+  return withNextLock(0);
 }
 
 async function makeCommit(designId, previousHash, sequence, pageId, document, crypto) {
@@ -487,6 +562,7 @@ async function recoverHead(dirs, designId, identity, crypto, pending = null) {
 export async function openDesign(workspace, designId, { crypto = globalThis.crypto, locks = globalThis.navigator?.locks } = {}) {
   assertWorkspace(workspace, locks);
   return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${assertId(designId, 'design ID')}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, designId);
     const dirs = await openDesignDirectories(workspace, designId);
     const identity = await readJson(dirs.metadata, 'design.json', 16 * 1024, 'DESIGN_MISSING', 'DESIGN_INVALID');
     if (identity?.formatVersion !== DESIGN_STORE_FORMAT_VERSION || identity.designId !== designId
@@ -504,6 +580,7 @@ export async function listDesignAssetReferences(workspace, designId, { crypto = 
   assertWorkspace(workspace, locks);
   const safeDesignId = assertId(designId, 'design ID');
   return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${safeDesignId}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, safeDesignId);
     const dirs = await openDesignDirectories(workspace, safeDesignId);
     const identity = await readJson(dirs.metadata, 'design.json', 16 * 1024, 'DESIGN_MISSING', 'DESIGN_INVALID');
     if (identity?.formatVersion !== DESIGN_STORE_FORMAT_VERSION || identity.designId !== safeDesignId
@@ -535,6 +612,7 @@ export async function commitDesign(workspace, designId, document, { expectedHead
   const candidate = parseDocument(document);
   if (candidate.id !== designId || !candidate.pages.some(page => page.id === pageId)) fail('SNAPSHOT_INVALID', 'The proposed snapshot does not match the design and page.');
   return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, designId);
     const dirs = await openDesignDirectories(workspace, designId);
     const identity = await readJson(dirs.metadata, 'design.json', 16 * 1024, 'DESIGN_MISSING', 'DESIGN_INVALID');
     if (!Array.isArray(identity.pageIds) || !identity.pageIds.length || identity.pageIds.length > 10_000

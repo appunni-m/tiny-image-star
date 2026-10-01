@@ -27,7 +27,7 @@ import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
-import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
+import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
 import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
 import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
 import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
@@ -10030,14 +10030,16 @@ async function renderDesignLibrary() {
       const indexedById = new Map(indexedDocuments.map(item => [item.id, item]));
       const folderDocuments = [];
       for (const id of await listWorkspaceDesignIds(state.workspace)) {
-        const opened = await openWorkspaceDesign(state.workspace, id);
         const indexed = indexedById.get(id);
-        folderDocuments.push({
-          id,
-          name: opened.document.name || indexed?.name || 'Untitled',
-          savedAt: indexed?.savedAt || null,
-          revision: indexed?.revision ?? null
-        });
+        try {
+          const opened = await openWorkspaceDesign(state.workspace, id);
+          folderDocuments.push({ id, name: opened.document.name || indexed?.name || 'Untitled',
+            savedAt: indexed?.savedAt || null, revision: indexed?.revision ?? null });
+        } catch (error) {
+          if (error?.code !== 'DESIGN_DELETED') throw error;
+          folderDocuments.push({ id, name: indexed?.name || 'Design deletion pending',
+            savedAt: indexed?.savedAt || null, revision: indexed?.revision ?? null, pendingDeletion: true });
+        }
       }
       documents = folderDocuments;
     }
@@ -10051,8 +10053,11 @@ async function renderDesignLibrary() {
       if (item.savedAt) {
         try { date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(item.savedAt)); } catch { /* Keep the local fallback label. */ }
       }
-      const deleteDisabled = state.workspace ? ' disabled title="Folder design deletion is not yet supported"' : '';
-      return `<article class="design-file-row${current ? ' is-current' : ''}"><div class="design-file-details"><span class="design-file-name">${escapeHtml(item.name)}${current ? ' · Current' : ''}</span><span class="design-file-date">${escapeHtml(date)} · ${state.workspace ? 'Folder workspace' : 'This device'}</span></div><div class="design-file-actions"><button type="button" data-design-action="open" data-design-id="${escapeHtml(item.id)}"${current ? ' disabled aria-current="true"' : ''}>Open</button><button type="button" data-design-action="rename" data-design-id="${escapeHtml(item.id)}">Rename</button><button type="button" data-design-action="duplicate" data-design-id="${escapeHtml(item.id)}">Duplicate</button><button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}"${deleteDisabled}>Delete</button></div></article>`;
+      const pendingStatus = item.pendingDeletion ? '<span class="design-file-date">Deletion pending · folder cleanup needs retry</span>' : `<span class="design-file-date">${escapeHtml(date)} · ${state.workspace ? 'Folder workspace' : 'This device'}</span>`;
+      const actions = item.pendingDeletion
+        ? `<button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}">Retry delete</button>`
+        : `<button type="button" data-design-action="open" data-design-id="${escapeHtml(item.id)}"${current ? ' disabled aria-current="true"' : ''}>Open</button><button type="button" data-design-action="rename" data-design-id="${escapeHtml(item.id)}">Rename</button><button type="button" data-design-action="duplicate" data-design-id="${escapeHtml(item.id)}">Duplicate</button><button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}">Delete</button>`;
+      return `<article class="design-file-row${current ? ' is-current' : ''}${item.pendingDeletion ? ' is-deletion-pending' : ''}"><div class="design-file-details"><span class="design-file-name">${escapeHtml(item.name)}${current ? ' · Current' : ''}</span>${pendingStatus}</div><div class="design-file-actions">${actions}</div></article>`;
     }).join('');
   } finally {
     list.setAttribute('aria-busy', 'false');
@@ -10179,11 +10184,58 @@ async function handleDesignLibraryAction(action, id) {
       return;
     }
     if (action === 'delete') {
-      if (state.workspace) { showToast('Deleting workspace designs is unavailable until folder revision cleanup is implemented.'); return; }
       if (isImageRecipeBatchActive(state.bulk)) { showToast('Finish or stop the active image recipe before deleting a design.'); return; }
-      const saved = await loadDocumentById(id);
+      const live = state.liveCollaboration;
+      const liveDesignId = live?.role === 'guest' ? live.localDesignId : live?.designId;
+      if (liveDesignId === id && (live.status === 'fork-unsaved' || !liveTerminal(live.status))) {
+        showToast('Leave the live session and save any pending local fork before deleting this design.'); return;
+      }
+      if (id === state.document.id && state.pendingRecipeRecovery) {
+        showToast('Resolve this design’s interrupted image recipe before deleting it.'); return;
+      }
+      let saved;
+      let pendingDeletion = false;
+      if (state.workspace) {
+        try { saved = (await openWorkspaceDesign(state.workspace, id)).document; }
+        catch (error) {
+          if (error?.code === 'DESIGN_DELETED') {
+            pendingDeletion = true;
+            const indexed = await loadDocumentRecordById(id);
+            saved = indexed?.document ? parseDocument(indexed.document) : { name: indexed?.name || 'Design deletion pending' };
+          } else if (workspaceNotFound(error, 'DESIGN_NOT_FOUND')) saved = null;
+          else throw error;
+        }
+      } else saved = await loadDocumentById(id);
       if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
-      if (!confirm(`Delete “${saved.name || 'Untitled'}” from this device? This cannot be undone.`)) return;
+      const location = state.workspace ? `the “${state.workspaceHandle?.name || 'selected'}” workspace folder` : 'this device';
+      const question = pendingDeletion
+        ? `Finish deleting “${saved.name || 'Untitled'}” from ${location}? This cannot be undone.`
+        : `Delete “${saved.name || 'Untitled'}” from ${location}? Its local versions and workspace assets will be removed. This cannot be undone.`;
+      if (!confirm(question)) return;
+      if (state.workspace) {
+        if (id === state.document.id) {
+          if (pendingDeletion) { showToast('This design is open in this tab but is marked for deletion. Export a local copy before closing it, then retry from another tab.'); return; }
+          const switched = await switchToDocument(createDocument(), { message: 'A new local design is ready.' });
+          if (!switched || !(await persistCurrentDocumentNow())) return;
+        }
+        try { await deleteWorkspaceDesign(state.workspace, id); }
+        catch (error) {
+          if (error?.code === 'DESIGN_DELETE_PENDING') await renderDesignLibrary();
+          throw error;
+        }
+        state.workspaceVerifiedImageIds.delete(id);
+        state.workspaceVerifiedFontIds.delete(id);
+        try { await deleteStoredDocument(id); }
+        catch (error) { console.warn('The workspace design was deleted, but its optional browser library mirror could not be cleaned up.', error); }
+        if (liveDesignId === id) {
+          state.liveCollaboration = null;
+          state.liveReplicaHead = null;
+          state.liveReplicaDesignId = null;
+        }
+        await renderDesignLibrary();
+        showToast(`“${saved.name || 'Untitled'}” was deleted from the workspace.`);
+        return;
+      }
       if (id === state.document.id) {
         const switched = await switchToDocument(createDocument(), {
           message: 'Design deleted. A new local design is ready.',

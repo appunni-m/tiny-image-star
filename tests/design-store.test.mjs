@@ -3,7 +3,7 @@ import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import { createDocument } from '../src/model.js';
 import { createWorkspace } from '../src/workspace/workspace-store.js';
-import { commitDesign, createDesign, openDesign, MAX_DESIGN_COMMITS, MAX_DESIGN_HISTORY_BYTES,
+import { commitDesign, createDesign, deleteDesign, openDesign, MAX_DESIGN_COMMITS, MAX_DESIGN_HISTORY_BYTES,
   MAX_DESIGN_SNAPSHOT_BYTES } from '../src/workspace/design-store.js';
 
 function notFound() { const error = new Error('Not found'); error.name = 'NotFoundError'; return error; }
@@ -49,6 +49,10 @@ class DirectoryHandle {
   }
   async *values() { this.root.directoryScans = (this.root.directoryScans || 0) + 1; yield* this.children.values(); }
   async removeEntry(name, { recursive = false } = {}) {
+    if (this.root.failRemoveFor === name) {
+      this.root.failRemoveFor = null;
+      throw new Error(`injected remove failure for ${name}`);
+    }
     const entry = this.children.get(name);
     if (!entry) throw notFound();
     if (entry.kind === 'directory' && !recursive && entry.children.size) throw new Error('directory not empty');
@@ -209,6 +213,54 @@ test('unsafe caller IDs are rejected rather than normalized into another path', 
   badPage.pages[0].id = 'pages/escape';
   badPage.activePageId = 'pages/escape';
   await assert.rejects(createDesign(workspace, badPage, { crypto: webcrypto, locks }), error => error.code === 'INVALID_ID');
+});
+
+test('deleting a folder design removes its history and assets without changing other designs', async () => {
+  const { workspace, root } = await fixture();
+  const first = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  const second = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  const firstFolder = await workspace.getDesignDirectoryHandle(first.designId);
+  await firstFolder.getDirectoryHandle('assets', { create: true });
+  await firstFolder.getDirectoryHandle('fonts', { create: true });
+
+  assert.deepEqual(await deleteDesign(workspace, first.designId, { locks }), { designId: first.designId, deleted: true });
+  assert.equal(root.children.get('designs').children.has(first.designId), false);
+  assert.equal(root.children.get('designs').children.has(`${first.designId}.deleted.json`), true);
+  await assert.rejects(openDesign(workspace, first.designId, { crypto: webcrypto, locks }), error => error.code === 'DESIGN_DELETED');
+  await assert.rejects(createDesign(workspace, first.document, { crypto: webcrypto, locks }), error => error.code === 'DESIGN_DELETED');
+  assert.deepEqual(await deleteDesign(workspace, first.designId, { locks }), { designId: first.designId, deleted: true });
+  assert.equal((await openDesign(workspace, second.designId, { crypto: webcrypto, locks })).document.id, second.designId);
+});
+
+test('interrupted folder deletion stays fenced from stale autosaves and can be retried', async () => {
+  const { workspace, root } = await fixture();
+  const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  root.failRemoveFor = created.designId;
+  await assert.rejects(deleteDesign(workspace, created.designId, { locks }), error => error.code === 'DESIGN_DELETE_PENDING');
+  assert.equal(root.children.get('designs').children.has(`${created.designId}.deleted.json`), true);
+  await assert.rejects(openDesign(workspace, created.designId, { crypto: webcrypto, locks }), error => error.code === 'DESIGN_DELETED');
+  await assert.rejects(createDesign(workspace, created.document, { crypto: webcrypto, locks }), error => error.code === 'DESIGN_DELETED');
+  assert.deepEqual(await deleteDesign(workspace, created.designId, { locks }), { designId: created.designId, deleted: true });
+  assert.equal(root.children.get('designs').children.has(created.designId), false);
+});
+
+test('design deletion requires current folder permission and refuses unowned folders', async () => {
+  const { workspace } = await fixture();
+  const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  const designs = workspace.designsDirectory;
+  const owned = await workspace.getDesignDirectoryHandle(created.designId);
+  const marker = await owned.getFileHandle('CREATE.json');
+  marker.contents = '{broken';
+  await assert.rejects(deleteDesign(workspace, created.designId, { locks }), error => error.code === 'CREATE_MARKER_INVALID');
+  assert.equal(designs.children.has(created.designId), true, 'an unverified folder must remain untouched');
+
+  marker.contents = JSON.stringify({
+    formatVersion: 1, designId: created.designId, createdAt: 1, pageIds: created.pageIds,
+    initialCommitHash: '0'.repeat(64)
+  });
+  workspace.directoryHandle.permission = 'prompt';
+  await assert.rejects(deleteDesign(workspace, created.designId, { locks }), error => error.code === 'PERMISSION_REQUIRED');
+  assert.equal(designs.children.has(created.designId), true, 'permission denial must not remove the design');
 });
 
 test('appending checks history file metadata without reading prior commit contents', async () => {

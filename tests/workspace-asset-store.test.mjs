@@ -101,6 +101,17 @@ test('source image bytes round-trip exactly and are stored at a generated conten
   });
 });
 
+test('image asset writes fail closed after workspace design deletion is marked', async () => {
+  const { workspace, designId } = await fixture();
+  const handle = await workspace.designsDirectory.getFileHandle(`${designId}.deleted.json`, { create: true });
+  const writable = await handle.createWritable();
+  await writable.write(JSON.stringify({ formatVersion: 1, designId, deletedAt: 1 }));
+  await writable.close();
+  await assert.rejects(saveImageAsset(workspace, designId, 'late-image', bytesA, {
+    ...options, mimeType: 'image/png'
+  }), error => error.code === 'DESIGN_DELETED');
+});
+
 test('saving the same asset ID and bytes is idempotent and preserves original metadata', async () => {
   const { workspace, designId } = await fixture();
   const first = await saveImageAsset(workspace, designId, 'same', bytesA, { ...options, mimeType: 'image/png', now: 10 });

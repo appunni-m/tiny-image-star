@@ -1,5 +1,5 @@
 import { WorkspaceStoreError } from './workspace-store.js';
-import { listDesignAssetReferences } from './design-store.js';
+import { assertDesignNotDeleted, listDesignAssetReferences } from './design-store.js';
 
 export const ASSET_STORE_FORMAT_VERSION = 1;
 export const MAX_IMAGE_ASSET_BYTES = 64 * 1024 * 1024;
@@ -219,6 +219,7 @@ export async function saveImageAsset(workspace, designId, assetId, source, {
   const blobName = contentHash;
 
   return locks.request(`tiny-image-star-assets:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
+    await assertDesignNotDeleted(workspace, designId);
     await requireWritePermission(workspace);
     const directories = await imageDirectories(workspace, designId, { create: true });
     let existingMetadata = null;
