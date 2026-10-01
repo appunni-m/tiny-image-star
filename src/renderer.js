@@ -1,7 +1,7 @@
 import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
-import { layoutPlainText, layoutTextRuns, measureTrackedText, textGraphemes, transformTextCase } from './text-layout.js';
+import { layoutPlainText, layoutTextRuns, measureTrackedText, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
@@ -88,6 +88,7 @@ function drawTextMask(ctx, node, document, x, y, width, height) {
     fontWeight: getNodePropertyValue(document, node, 'fontWeight') || 400,
     fontStyle: node.fontStyle || 'normal',
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+    lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
     color: '#ffffff',
     textCase: node.textCase || 'none',
@@ -113,7 +114,7 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
   const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing');
   ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${fontSize || 24}px ${node.fontFamily || 'Arial, sans-serif'}`;
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  const lineHeight = (fontSize || 24) * (lineHeightScale || 1.25);
+  const lineHeight = resolvedLineHeight(lineHeightScale || 1.25, fontSize || 24, node.lineHeightUnit || 'ratio');
   const layout = layoutPlainText(text, Math.max(1, width), value => measureTrackedText(ctx, value, letterSpacing), {
     lineHeight, paragraphSpacing: node.paragraphSpacing, listSpacing: node.listSpacing,
     paragraphStyles: node.paragraphStyles, markerStyle: {
@@ -1067,6 +1068,7 @@ export class SceneRenderer {
           fontWeight: node.fontWeight || 400,
           fontStyle: node.fontStyle || 'normal',
           lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+          lineHeightUnit: node.lineHeightUnit || 'ratio',
           letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
           color: getNodeColor(document, node, 'text'),
           textCase: node.textCase || 'none',

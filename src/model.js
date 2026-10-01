@@ -36,6 +36,7 @@ const variableBindingSpecs = {
   'autoLayout.axis': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.align': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.justify': { type: 'string', nodeTypes: ['frame'] },
+  'autoLayout.wrapDistribution': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.mainSizing': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.crossSizing': { type: 'string', nodeTypes: ['frame'] },
   'autoLayout.wrap': { type: 'boolean', nodeTypes: ['frame'] },
@@ -80,6 +81,7 @@ function isVariableBindingValue(property, value) {
     if (property.endsWith('.axis')) return ['vertical', 'horizontal', 'grid'].includes(value);
     if (property.endsWith('.align')) return ['start', 'center', 'end', 'stretch'].includes(value);
     if (property.endsWith('.justify')) return ['start', 'center', 'end', 'space-between', 'space-around', 'space-evenly'].includes(value);
+    if (property.endsWith('.wrapDistribution')) return ['start', 'center', 'end', 'space-between'].includes(value);
     if (property.endsWith('.mainSizing') || property.endsWith('.crossSizing')) return ['fixed', 'hug'].includes(value);
     if (property.endsWith('.columns') || property.endsWith('.rows')) return Number.isInteger(value) && value >= 1 && value <= 64;
     if (property.endsWith('.rowGap') || property.endsWith('.columnGap')) return value >= 0 && value <= 100_000;
@@ -108,7 +110,13 @@ function isValidFontWeight(value) {
   return Number.isInteger(weight) && weight >= 1 && weight <= 1000;
 }
 
-const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration', 'baselineShift']);
+const textRunStyleProperties = new Set(['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift']);
+const lineHeightUnits = new Set(['ratio', 'auto', 'pixels', 'percent']);
+
+function isValidLineHeight(value, unit = 'ratio') {
+  return lineHeightUnits.has(unit) && typeof value === 'number' && Number.isFinite(value)
+    && (unit === 'auto' || value > 0 && (unit === 'ratio' ? value <= 100 : value <= 100_000));
+}
 
 function isValidTextRun(run) {
   if (!run || typeof run !== 'object' || Array.isArray(run)
@@ -118,7 +126,8 @@ function isValidTextRun(run) {
   if (run.fontSize != null && (typeof run.fontSize !== 'number' || !Number.isFinite(run.fontSize) || run.fontSize <= 0 || run.fontSize > 100_000)) return false;
   if (run.fontWeight != null && !isValidFontWeight(run.fontWeight)) return false;
   if (run.fontStyle != null && !['normal', 'italic'].includes(run.fontStyle)) return false;
-  if (run.lineHeight != null && (typeof run.lineHeight !== 'number' || !Number.isFinite(run.lineHeight) || run.lineHeight <= 0 || run.lineHeight > 100)) return false;
+  if (run.lineHeightUnit != null && (!lineHeightUnits.has(run.lineHeightUnit) || run.lineHeight == null)) return false;
+  if (run.lineHeight != null && !isValidLineHeight(run.lineHeight, run.lineHeightUnit || 'ratio')) return false;
   if (run.letterSpacing != null && (typeof run.letterSpacing !== 'number' || !Number.isFinite(run.letterSpacing) || Math.abs(run.letterSpacing) > 10_000)) return false;
   if (run.color != null && (typeof run.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(run.color))) return false;
   if (run.textDecoration != null && !textDecorations.has(run.textDecoration)) return false;
@@ -198,7 +207,7 @@ const defaults = {
   line: { name: 'Line', width: 120, height: 0, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2 },
   star: { name: 'Star', width: 100, height: 100, fill: '#ffcd29', points: 5, innerRadius: 0.48 },
   polygon: { name: 'Polygon', width: 100, height: 100, fill: '#d9d9d9', points: 6 },
-  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
+  text: { name: 'Text', width: 240, height: 48, text: 'Text', textFit: 'auto-height', fontFamily: 'Inter, Arial, sans-serif', fontSize: 24, fontWeight: 400, fontStyle: 'normal', lineHeight: 1.25, lineHeightUnit: 'ratio', letterSpacing: 0, paragraphSpacing: 0, firstLineIndent: 0, listSpacing: 0, color: '#1e1e1e', align: 'left', verticalAlign: 'top', textCase: 'none', textDecoration: 'none' },
   image: { name: 'Image', width: 320, height: 240, fill: '#eeeeee', assetId: null, fileName: 'Image', adjustments: defaultImageAdjustments, transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false }, fit: 'cover', outputFormat: 'png', outputQuality: 90 },
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
@@ -383,7 +392,7 @@ const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both'
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
-  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
@@ -1809,7 +1818,7 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
 const legacyTypographyStyleProperties = ['color', 'align', 'verticalAlign'];
 
 function typographyStyleValues(document, node) {
@@ -1819,6 +1828,7 @@ function typographyStyleValues(document, node) {
     fontWeight: Number(getNodePropertyValue(document, node, 'fontWeight')) || 400,
     fontStyle: getNodePropertyValue(document, node, 'fontStyle') || 'normal',
     lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+    lineHeightUnit: node.lineHeightUnit || 'ratio',
     letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
     paragraphSpacing: Number(node.paragraphSpacing) || 0,
     firstLineIndent: Number(node.firstLineIndent) || 0,
@@ -2166,7 +2176,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -3174,6 +3184,8 @@ export function validateDocument(document) {
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
+      if (node.lineHeightUnit != null && (node.type !== 'text' || !lineHeightUnits.has(node.lineHeightUnit) || node.lineHeight == null)) throw new TypeError(`Invalid line-height unit on layer ${node.name || node.id}.`);
+      if (node.lineHeight != null && (node.type !== 'text' || !isValidLineHeight(node.lineHeight, node.lineHeightUnit || 'ratio'))) throw new TypeError(`Invalid line height on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);
       if (node.textDecoration != null && (node.type !== 'text' || !textDecorations.has(node.textDecoration))) throw new TypeError(`Invalid text decoration on layer ${node.name || node.id}.`);
       if (node.align != null && (node.type !== 'text' || !textAlignments.has(node.align))) throw new TypeError(`Invalid text alignment on layer ${node.name || node.id}.`);
@@ -3255,6 +3267,7 @@ export function validateDocument(document) {
         }));
         const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
         if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)
+          || (layout.wrapDistribution != null && !['start', 'center', 'end', 'space-between'].includes(layout.wrapDistribution))
           || (layout.gap != null && !validFlowGap(layout.gap))
           || (layout.rowGap != null && !validFlowGap(layout.rowGap))
           || (layout.columnGap != null && !validFlowGap(layout.columnGap))
@@ -3683,7 +3696,7 @@ export function validateDocument(document) {
         || !Number.isFinite(style.fontSize) || style.fontSize <= 0
         || !isValidFontWeight(style.fontWeight)
         || !['normal', 'italic'].includes(style.fontStyle)
-        || !Number.isFinite(style.lineHeight) || style.lineHeight <= 0
+        || !isValidLineHeight(style.lineHeight, style.lineHeightUnit || 'ratio')
         || !Number.isFinite(style.letterSpacing)
         || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))
         || (style.firstLineIndent != null && (!Number.isFinite(style.firstLineIndent) || style.firstLineIndent < 0 || style.firstLineIndent > 10_000))

@@ -60,6 +60,8 @@ test('the layer action menu keeps common actions and conditionally adds group/co
   }
   assert.match(builder, /if \(canGroupLayers\(state\.document, rootSelectedIds\(\)\)\).*Group/);
   assert.match(builder, /if \(node\?\.type === 'image'\)[\s\S]*?Save image recipe/);
+  assert.match(builder, /const deleteTargetIds = layerMenuDeleteTargets\(state\.selectedIds, nodeId\)[\s\S]*?action: \(\) => deleteSelected\(deleteTargetIds\)/,
+    'Delete should use the layer or multi-selection captured when its context menu opened');
   assert.match(builder, /getNodePropertyValue\(state\.document, node, 'visible'\) \? 'Hide layer' : 'Show layer'/,
     'visibility remains available from the action menu on very narrow phones');
 });

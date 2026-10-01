@@ -1,5 +1,5 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
-import { layoutPlainText, layoutTextRuns, textGraphemes, transformTextCase } from './text-layout.js';
+import { layoutPlainText, layoutTextRuns, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { fillStackForNode, gradientTypes, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
@@ -792,7 +792,7 @@ function textLines(node, document, measureText) {
   const hasListMarker = Array.isArray(node.paragraphStyles) && node.paragraphStyles.some(paragraph => paragraph?.listStyle === 'bulleted' || paragraph?.listStyle === 'numbered');
   if (!text && !hasListMarker) {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
-    const lineHeight = fontSize * Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25);
+    const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
     return [{ displayText: '', index: 0, paragraphIndex: 0, firstLine: true, indent: 0, naturalWidth: 0, width: 0, y: 0, lineHeight }];
   }
   if (Number(node.width) <= 0) throw new TypeError(`SVG export cannot faithfully render text in a zero-width box on layer ${node.name || node.id || '(unnamed)'}.`);
@@ -806,6 +806,7 @@ function textLines(node, document, measureText) {
       fontWeight: node.fontWeight || 400,
       fontStyle: node.fontStyle || 'normal',
       lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+      lineHeightUnit: node.lineHeightUnit || 'ratio',
       letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') ?? 0,
       paragraphSpacing: node.paragraphSpacing || 0,
       firstLineIndent: node.firstLineIndent || 0,
@@ -831,7 +832,7 @@ function textLines(node, document, measureText) {
   }
 
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
-  const lineHeight = fontSize * Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25);
+  const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
   const measure = line => Number(measureText(line, node));
   const layout = layoutPlainText(text, Math.max(1, Number(node.width)), measure, {
     lineHeight,

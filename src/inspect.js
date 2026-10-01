@@ -4,6 +4,7 @@ import { gradientFillToCSS } from './fills.js';
 import { nodeLocalToPage } from './transform-geometry.js';
 import { vectorPathContours } from './vector-path.js';
 import { strokeStackForNode } from './strokes.js';
+import { resolvedLineHeight } from './text-layout.js';
 
 function hasFillablePathContour(node) {
   return vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2);
@@ -223,7 +224,7 @@ function cssForEntry(document, entry) {
 
   if (node.type === 'text') {
     const fontSize = Number(getNodePropertyValue(document, node, 'fontSize')) || 24;
-    const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight')) || 1.25;
+    const lineHeight = resolvedLineHeight(getNodePropertyValue(document, node, 'lineHeight') || 1.25, fontSize, node.lineHeightUnit || 'ratio');
     const paragraphSpacing = Math.max(0, Number(node.paragraphSpacing) || 0);
     // Match canvas and SVG text layout: leave at least one pixel for text in
     // narrow boxes so a large indent cannot push the first line outside.
@@ -241,7 +242,7 @@ function cssForEntry(document, entry) {
       `font-size: ${number(fontSize)}px;`,
       `font-weight: ${number(node.fontWeight || 400)};`,
       `font-style: ${node.fontStyle === 'italic' ? 'italic' : 'normal'};`,
-      `line-height: ${number(fontSize * lineHeight)}px;`,
+      `line-height: ${number(lineHeight)}px;`,
       `letter-spacing: ${number(getNodePropertyValue(document, node, 'letterSpacing') || 0)}px;`,
       'display: block;',
       `text-align: ${['left', 'center', 'right', 'justify'].includes(node.align) ? node.align : 'left'};`,
@@ -255,7 +256,7 @@ function cssForEntry(document, entry) {
     );
     const paragraphClass = `${cssClass(node)}__paragraph`;
     additionalRules.push(
-      `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(fontSize * lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
+      `.${paragraphClass} {\n  display: block;\n  margin: 0;\n  min-height: ${number(lineHeight)}px;\n  text-indent: ${number(firstLineIndent)}px;\n  white-space: pre-wrap;\n}`,
       `.${cssClass(node)} > .${paragraphClass} + .${paragraphClass} {\n  margin-block-start: ${number(paragraphSpacing)}px;\n}`
     );
     if (hasListParagraphs) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
-import { layerDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
+import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
   const selectedIds = ['selected-a', 'selected-b'];
@@ -11,6 +11,16 @@ test('keyboard delete prefers a focused unselected layer and preserves an active
   assert.deepEqual(layerDeleteTargets(selectedIds, null), selectedIds);
   assert.deepEqual(layerDeleteTargets([], 'focused-layer'), ['focused-layer']);
   assert.deepEqual(layerDeleteTargets(['selected-a', 'selected-a'], null), ['selected-a']);
+});
+
+test('a layer menu keeps its opening selection as the delete target', () => {
+  const selectedIds = ['selected-a', 'selected-b'];
+
+  assert.deepEqual(layerMenuDeleteTargets(selectedIds, 'selected-b'), selectedIds,
+    'opening a menu on a selected row keeps the multi-selection');
+  assert.deepEqual(layerMenuDeleteTargets(selectedIds, 'menu-layer'), ['menu-layer'],
+    'opening a menu on an unselected row makes that row the stable delete target');
+  assert.deepEqual(layerMenuDeleteTargets([], 'menu-layer'), ['menu-layer']);
 });
 
 test('layer deletion removes selections from a new valid document', () => {

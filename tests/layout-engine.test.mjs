@@ -207,6 +207,46 @@ test('wrapped horizontal stacks use distinct row and column gaps', () => {
   assert.deepEqual([first.x, first.y, second.x, second.y, third.x, third.y], [10, 10, 60, 10, 10, 45]);
 });
 
+test('wrapped horizontal lines distribute within fixed cross-axis space', () => {
+  assert.equal(createAutoLayout().wrapDistribution, 'start', 'older layouts default to start distribution');
+  const persisted = createDocument();
+  addNode(persisted, createNode('frame', { autoLayout: createAutoLayout({ axis: 'horizontal', wrapDistribution: 'end' }) }));
+  assert.equal(parseDocument(serializeDocument(persisted)).pages[0].children[0].autoLayout.wrapDistribution, 'end');
+  const positions = wrapDistribution => {
+    const frame = createNode('frame', {
+      width: 60, height: 120,
+      autoLayout: createAutoLayout({ axis: 'horizontal', wrap: true, wrapDistribution, columnGap: 0, rowGap: 10, padding: { top: 10, right: 0, bottom: 10, left: 0 } })
+    });
+    const first = createNode('rectangle', { width: 60, height: 10 });
+    const second = createNode('rectangle', { width: 60, height: 20 });
+    frame.children.push(first, second);
+    applyAutoLayout(frame);
+    return [first.y, second.y];
+  };
+  assert.deepEqual(positions('start'), [10, 30]);
+  assert.deepEqual(positions('center'), [40, 60]);
+  assert.deepEqual(positions('end'), [70, 90]);
+  assert.deepEqual(positions('space-between'), [10, 90]);
+});
+
+test('wrapped vertical lines distribute across fixed width and hug sizing keeps packed lines', () => {
+  const makeFrame = (crossSizing, wrapDistribution) => {
+    const frame = createNode('frame', {
+      width: 120, height: 60,
+      autoLayout: createAutoLayout({ axis: 'vertical', wrap: true, wrapDistribution, crossSizing, rowGap: 0, columnGap: 10, padding: { top: 0, right: 10, bottom: 0, left: 10 } })
+    });
+    const first = createNode('rectangle', { width: 10, height: 60 });
+    const second = createNode('rectangle', { width: 20, height: 60 });
+    frame.children.push(first, second);
+    applyAutoLayout(frame);
+    return { frame, first, second };
+  };
+  const fixed = makeFrame('fixed', 'space-between');
+  assert.deepEqual([fixed.first.x, fixed.second.x], [10, 90]);
+  const hugged = makeFrame('hug', 'end');
+  assert.deepEqual([hugged.first.x, hugged.second.x, hugged.frame.width], [10, 30, 60]);
+});
+
 test('linear auto layout keeps each child cross-axis alignment override', () => {
   const frame = createNode('frame', {
     width: 240, height: 100,
@@ -286,6 +326,15 @@ test('grid auto layout and cell placement validate and survive document reload',
   const invalid = structuredClone(document);
   invalid.pages[0].children[0].autoLayout.columns = 0;
   assert.throws(() => validateDocument(invalid), /Invalid auto layout/);
+
+  const invalidWrapDistribution = structuredClone(document);
+  invalidWrapDistribution.pages[0].children[0].autoLayout.wrapDistribution = 'space-around';
+  assert.throws(() => validateDocument(invalidWrapDistribution), /Invalid auto layout/);
+
+  const legacyLayout = structuredClone(document);
+  delete legacyLayout.pages[0].children[0].autoLayout.wrapDistribution;
+  assert.equal(validateDocument(parseDocument(serializeDocument(legacyLayout))), true);
+  assert.equal(createAutoLayout(legacyLayout.pages[0].children[0].autoLayout).wrapDistribution, 'start');
 
   const inverted = structuredClone(document);
   inverted.pages[0].children[0].children[0].minWidth = 200;

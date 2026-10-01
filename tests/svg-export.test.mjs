@@ -26,6 +26,19 @@ test('page SVG omits slice overlays from artwork bounds and standalone slices re
   assert.throws(() => exportNodeToSvg(slice), error => error instanceof SvgExportError && /raster slice exports/.test(error.message));
 });
 
+test('SVG text export lays out explicit line-height units in pixels', () => {
+  const measureText = text => [...String(text)].length * 5;
+  for (const [lineHeight, lineHeightUnit, expectedY] of [
+    [18, 'pixels', 18], [150, 'percent', 15], [1.5, 'ratio', 15]
+  ]) {
+    const text = createNode('text', {
+      text: 'a\nb', width: 100, height: 40, fontSize: 10, lineHeight, lineHeightUnit,
+      textFit: 'fixed'
+    });
+    assert.match(exportNodeToSvg(text, { measureText }), new RegExp(`y="${expectedY}"`));
+  }
+});
+
 test('exports editable nested geometry, text styling, rotation, opacity, and clipping deterministically', () => {
   const title = createNode('text', {
     name: 'Greeting & title', x: 16, y: 20, width: 180, height: 54, rotation: -4,

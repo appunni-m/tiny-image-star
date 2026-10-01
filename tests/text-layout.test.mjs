@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, applyTypographyStyle, createComponent, createComponentInstance, createDocument, createNode, createTypographyStyle, findNode, validateDocument } from '../src/model.js';
-import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, textGraphemes, transformTextCase } from '../src/text-layout.js';
+import { calculateTextBox, layoutPlainText, layoutTextRuns, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight, textGraphemes, transformTextCase } from '../src/text-layout.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
 function context() {
@@ -39,6 +39,52 @@ function alignedTopAnchor(node) {
     y: node.y + height / 2 + sine * (localX - width / 2) - cosine * height / 2
   };
 }
+
+test('resolves Auto, pixel, percent, and legacy ratio line heights through text layout', () => {
+  assert.equal(resolvedLineHeight(1, 20, 'auto'), 24);
+  assert.equal(resolvedLineHeight(18, 20, 'pixels'), 18);
+  assert.equal(resolvedLineHeight(135, 20, 'percent'), 27);
+  assert.equal(resolvedLineHeight(1.5, 20), 30);
+
+  const layout = unit => layoutTextRuns([{ text: 'a\nb' }], Infinity, {
+    fontSize: 20, lineHeight: unit.value, lineHeightUnit: unit.name, letterSpacing: 0
+  }, text => [...text].length * 10);
+  assert.equal(layout({ name: 'pixels', value: 18 }).height, 36);
+  assert.equal(layout({ name: 'percent', value: 135 }).height, 54);
+  assert.equal(layout({ name: 'auto', value: 1 }).height, 48);
+  assert.equal(layout({ name: 'ratio', value: 1.5 }).height, 60);
+});
+
+test('auto-height relayout uses pixel line height', () => {
+  const node = createNode('text', {
+    text: 'one two three four', width: 40, height: 20, fontSize: 10,
+    lineHeight: 18, lineHeightUnit: 'pixels', textFit: 'auto-height'
+  });
+  const size = calculateTextBox(context(), node);
+  assert.ok(size.height >= 4 * 18);
+  assert.equal(node.lineHeightUnit, 'pixels');
+});
+
+test('model validation accepts supported line-height units and rejects malformed values', () => {
+  for (const [lineHeight, lineHeightUnit] of [[1.25, 'ratio'], [1, 'auto'], [18, 'pixels'], [135, 'percent']]) {
+    const document = createDocument();
+    addNode(document, createNode('text', { text: 'Line', lineHeight, lineHeightUnit }));
+    assert.doesNotThrow(() => validateDocument(document));
+  }
+  for (const overrides of [
+    { lineHeight: 0, lineHeightUnit: 'pixels' },
+    { lineHeight: 100_001, lineHeightUnit: 'percent' },
+    { lineHeight: 1, lineHeightUnit: 'em' },
+    { lineHeight: null, lineHeightUnit: 'pixels' }
+  ]) {
+    const document = createDocument();
+    addNode(document, createNode('text', { text: 'Bad', ...overrides }));
+    assert.throws(() => validateDocument(document), /line.height/i);
+  }
+  const legacy = createDocument();
+  addNode(legacy, createNode('text', { text: 'Legacy', lineHeight: 1.4 }));
+  assert.doesNotThrow(() => validateDocument(legacy));
+});
 
 test('auto-width fits the widest explicit line and keeps newline height', () => {
   const node = createNode('text', { text: 'one\ntwo words', fontSize: 20, lineHeight: 1.25, letterSpacing: 2, textFit: 'auto-width' });

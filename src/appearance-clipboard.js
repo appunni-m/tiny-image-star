@@ -8,7 +8,7 @@ import { isValidStrokeStack, strokeStackForNode, syncLegacyStrokeFields } from '
 const clone = value => structuredClone(value);
 const radiusNodeTypes = new Set(['rectangle', 'frame', 'section', 'image']);
 const textStyleProperties = Object.freeze([
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'color', 'align',
   'verticalAlign', 'textCase', 'textDecoration'
 ]);

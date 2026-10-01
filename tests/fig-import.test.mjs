@@ -192,10 +192,26 @@ test('imports supported mixed character styles as editable rich-text runs', () =
   assert.equal(text.textRuns.map(run => run.text).join(''), characters);
   assert.deepEqual(text.textRuns, [
     { text: 'A' },
-    { text: '🚀', fontSize: 32, fontWeight: 700, fontStyle: 'italic', lineHeight: 1.5, letterSpacing: 3.2, color: '#ff0000' },
+    { text: '🚀', fontSize: 32, fontWeight: 700, fontStyle: 'italic', lineHeight: 48, lineHeightUnit: 'pixels', letterSpacing: 3.2, color: '#ff0000' },
     { text: 'B', fontWeight: 500, textDecoration: 'underline' }
   ]);
+  assert.equal(text.lineHeight, 30);
+  assert.equal(text.lineHeightUnit, 'pixels');
   assert.equal(imported.report.flattenedTypes.TEXT_STYLE, undefined);
+});
+
+test('preserves imported Auto and Percent line-height units while legacy numbers remain ratios', () => {
+  const pageGuid = { sessionID: 121, localID: 1 };
+  const nodes = [
+    node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+    node('TEXT', 2, pageGuid, 'a', { textData: { characters: 'Auto', style: { fontSize: 20, lineHeight: { unit: 'AUTO', value: 0 } } } }),
+    node('TEXT', 3, pageGuid, 'b', { textData: { characters: 'Percent', style: { fontSize: 20, lineHeight: { unit: 'PERCENT', value: 135 } } } }),
+    node('TEXT', 4, pageGuid, 'c', { textData: { characters: 'Legacy', style: { fontSize: 20, lineHeight: 1.4 } } })
+  ];
+  const { document } = convertFigDocument({ nodes, images: new Map(), message: { blobs: [] } });
+  assert.deepEqual(document.pages[0].children.map(({ lineHeight, lineHeightUnit }) => [lineHeight, lineHeightUnit]), [
+    [1, 'auto'], [135, 'percent'], [1.4, 'ratio']
+  ]);
 });
 
 test('short mixed-style maps default trailing text safely and reject a split surrogate boundary', () => {
@@ -256,7 +272,7 @@ test('imports horizontal and vertical auto layout as editable local layout inste
   assert.deepEqual(toolbar.autoLayout, {
     axis: 'horizontal', gap: 16, padding: { top: 10, right: 24, bottom: 8, left: 20 },
     rowGap: 12, columnGap: 16, columns: 2, rows: 'auto', autoPositioning: true,
-    align: 'center', justify: 'space-between', wrap: true, mainSizing: 'fixed', crossSizing: 'fixed'
+    align: 'center', justify: 'space-between', wrap: true, wrapDistribution: 'start', mainSizing: 'fixed', crossSizing: 'fixed'
   });
   assert.equal(toolbar.children[0].layoutSizingMain, 'fill');
   assert.equal(toolbar.children[0].layoutAlignSelf, 'stretch');
@@ -317,7 +333,7 @@ test('imports editable manual grid tracks, placements, spans, gaps, padding, and
   assert.deepEqual(frame.autoLayout, {
     axis: 'grid', gap: 10, padding: { top: 12, right: 20, bottom: 8, left: 10 },
     rowGap: 10, columnGap: 10, columns: 2, rows: 2, autoPositioning: false,
-    align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
+    align: 'start', justify: 'start', wrap: false, wrapDistribution: 'start', mainSizing: 'fixed', crossSizing: 'fixed',
     columnTracks: [{ mode: 'fixed', value: 80 }, { mode: 'fill', weight: 2 }],
     rowTracks: [{ mode: 'fixed', value: 80 }, { mode: 'fill', weight: 1 }]
   });

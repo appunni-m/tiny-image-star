@@ -586,7 +586,17 @@ export function layoutPlainText(text, maxWidth, measure, {
   return { lines, width, height: y };
 }
 
-const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
+export function resolvedLineHeight(value, fontSize, unit = 'ratio') {
+  const size = Math.max(1, Number(fontSize) || 24);
+  const amount = Number(value);
+  if (unit === 'auto') return size * 1.2;
+  if (!Number.isFinite(amount) || amount <= 0) return size * 1.25;
+  if (unit === 'pixels') return amount;
+  if (unit === 'percent') return size * amount / 100;
+  return size * amount;
+}
+
+const richTextStyleKeys = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'lineHeightUnit', 'letterSpacing', 'color', 'textDecoration', 'baselineShift'];
 
 function richTextStyle(base, run) {
   const style = {};
@@ -596,6 +606,7 @@ function richTextStyle(base, run) {
   style.fontWeight = Number(style.fontWeight) || 400;
   style.fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal';
   style.lineHeight = Math.max(.1, Number(style.lineHeight) || 1.25);
+  style.lineHeightUnit = ['auto', 'pixels', 'percent'].includes(style.lineHeightUnit) ? style.lineHeightUnit : 'ratio';
   style.letterSpacing = Number(style.letterSpacing) || 0;
   style.color ||= '#1e1e1e';
   style.textDecoration ||= 'none';
@@ -932,8 +943,8 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
     const justify = paragraphAlign === 'justify' && Number.isFinite(lineLimit) && !isLastParagraphLine && gaps > 0 && naturalWidth < lineLimit;
     const lineWidth = justify ? lineLimit : Number.isFinite(lineLimit) ? Math.min(lineLimit, naturalWidth) : naturalWidth;
     const lineHeight = visibleParts.length
-      ? Math.max(...visibleParts.map(part => part.style.fontSize * part.style.lineHeight))
-      : fallback.fontSize * fallback.lineHeight;
+      ? Math.max(...visibleParts.map(part => resolvedLineHeight(part.style.lineHeight, part.style.fontSize, part.style.lineHeightUnit)))
+      : resolvedLineHeight(fallback.lineHeight, fallback.fontSize, fallback.lineHeightUnit);
     let offsetX = 0;
     const resolvedHeight = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : fallback.fontSize * fallback.lineHeight;
     const positionedParts = visibleParts.map(part => {
@@ -965,6 +976,7 @@ export function layoutTextRuns(runs, maxWidth, baseStyle, measure, {
 export function calculateTextBox(ctx, node, {
   fontSize = node.fontSize,
   lineHeight = node.lineHeight,
+  lineHeightUnit = node.lineHeightUnit || 'ratio',
   letterSpacing = node.letterSpacing,
   paragraphSpacing = node.paragraphSpacing,
   firstLineIndent = node.firstLineIndent,
@@ -978,7 +990,7 @@ export function calculateTextBox(ctx, node, {
   if (mode === 'fixed') return { width, height };
 
   const size = Math.max(1, Number(fontSize) || 24);
-  const lineHeightPx = size * Math.max(.1, Number(lineHeight) || 1.25);
+  const lineHeightPx = resolvedLineHeight(lineHeight, size, lineHeightUnit);
   const spacing = Number(letterSpacing) || 0;
   const textValue = transformTextCase(text, node.textCase || 'none');
   ctx.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${node.fontWeight || 400} ${size}px ${node.fontFamily || 'Arial, sans-serif'}`;
@@ -989,6 +1001,7 @@ export function calculateTextBox(ctx, node, {
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: size,
       fontWeight: Number(node.fontWeight) || 400, fontStyle: node.fontStyle || 'normal',
       lineHeight: Math.max(.1, Number(lineHeight) || 1.25), letterSpacing: Number(letterSpacing) || 0,
+      lineHeightUnit,
       paragraphSpacing: nonNegativeTextMetric(paragraphSpacing),
       firstLineIndent: nonNegativeTextMetric(firstLineIndent),
       listSpacing: nonNegativeTextMetric(listSpacing),

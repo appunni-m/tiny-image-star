@@ -95,6 +95,24 @@ test('typography styles snapshot resolved text values and update from a text lay
   }, 'updated values remain a snapshot');
 });
 
+test('typography styles preserve explicit line-height units through save, apply, and update', () => {
+  const document = createDocument();
+  const source = addNode(document, createNode('text', { text: 'Source', fontSize: 20, lineHeight: 28, lineHeightUnit: 'pixels' }));
+  const style = createTypographyStyle(document, source.id, 'Pixel leading');
+  assert.equal(style.lineHeight, 28);
+  assert.equal(style.lineHeightUnit, 'pixels');
+
+  const target = addNode(document, createNode('text', { text: 'Target', lineHeight: 1.1, lineHeightUnit: 'ratio' }));
+  assert.equal(applyTypographyStyle(document, target.id, style.id), true);
+  assert.equal(target.lineHeightUnit, 'pixels');
+  target.lineHeight = 32;
+  assert.equal(updateTypographyStyle(document, style.id, target.id), true);
+  assert.equal(style.lineHeight, 32);
+  assert.equal(style.lineHeightUnit, 'pixels');
+  assert.equal(parseDocument(serializeDocument(document)).typographyStyles[0].lineHeightUnit, 'pixels');
+  assert.doesNotThrow(() => validateDocument(document));
+});
+
 test('applying a typography style preserves text, geometry, color links, and layer-local alignment', () => {
   const { document, collection, frame, source } = makeTypographyFixture();
   const style = createTypographyStyle(document, source.id, 'Display');

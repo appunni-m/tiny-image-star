@@ -76,7 +76,7 @@ export function createAutoLayout(overrides = {}) {
     : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 };
   const settings = {
     axis: 'vertical',
-    align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
+    align: 'start', justify: 'start', wrap: false, wrapDistribution: 'start', mainSizing: 'fixed', crossSizing: 'fixed',
     ...overrides,
     gap,
     rowGap: normalizeGap(overrides.rowGap ?? gap),
@@ -86,6 +86,7 @@ export function createAutoLayout(overrides = {}) {
     autoPositioning: overrides.autoPositioning !== false,
     padding: Object.fromEntries(Object.entries(padding).map(([side, value]) => [side, clamp(value)]))
   };
+  if (!['start', 'center', 'end', 'space-between'].includes(settings.wrapDistribution)) settings.wrapDistribution = 'start';
   if (settings.axis === 'grid') {
     settings.columnTracks = normalizeGridTracks(overrides.columnTracks, settings.columns, 'fill');
     settings.rowTracks = normalizeGridTracks(overrides.rowTracks, settings.rows === 'auto' ? 1 : settings.rows, settings.rows === 'auto' ? 'hug' : 'fill');
@@ -343,8 +344,27 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     : 0;
   const stretchPerGroup = stretchGroups
     ? Math.max(0, crossAvailable - naturalCrossExtent) / stretchGroups : 0;
-  const crossFootprint = linearFootprint(naturalCrossSizes, crossGap);
-  let crossCursor = (horizontal ? padding.top : padding.left) - crossFootprint.min;
+  const groupCrossSizes = groups.map((group, index) => {
+    const canStretchGroup = settings.crossSizing !== 'hug'
+      && (settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch'));
+    return naturalCrossSizes[index] + (canStretchGroup ? stretchPerGroup : 0);
+  });
+  const crossFootprint = linearFootprint(groupCrossSizes, crossGap);
+  const crossSpare = settings.wrap && settings.crossSizing !== 'hug'
+    ? Math.max(0, crossAvailable - crossFootprint.extent) : 0;
+  let crossGapDistributed = crossGap;
+  let crossStartOffset = 0;
+  if (settings.wrap && settings.crossSizing !== 'hug') {
+    if (settings.wrapDistribution === 'center') crossStartOffset = crossSpare / 2;
+    else if (settings.wrapDistribution === 'end') crossStartOffset = crossSpare;
+    else if (settings.wrapDistribution === 'space-between' && groups.length > 1) crossGapDistributed += crossSpare / (groups.length - 1);
+  }
+  const crossStarts = [];
+  let crossPosition = (horizontal ? padding.top : padding.left) - crossFootprint.min + crossStartOffset;
+  for (const size of groupCrossSizes) {
+    crossStarts.push(crossPosition);
+    crossPosition += size + crossGapDistributed;
+  }
   let computedMain = 0;
 
   for (const [groupIndex, group] of groups.entries()) {
@@ -352,6 +372,7 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     const canStretchGroup = settings.crossSizing !== 'hug'
       && (settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch'));
     const groupCross = lineCross + (canStretchGroup ? stretchPerGroup : 0);
+    const crossCursor = crossStarts[groupIndex];
     const fillItems = settings.mainSizing === 'fixed' ? group.filter(item => item.layoutSizingMain === 'fill') : [];
     if (fillItems.length) {
       const usedByFixedItems = group.filter(item => item.layoutSizingMain !== 'fill').reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0);
@@ -380,7 +401,6 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
       }
       mainCursor += mainSize + content.gap;
     }
-    crossCursor += groupCross + crossGap;
   }
 
   if (flowItems.length) {

@@ -304,16 +304,16 @@ function modelType(sourceType) {
   }
 }
 
-function figTextLineHeight(value, fontSize, fallback = 1.25) {
-  if (value == null) return fallback;
+function figTextLineHeight(value, fallbackValue = 1.25, fallbackUnit = 'ratio') {
+  if (value == null) return { value: fallbackValue, unit: fallbackUnit };
   const metric = value && typeof value === 'object' ? value : { value };
-  const number = Number(metric.value);
-  if (!Number.isFinite(number) || number <= 0) return fallback;
   const unit = String(metric.unit || '').toUpperCase();
-  if (unit === 'PIXELS' || unit === 'PX') return finite(number / fontSize, fallback, 0.01, 100);
-  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return finite(number / 100, fallback, 0.01, 100);
-  if (unit === 'AUTO') return fallback;
-  return finite(number, fallback, 0.01, 100);
+  if (unit === 'AUTO') return { value: 1, unit: 'auto' };
+  const number = Number(metric.value);
+  if (!Number.isFinite(number) || number <= 0) return { value: fallbackValue, unit: fallbackUnit };
+  if (unit === 'PIXELS' || unit === 'PX') return { value: finite(number, fallbackValue, 0.01, 100_000), unit: 'pixels' };
+  if (unit === 'PERCENT' || unit === 'PERCENTAGE') return { value: finite(number, fallbackValue, 0.01, 100_000), unit: 'percent' };
+  return { value: finite(number, fallbackValue, 0.01, 100), unit: 'ratio' };
 }
 
 function figTextLetterSpacing(value, fontSize, fallback = 0) {
@@ -361,8 +361,11 @@ function textRunStyleOverrides(style, base, context, name) {
 
   const sizeForMetrics = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : base.fontSize;
   if (style.lineHeight != null) {
-    const value = figTextLineHeight(style.lineHeight, sizeForMetrics, base.lineHeight);
-    if (value !== base.lineHeight) result.lineHeight = value;
+    const metric = figTextLineHeight(style.lineHeight, base.lineHeight, base.lineHeightUnit || 'ratio');
+    if (metric.value !== base.lineHeight || metric.unit !== (base.lineHeightUnit || 'ratio')) {
+      result.lineHeight = metric.value;
+      result.lineHeightUnit = metric.unit;
+    }
   }
   if (style.letterSpacing != null) {
     const value = figTextLetterSpacing(style.letterSpacing, sizeForMetrics, base.letterSpacing);
@@ -476,7 +479,7 @@ function textProperties(source, context) {
   const fontFamily = safeName(style.fontFamily || style.fontName?.family || source.fontName?.family || source.fontFamily, 'Arial, sans-serif').slice(0, 160);
   const fontSize = finite(style.fontSize ?? source.fontSize, 24, 1, 100_000);
   const fontWeight = finite(style.fontWeight ?? source.fontWeight, inferredTextWeight(namedStyle), 1, 1000);
-  const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight, fontSize);
+  const lineHeight = figTextLineHeight(style.lineHeight ?? source.lineHeight);
   const letterSpacing = figTextLetterSpacing(style.letterSpacing ?? source.letterSpacing, fontSize);
   const verticalAlign = ({ TOP: 'top', CENTER: 'middle', BOTTOM: 'bottom' })[String(source.textAlignVertical || '').toUpperCase()] || 'top';
   const textFit = ({ HEIGHT: 'auto-height', WIDTH_AND_HEIGHT: 'auto-width', NONE: 'fixed', TRUNCATE: 'fixed' })[String(source.textAutoResize || '').toUpperCase()] || 'fixed';
@@ -490,7 +493,8 @@ function textProperties(source, context) {
     fontSize,
     fontWeight,
     fontStyle: style.italic === true || source.italic === true || String(style.fontStyle || '').toUpperCase() === 'ITALIC' || /italic/iu.test(String(style.italic || source.italic || namedStyle)) ? 'italic' : 'normal',
-    lineHeight,
+    lineHeight: lineHeight.value,
+    lineHeightUnit: lineHeight.unit,
     letterSpacing,
     color,
     align: ({ LEFT: 'left', CENTER: 'center', RIGHT: 'right', JUSTIFIED: 'justify' })[String(source.textAlignHorizontal || '').toUpperCase()] || 'left',
