@@ -1,4 +1,4 @@
-import { cloneDocument, removeNode, validateDocument } from './model.js';
+import { cloneDocument, removeInheritedSlotNodes, removeNode, validateDocument } from './model.js';
 
 /** Prefer the focused layer when keyboard focus moved away from the current selection. */
 export function layerDeleteTargets(selectedIds, focusedLayerId) {
@@ -18,7 +18,9 @@ export function removeLayersAtomically(document, nodeIds, pageId = document.acti
   if (!ids.length) return { document, removedIds: [] };
 
   const nextDocument = cloneDocument(document);
+  const slotRemovedIds = removeInheritedSlotNodes(nextDocument, ids, pageId);
   for (const nodeId of ids) {
+    if (slotRemovedIds.has(nodeId)) continue;
     if (!removeNode(nextDocument, nodeId, pageId)) {
       throw new Error('One of the selected layers no longer exists.');
     }

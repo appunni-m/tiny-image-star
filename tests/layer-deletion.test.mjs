@@ -106,24 +106,75 @@ test('deleting a mask source from a component instance remains deleted after com
   assert.equal(reloadedInstanceGroup.children.some(child => child.type === 'rectangle'), true);
 });
 
-test('a blocked slot-layer deletion leaves every selected layer intact', () => {
+test('deleting inherited component-slot content creates an override and preserves unselected content', () => {
   const document = createDocument();
   const removable = createNode('rectangle', { name: 'Ordinary layer' });
   const card = createNode('frame', { name: 'Card' });
   const slot = createNode('frame', { name: 'Content' });
-  const inherited = createNode('rectangle', { name: 'Inherited content' });
+  const inherited = createNode('frame', { name: 'Inherited container' });
+  const inheritedChild = createNode('rectangle', { name: 'Inherited content' });
+  const sibling = createNode('ellipse', { name: 'Keep this content' });
   addNode(document, removable);
   addNode(document, card);
   addNode(document, slot, { parentId: card.id });
   addNode(document, inherited, { parentId: slot.id });
+  addNode(document, inheritedChild, { parentId: inherited.id });
+  addNode(document, sibling, { parentId: slot.id });
   const component = createComponent(document, card.id, 'Card');
-  createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
   const instance = createComponentInstance(document, component.id);
-  const inheritedInstanceLayer = instance.children[0].children[0];
+  const inheritedInstanceLayer = instance.children[0].children[0].children[0];
+  const originalInheritedInstanceId = inheritedInstanceLayer.id;
 
-  assert.throws(() => removeLayersAtomically(document, [removable.id, inheritedInstanceLayer.id]), /Set a slot override before editing it/);
-  assert.ok(findNode(document, removable.id), 'the ordinary selection must not be partially deleted');
-  assert.ok(findNode(document, inheritedInstanceLayer.id), 'the protected slot layer remains intact');
+  const result = removeLayersAtomically(document, [removable.id, inheritedInstanceLayer.id]);
+  const updatedInstance = findNode(result.document, instance.id).node;
+  const updatedSlot = findNode(result.document, instance.children[0].id).node;
+
+  assert.equal(findNode(result.document, removable.id), null, 'a mixed selection still deletes ordinary layers');
+  assert.equal(findNode(result.document, originalInheritedInstanceId), null, 'the requested inherited layer is removed');
+  assert.deepEqual(updatedSlot.children[0].children, [], 'the inherited container remains, with its selected child removed');
+  assert.equal(updatedSlot.children[0].name, 'Inherited container');
+  assert.equal(updatedSlot.children[1].name, 'Keep this content', 'unselected slot content is retained');
+  assert.ok(updatedInstance.componentPropertyValues[property.id], 'the instance now owns an explicit slot override');
+  assert.deepEqual(updatedInstance.componentPropertyValues[property.id], updatedSlot.children.map(node => node.id));
+  assert.ok(findNode(document, removable.id), 'the source document remains untouched until the atomic delete is installed');
+  assert.ok(findNode(document, originalInheritedInstanceId), 'the source instance remains untouched');
+  assert.equal(validateDocument(result.document), true);
+
+  syncAllComponentInstances(result.document);
+  const reloaded = parseDocument(serializeDocument(result.document));
+  syncAllComponentInstances(reloaded);
+  assert.deepEqual(findNode(reloaded, instance.children[0].id).node.children[0].children, [], 'the local deletion survives sync and reload');
+  assert.equal(findNode(reloaded, instance.children[0].id).node.children[1].name, 'Keep this content');
+});
+
+test('deleting the last inherited slot layer persists an explicit empty override', () => {
+  const document = createDocument();
+  const card = createNode('frame', { name: 'Card' });
+  const slot = createNode('frame', { name: 'Content' });
+  const inherited = createNode('rectangle', { name: 'Default content' });
+  addNode(document, card);
+  addNode(document, slot, { parentId: card.id });
+  addNode(document, inherited, { parentId: slot.id });
+  const component = createComponent(document, card.id, 'Card');
+  const property = createComponentProperty(document, component.id, { name: 'Content', type: 'SLOT', targetNodeId: slot.id });
+  const instance = createComponentInstance(document, component.id);
+  const instanceSlot = instance.children[0];
+  const inheritedInstanceLayerId = instanceSlot.children[0].id;
+
+  const result = removeLayersAtomically(document, [inheritedInstanceLayerId]);
+  const updatedInstance = findNode(result.document, instance.id).node;
+  const updatedSlot = findNode(result.document, instanceSlot.id).node;
+
+  assert.deepEqual(updatedSlot.children, []);
+  assert.deepEqual(updatedInstance.componentPropertyValues[property.id], [], 'empty content remains an explicit override');
+  assert.equal(findNode(result.document, inheritedInstanceLayerId), null);
+  assert.equal(validateDocument(result.document), true);
+
+  syncAllComponentInstances(result.document);
+  const reloaded = parseDocument(serializeDocument(result.document));
+  syncAllComponentInstances(reloaded);
+  assert.deepEqual(findNode(reloaded, instanceSlot.id).node.children, [], 'the default layer stays deleted after sync and reload');
 });
 
 test('deleting a selected slot override remains supported', () => {

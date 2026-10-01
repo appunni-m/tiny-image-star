@@ -2325,6 +2325,74 @@ export function setComponentSlotContent(document, instanceId, propertyId, nodes,
   return content;
 }
 
+/** Promote inherited slot content to an instance override while deleting selected descendants. */
+export function removeInheritedSlotNodes(document, nodeIds, pageId = document.activePageId) {
+  const selectedIds = [...new Set(nodeIds)];
+  const groups = new Map();
+  for (const nodeId of selectedIds) {
+    const entry = findNode(document, nodeId, pageId);
+    const context = entry && componentSlotMutationContext(document, entry);
+    if (!context || context.overridden || entry.node === context.target) continue;
+    const key = `${context.instance.id}\u0000${context.property.id}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { instanceId: context.instance.id, propertyId: context.property.id, targetDepth: context.targetDepth, nodeIds: [] };
+      groups.set(key, group);
+    }
+    group.nodeIds.push(nodeId);
+  }
+
+  const handledIds = new Set();
+  const orderedGroups = [...groups.values()].sort((left, right) => right.targetDepth - left.targetDepth);
+  for (const group of orderedGroups) {
+    const entry = group.nodeIds.map(nodeId => findNode(document, nodeId, pageId)).find(Boolean);
+    const context = entry && componentSlotMutationContext(document, entry);
+    if (!context || context.overridden
+      || context.instance.id !== group.instanceId || context.property.id !== group.propertyId) continue;
+
+    const groupSelectedIds = new Set(group.nodeIds);
+    const removedNodeIds = new Set();
+    const originalNodeIds = new Set();
+    walkNodes(context.target.children || [], ({ node }) => originalNodeIds.add(node.id));
+    const content = clone(context.target.children || []);
+    const pruneSelected = nodes => nodes.filter(node => {
+      if (groupSelectedIds.has(node.id)) {
+        walkNodes([node], ({ node: removed }) => removedNodeIds.add(removed.id));
+        return false;
+      }
+      if (Array.isArray(node.children)) node.children = pruneSelected(node.children);
+      return true;
+    });
+    const nextContent = pruneSelected(content);
+    const matchedSelection = group.nodeIds.filter(nodeId => removedNodeIds.has(nodeId));
+    if (!matchedSelection.length) continue;
+
+    // Slot replacement assigns fresh IDs to every retained layer. Clear links
+    // that still point into the replaced tree before validating the new copy.
+    removePrototypeInteractionsUsingNodes(document, originalNodeIds);
+    if (document.motion?.tracks?.length) {
+      document.motion.tracks = document.motion.tracks.filter(track => !originalNodeIds.has(track.nodeId));
+    }
+    if (Array.isArray(document.prototypeFlows)) {
+      document.prototypeFlows = document.prototypeFlows.filter(flow => !(flow.pageId === pageId && originalNodeIds.has(flow.nodeId)));
+      const selectedFlow = document.prototypeFlows.find(flow => flow.id === document.prototypeStartFlowId)
+        || document.prototypeFlows[0]
+        || null;
+      document.prototypeStartFlowId = selectedFlow?.id ?? null;
+      if (selectedFlow) {
+        document.prototypeStartPoint = { pageId: selectedFlow.pageId, nodeId: selectedFlow.nodeId };
+      } else if (document.prototypeStartPoint?.pageId === pageId && originalNodeIds.has(document.prototypeStartPoint.nodeId)) {
+        document.prototypeStartPoint = null;
+      }
+    } else if (document.prototypeStartPoint?.pageId === pageId && originalNodeIds.has(document.prototypeStartPoint.nodeId)) {
+      document.prototypeStartPoint = null;
+    }
+    setComponentSlotContent(document, group.instanceId, group.propertyId, nextContent, pageId);
+    for (const nodeId of matchedSelection) handledIds.add(nodeId);
+  }
+  return handledIds;
+}
+
 /** Restore a component instance's slot to the current main-component children. */
 export function resetComponentSlotContent(document, instanceId, propertyId, pageId = document.activePageId) {
   const instance = findNode(document, instanceId, pageId)?.node;
