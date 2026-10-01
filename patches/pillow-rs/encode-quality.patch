@@ -1,8 +1,8 @@
 diff --git a/pillow-rs-js/src/lib.rs b/pillow-rs-js/src/lib.rs
-index a2e603b..ca90f6f 100644
+index 396e0af..c726e96 100644
 --- a/pillow-rs-js/src/lib.rs
 +++ b/pillow-rs-js/src/lib.rs
-@@ -3886,6 +3886,23 @@ impl Image {
+@@ -3835,6 +3835,23 @@ impl Image {
          self.inner.encode(&resolved).map_err(err)
      }
  
@@ -27,10 +27,10 @@ index a2e603b..ca90f6f 100644
      fn encode_png(img: &mut RsImage) -> Result<Vec<u8>, JsValue> {
          img.to_png_bytes()
 diff --git a/pillow-rs/src/image.rs b/pillow-rs/src/image.rs
-index 4ef4834..586c305 100644
+index 9d62b1a..4ec5630 100644
 --- a/pillow-rs/src/image.rs
 +++ b/pillow-rs/src/image.rs
-@@ -29,7 +29,8 @@
+@@ -29,6 +29,7 @@
  //! [`Image::tobytes`] forces decoding and pipeline execution.
  
  use image_slash_star::{
@@ -38,9 +38,8 @@ index 4ef4834..586c305 100644
 +    Decoded, DecodedImage, EncodeOptions, EncodedImage, ImageFormat, ImageInfo, ImageMode,
 +    ImagePalette,
  };
- use std::borrow::Cow;
  use std::sync::{Arc, OnceLock};
-@@ -3997,9 +3998,43 @@ impl Image {
+@@ -3351,9 +3352,43 @@ impl Image {
      /// Returns [`PilError`] when the format is unsupported or image
      /// materialization or encoding fails.
      pub fn encode(&self, format: &str) -> Result<Vec<u8>, PilError> {
@@ -84,7 +83,7 @@ index 4ef4834..586c305 100644
          // Pillow's encoders reject unsupported mode/format combinations with
          // an OSError naming both; replicate the public messages exactly.
          let rejection = match upper_format.as_str() {
-@@ -4017,7 +4052,7 @@ impl Image {
+@@ -3371,7 +3406,7 @@ impl Image {
              return self.to_png_bytes();
          }
          let decoded = self.decoded_for_encoding()?;
@@ -93,36 +92,3 @@ index 4ef4834..586c305 100644
      }
  
      /// Resolves Pillow's explicit save format or a host-supplied path
-@@ -7454,3 +7489,32 @@ mod compatibility_info_tests {
-         Ok(())
-     }
- }
-+
-+#[cfg(test)]
-+mod quality_encode_tests {
-+    use super::{Image, PilError};
-+
-+    #[test]
-+    fn jpeg_and_webp_quality_change_encoded_bytes() -> Result<(), PilError> {
-+        let pixels: Vec<u8> = (0..128 * 128 * 3)
-+            .map(|index| ((index * 73 + index / 11 * 29) % 256) as u8)
-+            .collect();
-+        let image = Image::frombytes("RGB", (128, 128), &pixels)?;
-+
-+        for format in ["JPEG", "WEBP"] {
-+            let low = image.encode_with_quality(format, Some(20))?;
-+            let high = image.encode_with_quality(format, Some(90))?;
-+            assert_ne!(low, high, "{format} must apply the requested quality");
-+        }
-+        Ok(())
-+    }
-+
-+    #[test]
-+    fn encode_quality_rejects_unsupported_formats_and_ranges() -> Result<(), PilError> {
-+        let image = Image::new(2, 2, "RGB", (40, 80, 120, 255))?;
-+        assert!(image.encode_with_quality("PNG", Some(80)).is_err());
-+        assert!(image.encode_with_quality("JPEG", Some(101)).is_err());
-+        assert!(image.encode_with_quality("PNG", None).is_ok());
-+        Ok(())
-+    }
-+}

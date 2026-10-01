@@ -60,10 +60,9 @@ const runtime = JSON.parse(await readFile(resolve(root, 'wasm/runtime.json'), 'u
 const runtimeBuilder = await readFile(resolve(root, 'scripts/build-pillow-runtime.mjs'), 'utf8');
 const readme = await readFile(resolve(root, 'README.md'), 'utf8');
 assert.equal(runtime.package, 'pillow-rs');
-assert.match(runtime.version, /^12\./);
+assert.equal(runtime.version, '0.1.3');
 assert.match(runtime.sourceCommit, /^[a-f0-9]{40}$/);
-assert.equal(runtime.sourceRef, 'v12.2.0-alpha.5');
-assert.equal(runtime.version, '12.2.0-alpha.5');
+assert.equal(runtime.sourceRef, 'v0.1.3');
 assert.equal(runtime.sourceRef, runtimeBuilder.match(/const sourceRef = '([^']+)';/)?.[1],
   'the vendored runtime must name the exact upstream Pillow-RS tag pinned by the build script');
 assert.equal(runtime.sourceCommit, runtimeBuilder.match(/const sourceCommit = '([a-f0-9]{40})';/)?.[1],
