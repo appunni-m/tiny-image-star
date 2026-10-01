@@ -136,7 +136,7 @@ test('both editor tab lists declare their panels and install keyboard navigation
   assert.match(indexHtml, /id="sidebar-tab-assets"[^>]*aria-controls="assets-section"[^>]*aria-selected="false"[^>]*tabindex="-1"/);
   assert.match(indexHtml, /id="layers-section"[^>]*role="tabpanel"[^>]*aria-labelledby="sidebar-tab-layers"/);
   assert.match(indexHtml, /id="assets-section"[^>]*role="tabpanel"[^>]*aria-labelledby="sidebar-tab-assets"/);
-  for (const tab of ['design', 'prototype', 'inspect', 'comments']) {
+  for (const tab of ['design', 'prototype', 'inspect', 'comments', 'motion']) {
     assert.match(indexHtml, new RegExp(`id="inspector-tab-${tab}"[^>]*aria-controls="inspector-content"`));
   }
   assert.match(indexHtml, /id="inspector-content"[^>]*role="tabpanel"[^>]*aria-labelledby="inspector-tab-design"/);

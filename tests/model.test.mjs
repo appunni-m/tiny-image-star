@@ -9,6 +9,49 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(document.pages.length, 1);
   assert.equal(document.pages[0].id, document.activePageId);
   assert.deepEqual(document.pages[0].guides, []);
+  assert.deepEqual(document.motion, { durationMs: 1000, tracks: [] });
+  assert.equal(validateDocument(document), true);
+});
+
+test('motion tracks persist with a design, validate their layer references, and migrate older files', () => {
+  const document = createDocument();
+  const node = createNode('rectangle');
+  addNode(document, node);
+  document.motion.tracks.push({
+    id: 'motion-x', nodeId: node.id, property: 'x',
+    keyframes: [
+      { id: 'motion-x-start', timeMs: 0, value: 0, easing: 'ease-in-out' },
+      { id: 'motion-x-end', timeMs: 1000, value: 240, easing: 'linear' }
+    ]
+  });
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.motion, document.motion);
+  assert.equal(validateDocument(reopened), true);
+
+  const legacy = structuredClone(document);
+  delete legacy.motion;
+  assert.deepEqual(parseDocument(legacy).motion, { durationMs: 1000, tracks: [] });
+
+  const missingTarget = structuredClone(document);
+  missingTarget.motion.tracks[0].nodeId = 'deleted-layer';
+  assert.throws(() => validateDocument(missingTarget), /motion document: track references missing node/);
+  const duplicateTarget = structuredClone(document);
+  duplicateTarget.motion.tracks.push({ ...structuredClone(duplicateTarget.motion.tracks[0]), id: 'motion-x-copy' });
+  assert.throws(() => validateDocument(duplicateTarget), /node\/property pair can have only one track/);
+});
+
+test('removing a layer also removes motion tracks for the layer and its descendants', () => {
+  const document = createDocument();
+  const group = createNode('group');
+  const child = createNode('rectangle');
+  group.children.push(child);
+  addNode(document, group);
+  document.motion.tracks.push(
+    { id: 'motion-parent', nodeId: group.id, property: 'x', keyframes: [] },
+    { id: 'motion-child', nodeId: child.id, property: 'opacity', keyframes: [] }
+  );
+  removeNode(document, group.id);
+  assert.deepEqual(document.motion.tracks, []);
   assert.equal(validateDocument(document), true);
 });
 

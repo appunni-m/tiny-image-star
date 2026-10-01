@@ -9,6 +9,7 @@ import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidImageLibraryManifest } from './image-asset-library.js';
+import { createMotionDocument, validateMotion } from './motion.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -177,6 +178,7 @@ export function createDocument() {
     variableCollections: [],
     variables: [],
     comments: [],
+    motion: createMotionDocument(),
     prototypeStartPoint: null,
     prototypeFlows: [],
     prototypeStartFlowId: null,
@@ -626,6 +628,9 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
     if (node.isComponent && node.componentId) removedComponents.push(node.componentId);
   });
   removePrototypeInteractionsUsingNodes(document, removedNodeIds);
+  if (document.motion?.tracks?.length) {
+    document.motion.tracks = document.motion.tracks.filter(track => !removedNodeIds.has(track.nodeId));
+  }
   if (Array.isArray(document.prototypeFlows)) {
     document.prototypeFlows = document.prototypeFlows.filter(flow => !(flow.pageId === pageId && removedNodeIds.has(flow.nodeId)));
     const selectedFlow = document.prototypeFlows.find(flow => flow.id === document.prototypeStartFlowId)
@@ -3243,6 +3248,7 @@ export function validateDocument(document) {
       if (node.componentPropertyValues != null && (!node.isInstance || typeof node.componentPropertyValues !== 'object' || Array.isArray(node.componentPropertyValues))) throw new TypeError(`Invalid component property values on ${node.name || node.id}.`);
     });
   }
+  if (Object.hasOwn(document, 'motion')) validateMotion(document.motion, { nodeIds });
   if (hasInvalidPrototypeScrollTargets(document)) throw new TypeError('Prototype scroll-to interactions must target a layer inside a scrollable frame on the same prototype screen.');
   if (!pageIds.has(document.activePageId)) throw new TypeError('The active page does not exist.');
   if (document.prototypeFlows != null) {
@@ -3575,6 +3581,9 @@ export function parseDocument(json) {
   // Image libraries were added after the initial local document format. Older
   // designs and packages have no manifest; promote them to an empty library.
   if (!Object.hasOwn(document, 'imageLibrary')) document.imageLibrary = [];
+  // Motion is an optional addition to the local design format. Older files
+  // open with an empty, editable timeline and are upgraded on their next save.
+  if (document.motion == null) document.motion = createMotionDocument();
   // Older local files stored only one prototypeStartPoint. Promote that entry to
   // the named-flow model while retaining the legacy field for older readers.
   if (!Array.isArray(document.prototypeFlows)) document.prototypeFlows = [];

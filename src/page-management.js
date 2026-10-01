@@ -99,6 +99,9 @@ export function deletePage(document, pageId) {
     collect(node.children || []);
   });
   collect(document.pages[index].children || []);
+  if (document.motion?.tracks?.length) {
+    document.motion.tracks = document.motion.tracks.filter(track => !removedNodeIds.has(track.nodeId));
+  }
   document.pages.splice(index, 1);
   document.comments = (document.comments || []).filter(comment => comment.pageId !== pageId);
   for (const page of document.pages) {

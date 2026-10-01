@@ -55,6 +55,7 @@ import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage,
 import { applyFrameConstraints, captureChildGeometry, horizontalConstraints, verticalConstraints } from './constraints.js';
 import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js';
 import { applyAppearance, snapshotAppearance } from './appearance-clipboard.js';
+import { createMotionSampler, orderedMotionKeyframes } from './motion.js';
 import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirection, moveLayerOneVisualRow } from './layer-order.js';
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
@@ -133,7 +134,8 @@ const state = {
   componentSlotDialog: null,
   prototypeOverlayPosition: 'center', prototypeOverlayOutsideClick: true, prototypeOverlayBackground: true,
   prototypeOverlayBackgroundColor: '#000000', prototypeOverlayBackgroundOpacity: 0.32,
-  presenting: null
+  presenting: null,
+  motionPreview: null, motionPlayheadMs: 0, motionPlaying: false
 };
 const history = new History(120);
 const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRetainedImageMemoryBudget() });
@@ -165,6 +167,13 @@ const presentationDragThreshold = 7;
 let textMeasureContext = null;
 let pendingFontImport = null;
 let pendingFigImport = null;
+let motionAnimationFrame = 0;
+let motionPlaybackStartAt = 0;
+let motionPlaybackStartMs = 0;
+let motionPlaybackDocument = null;
+let motionSamplerSource = null;
+let motionSampler = null;
+const emptyMotionDocument = { durationMs: 1000, tracks: [] };
 let gradientStopDrag = null;
 
 function activePage() { return getActivePage(state.document); }
@@ -2299,8 +2308,233 @@ function commentPanel() {
   return `<div class="comments-panel"><header class="comments-panel-header"><div><strong>Review notes</strong><span>Stored locally with this design</span></div><button class="comment-new-button" data-comment-action="new">＋ Comment</button></header>${newDraft}${empty}<div class="comment-thread-list">${rows}</div>${overflow}</div>`;
 }
 
+const motionPropertyLabels = { x: 'X position', y: 'Y position', rotation: 'Rotation', opacity: 'Opacity' };
+const motionEasingOptions = [['linear', 'Linear'], ['ease-in', 'Ease in'], ['ease-out', 'Ease out'], ['ease-in-out', 'Ease in and out']];
+function motionDuration() { return state.document.motion?.durationMs || 1000; }
+function motionTracksForSelectedNode(nodeId = selectedNodes().length === 1 ? selectedNodes()[0].id : null) {
+  return nodeId ? (state.document.motion?.tracks || []).filter(track => track.nodeId === nodeId) : [];
+}
+function motionTimeLabel(timeMs) { return `${(Math.max(0, timeMs) / 1000).toFixed(2)} s`; }
+function refreshMotionPreview() {
+  if (state.inspectorTab !== 'motion' && !state.motionPlaying) {
+    state.motionPreview = null;
+    return;
+  }
+  const motion = state.document.motion || emptyMotionDocument;
+  if (motionSamplerSource !== motion) {
+    motionSamplerSource = motion;
+    motionSampler = createMotionSampler(motion);
+  }
+  const preview = motionSampler(state.motionPlayheadMs);
+  state.motionPreview = preview.size ? preview : null;
+}
+function syncMotionPlayheadControls() {
+  const scrubber = $('#motion-playhead');
+  if (scrubber) scrubber.value = String(Math.round(state.motionPlayheadMs));
+  const readout = $('#motion-time-readout');
+  if (readout) readout.textContent = `${motionTimeLabel(state.motionPlayheadMs)} / ${motionTimeLabel(motionDuration())}`;
+  const play = $('#motion-play');
+  if (play) {
+    play.textContent = state.motionPlaying ? 'Pause' : 'Play';
+    play.setAttribute('aria-label', state.motionPlaying ? 'Pause motion preview' : 'Play motion preview');
+    play.setAttribute('aria-pressed', String(state.motionPlaying));
+  }
+}
+function setMotionPlayhead(value) {
+  if (state.motionPlaying) stopMotionPlayback();
+  const duration = motionDuration();
+  const time = Number(value);
+  if (!Number.isFinite(time)) return;
+  state.motionPlayheadMs = Math.max(0, Math.min(duration, Math.round(time)));
+  refreshMotionPreview();
+  syncMotionPlayheadControls();
+  renderer?.invalidate();
+}
+function motionPlaybackFrame(timestamp) {
+  if (!state.motionPlaying) return;
+  if (state.document !== motionPlaybackDocument) {
+    stopMotionPlayback({ clearPreview: true });
+    return;
+  }
+  const elapsed = Math.max(0, timestamp - motionPlaybackStartAt);
+  const duration = motionDuration();
+  state.motionPlayheadMs = Math.min(duration, motionPlaybackStartMs + elapsed);
+  refreshMotionPreview();
+  syncMotionPlayheadControls();
+  renderer?.invalidate();
+  if (state.motionPlayheadMs >= duration) {
+    state.motionPlaying = false;
+    motionAnimationFrame = 0;
+    syncMotionPlayheadControls();
+    return;
+  }
+  motionAnimationFrame = requestAnimationFrame(motionPlaybackFrame);
+}
+function stopMotionPlayback({ clearPreview = false } = {}) {
+  if (motionAnimationFrame) cancelAnimationFrame(motionAnimationFrame);
+  motionAnimationFrame = 0;
+  state.motionPlaying = false;
+  if (clearPreview) state.motionPreview = null;
+  else refreshMotionPreview();
+  syncMotionPlayheadControls();
+  renderer?.invalidate();
+}
+function toggleMotionPlayback() {
+  if (state.motionPlaying) { stopMotionPlayback(); return; }
+  const tracks = state.document.motion?.tracks || [];
+  if (!tracks.some(track => track.keyframes?.length > 1)) {
+    showToast('Add a motion track with at least two keyframes before previewing it.');
+    return;
+  }
+  if (state.motionPlayheadMs >= motionDuration()) state.motionPlayheadMs = 0;
+  state.motionPlaying = true;
+  motionPlaybackDocument = state.document;
+  motionPlaybackStartAt = performance.now();
+  motionPlaybackStartMs = state.motionPlayheadMs;
+  refreshMotionPreview();
+  syncMotionPlayheadControls();
+  motionAnimationFrame = requestAnimationFrame(motionPlaybackFrame);
+}
+function mutateMotion(label, update) {
+  if (state.motionPlaying) stopMotionPlayback();
+  const candidate = structuredClone(state.document.motion || { durationMs: 1000, tracks: [] });
+  try {
+    update(candidate);
+    validateDocument({ ...state.document, motion: candidate });
+  } catch (error) {
+    renderInspector();
+    showToast(error.message || 'That motion edit is not valid.');
+    return false;
+  }
+  if (JSON.stringify(candidate) === JSON.stringify(state.document.motion)) return false;
+  checkpoint(label);
+  state.document.motion = candidate;
+  state.motionPlayheadMs = Math.min(state.motionPlayheadMs, candidate.durationMs);
+  refreshMotionPreview();
+  renderInspector();
+  queueSave();
+  renderer?.invalidate();
+  return true;
+}
+function addMotionTrack() {
+  const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
+  const property = $('#motion-property')?.value;
+  if (!node || node.locked || !motionPropertyLabels[property]) return;
+  if (motionTracksForSelectedNode(node.id).some(track => track.property === property)) {
+    showToast(`A ${motionPropertyLabels[property].toLowerCase()} track already exists for this layer.`);
+    return;
+  }
+  const rawValue = Number(getNodePropertyValue(state.document, node, property));
+  const value = Number.isFinite(rawValue) ? rawValue : property === 'opacity' ? 1 : 0;
+  const duration = motionDuration();
+  mutateMotion(`Animate ${motionPropertyLabels[property].toLowerCase()}`, motion => {
+    motion.tracks.push({
+      id: createId('motion-track'), nodeId: node.id, property,
+      keyframes: [
+        { id: createId('keyframe'), timeMs: 0, value, easing: 'ease-in-out' },
+        { id: createId('keyframe'), timeMs: duration, value, easing: 'ease-in-out' }
+      ]
+    });
+  });
+}
+function addMotionKeyframe(trackId) {
+  const track = state.document.motion?.tracks.find(item => item.id === trackId);
+  const node = track && findNode(state.document, track.nodeId)?.node;
+  if (!track || !node) return;
+  const timeMs = Math.max(0, Math.min(motionDuration(), Math.round(state.motionPlayheadMs)));
+  const rawValue = Number(getNodePropertyValue(state.document, node, track.property));
+  const value = Number.isFinite(rawValue) ? rawValue : 0;
+  mutateMotion(`Add ${motionPropertyLabels[track.property]} keyframe`, motion => {
+    const target = motion.tracks.find(item => item.id === trackId);
+    const existing = target?.keyframes.find(frame => frame.timeMs === timeMs);
+    if (existing) existing.value = value;
+    else target?.keyframes.push({ id: createId('keyframe'), timeMs, value, easing: 'ease-in-out' });
+  });
+}
+function updateMotionKeyframeField(field) {
+  const { trackId, keyframeId, motionField, motionProperty } = field.dataset;
+  const value = motionField === 'value'
+    ? Number(field.value) / (motionProperty === 'opacity' ? 100 : 1)
+    : motionField === 'timeMs' ? Number(field.value) : field.value;
+  if (motionField !== 'easing' && !Number.isFinite(value)) {
+    renderInspector();
+    showToast('Enter a finite keyframe value.');
+    return;
+  }
+  mutateMotion('Edit motion keyframe', motion => {
+    const keyframe = motion.tracks.find(track => track.id === trackId)?.keyframes.find(item => item.id === keyframeId);
+    if (!keyframe) throw new Error('That keyframe no longer exists.');
+    if (motionField === 'timeMs') keyframe.timeMs = Math.round(value);
+    else if (motionField === 'value') keyframe.value = value;
+    else if (motionField === 'easing') keyframe.easing = value;
+    else throw new Error('That keyframe field is not supported.');
+  });
+}
+function updateMotionDuration(input) {
+  const duration = Number(input.value);
+  if (!Number.isSafeInteger(duration) || duration < 1) {
+    renderInspector();
+    showToast('Motion duration must be a positive whole number of milliseconds.');
+    return;
+  }
+  if (state.motionPlaying) stopMotionPlayback();
+  mutateMotion('Change motion duration', motion => {
+    const lastKeyframe = Math.max(0, ...motion.tracks.flatMap(track => track.keyframes.map(frame => frame.timeMs)));
+    if (duration < lastKeyframe) throw new Error('Move or remove keyframes beyond this time before shortening the motion duration.');
+    motion.durationMs = duration;
+  });
+}
+function handleMotionAction(button) {
+  const action = button.dataset.motionAction;
+  if (action === 'play') { toggleMotionPlayback(); return; }
+  if (action === 'add-track') { addMotionTrack(); return; }
+  if (action === 'add-keyframe') { addMotionKeyframe(button.dataset.trackId); return; }
+  if (action === 'jump-keyframe') { setMotionPlayhead(button.dataset.timeMs); return; }
+  if (action === 'remove-track') {
+    mutateMotion('Remove motion track', motion => { motion.tracks = motion.tracks.filter(track => track.id !== button.dataset.trackId); });
+    return;
+  }
+  if (action === 'remove-keyframe') {
+    mutateMotion('Remove motion keyframe', motion => {
+      const track = motion.tracks.find(item => item.id === button.dataset.trackId);
+      if (track) track.keyframes = track.keyframes.filter(frame => frame.id !== button.dataset.keyframeId);
+    });
+  }
+}
+function motionInspector() {
+  const selected = selectedNodes();
+  const node = selected.length === 1 ? selected[0] : null;
+  const motion = state.document.motion || { durationMs: 1000, tracks: [] };
+  const duration = motion.durationMs || 1000;
+  const tracks = motionTracksForSelectedNode(node?.id);
+  const trackedProperties = new Set(tracks.map(track => track.property));
+  const propertyOptions = Object.entries(motionPropertyLabels).map(([property, label]) =>
+    `<option value="${property}"${trackedProperties.has(property) ? ' disabled' : ''}>${label}${trackedProperties.has(property) ? ' · added' : ''}</option>`).join('');
+  const trackMarkup = tracks.map(track => {
+    const keyframes = orderedMotionKeyframes(track);
+    const markers = keyframes.map(frame => {
+      const position = duration > 0 ? Math.max(0, Math.min(100, frame.timeMs / duration * 100)) : 0;
+      return `<button class="motion-keyframe-marker" type="button" style="left:${position}%" data-motion-action="jump-keyframe" data-time-ms="${frame.timeMs}" aria-label="Move playhead to ${motionTimeLabel(frame.timeMs)}"></button>`;
+    }).join('');
+    const rows = keyframes.map(frame => {
+      const displayValue = track.property === 'opacity' ? Math.round(frame.value * 100) : frame.value;
+      const valueMin = track.property === 'opacity' ? ' min="0" max="100" step="1"' : '';
+      const valueStep = track.property === 'opacity' ? '1' : '0.1';
+      const easingOptions = motionEasingOptions.map(([value, label]) => `<option value="${value}"${(frame.easing || 'linear') === value ? ' selected' : ''}>${label}</option>`).join('');
+      return `<div class="motion-keyframe-row"><label><span>Time</span><input type="number" min="0" max="${duration}" step="10" value="${frame.timeMs}" data-motion-field="timeMs" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} keyframe time in milliseconds" /></label><label><span>${track.property === 'opacity' ? 'Opacity' : 'Value'}</span><input type="number"${valueMin} step="${valueStep}" value="${displayValue}" data-motion-field="value" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="${motionPropertyLabels[track.property]} value at ${motionTimeLabel(frame.timeMs)}" /></label><label class="motion-easing-field"><span>Ease to next</span><select data-motion-field="easing" data-motion-property="${track.property}" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Easing after ${motionTimeLabel(frame.timeMs)}">${easingOptions}</select></label><button class="tiny-icon-button motion-remove-keyframe" type="button" data-motion-action="remove-keyframe" data-track-id="${escapeHtml(track.id)}" data-keyframe-id="${escapeHtml(frame.id)}" aria-label="Remove keyframe at ${motionTimeLabel(frame.timeMs)}" title="Remove keyframe">×</button></div>`;
+    }).join('');
+    return `<section class="motion-track-card"><header><strong>${escapeHtml(motionPropertyLabels[track.property] || track.property)}</strong><button class="tiny-icon-button" type="button" data-motion-action="remove-track" data-track-id="${escapeHtml(track.id)}" aria-label="Remove ${escapeHtml(motionPropertyLabels[track.property] || track.property)} track" title="Remove track">×</button></header><div class="motion-track-lane" aria-label="${escapeHtml(motionPropertyLabels[track.property] || track.property)} keyframes">${markers}</div><div class="motion-keyframe-list">${rows || '<p class="motion-empty-keyframes">No keyframes yet. Move the playhead, then add one.</p>'}</div><button class="secondary-button motion-add-keyframe" type="button" data-motion-action="add-keyframe" data-track-id="${escapeHtml(track.id)}">＋ Add keyframe at playhead</button></section>`;
+  }).join('');
+  const selectionCopy = !node ? '<p class="motion-empty">Select one layer in the Layers panel to animate its position, rotation, or opacity.</p>'
+    : node.locked ? '<p class="motion-empty">Unlock this layer before adding motion tracks.</p>'
+      : '';
+  return `<div class="motion-panel"><section class="motion-section"><div class="motion-panel-heading"><div><span class="motion-eyebrow">TIMELINE</span><strong>${node ? escapeHtml(node.name || 'Selected layer') : 'Design motion'}</strong></div><label class="motion-duration-field"><span>Duration</span><input id="motion-duration" type="number" min="1" max="120000" step="100" value="${duration}" aria-label="Motion duration in milliseconds" /></label></div><div class="motion-playback-controls"><button class="primary-button motion-play-button" id="motion-play" type="button" data-motion-action="play" aria-label="${state.motionPlaying ? 'Pause motion preview' : 'Play motion preview'}" aria-pressed="${state.motionPlaying}">${state.motionPlaying ? 'Pause' : 'Play'}</button><input id="motion-playhead" type="range" min="0" max="${duration}" step="1" value="${Math.min(duration, Math.round(state.motionPlayheadMs))}" aria-label="Motion timeline playhead" /><output id="motion-time-readout" aria-live="off">${motionTimeLabel(state.motionPlayheadMs)} / ${motionTimeLabel(duration)}</output></div><p class="motion-preview-note">Preview is read-only. Select layers from the Layers panel while previewing.</p></section>${selectionCopy}${node && !node.locked ? `<section class="motion-section motion-track-create"><label for="motion-property">Animate</label><div><select id="motion-property" class="select-field" aria-label="Property to animate">${propertyOptions}</select><button class="secondary-button" type="button" data-motion-action="add-track"${Object.keys(motionPropertyLabels).every(property => trackedProperties.has(property)) ? ' disabled' : ''}>＋ Add track</button></div><small>Track values preview on the canvas; the saved layer values stay unchanged.</small></section>` : ''}<div class="motion-track-list">${trackMarkup || (node ? '<p class="motion-empty">No motion tracks on this layer yet.</p>' : '')}</div></div>`;
+}
+
 function setInspectorTab(tab) {
+  if (tab !== 'motion') stopMotionPlayback({ clearPreview: true });
   state.inspectorTab = tab;
+  if (tab === 'motion') refreshMotionPreview();
   if (tab !== 'prototype') clearPrototypeConnectPrompt();
   syncInspectorTabAccessibility(tab);
   renderInspector();
@@ -2404,6 +2638,7 @@ function renderInspector() {
     if (state.inspectorTab === 'prototype') { content.innerHTML = prototypeInspector(); return; }
     if (state.inspectorTab === 'inspect') { content.innerHTML = inspectPanel(); return; }
     if (state.inspectorTab === 'comments') { content.innerHTML = commentPanel(); return; }
+    if (state.inspectorTab === 'motion') { refreshMotionPreview(); content.innerHTML = motionInspector(); return; }
     content.innerHTML = '<div class="prototype-placeholder">Choose a properties tab.</div>';
     return;
   }
@@ -3841,6 +4076,12 @@ function onCanvasPointerDown(event) {
   if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
     canvas.classList.add('is-panning'); event.preventDefault(); return;
+  }
+  if (state.inspectorTab === 'motion' && state.motionPreview && event.button === 0) {
+    showToast('Motion preview is read-only. Select a layer from the Layers panel or switch to Design to edit it.');
+    state.pointerMap.delete(event.pointerId);
+    canvas.releasePointerCapture?.(event.pointerId);
+    return;
   }
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('Canvas edits are paused while the image recipe batch is running. You can still pan and use the Layers panel.');
@@ -10684,7 +10925,7 @@ async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent 
   }
   const samplerContext = backdropSampler?.getContext('2d', { alpha: true }) || null;
   if (backdropSampler && !samplerContext) throw new Error('This browser could not create a backdrop export surface.');
-  const baseRenderOptions = { showLayoutGuides: false, outlineMode: false, includeSlices: false };
+  const baseRenderOptions = { showLayoutGuides: false, outlineMode: false, includeSlices: false, ignoreMotionPreview: true };
   const drawExportScene = (context, renderOptions = baseRenderOptions, sceneIds = renderIds) => {
     for (const id of sceneIds) {
       const tree = exportRenderTree(id);
@@ -12537,6 +12778,7 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    if (event.target.id === 'motion-playhead') { setMotionPlayhead(event.target.value); return; }
     const gradientGeometryField = event.target.closest('[data-gradient-geometry-field]');
     if (gradientGeometryField) { updateGradientGeometryInput(gradientGeometryField); return; }
     const strokeField = event.target.closest('[data-stroke-field]');
@@ -12577,6 +12819,9 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    const motionField = event.target.closest('[data-motion-field]');
+    if (motionField) { updateMotionKeyframeField(motionField); return; }
+    if (event.target.id === 'motion-duration') { updateMotionDuration(event.target); return; }
     if (event.target.id === 'effect-style-select') {
       selectedEffectStyleId = event.target.value;
       const styleExists = state.document.effectStyles?.some(style => style.id === selectedEffectStyleId) || false;
@@ -12721,6 +12966,8 @@ function initEvents() {
   $('#inspector-content').addEventListener('keydown', handleGradientStopKey);
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => {
+    const motionAction = event.target.closest('[data-motion-action]');
+    if (motionAction) { handleMotionAction(motionAction); return; }
     const gradientHandle = event.target.closest('[data-gradient-stop-handle]');
     if (gradientHandle) return;
     const gradientTrack = event.target.closest('[data-gradient-stop-track]');

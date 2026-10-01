@@ -113,6 +113,10 @@ test('renamePage trims valid names and leaves invalid input unchanged', () => {
 
 test('deletePage protects the last page and repairs active page plus page-owned references', () => {
   const document = fixture();
+  document.motion = { durationMs: 1000, tracks: [
+    { id: 'deleted-page-track', nodeId: 'frame-b', property: 'x', keyframes: [] },
+    { id: 'kept-page-track', nodeId: 'frame-a', property: 'y', keyframes: [] }
+  ] };
   document.prototypeFlows = [
     { id: 'flow-b', name: 'Deleted page', pageId: 'b', nodeId: 'frame-b' },
     { id: 'flow-a', name: 'Kept page', pageId: 'a', nodeId: 'frame-a' }
@@ -122,6 +126,7 @@ test('deletePage protects the last page and repairs active page plus page-owned 
     { id: 'to-b-explicit', action: 'navigate', destinationId: 'frame-b', destinationPageId: 'b' },
     { id: 'to-b-implicit', action: 'navigate', destinationId: 'frame-b' }
   ] });
+  document.motion.tracks[1].nodeId = 'source';
   assert.equal(deletePage(document, 'missing'), false);
   assert.equal(deletePage(document, 'b'), true);
   assert.deepEqual(document.pages.map(page => page.id), ['a', 'c']);
@@ -131,6 +136,7 @@ test('deletePage protects the last page and repairs active page plus page-owned 
   assert.equal(document.prototypeStartFlowId, 'flow-a');
   assert.deepEqual(document.prototypeStartPoint, { pageId: 'a', nodeId: 'frame-a' });
   assert.equal(document.pages[0].children[0].interactions, undefined);
+  assert.deepEqual(document.motion.tracks.map(track => track.id), ['kept-page-track']);
   assert.equal(deletePage(document, 'a'), true);
   assert.equal(document.activePageId, 'c');
   assert.equal(deletePage(document, 'c'), false);

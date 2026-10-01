@@ -813,7 +813,8 @@ export class SceneRenderer {
     const document = state.document;
     if (!getNodePropertyValue(document, node, 'visible')) return;
     if (node.type === 'slice' && (state.presenting || renderOptions.includeSlices === false)) return;
-    node = { ...node, ...getNodeGeometry(document, node), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
+    const motionValues = renderOptions.ignoreMotionPreview ? null : state.motionPreview?.get(node.id);
+    node = { ...node, ...getNodeGeometry(document, node), ...(motionValues || {}), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
     if (node.type === 'slice') {
       const x = parentX + node.x; const y = parentY + node.y;
       const width = node.width; const height = node.height;
@@ -861,7 +862,7 @@ export class SceneRenderer {
       this.drawNodeWithEffects(ctx, node, parentX, parentY, assets, effects, renderOptions);
       return;
     }
-    const opacity = getNodePropertyValue(document, node, 'opacity');
+    const opacity = motionValues?.opacity ?? getNodePropertyValue(document, node, 'opacity');
     const radius = node.cornerRadii || getNodePropertyValue(document, node, 'radius');
     const x = parentX + node.x; const y = parentY + node.y;
     const width = node.width; const height = node.height;
@@ -1963,7 +1964,7 @@ export class SceneRenderer {
     const collect = (list, ancestors = []) => {
       for (const node of list) {
         const geometry = getNodeGeometry(state.document, node);
-        const resolvedNode = { ...node, ...geometry, ...(node.type === 'slice' ? { rotation: 0 } : {}) };
+        const resolvedNode = { ...node, ...geometry, ...(state.motionPreview?.get(node.id) || {}), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
         if (selectedIds.includes(node.id)) selected.push({ node: resolvedNode, ancestors });
         collect(node.children || [], [...ancestors, resolvedNode]);
       }

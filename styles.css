@@ -363,6 +363,40 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .inspector-tab { padding: 0 7px; font-size: 11px; }
 .inspector-content { flex: 1; min-height: 0; overflow: auto; padding: 0 0 12px; }
 .comments-panel { display: grid; align-content: start; gap: 12px; padding: 12px; }
+.motion-panel { display: grid; align-content: start; }
+.motion-section { display: grid; gap: 11px; padding: 14px 12px; border-bottom: 1px solid var(--border); }
+.motion-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.motion-panel-heading > div { min-width: 0; display: grid; gap: 4px; }
+.motion-eyebrow { color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .08em; }
+.motion-panel-heading strong { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.motion-duration-field { display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
+.motion-duration-field input { box-sizing: border-box; width: 94px; min-height: 32px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--ink); background: var(--panel); font: inherit; }
+.motion-playback-controls { display: grid; grid-template-columns: 52px minmax(70px, 1fr) auto; align-items: center; gap: 9px; }
+.motion-play-button { min-height: 34px; padding-inline: 8px; }
+.motion-playback-controls input[type="range"] { width: 100%; min-width: 0; accent-color: var(--blue); }
+.motion-playback-controls output { color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.motion-preview-note, .motion-track-create small { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.motion-track-create > label { color: var(--ink); font-size: 10px; font-weight: 550; }
+.motion-track-create > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.motion-track-create .select-field { min-width: 0; min-height: 36px; }
+.motion-track-create .secondary-button, .motion-add-keyframe { min-height: 36px; padding-inline: 9px; font-size: 10px; }
+.motion-track-list { display: grid; align-content: start; gap: 10px; padding: 10px 12px 14px; }
+.motion-track-card { display: grid; gap: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel); }
+.motion-track-card > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.motion-track-card > header strong { color: var(--ink); font-size: 10px; font-weight: 600; }
+.motion-track-lane { position: relative; height: 23px; margin: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: repeating-linear-gradient(to right, transparent 0 calc(25% - 1px), var(--border) calc(25% - 1px) 25%); }
+.motion-keyframe-marker { position: absolute; top: 50%; width: 30px; height: 30px; padding: 0; transform: translate(-50%, -50%); border: 0; border-radius: 50%; background: transparent; }
+.motion-keyframe-marker::before { position: absolute; top: 50%; left: 50%; width: 12px; height: 12px; transform: translate(-50%, -50%) rotate(45deg); border: 2px solid var(--panel); border-radius: 2px; background: var(--blue); box-shadow: 0 0 0 1px var(--blue); content: ''; }
+.motion-keyframe-marker:hover::before { background: var(--blue-strong, #0876c4); }
+.motion-keyframe-list { display: grid; gap: 7px; }
+.motion-keyframe-row { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1fr) 38px; align-items: end; gap: 6px; }
+.motion-keyframe-row label { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 8px; }
+.motion-keyframe-row label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.motion-keyframe-row label input, .motion-keyframe-row label select { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; color: var(--ink); background: var(--panel); font: inherit; font-size: 10px; }
+.motion-keyframe-row .motion-easing-field { grid-column: 1 / 3; }
+.motion-remove-keyframe { grid-column: 3; grid-row: 1 / span 2; width: 36px; height: 36px; align-self: center; }
+.motion-empty, .motion-empty-keyframes { margin: 0; padding: 12px 8px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.motion-empty-keyframes { padding: 2px; }
 .comments-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 39px; }
 .comments-panel-header > div { min-width: 0; display: grid; gap: 4px; }
 .comments-panel-header strong { font-size: 12px; font-weight: 600; }
@@ -992,6 +1026,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .inspect-code-card pre { max-height: 280px; padding: 10px; font-size: 10px; }
   .inspect-layer-card dl > div { padding: 7px 3px; }
 }
+
+:root[data-theme="dark"] .motion-panel-heading strong,
+:root[data-theme="dark"] .motion-track-card > header strong,
+:root[data-theme="dark"] .motion-track-create > label { color: #e0e4eb; }
+:root[data-theme="dark"] .motion-duration-field input,
+:root[data-theme="dark"] .motion-keyframe-row label input,
+:root[data-theme="dark"] .motion-keyframe-row label select { border-color: #454953; background: #30333a; color: #e0e4eb; }
+:root[data-theme="dark"] .motion-track-card { background: #2a2d34; }
+:root[data-theme="dark"] .motion-track-lane { background-color: #25272e; }
+:root[data-theme="dark"] .motion-keyframe-marker::before { border-color: #2a2d34; }
 @media (max-width: 420px) {
   .topbar { padding: 0 4px; }
   .topbar-leading { gap: 0; }
@@ -1280,6 +1324,15 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
   .inspector-tabs { flex-basis: 48px; gap: 3px; padding-inline: 6px; }
   .inspector-tab { flex: 1 1 0; min-width: 44px; min-height: 44px; padding-inline: 6px; }
+  .motion-section { gap: 12px; padding: 12px 10px; }
+  .motion-duration-field input { min-height: 44px; font-size: 16px; }
+  .motion-playback-controls { grid-template-columns: 56px minmax(54px, 1fr) auto; gap: 6px; }
+  .motion-play-button, .motion-track-create .secondary-button, .motion-add-keyframe { min-height: 44px; }
+  .motion-playback-controls input[type="range"] { min-height: 44px; }
+  .motion-track-create .select-field { min-height: 44px; font-size: 16px; }
+  .motion-keyframe-row label input, .motion-keyframe-row label select { height: 44px; min-height: 44px; font-size: 16px; }
+  .motion-remove-keyframe { width: 44px; height: 44px; }
+  .motion-keyframe-marker { width: 44px; height: 44px; }
   .grid-track-row .select-field, .grid-track-value { min-height: 44px; height: 44px; }
   .grid-track-value input { min-height: 42px; font-size: 16px; }
   .corner-radius-controls .property-field { height: 44px; min-height: 44px; }
