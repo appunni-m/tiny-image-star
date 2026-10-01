@@ -367,7 +367,7 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
     if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
     else if (node.type === 'text') markup = `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}/>`;
     else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId });
-    if (markup) markup = markup.replace(/^<(path|rect|ellipse|polygon)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"`);
+    if (markup) markup = markup.replace(/^<([a-z][\w:-]*)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"${paintBlendStyle(stroke.blendMode)}`);
     return markup + strokeDecorationMarkup(node, document, stroke, index, strokeGradientId);
   }).join('');
 }
@@ -378,7 +378,7 @@ function strokeDecorationMarkup(node, document, stroke, strokeIndex, gradientId 
   const rawColor = strokeIndex === 0 && node.strokeVariableId ? color(document, node, 'stroke') : stroke.color;
   const value = stroke.gradient ? (gradientId ? `url(#${gradientId})` : null) : rawColor === 'transparent' ? 'none' : rawColor;
   if (!value || value === 'none') return '';
-  const metadata = ` data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"`;
+  const metadata = ` data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"${paintBlendStyle(stroke.blendMode)}`;
   const attributes = strokeAttributes(document, node, stroke, strokeIndex, gradientId).replace(/ stroke-dasharray="[^"]*"/, '');
   return decorations.map(item => {
     const path = `M ${number(item.points[0].x)} ${number(item.points[0].y)}${item.points.slice(1).map(point => ` L ${number(point.x)} ${number(point.y)}`).join('')}${item.closed ? ' Z' : ''}`;
@@ -422,6 +422,11 @@ function roundedRectMarkup(node, document, attributes = '') {
 function unsupportedFeature(node, assets, imagePreviews = null, document = emptyDocument) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
   if (Array.isArray(node.fills)) {
+    for (const fill of node.fills) {
+      if (fill?.blendMode != null && !isValidLayerBlendMode(fill.blendMode)) {
+        throw new TypeError(`SVG export requires a supported fill blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
+      }
+    }
     if (!isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) {
       throw new TypeError(`SVG export requires a valid fill stack on layer ${node.name || node.id || '(unnamed)'}.`);
     }
@@ -430,6 +435,11 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
       if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0) continue;
       const problem = unsupportedImageFill(node, fill.imageFill, assets, imagePreviews, imagePreviewKey(node.id, fill.id));
       if (problem) return problem;
+    }
+  }
+  for (const stroke of strokeStackForNode(node)) {
+    if (stroke?.blendMode != null && !isValidLayerBlendMode(stroke.blendMode)) {
+      throw new TypeError(`SVG export requires a supported stroke blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
     }
   }
   if (node.type === 'image' || (!Array.isArray(node.fills) && node.imageFill)) {
@@ -471,7 +481,8 @@ function unsupportedFeature(node, assets, imagePreviews = null, document = empty
       && (child.type !== 'network' || (child.faces || []).length > 0);
     if (node.children.some(child => !validOperand(child))) return 'unsupported Boolean operands';
     const hiddenIntersection = (node.operation || 'union') === 'intersect' && node.children.some(child => !isNodeVisible(document, child));
-    if (!hiddenIntersection && node.children.some(child => isNodeVisible(document, child) && (child.blendMode || 'normal') !== 'normal')) return 'blended Boolean operands';
+    if (!hiddenIntersection && node.children.some(child => isNodeVisible(document, child)
+      && ((child.blendMode || 'normal') !== 'normal' || hasNonNormalPaintBlend(child)))) return 'blended Boolean operands';
   }
   if (node.type === 'group' && node.maskSourceId && !node.mask) return 'mask groups';
   return null;
@@ -495,10 +506,11 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
   if (['image', 'group', 'frame', 'section'].includes(source.type)) {
     const unsupported = unsupportedFeature(source, assets, imagePreviews, document);
     if (unsupported) throw new SvgExportError(unsupported, source);
-    if (source.children?.length) validateTree(source.children, document, assets, imagePreviews);
+    if (source.children?.length) validateTree(source.children, document, assets, imagePreviews, new Set(), true);
   }
   if (source.type === 'path' && !hasFillablePathContour(source)) throw new SvgExportError('open path alpha mask contents', source);
   if (source.type === 'network' && !(source.faces || []).length) throw new SvgExportError('open vector network alpha mask contents', source);
+  if (hasNonNormalPaintBlend(source)) throw new SvgExportError('paint blend modes in alpha-mask content', source);
   if ((source.blendMode || 'normal') !== 'normal') throw new SvgExportError('blended alpha mask contents', source);
   const fillOpacity = Number(source.fillOpacity ?? 1);
   if (!Number.isFinite(fillOpacity) || fillOpacity < 0 || fillOpacity > 1) {
@@ -512,7 +524,7 @@ function validateMaskGroup(node, document, assets, imagePreviews) {
   return source;
 }
 
-function validateTree(nodes, document, assets, imagePreviews = null, ignoredNodeIds = new Set()) {
+function validateTree(nodes, document, assets, imagePreviews = null, ignoredNodeIds = new Set(), hasIsolatedPaintAncestor = false) {
   for (const node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
     if (node.type === 'slice') continue;
@@ -521,10 +533,16 @@ function validateTree(nodes, document, assets, imagePreviews = null, ignoredNode
     const maskSource = node.mask ? validateMaskGroup(node, document, assets, imagePreviews) : null;
     const unsupported = unsupportedFeature(node, assets, imagePreviews, document);
     if (unsupported) throw new SvgExportError(unsupported, node);
+    const nodeCreatesPaintIsolation = isolatesSvgPaintBackdrop(document, node, maskSource)
+      || node.type === 'boolean';
+    if (hasNonNormalPaintBlend(node) && (hasIsolatedPaintAncestor || nodeCreatesPaintIsolation)) {
+      throw new SvgExportError('paint blend modes whose backdrop crosses an isolated SVG layer boundary (remove the isolating opacity, effect, mask, layer blend, or Boolean compositing, or use raster export)', node);
+    }
     dimensions({ ...node, ...getNodeGeometry(document, node) });
     if (!Array.isArray(node.children || [])) throw new TypeError(`SVG export requires a child layer list on ${node.name || node.id || '(unnamed)'}.`);
     const ignoredChildren = maskSource ? new Set([...ignoredNodeIds, maskSource.id]) : ignoredNodeIds;
-    validateTree(node.children || [], document, assets, imagePreviews, ignoredChildren);
+    validateTree(node.children || [], document, assets, imagePreviews, ignoredChildren,
+      hasIsolatedPaintAncestor || nodeCreatesPaintIsolation);
   }
 }
 
@@ -669,7 +687,7 @@ function networkMarkup(node, document, gradientId = null, { includeFills = true,
     if (strokeItem && (!strokeItem.visible || strokeItem.opacity <= 0 || strokeItem.width <= 0 || (!strokeItem.gradient && (!strokeItem.color || strokeItem.color === 'transparent')))) continue;
     const strokeGradientId = addStrokeGradientDefinition(node, strokeItem, strokeIndex, layerIndex, context);
     const stroke = strokeItem ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : strokeAttributes(document, node);
-    const strokeMetadata = strokeItem ? ` data-tiny-image-star-stroke-id="${escapeXml(strokeItem.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"` : '';
+    const strokeMetadata = strokeItem ? ` data-tiny-image-star-stroke-id="${escapeXml(strokeItem.id)}" data-tiny-image-star-stroke-order="${strokeIndex}"${paintBlendStyle(strokeItem.blendMode)}` : '';
     for (const edge of node.edges || []) {
       markup += `<path data-tiny-image-star-edge-id="${escapeXml(edge.id)}" data-tiny-image-star-from="${escapeXml(edge.from)}" data-tiny-image-star-to="${escapeXml(edge.to)}"${strokeMetadata} d="${networkEdgePath(node, edge)}" fill="none"${stroke}/>`;
     }
@@ -691,8 +709,31 @@ function stackSolidValue(document, node, fill, index) {
 function markFillMarkup(markup, fill) {
   if (!markup) return '';
   const metadata = ` data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"`;
-  if (markup.startsWith('<g')) return markup.replace(/^<g(?=[\s>])/, `<g${metadata}`);
-  return markup.replace(/\/>$/, `${metadata}/>`);
+  const attributes = `${metadata}${paintBlendStyle(fill.blendMode)}`;
+  if (markup.startsWith('<g')) return markup.replace(/^<g(?=[\s>])/, `<g${attributes}`);
+  return markup.replace(/\/>$/, `${attributes}/>`);
+}
+
+function paintBlendStyle(mode) {
+  return mode && mode !== 'normal' ? ` style="mix-blend-mode:${mode}"` : '';
+}
+
+function hasNonNormalPaintBlend(node) {
+  const fills = Array.isArray(node.fills) ? node.fills : [];
+  const strokes = strokeStackForNode(node);
+  return fills.some(fill => fill?.blendMode && fill.blendMode !== 'normal')
+    || strokes.some(stroke => stroke?.blendMode && stroke.blendMode !== 'normal');
+}
+
+function isolatesSvgPaintBackdrop(document, node, maskSource = null) {
+  // SVG paint blend modes use prior painted scene content as their backdrop.
+  // Opacity below one, filters, non-normal layer blending, and masks isolate a
+  // group, so descendants cannot see the same backdrop as the live canvas.
+  const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);
+  return (Number.isFinite(opacity) && opacity < 1)
+    || (node.blendMode != null && node.blendMode !== 'normal')
+    || Boolean(maskSource && isNodeVisible(document, maskSource))
+    || Boolean(node.effects?.some(effect => effect.visible !== false));
 }
 
 function renderShapeFillStack(node, document, context, index, measureText) {
@@ -787,7 +828,7 @@ function renderNetworkFillStack(node, document, context, index) {
             : stackSolidValue(document, node, fill, fillIndex);
           paint = paint === 'transparent' ? 'none' : paint;
         } else paint = `url(#${gradientId})`;
-        markup += `<path data-tiny-image-star-face-id="${faceId}" d="${path}" fill="${escapeXml(paint)}" fill-opacity="${number(fill.opacity * faceOpacity)}" data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"/>`;
+        markup += `<path data-tiny-image-star-face-id="${faceId}" d="${path}" fill="${escapeXml(paint)}" fill-opacity="${number(fill.opacity * faceOpacity)}" data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"${paintBlendStyle(fill.blendMode)}/>`;
       }
     });
   }

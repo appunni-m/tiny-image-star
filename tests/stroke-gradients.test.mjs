@@ -74,3 +74,20 @@ test('gradient stroke definitions survive document reload and invalid data block
   broken.pages[0].children[0].strokes[0].gradient.stops[1].position = 2;
   assert.throws(() => validateDocument(broken), /Invalid stroke stack/);
 });
+
+test('per-stroke blend modes validate and persist while omitted blend mode remains backward-compatible', () => {
+  const document = createDocument();
+  const stroke = createStroke({ id: 'multiply-stroke', blendMode: 'multiply' });
+  const rectangle = createNode('rectangle', { strokes: [stroke] });
+  addNode(document, rectangle);
+  assert.equal(isValidStroke(stroke), true);
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children[0].strokes[0].blendMode, 'multiply');
+
+  const legacy = createStroke({ id: 'legacy-normal-stroke' });
+  delete legacy.blendMode;
+  assert.equal(isValidStroke(legacy), true);
+  const broken = structuredClone(restored);
+  broken.pages[0].children[0].strokes[0].blendMode = 'pass-through';
+  assert.throws(() => validateDocument(broken), /Invalid stroke stack/);
+});

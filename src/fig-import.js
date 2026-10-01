@@ -78,14 +78,31 @@ function mapLayerBlendMode(source, overrides, report, name) {
   warn(report, 'flattened', 'BLEND_MODE', name, detail);
 }
 
-function warnPaintBlend(paint, report, name, warningType = 'PAINT_BLEND') {
-  if (paint?.blendMode == null || paint.blendMode === '') return;
+function mappedPaintBlendMode(paint, report, name, warningType = 'PAINT_BLEND') {
+  if (paint?.blendMode == null || paint.blendMode === '') return {};
   const sourceMode = String(paint.blendMode).toUpperCase();
-  if (sourceMode === 'NORMAL') return;
+  if (sourceMode === 'NORMAL') return {};
+  const knownLayerMode = figLayerBlendModes[sourceMode];
+  if (knownLayerMode && isValidLayerBlendMode(knownLayerMode)) return { blendMode: knownLayerMode };
+  const detail = sourceMode === 'PASS_THROUGH'
+    ? 'PASS_THROUGH is not a paint blend mode supported by the local renderer and was reset to normal.'
+    : `The unsupported paint blend mode “${sourceMode.slice(0, 80)}” was reset to normal.`;
+  warn(report, 'flattened', warningType, name, detail);
+  return {};
+}
+
+// Text runs do not share the editable local fill stack. Preserve an import
+// review warning for text paint blends even when the mode itself is supported
+// for ordinary fill and stroke paints.
+function warnPaintBlend(paint, report, name, warningType = 'PAINT_BLEND') {
+  if (paint?.blendMode == null || paint.blendMode === '' || String(paint.blendMode).toUpperCase() === 'NORMAL') return;
+  const sourceMode = String(paint.blendMode).toUpperCase();
   const knownLayerMode = figLayerBlendModes[sourceMode];
   const detail = knownLayerMode && isValidLayerBlendMode(knownLayerMode)
-    ? `The ${sourceMode} paint blend cannot be represented independently in the local fill stack and was reset to normal.`
-    : `The ${sourceMode === 'PASS_THROUGH' ? 'PASS_THROUGH' : `unknown “${sourceMode.slice(0, 80)}”`} paint blend cannot be represented in the local fill stack and was reset to normal.`;
+    ? `The ${sourceMode} paint blend cannot be represented on a local text run and was reset to normal.`
+    : sourceMode === 'PASS_THROUGH'
+      ? 'PASS_THROUGH is not a paint blend mode supported by the local text model and was reset to normal.'
+      : `The unsupported paint blend mode “${sourceMode.slice(0, 80)}” was reset to normal.`;
   warn(report, 'flattened', warningType, name, detail);
 }
 
@@ -243,11 +260,11 @@ function mapPaints(paints, node, context, { allowFill = true } = {}) {
   const supported = [];
   for (const paint of paints.slice(0, 32)) {
     if (!paint || paint.visible === false || finite(paint.opacity, 1, 0, 1) === 0) continue;
-    warnPaintBlend(paint, context.report, node.name);
+    const blend = mappedPaintBlendMode(paint, context.report, node.name);
     if (paint.type === 'SOLID') {
       const color = hexColor(paint.color);
       if (!color) { warn(context.report, 'unsupported', 'PAINT', node.name, 'A fill color could not be decoded.'); continue; }
-      supported.push({ id: createId('fill'), type: 'solid', visible: true, opacity: paintOpacity(paint), color });
+      supported.push({ id: createId('fill'), type: 'solid', visible: true, opacity: paintOpacity(paint), color, ...blend });
       continue;
     }
     if (paint.type === 'IMAGE') {
@@ -262,14 +279,14 @@ function mapPaints(paints, node, context, { allowFill = true } = {}) {
       if (paint.imageTransform || paint.filters) warn(context.report, 'flattened', 'IMAGE_TRANSFORM', node.name, 'Image crop, tint and filter settings use the nearest fill mode.');
       if (['TILE', 'STRETCH'].includes(scaleMode)) warn(context.report, 'flattened', 'IMAGE_SCALE', node.name, 'Image tiling or stretch scaling was reduced to cover.');
       supported.push({
-        id: createId('fill'), type: 'image', visible: true, opacity: paintOpacity(paint),
+        id: createId('fill'), type: 'image', visible: true, opacity: paintOpacity(paint), ...blend,
         imageFill: createImageFill(asset.id, { fit })
       });
       continue;
     }
     if (['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR'].includes(paint.type)) {
       const gradient = mapGradientPaint(paint, node, context.report);
-      if (gradient) supported.push(gradient);
+      if (gradient) supported.push({ ...gradient, ...blend });
       continue;
     }
     warn(context.report, 'unsupported', paint.type || 'PAINT', node.name, 'This paint type was omitted; solid, gradient, and image fills are supported.');
@@ -298,13 +315,13 @@ function mapStrokes(paints, node, report) {
       if (paint?.visible !== false) warn(report, 'unsupported', paint?.type || 'STROKE', node.name, 'Only solid stroke paints are imported.');
       continue;
     }
-    warnPaintBlend(paint, report, node.name);
+    const blend = mappedPaintBlendMode(paint, report, node.name);
     const color = hexColor(paint.color);
     if (!color) continue;
     strokes.push({
       id: createId('stroke'), color, width: finite(node.strokeWeight, 1, 0, 100_000),
       opacity: paintOpacity(paint), visible: true, cap, join, pattern,
-      miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none'
+      miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none', ...blend
     });
   }
   return strokes;
@@ -1516,6 +1533,32 @@ function recursivelyConvert(node, childrenMap, context, pageId, depth = 0, paren
   }
 }
 
+function paintBlendIsolationReasons(node) {
+  const reasons = [];
+  if (Number(node.opacity ?? 1) < 1) reasons.push('reduced layer opacity');
+  if (node.blendMode && node.blendMode !== 'normal') reasons.push('a layer blend mode');
+  if (node.effects?.some(effect => effect?.visible !== false)) reasons.push('visible effects');
+  if (node.mask) reasons.push('mask compositing');
+  if (node.type === 'boolean') reasons.push('Boolean compositing');
+  return reasons;
+}
+
+function warnIsolatedPaintBlends(nodes, report, inheritedReasons = []) {
+  for (const node of nodes || []) {
+    if (!node || typeof node !== 'object') continue;
+    const reasons = [...new Set([...inheritedReasons, ...paintBlendIsolationReasons(node)])];
+    const hasPaintBlend = (Array.isArray(node.fills) && node.fills.some(fill => fill?.visible !== false
+      && fill?.opacity > 0 && fill?.blendMode && fill.blendMode !== 'normal'))
+      || (Array.isArray(node.strokes) && node.strokes.some(stroke => stroke?.visible !== false
+        && stroke?.opacity > 0 && stroke?.blendMode && stroke.blendMode !== 'normal'));
+    if (hasPaintBlend && reasons.length) {
+      warn(report, 'flattened', 'PAINT_BLEND_COMPOSITION', node.name,
+        `This paint blend is inside or on ${reasons.join(', ')}. Its backdrop may render differently locally and should be reviewed.`);
+    }
+    warnIsolatedPaintBlends(node.children, report, reasons);
+  }
+}
+
 /** Convert a bounded, parsed Figma Design document into the local editable scene model. */
 export function convertFigDocument(parsed, { fileName = 'Imported design.fig', formatVersion = parsed?.header?.version ?? 0 } = {}) {
   if (!parsed || !Array.isArray(parsed.nodes) || parsed.nodes.length > FIG_IMPORT_LIMITS.nodes) {
@@ -1557,6 +1600,7 @@ export function convertFigDocument(parsed, { fileName = 'Imported design.fig', f
     document.pages.push({ id: pageId, name: safeName(sourcePage.name, `Page ${index + 1}`), children, guides: [] });
   }
   preserveFigComponents(document, parsed, childrenMap, context);
+  for (const page of document.pages) warnIsolatedPaintBlends(page.children, report);
   for (const node of parsed.nodes) {
     if (context.traversalSeen.has(node) || node.phase === 'REMOVED'
       || node.type === 'DOCUMENT' || node.type === 'CANVAS') continue;

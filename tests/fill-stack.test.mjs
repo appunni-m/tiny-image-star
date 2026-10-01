@@ -202,6 +202,23 @@ test('fill stacks validate and round-trip through the document model, including 
   }
 });
 
+test('per-fill blend modes default to normal, edit only to supported values, and survive document reload', () => {
+  const paint = createFillLayer('solid', { id: 'screen-paint', color: '#123456', blendMode: 'screen' });
+  const node = createNode('rectangle', { fills: [paint] });
+  assert.equal(paint.blendMode, 'screen');
+  assert.equal(isValidFillStack(node.fills, node), true);
+  assert.equal(updateFillLayer(node, paint.id, { blendMode: 'multiply' }).blendMode, 'multiply');
+  assert.equal(updateFillLayer(node, paint.id, { blendMode: 'vivid-light' }).blendMode, 'multiply', 'unsupported edits are ignored');
+  const document = createDocument();
+  addNode(document, node);
+  const restored = parseDocument(serializeDocument(document)).pages[0].children[0];
+  assert.equal(restored.fills[0].blendMode, 'multiply');
+  assert.equal(isValidFillStack([{ ...paint, blendMode: 'vivid-light' }], node), false);
+  assert.equal(isValidFillStack([{ ...paint, blendMode: 'PASS_THROUGH' }], node), false);
+  assert.equal(isValidFillStack([{ ...paint, blendMode: 'normal' }], node), true);
+  assert.equal(createFillLayer('solid').blendMode, 'normal', 'new paints explicitly default to normal');
+});
+
 test('linked component fill-stack overrides keep an instance-local base and overlay through master edits and reload', () => {
   const document = createDocument();
   const master = createNode('rectangle', {
@@ -290,7 +307,7 @@ test('Inspector markup and delegated events expose add/remove/reorder/visibility
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   for (const marker of [
     'data-action="add-fill-layer"', 'data-action="remove-fill-layer"', 'data-action="move-fill-layer"',
-    'data-fill-field="visible"', 'data-fill-field="opacity"', 'updateFillInput(fillField)',
+    'data-fill-field="visible"', 'data-fill-field="opacity"', 'data-fill-field="blendMode"', "select('blendMode', 'Blend'", "field === 'blendMode') updateStroke", 'paintBlendCompositionWarning(node)', 'updateFillInput(fillField)',
     "recordNodeComponentOverrides(node, ['fills'"
   ]) assert.ok(source.includes(marker), `Inspector is wired for ${marker}`);
 });

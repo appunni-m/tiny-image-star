@@ -295,7 +295,7 @@ function fillCurrentPath(ctx, node) {
   else ctx.fill();
 }
 
-function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id)) {
+function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false) {
   const fills = fillStackForNode(node);
   const motionFillIndex = fills.findIndex(fill => fill.type === 'solid');
   for (let index = 0; index < fills.length; index += 1) {
@@ -304,6 +304,11 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
     const fillOpacity = animatedFill && Number.isFinite(motionValues?.fillOpacity) ? motionValues.fillOpacity : fill.opacity;
     if (!fill.visible || fillOpacity <= 0) continue;
     ctx.save();
+    // Paint blend modes are compositing operations for this paint. Applying
+    // them on the active destination lets the paint see both the already
+    // rendered page backdrop and earlier paints on this node, matching the
+    // ordered fill stack instead of blending an isolated whole-node bitmap.
+    if (!maskMode && fill.blendMode && fill.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(fill.blendMode);
     ctx.globalAlpha *= fillOpacity;
     if (fill.type === 'solid') {
       const color = animatedFill && typeof motionValues?.fillColor === 'string'
@@ -349,12 +354,15 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
   }
 }
 
-function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null) {
+function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false) {
   const strokes = strokeStackForNode(node);
   for (let index = 0; index < strokes.length; index += 1) {
     const stroke = strokes[index];
     if (!stroke.visible || stroke.opacity <= 0 || stroke.width <= 0 || (!stroke.gradient && (!stroke.color || stroke.color === 'transparent'))) continue;
     ctx.save();
+    // Strokes follow fills in the node paint order, so each stroke composites
+    // against the visible backdrop and every earlier fill/stroke.
+    if (!maskMode && stroke.blendMode && stroke.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(stroke.blendMode);
     ctx.globalAlpha *= stroke.opacity;
     ctx.lineWidth = stroke.width;
     const color = index === 0 && node.strokeVariableId
@@ -368,6 +376,60 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
     if (tracePath) { ctx.beginPath(); tracePath(ctx); }
     ctx.stroke();
     drawStrokeEndpointDecorations(ctx, node, stroke, { x, y }, paint);
+    ctx.restore();
+  }
+}
+
+function hasBlendedFillPaint(node) {
+  return Array.isArray(node?.fills) && node.fills.some(fill => fill?.visible !== false && fill?.blendMode && fill.blendMode !== 'normal');
+}
+
+function drawBooleanFillStack(ctx, node, maskSurface, assets, state, x, y) {
+  const surface = typeof OffscreenCanvas === 'function'
+    ? new OffscreenCanvas(maskSurface.width, maskSurface.height)
+    : Object.assign(document.createElement('canvas'), { width: maskSurface.width, height: maskSurface.height });
+  const paintContext = surface.getContext('2d');
+  if (!paintContext) return;
+  const scaleX = maskSurface.width / Math.max(1, node.width);
+  const scaleY = maskSurface.height / Math.max(1, node.height);
+  const fills = fillStackForNode(node);
+  const animatedFillIndex = fills.findIndex(fill => fill.type === 'solid');
+  for (let index = 0; index < fills.length; index += 1) {
+    const fill = fills[index];
+    const motion = state.motionPreview?.get(node.id);
+    const fillOpacity = index === animatedFillIndex && Number.isFinite(motion?.fillOpacity) ? motion.fillOpacity : fill.opacity;
+    if (!fill.visible || fillOpacity <= 0) continue;
+    paintContext.save();
+    paintContext.setTransform(1, 0, 0, 1, 0, 0);
+    paintContext.clearRect(0, 0, surface.width, surface.height);
+    paintContext.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+    paintContext.globalAlpha = 1;
+    paintContext.globalCompositeOperation = 'source-over';
+    if (fill.type === 'solid') {
+      const color = index === animatedFillIndex && typeof motion?.fillColor === 'string'
+        ? motion.fillColor : fillLayerColor(state.document, node, fill, index);
+      if (color && color !== 'transparent') { paintContext.fillStyle = rgba(color, 1); paintContext.fillRect(0, 0, node.width, node.height); }
+    } else if (gradientTypes.has(fill.type)) {
+      const paint = createGradientPaint(paintContext, fill.gradient, 0, 0, node.width, node.height);
+      if (paint) { paintContext.fillStyle = paint; paintContext.fillRect(0, 0, node.width, node.height); }
+    } else if (fill.type === 'image') {
+      const imageFill = fill.imageFill;
+      const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
+      const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
+      if (image) {
+        if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
+        else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+      }
+    }
+    paintContext.setTransform(1, 0, 0, 1, 0, 0);
+    paintContext.globalCompositeOperation = 'destination-in';
+    paintContext.drawImage(maskSurface, 0, 0);
+    paintContext.restore();
+
+    ctx.save();
+    ctx.globalAlpha *= fillOpacity;
+    if (fill.blendMode && fill.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(fill.blendMode);
+    ctx.drawImage(surface, x, y, node.width, node.height);
     ctx.restore();
   }
 }
@@ -1045,7 +1107,7 @@ export class SceneRenderer {
           ctx.fillText('Loading image…', cx, cy);
         }
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius));
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius), maskMode);
     } else if (node.type === 'text') {
       const sourceText = getNodePropertyValue(document, node, 'text');
       if (Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === sourceText) {
@@ -1070,7 +1132,7 @@ export class SceneRenderer {
           fillOpacity: node.fillOpacity ?? 1
         });
       } else drawPlainText(ctx, node, document, x, y, width, height);
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => pathContext.rect(x, y, width, height));
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => pathContext.rect(x, y, width, height), maskMode);
     } else if (node.type === 'network') {
       const fills = fillStackForNode(node);
       for (const face of node.faces || []) {
@@ -1107,6 +1169,7 @@ export class SceneRenderer {
           ctx.beginPath();
           if (!traceVectorNetworkFace(ctx, node, face, x, y)) continue;
           ctx.save();
+          if (!maskMode && fill.blendMode && fill.blendMode !== 'normal') ctx.globalCompositeOperation = canvasBlendOperation(fill.blendMode);
           ctx.globalAlpha *= fillOpacity * (face.fillOpacity ?? 1);
           if (face.fill != null && index === 0 && fill.type === 'solid') {
             ctx.fillStyle = rgba(face.fill, 1); ctx.fill();
@@ -1129,10 +1192,10 @@ export class SceneRenderer {
           ctx.restore();
         }
       }
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y));
+      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
     } else {
-      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues);
-      drawStrokeStack(ctx, node, document, x, y, width, height);
+      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode);
+      drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode);
     }
 
     if (draft) { ctx.beginPath(); ctx.rect(x, y, width, height); ctx.strokeStyle = BLUE; ctx.lineWidth = 1 / (this.getState().zoom || 1); ctx.setLineDash([4, 3]); ctx.stroke(); }
@@ -1728,6 +1791,10 @@ export class SceneRenderer {
     const transform = ctx.getTransform?.();
     const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
     const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
+    if (!maskMode && hasBlendedFillPaint(node)) {
+      drawBooleanFillStack(ctx, node, surface, assets, state, x, y);
+      return;
+    }
     ctx.save();
     if (!Array.isArray(node.fills)) ctx.globalAlpha *= node.fillOpacity ?? 1;
     ctx.drawImage(surface, x, y, node.width, node.height);
@@ -1788,7 +1855,11 @@ export class SceneRenderer {
       // Boolean source geometry is scaled into the current group bounds above.
       // Paint the completed mask and group fills back in the unscaled surface box.
       mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
-      if (Array.isArray(node.fills)) {
+      if (Array.isArray(node.fills) && hasBlendedFillPaint(node) && !maskMode) {
+        // Keep only the Boolean alpha mask in the cache. Paint blend modes
+        // depend on the live page backdrop, so they are drawn in order by
+        // drawBooleanFillStack when this cached mask is presented.
+      } else if (Array.isArray(node.fills)) {
         const createSurface = () => typeof OffscreenCanvas === 'function'
           ? new OffscreenCanvas(width, height)
           : Object.assign(document.createElement('canvas'), { width, height });

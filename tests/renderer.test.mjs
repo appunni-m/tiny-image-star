@@ -4,6 +4,7 @@ import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, draw
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
+import { vectorNetworkGeometryFromAnchors } from '../src/vector-path.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
 function textContext({ nativeTracking = false } = {}) {
@@ -508,6 +509,56 @@ test('Boolean source pixels scale and reposition into the resized group bounds',
   }
 });
 
+test('Boolean stacked fills blend separately against the destination instead of caching blended pixels', () => {
+  const document = createDocument();
+  const group = createNode('boolean', {
+    width: 40, height: 24,
+    fills: [
+      { id: 'base', type: 'solid', visible: true, opacity: 1, color: '#ff0000' },
+      { id: 'overlay', type: 'solid', visible: true, opacity: .45, color: '#0000ff', blendMode: 'multiply' }
+    ]
+  });
+  addNode(document, group);
+  const maskSurface = { width: 40, height: 24 };
+  const destination = [];
+  const target = {
+    globalAlpha: .8, globalCompositeOperation: 'source-over',
+    save() { this.saved = { globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }; },
+    restore() { Object.assign(this, this.saved); },
+    getTransform() { return { a: 1, b: 0 }; },
+    drawImage(image) { destination.push({ image, globalAlpha: this.globalAlpha, blendMode: this.globalCompositeOperation }); }
+  };
+  class PaintSurface {
+    constructor(width, height) {
+      this.width = width; this.height = height;
+      const stack = [];
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over',
+        save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }); },
+        restore() { Object.assign(this, stack.pop() || {}); },
+        setTransform() {}, clearRect() {}, fillRect() {}, drawImage() {}
+      };
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = PaintSurface;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, assets: new Map(), zoom: 1 });
+    renderer.getBooleanSurface = () => maskSurface;
+    renderer.drawBooleanGroup(target, group, 5, 7, new Map());
+
+    assert.deepEqual(destination.map(item => [item.blendMode, item.globalAlpha]), [
+      ['source-over', .8], ['multiply', .8 * .45]
+    ]);
+    assert.ok(destination.every(item => item.image instanceof PaintSurface), 'each paint is clipped to the Boolean alpha mask before reaching the page');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('Boolean paint and mask surfaces cap extreme axes and total pixels without shrinking normal previews', () => {
   const created = [];
   class RecordingContext {
@@ -924,6 +975,110 @@ test('shape rendering applies editable stroke cap, join, and dash patterns', () 
   calls.length = 0;
   renderer.drawNode(context, shape, 0, 0, new Map());
   assert.deepEqual(calls, [['dash', [0, 6]], ['stroke', 'round', 'bevel', 4, 3, '#123456']], 'dots need a round cap to keep zero-length dash segments visible');
+});
+
+test('fill and stroke paint blends composite in paint order on the active page backdrop', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', {
+    width: 40, height: 30, fill: 'transparent', stroke: null, strokeWidth: 0,
+    fills: [
+      { id: 'base', type: 'solid', visible: true, opacity: 1, color: '#ff0000' },
+      { id: 'screen', type: 'solid', visible: true, opacity: .6, color: '#00ff00', blendMode: 'screen' },
+      { id: 'soft-light', type: 'solid', visible: true, opacity: .4, color: '#0000ff', blendMode: 'soft-light' }
+    ],
+    strokes: [
+      { id: 'multiply-outline', color: '#111111', width: 2, opacity: .8, visible: true, blendMode: 'multiply' },
+      { id: 'hue-outline', color: '#eeeeee', width: 1, opacity: .5, visible: true, blendMode: 'hue' }
+    ]
+  });
+  addNode(document, shape);
+
+  const operations = [];
+  const stack = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation, fillStyle: this.fillStyle, strokeStyle: this.strokeStyle }); },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    beginPath() {}, rect() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {}, arc() {}, closePath() {}, setLineDash() {},
+    fill() { operations.push({ kind: 'fill', blendMode: this.globalCompositeOperation, alpha: this.globalAlpha }); },
+    stroke() { operations.push({ kind: 'stroke', blendMode: this.globalCompositeOperation, alpha: this.globalAlpha }); }
+  };
+  const context = new Proxy(target, {
+    get(current, property) {
+      if (property in current) return current[property];
+      return () => {};
+    },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, shape, 0, 0, new Map());
+
+  assert.deepEqual(operations.map(({ kind, blendMode }) => [kind, blendMode]), [
+    ['fill', 'source-over'], ['fill', 'screen'], ['fill', 'soft-light'],
+    ['stroke', 'multiply'], ['stroke', 'hue']
+  ]);
+  assert.deepEqual(operations.map(({ alpha }) => alpha), [1, .6, .4, .8, .5]);
+});
+
+test('normal and mask-source paints preserve the enclosing Canvas composite operation', () => {
+  const document = createDocument();
+  const shape = createNode('rectangle', {
+    width: 24, height: 16,
+    fills: [{ id: 'screen', type: 'solid', visible: true, opacity: 1, color: '#123456', blendMode: 'screen' }]
+  });
+  addNode(document, shape);
+  const operations = [];
+  const stack = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'destination-out', fillStyle: '',
+    save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }); },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    beginPath() {}, rect() {}, fill() { operations.push(this.globalCompositeOperation); }
+  };
+  const context = new Proxy(target, {
+    get(current, property) { return property in current ? current[property] : () => {}; },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, shape, 0, 0, new Map(), false, true);
+  assert.deepEqual(operations, ['destination-out'], 'paint blend modes do not replace Boolean/mask alpha composition');
+});
+
+test('vector network face paints honor each fill paint blend mode', () => {
+  const document = createDocument();
+  const geometry = vectorNetworkGeometryFromAnchors([
+    { x: 0, y: 0 }, { x: 30, y: 0 }, { x: 15, y: 24 }
+  ], { closed: true });
+  const network = createNode('network', {
+    ...geometry, stroke: null, strokeWidth: 0,
+    fills: [
+      { id: 'base', type: 'solid', visible: true, opacity: 1, color: '#ff0000' },
+      { id: 'color-dodge', type: 'solid', visible: true, opacity: .7, color: '#00ff00', blendMode: 'color-dodge' },
+      { id: 'luminosity', type: 'solid', visible: true, opacity: .35, color: '#0000ff', blendMode: 'luminosity' }
+    ]
+  });
+  addNode(document, network);
+
+  const fills = [];
+  const stack = [];
+  const target = {
+    globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    save() { stack.push({ globalAlpha: this.globalAlpha, globalCompositeOperation: this.globalCompositeOperation }); },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() { fills.push(this.globalCompositeOperation); }
+  };
+  const context = new Proxy(target, {
+    get(current, property) { return property in current ? current[property] : () => {}; },
+    set(current, property, value) { current[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, network, 0, 0, new Map());
+
+  assert.deepEqual(fills, ['source-over', 'color-dodge', 'luminosity']);
 });
 
 test('shape rendering paints linear, radial, and angular stroke gradients through the stroke geometry', () => {

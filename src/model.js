@@ -504,7 +504,7 @@ export function createGradientFill(type = 'linear', firstColor = '#d9d9d9') {
 
 export function createFillLayer(type = 'solid', overrides = {}) {
   if (!['solid', 'linear', 'radial', 'angular', 'image'].includes(type)) throw new TypeError(`Unsupported fill type: ${type}`);
-  const base = { id: createId('fill'), type, visible: true, opacity: 1 };
+  const base = { id: createId('fill'), type, visible: true, opacity: 1, blendMode: 'normal' };
   if (type === 'solid') return { ...base, color: '#d9d9d9', ...overrides };
   if (type === 'linear' || type === 'radial' || type === 'angular') return { ...base, gradient: createGradientFill(type), ...overrides };
   if (typeof overrides.assetId !== 'string' && typeof overrides.imageFill?.assetId !== 'string') {

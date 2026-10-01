@@ -4,6 +4,7 @@ import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument,
 import { createImageFill } from '../src/image-fills.js';
 import { isValidGradientFill, moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
+import { layerBlendModes } from '../src/layer-blend.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
 import { importSvgToLayers } from '../src/svg-import.js';
 
@@ -967,6 +968,88 @@ test('serializes visible explicit fill stacks in paint order with per-fill opaci
   assert.match(svg, /fill="url\(#tis-gradient-[^)]+\)" fill-opacity="0\.35"/);
   assert.match(svg, /href="data:image\/png;base64,AQIDBA=="[^>]*opacity="0\.6"/);
   assert.doesNotMatch(svg, /#deadbe/, 'hidden explicit fills should not be emitted');
+});
+
+test('serializes every fill and stroke Paint blend against the ordered SVG scene backdrop', () => {
+  for (const blendMode of layerBlendModes) {
+    const node = createNode('rectangle', {
+      id: `paint-mode-${blendMode}`, width: 60, height: 40,
+      fills: [
+        createFillLayer('solid', { id: 'base-paint', color: '#123456' }),
+        createFillLayer('solid', { id: 'blended-paint', color: '#abcdef', blendMode })
+      ],
+      strokes: [{
+        id: 'blended-stroke', color: '#fedcba', width: 3, opacity: 1, visible: true,
+        cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, blendMode
+      }]
+    });
+    const background = createNode('rectangle', { id: 'page-backdrop', width: 60, height: 40, fill: '#778899' });
+    const svg = exportPageToSvg({ id: 'paint-blend-page', children: [background, node] });
+    assert.ok(svg.indexOf('data-tiny-image-star-node-id="page-backdrop"') < svg.indexOf(`data-tiny-image-star-node-id="paint-mode-${blendMode}"`),
+      'earlier page content remains before the blended node as its SVG backdrop');
+    assert.match(svg, new RegExp(`<g opacity="1" data-tiny-image-star-type="rectangle" data-tiny-image-star-node-id="paint-mode-${blendMode}"`),
+      'the layer remains a normal SVG group so its paint elements can see the scene backdrop');
+    assert.doesNotMatch(svg, /isolation:\s*isolate/, 'paint serialization must not isolate the backdrop');
+    assert.ok(svg.indexOf('data-tiny-image-star-fill-id="base-paint"') < svg.indexOf('data-tiny-image-star-fill-id="blended-paint"'));
+    assert.ok(svg.indexOf('data-tiny-image-star-fill-id="blended-paint"') < svg.indexOf('data-tiny-image-star-stroke-id="blended-stroke"'),
+      'fills retain their order and strokes remain above the fill stack');
+    if (blendMode === 'normal') {
+      assert.doesNotMatch(svg, /data-tiny-image-star-fill-id="blended-paint"[^>]*style="mix-blend-mode:normal"/);
+      assert.doesNotMatch(svg, /data-tiny-image-star-stroke-id="blended-stroke"[^>]*style="mix-blend-mode:normal"/);
+    } else {
+      assert.match(svg, new RegExp(`data-tiny-image-star-fill-id="blended-paint"[^>]*style="mix-blend-mode:${blendMode}"`));
+      assert.match(svg, new RegExp(`data-tiny-image-star-stroke-id="blended-stroke"[^>]*style="mix-blend-mode:${blendMode}"`));
+    }
+  }
+});
+
+test('vector network fill and stroke Paint blend modes remain editable and ordered', () => {
+  const network = createNode('network', {
+    id: 'network-paint-blends', width: 30, height: 20,
+    vertices: [{ id: 'a', x: 0, y: 0 }, { id: 'b', x: 1, y: 0 }, { id: 'c', x: .5, y: 1 }],
+    edges: [{ id: 'ab', from: 'a', to: 'b' }, { id: 'bc', from: 'b', to: 'c' }, { id: 'ca', from: 'c', to: 'a' }],
+    faces: [{ id: 'face', vertexIds: ['a', 'b', 'c'] }],
+    fills: [
+      createFillLayer('solid', { id: 'network-base', color: '#123456' }),
+      createFillLayer('solid', { id: 'network-overlay', color: '#abcdef', blendMode: 'screen' })
+    ],
+    strokes: [{
+      id: 'network-outline', color: '#fedcba', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, blendMode: 'overlay'
+    }]
+  });
+  const svg = exportNodeToSvg(network);
+  assert.match(svg, /data-tiny-image-star-fill-id="network-base"[\s\S]*data-tiny-image-star-fill-id="network-overlay"[^>]*style="mix-blend-mode:screen"[\s\S]*data-tiny-image-star-stroke-id="network-outline"[^>]*style="mix-blend-mode:overlay"/);
+  assert.doesNotMatch(svg, /isolation:\s*isolate/);
+});
+
+test('SVG paint blends fail closed when node or ancestor effects would isolate their backdrop', () => {
+  const paint = createFillLayer('solid', { id: 'screen-paint', color: '#abcdef', blendMode: 'screen' });
+  const isolatedCases = [
+    createNode('rectangle', { id: 'opacity-parent', opacity: .5, fills: [paint] }),
+    createNode('rectangle', { id: 'blend-parent', blendMode: 'multiply', fills: [paint] }),
+    createNode('rectangle', { id: 'filter-parent', effects: [createLayerEffect('layer-blur')], fills: [paint] }),
+    createNode('frame', { id: 'ancestor-opacity', opacity: .5, children: [createNode('rectangle', { fills: [paint] })] })
+  ];
+  for (const node of isolatedCases) {
+    assert.throws(() => exportNodeToSvg(node), error => error instanceof SvgExportError
+      && error.feature.includes('isolated SVG layer boundary'), `must reject ${node.id} rather than silently changing the paint backdrop`);
+  }
+});
+
+test('SVG export rejects unsupported per-fill and per-stroke blend modes instead of silently normalizing them', () => {
+  const invalidFill = createNode('rectangle', {
+    name: 'invalid paint', fills: [createFillLayer('solid', { id: 'bad-fill', color: '#123456', blendMode: 'pass-through' })]
+  });
+  assert.throws(() => exportNodeToSvg(invalidFill), /supported fill blend mode/);
+
+  const invalidStroke = createNode('rectangle', {
+    name: 'invalid outline', strokes: [{
+      id: 'bad-stroke', color: '#123456', width: 2, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10, blendMode: 'vivid-light'
+    }]
+  });
+  assert.throws(() => exportNodeToSvg(invalidStroke), /supported stroke blend mode/);
 });
 
 test('serializes vector network fill stacks per face and emits network edges once', () => {

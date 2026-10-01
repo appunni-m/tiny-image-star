@@ -577,6 +577,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .slider-row input[type=range] { width: 100%; accent-color: #0d99ff; }
 .slider-row output { color: #777; text-align: right; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .image-properties-note { margin: 10px 0 0; color: #888; font-size: 9px; line-height: 1.5; }
+.paint-blend-warning { padding: 8px 10px; border: 1px solid #ead8ad; border-radius: 8px; background: #fffaf0; color: #6a5734; }
 .image-erase-actions { display: grid; grid-template-columns: 1.25fr 1fr 1fr; gap: 6px; margin-top: 8px; }
 .image-erase-actions .add-fill { min-width: 0; min-height: 34px; padding-inline: 7px; white-space: nowrap; }
 .image-erase-mode-button[aria-pressed="true"] { border-color: #e56b75; background: #fff3f4; color: #9f1d2b; }
@@ -2418,6 +2419,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 :root[data-theme="dark"] .fig-import-private-note { background: #30333a; }
 :root[data-theme="dark"] .fig-import-warning-block { border-color: #69552f; background: #352d1e; color: #f1dbab; }
 :root[data-theme="dark"] .fig-import-warning-block li span { color: #c0aa7d; }
+:root[data-theme="dark"] .paint-blend-warning { border-color: #69552f; background: #352d1e; color: #f1dbab; }
 :root[data-theme="dark"] .fig-import-clean { background: #1d382e; color: #a5e5c6; }
 @media (max-width: 560px) {
   .fig-import-dialog { max-height: 90dvh; }

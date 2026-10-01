@@ -242,19 +242,19 @@ test('smart animation interpolates stroke miter limits and switches stroke prese
 });
 
 test('smart animation interpolates compatible ordered stroke items and midpoint-snaps incompatible identities', () => {
-  const makeStroke = (id, color, width, opacity, pattern, cap, join, miterLimit) => ({
-    id, color, width, opacity, visible: true, pattern, cap, join, miterLimit
+  const makeStroke = (id, color, width, opacity, pattern, cap, join, miterLimit, blendMode = 'normal') => ({
+    id, color, width, opacity, visible: true, pattern, cap, join, miterLimit, blendMode
   });
-  const fromStack = [makeStroke('inner', '#000000', 2, .2, 'solid', 'butt', 'miter', 10)];
-  const toStack = [makeStroke('inner', '#ffffff', 6, .8, 'dashed', 'round', 'bevel', 4)];
+  const fromStack = [makeStroke('inner', '#000000', 2, .2, 'solid', 'butt', 'miter', 10, 'screen')];
+  const toStack = [makeStroke('inner', '#ffffff', 6, .8, 'dashed', 'round', 'bevel', 4, 'multiply')];
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: fromStack })] });
   const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', strokes: toStack })] });
   const at = progress => interpolateSmartFrame(from, to, progress).children[0].strokes;
   assert.deepEqual(at(0), fromStack);
   assert.deepEqual(at(1), toStack);
   const quarter = at(.25)[0];
-  assert.deepEqual({ ...quarter, opacity: Number(quarter.opacity.toFixed(2)) }, makeStroke('inner', '#404040', 3, .35, 'solid', 'butt', 'miter', 8.5));
-  assert.deepEqual(at(.5), [makeStroke('inner', '#808080', 4, .5, 'dashed', 'round', 'bevel', 7)]);
+  assert.deepEqual({ ...quarter, opacity: Number(quarter.opacity.toFixed(2)) }, makeStroke('inner', '#404040', 3, .35, 'solid', 'butt', 'miter', 8.5, 'screen'));
+  assert.deepEqual(at(.5), [makeStroke('inner', '#808080', 4, .5, 'dashed', 'round', 'bevel', 7, 'multiply')]);
 
   const incompatibleTarget = createNode('frame', { children: [createNode('rectangle', {
     name: 'Card', strokes: [makeStroke('replacement', '#ffffff', 6, .8, 'solid', 'butt', 'miter', 10)]
@@ -650,8 +650,8 @@ test('smart animation keeps mixed or malformed gradient geometry on the midpoint
 
 test('smart animation interpolates compatible modern fill stacks on frames and layers without mutating endpoint snapshots', () => {
   const fromFills = [
-    { id: 'solid-before', type: 'solid', visible: true, opacity: .2, color: '#000000' },
-    { id: 'gradient-before', type: 'linear', visible: true, opacity: .4, gradient: {
+    { id: 'solid-before', type: 'solid', visible: true, opacity: .2, color: '#000000', blendMode: 'screen' },
+    { id: 'gradient-before', type: 'linear', visible: true, opacity: .4, blendMode: 'darken', gradient: {
       type: 'linear', angle: 350,
       stops: [
         { id: 'before-start', position: 0, color: '#000000' },
@@ -660,8 +660,8 @@ test('smart animation interpolates compatible modern fill stacks on frames and l
     } }
   ];
   const toFills = [
-    { id: 'solid-after', type: 'solid', visible: true, opacity: .8, color: '#ffffff' },
-    { id: 'gradient-after', type: 'linear', visible: true, opacity: .8, gradient: {
+    { id: 'solid-after', type: 'solid', visible: true, opacity: .8, color: '#ffffff', blendMode: 'multiply' },
+    { id: 'gradient-after', type: 'linear', visible: true, opacity: .8, blendMode: 'overlay', gradient: {
       type: 'linear', angle: 10,
       stops: [
         { id: 'after-start', position: .5, color: '#ffffff' },
@@ -678,6 +678,7 @@ test('smart animation interpolates compatible modern fill stacks on frames and l
 
   for (const node of [quarter, quarter.children[0]]) {
     assert.deepEqual(node.fills.map(fill => fill.id), ['solid-before', 'gradient-before']);
+    assert.deepEqual(node.fills.map(fill => fill.blendMode), ['screen', 'darken']);
     assert.ok(Math.abs(node.fills[0].opacity - .35) < Number.EPSILON * 2);
     assert.equal(node.fills[1].opacity, .5);
     assert.equal(node.fills[0].color, '#404040');
@@ -691,6 +692,7 @@ test('smart animation interpolates compatible modern fill stacks on frames and l
   }
   for (const node of [midpoint, midpoint.children[0]]) {
     assert.deepEqual(node.fills.map(fill => fill.id), ['solid-after', 'gradient-after']);
+    assert.deepEqual(node.fills.map(fill => fill.blendMode), ['multiply', 'overlay']);
     assert.equal(node.fills[0].opacity, .5);
     assert.ok(Math.abs(node.fills[1].opacity - .6) < Number.EPSILON * 2);
     assert.equal(node.fills[0].color, '#808080');

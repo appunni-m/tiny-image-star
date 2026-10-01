@@ -1,4 +1,5 @@
 import { vectorPathContours } from './vector-path.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 export const gradientTypes = new Set(['linear', 'radial', 'angular']);
 export const fillTypes = new Set(['solid', 'linear', 'radial', 'angular', 'image']);
@@ -81,6 +82,7 @@ export function updateFillLayer(node, fillId, changes = {}) {
   if (!fill) return null;
   if (Object.hasOwn(changes, 'visible') && typeof changes.visible === 'boolean') fill.visible = changes.visible;
   if (Object.hasOwn(changes, 'opacity') && Number.isFinite(changes.opacity) && changes.opacity >= 0 && changes.opacity <= 1) fill.opacity = changes.opacity;
+  if (Object.hasOwn(changes, 'blendMode') && isValidLayerBlendMode(changes.blendMode)) fill.blendMode = changes.blendMode;
   if (Object.hasOwn(changes, 'color') && (typeof changes.color === 'string' && (/^#[0-9a-f]{6}$/i.test(changes.color) || changes.color === 'transparent'))) fill.color = changes.color;
   syncLegacyFillFields(node);
   return fill;
@@ -139,7 +141,8 @@ export function isValidFillLayer(fill, node = null, { isValidImageFill = () => f
   if (!fill || typeof fill !== 'object' || Array.isArray(fill)
     || typeof fill.id !== 'string' || !fill.id || fill.id.length > 256
     || !fillTypes.has(fill.type) || typeof fill.visible !== 'boolean'
-    || !Number.isFinite(fill.opacity) || fill.opacity < 0 || fill.opacity > 1) return false;
+    || !Number.isFinite(fill.opacity) || fill.opacity < 0 || fill.opacity > 1
+    || (Object.hasOwn(fill, 'blendMode') && !isValidLayerBlendMode(fill.blendMode))) return false;
   if (fill.type === 'solid') return typeof fill.color === 'string' && (/^#[0-9a-f]{6}$/i.test(fill.color) || fill.color === 'transparent');
   if (gradientTypes.has(fill.type)) return fill.gradient?.type === fill.type && isValidGradientFill(fill.gradient);
   return Boolean(node && isImageFillSupported(node) && isValidImageFill(fill.imageFill));

@@ -162,7 +162,7 @@ test('omits malformed Figma gradients with import-review warnings without invali
   assert.match(imported.report.warnings.find(item => item.type === 'GRADIENT').detail, /invalid stop/u);
 });
 
-test('imports faithful layer blend modes and explicitly reviews unrepresentable layer and paint blends', () => {
+test('imports faithful layer and paint blend modes and reviews unsupported paint blend modes', () => {
   const page = { sessionID: 81, localID: 1 };
   const imported = convertFigDocument({
     header: { version: 106 },
@@ -177,29 +177,99 @@ test('imports faithful layer blend modes and explicitly reviews unrepresentable 
         name: 'Paint blend',
         fillPaints: [
           { type: 'SOLID', blendMode: 'SCREEN', color: { r: 1, g: 0, b: 0, a: 1 } },
-          { type: 'SOLID', blendMode: 'FUTURE_PAINT', color: { r: 0, g: 0, b: 1, a: 1 } }
+          { type: 'SOLID', blendMode: 'FUTURE_PAINT', color: { r: 0, g: 0, b: 1, a: 1 } },
+          { type: 'SOLID', blendMode: 'PASS_THROUGH', color: { r: 0, g: 1, b: 0, a: 1 } }
         ],
         strokePaints: [{ type: 'SOLID', blendMode: 'MULTIPLY', color: { r: 0, g: 0, b: 0, a: 1 } }]
       })
     ], images: new Map(), message: { blobs: [] }
   });
   const layers = imported.document.pages[0].children;
+  const paintLayer = layers.find(layer => layer.name === 'Paint blend');
   assert.equal(layers[0].blendMode, 'multiply');
   assert.equal(layers[1].blendMode, 'color');
   assert.equal(layers[2].blendMode, 'normal');
   assert.equal(layers[3].blendMode, 'normal');
   assert.equal(layers[4].blendMode, 'normal');
   assert.equal(layers[5].blendMode, 'normal');
+  assert.equal(paintLayer.fills[0].blendMode, 'screen');
+  assert.equal(paintLayer.fills[1].blendMode, undefined, 'unknown paint modes reset to the default normal blend');
+  assert.equal(paintLayer.fills[2].blendMode, undefined, 'PASS_THROUGH is invalid on an individual paint');
+  assert.equal(paintLayer.strokes[0].blendMode, 'multiply');
   assert.equal(imported.report.flattenedTypes.BLEND_MODE, 3,
     'unsupported known, unknown, and pass-through layer modes are visible in import review');
-  assert.equal(imported.report.flattenedTypes.PAINT_BLEND, 3,
-    'fill and stroke paint blend modes are explicitly reported because paint-level compositing is not modeled');
+  assert.equal(imported.report.flattenedTypes.PAINT_BLEND, 2,
+    'only the unknown and pass-through paint modes are reported');
   assert.ok(imported.report.warnings.some(item => item.type === 'BLEND_MODE' && /LINEAR_BURN/u.test(item.detail)));
   assert.ok(imported.report.warnings.some(item => item.type === 'BLEND_MODE' && /FUTURE_BLEND/u.test(item.detail)));
   assert.ok(imported.report.warnings.some(item => item.type === 'PAINT_BLEND' && /FUTURE_PAINT/u.test(item.detail)));
+  assert.ok(imported.report.warnings.some(item => item.type === 'PAINT_BLEND' && /PASS_THROUGH/u.test(item.detail)));
   const restored = parseDocument(serializeDocument(imported.document));
   assert.equal(restored.pages[0].children[0].blendMode, 'multiply');
   assert.equal(restored.pages[0].children[1].blendMode, 'color');
+  const restoredPaintLayer = restored.pages[0].children.find(layer => layer.name === 'Paint blend');
+  assert.equal(restoredPaintLayer.fills[0].blendMode, 'screen');
+  assert.equal(restoredPaintLayer.strokes[0].blendMode, 'multiply');
+});
+
+test('all supported Figma Paint blend modes map on both fill and stroke paints without warnings', () => {
+  const page = { sessionID: 82, localID: 1 };
+  const modes = [
+    ['NORMAL', 'normal'], ['DARKEN', 'darken'], ['MULTIPLY', 'multiply'], ['COLOR_BURN', 'color-burn'],
+    ['LIGHTEN', 'lighten'], ['SCREEN', 'screen'], ['COLOR_DODGE', 'color-dodge'], ['OVERLAY', 'overlay'],
+    ['SOFT_LIGHT', 'soft-light'], ['HARD_LIGHT', 'hard-light'], ['DIFFERENCE', 'difference'],
+    ['EXCLUSION', 'exclusion'], ['HUE', 'hue'], ['SATURATION', 'saturation'], ['COLOR', 'color'],
+    ['LUMINOSITY', 'luminosity']
+  ];
+  const nodes = [node('CANVAS', 1, null, '', { guid: page, name: 'Page' }), ...modes.map(([sourceMode], index) => node('RECTANGLE', index + 2, page, String(index), {
+    name: sourceMode,
+    fillPaints: [{ type: 'SOLID', blendMode: sourceMode, color: { r: 0.3, g: 0.6, b: 0.9, a: 1 } }],
+    strokePaints: [{ type: 'SOLID', blendMode: sourceMode, color: { r: 0.9, g: 0.6, b: 0.3, a: 1 } }]
+  }))];
+  const imported = convertFigDocument({ header: { version: 106 }, nodes, images: new Map(), message: { blobs: [] } });
+  const layers = imported.document.pages[0].children;
+  for (const [sourceMode, cssMode] of modes) {
+    const layer = layers.find(item => item.name === sourceMode);
+    assert.equal(layer.fills[0].blendMode || 'normal', cssMode, `fill mode ${cssMode}`);
+    assert.equal(layer.strokes[0].blendMode || 'normal', cssMode, `stroke mode ${cssMode}`);
+  }
+  assert.equal(imported.report.flattenedTypes.PAINT_BLEND || 0, 0);
+});
+
+test('import review flags paint blends isolated by their layer or any ancestor', () => {
+  const page = { sessionID: 83, localID: 1 };
+  const opacityParent = { sessionID: 83, localID: 4 };
+  const effectParent = { sessionID: 83, localID: 6 };
+  const parsed = convertFigDocument({ header: { version: 106 }, nodes: [
+    node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+    node('RECTANGLE', 2, page, 'a', {
+      name: 'Layer blend combination', blendMode: 'MULTIPLY',
+      fillPaints: [{ type: 'SOLID', blendMode: 'SCREEN', color: { r: 0.5, g: 0.2, b: 0.8, a: 1 } }]
+    }),
+    node('RECTANGLE', 3, page, 'b', {
+      name: 'Effect combination',
+      fillPaints: [{ type: 'SOLID', blendMode: 'COLOR_DODGE', color: { r: 0.5, g: 0.2, b: 0.8, a: 1 } }],
+      effects: [{ type: 'DROP_SHADOW', color: { r: 0, g: 0, b: 0, a: 0.25 }, offset: { x: 0, y: 2 }, radius: 3 }]
+    }),
+    node('FRAME', 4, page, 'c', { guid: opacityParent, name: 'Opacity parent', opacity: 0.5 }),
+    node('RECTANGLE', 5, opacityParent, 'a', {
+      name: 'Nested opacity paint',
+      fillPaints: [{ type: 'SOLID', blendMode: 'SCREEN', color: { r: 0.1, g: 0.7, b: 0.5, a: 1 } }]
+    }),
+    node('GROUP', 6, page, 'd', {
+      guid: effectParent, name: 'Effect parent',
+      effects: [{ type: 'DROP_SHADOW', color: { r: 0, g: 0, b: 0, a: 0.25 }, offset: { x: 0, y: 2 }, radius: 3 }]
+    }),
+    node('RECTANGLE', 7, effectParent, 'a', {
+      name: 'Nested effect paint',
+      strokePaints: [{ type: 'SOLID', blendMode: 'SCREEN', color: { r: 0.1, g: 0.7, b: 0.5, a: 1 } }]
+    })
+  ], images: new Map(), message: { blobs: [] } });
+  assert.equal(parsed.report.flattenedTypes.PAINT_BLEND_COMPOSITION, 4);
+  assert.ok(parsed.report.warnings.some(item => item.type === 'PAINT_BLEND_COMPOSITION' && item.name === 'Layer blend combination'));
+  assert.ok(parsed.report.warnings.some(item => item.type === 'PAINT_BLEND_COMPOSITION' && item.name === 'Effect combination'));
+  assert.ok(parsed.report.warnings.some(item => item.type === 'PAINT_BLEND_COMPOSITION' && item.name === 'Nested opacity paint' && /reduced layer opacity/u.test(item.detail)));
+  assert.ok(parsed.report.warnings.some(item => item.type === 'PAINT_BLEND_COMPOSITION' && item.name === 'Nested effect paint' && /visible effects/u.test(item.detail)));
 });
 
 test('imports consecutive Figma alpha-mask stacks as editable, scoped mask groups', () => {

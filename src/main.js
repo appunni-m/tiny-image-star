@@ -1605,7 +1605,7 @@ function strokeStackControls(node) {
       : '';
     const opacity = Math.round(stroke.opacity * 100);
     const gradient = stroke.gradient;
-    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient']])}${gradient ? `<div class="stroke-gradient-controls">${['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<label class="stroke-field"><span>${gradient.type === 'angular' ? 'Start angle' : 'Angle'}</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="0.01" value="${formatInspectorNumber(gradient.angle)}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${formatInspectorNumber(stop.position * 100)}%</span><input type="number" min="0" max="100" step="0.01" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${formatInspectorNumber(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label>${strokeGradientStopOpacityField(stop, stopIndex, id, name, node)}<button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
+    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient']])}${select('blendMode', 'Blend', stroke.blendMode || 'normal', layerBlendModes.map(mode => [mode, layerBlendModeLabels[mode]]))}${gradient ? `<div class="stroke-gradient-controls">${['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<label class="stroke-field"><span>${gradient.type === 'angular' ? 'Start angle' : 'Angle'}</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="0.01" value="${formatInspectorNumber(gradient.angle)}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${formatInspectorNumber(stop.position * 100)}%</span><input type="number" min="0" max="100" step="0.01" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${formatInspectorNumber(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label>${strokeGradientStopOpacityField(stop, stopIndex, id, name, node)}<button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
     return `<div class="layer-effect-card stroke-stack-card" data-stroke-row="${id}">
       <div class="layer-effect-heading">
         <strong>${name}</strong>
@@ -1655,12 +1655,30 @@ function fillStackControls(node) {
       : gradientTypes.has(fill.type)
         ? gradientFillControls(node, fill.gradient, fill.id)
         : imageFillControls(node, fill.imageFill, fill.id);
+    const blendOptions = layerBlendModes.map(mode => `<option value="${mode}"${(fill.blendMode || 'normal') === mode ? ' selected' : ''}>${layerBlendModeLabels[mode]}</option>`).join('');
     const canAddImage = Boolean(sources.length || fill.type === 'image');
-    return `<div class="layer-effect-card fill-stack-card" data-fill-row="${id}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-fill-field="visible" data-fill-id="${id}"${fill.visible ? ' checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="up" aria-label="Move ${name.toLowerCase()} earlier"${node.locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="down" aria-label="Move ${name.toLowerCase()} later"${node.locked || index === fills.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-fill-layer" data-fill-id="${id}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button></div><label class="fill-type-row"><span>Paint</span><select class="select-field" data-fill-field="type" data-fill-id="${id}" aria-label="${name} type"${node.locked ? ' disabled' : ''}>${typeOptions}</select></label><div class="slider-row"><label for="fill-opacity-${id}">Opacity</label><input id="fill-opacity-${id}" type="range" min="0" max="100" step="1" value="${Math.round(fill.opacity * 100)}" data-fill-field="opacity" data-fill-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${Math.round(fill.opacity * 100)}%</output></div>${paint}</div>`;
+    return `<div class="layer-effect-card fill-stack-card" data-fill-row="${id}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-fill-field="visible" data-fill-id="${id}"${fill.visible ? ' checked' : ''} aria-label="Show ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="up" aria-label="Move ${name.toLowerCase()} earlier"${node.locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-fill-layer" data-fill-id="${id}" data-direction="down" aria-label="Move ${name.toLowerCase()} later"${node.locked || index === fills.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-fill-layer" data-fill-id="${id}" aria-label="Remove ${name.toLowerCase()}"${node.locked ? ' disabled' : ''}>×</button></div><label class="fill-type-row"><span>Paint</span><select class="select-field" data-fill-field="type" data-fill-id="${id}" aria-label="${name} type"${node.locked ? ' disabled' : ''}>${typeOptions}</select></label><label class="fill-type-row"><span>Blend</span><select class="select-field" data-fill-field="blendMode" data-fill-id="${id}" aria-label="${name} blend mode"${node.locked ? ' disabled' : ''}>${blendOptions}</select></label><div class="slider-row"><label for="fill-opacity-${id}">Opacity</label><input id="fill-opacity-${id}" type="range" min="0" max="100" step="1" value="${Math.round(fill.opacity * 100)}" data-fill-field="opacity" data-fill-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${Math.round(fill.opacity * 100)}%</output></div>${paint}</div>`;
   }).join('');
   const disabled = node.locked || fills.length >= 32;
   const imageButton = `<button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="image"${disabled || !sources.length ? ' disabled' : ''}>＋ Image fill</button>`;
   return `<div class="fill-stack" role="group" aria-label="Ordered fills">${rows}${fills.length >= 32 ? '<div class="image-properties-note">A layer can have up to 32 fills.</div>' : ''}<div class="style-actions fill-stack-actions"><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="solid"${disabled ? ' disabled' : ''}>＋ Solid fill</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="linear"${disabled ? ' disabled' : ''}>＋ Linear</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="radial"${disabled ? ' disabled' : ''}>＋ Radial</button><button class="add-fill" type="button" data-action="add-fill-layer" data-fill-type="angular"${disabled ? ' disabled' : ''}>＋ Angular</button>${imageButton}</div><div class="image-properties-note">Fills render in order; the later fills sit above the earlier ones.</div></div>`;
+}
+function paintBlendCompositionWarning(node) {
+  const activeFillBlend = fillStackForNode(node).some(fill => fill.visible !== false && fill.opacity > 0 && fill.blendMode && fill.blendMode !== 'normal');
+  const activeStrokeBlend = strokeStackForNode(node).some(stroke => stroke.visible !== false && stroke.opacity > 0 && stroke.blendMode && stroke.blendMode !== 'normal');
+  if (!(activeFillBlend || activeStrokeBlend)) return '';
+  const entry = findNode(state.document, node.id);
+  const ancestry = [...(entry?.parents || []), node];
+  const reasons = new Set();
+  for (const layer of ancestry) {
+    if (Number(getNodePropertyValue(state.document, layer, 'opacity') ?? 1) < 1) reasons.add('reduced opacity');
+    if (layer.blendMode && layer.blendMode !== 'normal') reasons.add('layer blending');
+    if (Array.isArray(layer.effects) && layer.effects.some(effect => effect && effect.visible !== false)) reasons.add('effects');
+    if (layer.mask) reasons.add('mask compositing');
+    if (layer.type === 'boolean') reasons.add('Boolean compositing');
+  }
+  if (!reasons.size) return '';
+  return `<div class="image-properties-note paint-blend-warning" role="status">Paint blending may differ inside ${escapeHtml([...reasons].join(', '))}.</div>`;
 }
 function appearanceSection(node) {
   const hasFill = isFillStackSupported(node);
@@ -1668,6 +1686,7 @@ function appearanceSection(node) {
   const canBindPrimaryFill = hasFill && fillStackForNode(node)[0]?.type === 'solid';
   const fillBinding = canBindPrimaryFill ? variableBindingControl(node, 'fill') : '';
   const stroke = strokeStackControls(node);
+  const paintBlendWarning = paintBlendCompositionWarning(node);
   const radius = cornerRadiusControls(node);
   const fillStyleActions = canBindPrimaryFill
     ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
@@ -1682,7 +1701,7 @@ function appearanceSection(node) {
     : node.type === 'boolean'
       ? fillStyleActions ? `<div class="style-actions">${fillStyleActions}</div>` : ''
       : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
-  const body = `${fills}${fillBinding}${stroke}${styleActions}${radius}`;
+  const body = `${fills}${fillBinding}${stroke}${paintBlendWarning}${styleActions}${radius}`;
   return section('Appearance', body);
 }
 function strokeSection(node) {
@@ -6174,6 +6193,7 @@ function updateFillInput(input) {
   const field = input.dataset.fillField;
   if (!state.controlEdit) { checkpoint('Edit fill'); state.controlEdit = true; }
   if (field === 'visible') updateFillLayer(node, fill.id, { visible: input.checked });
+  else if (field === 'blendMode') updateFillLayer(node, fill.id, { blendMode: input.value });
   else if (field === 'opacity' && Number.isFinite(Number(input.value))) {
     updateFillLayer(node, fill.id, { opacity: Math.max(0, Math.min(1, Number(input.value) / 100)) });
     if (input.nextElementSibling) input.nextElementSibling.value = `${input.value}%`;
@@ -6198,7 +6218,7 @@ function updateFillInput(input) {
     }
     const wasPrimary = fill === fills[0];
     for (const key of ['color', 'gradient', 'imageFill']) delete fill[key];
-    Object.assign(fill, replacement, { id: fill.id, visible: fill.visible, opacity: fill.opacity });
+    Object.assign(fill, replacement, { id: fill.id, visible: fill.visible, opacity: fill.opacity, blendMode: fill.blendMode || 'normal' });
     if (wasPrimary) {
       delete node.fillVariableId; delete node.fillStyleId;
       if (node.variableBindings) delete node.variableBindings.fill;
@@ -6229,7 +6249,8 @@ function updateStrokeInput(input) {
       updateStroke(node, stroke.id, { gradient });
     } else return;
     renderInspector();
-  } else if (field === 'gradientAngle' && stroke.gradient && Number.isFinite(Number(input.value))) {
+  } else if (field === 'blendMode') updateStroke(node, stroke.id, { blendMode: input.value });
+  else if (field === 'gradientAngle' && stroke.gradient && Number.isFinite(Number(input.value))) {
     stroke.gradient.angle = Math.max(0, Math.min(359, Number(input.value)));
   } else if (field === 'gradientStopColor' && stroke.gradient && /^#[0-9a-f]{6}$/i.test(input.value)) {
     const stop = stroke.gradient.stops.find(item => item.id === input.dataset.strokeGradientStopId);

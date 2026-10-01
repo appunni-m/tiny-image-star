@@ -50,12 +50,13 @@ test('stroke edits validate independently and removing the stack clears stale sc
   const stroke = ensureStrokeStack(node)[0];
   assert.equal(detachPrimaryStrokeBinding(node, stroke, '#778899'), true);
   assert.equal(stroke.color, '#778899');
-  updateStroke(node, stroke.id, { color: '#aabbcc', width: 9, opacity: .25, visible: false, pattern: 'dotted', cap: 'round', join: 'bevel', miterLimit: 4, startDecoration: 'arrow', endDecoration: 'triangle' });
+  updateStroke(node, stroke.id, { color: '#aabbcc', width: 9, opacity: .25, visible: false, pattern: 'dotted', cap: 'round', join: 'bevel', miterLimit: 4, startDecoration: 'arrow', endDecoration: 'triangle', blendMode: 'screen' });
   assert.equal(stroke.color, '#aabbcc');
   assert.equal(stroke.width, 9);
   assert.equal(stroke.opacity, .25);
   assert.equal(stroke.startDecoration, 'arrow');
   assert.equal(stroke.endDecoration, 'triangle');
+  assert.equal(stroke.blendMode, 'screen');
   assert.equal(isValidStrokeStack(node.strokes, node), true);
   for (const bad of [
     [{ ...stroke, width: -1 }],
@@ -63,6 +64,8 @@ test('stroke edits validate independently and removing the stack clears stale sc
     [{ ...stroke, cap: 'triangle' }],
     [{ ...stroke, startDecoration: 'circle' }],
     [{ ...stroke, endDecoration: 'diamond' }],
+    [{ ...stroke, blendMode: 'vivid-light' }],
+    [{ ...stroke, blendMode: 'PASS_THROUGH' }],
     [{ ...stroke, pattern: 'dotted', cap: 'butt' }],
     [{ ...stroke }, { ...stroke }]
   ]) assert.equal(isValidStrokeStack(bad, node), false);

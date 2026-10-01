@@ -1,6 +1,7 @@
 /** Ordered, local stroke paints with a compatibility view for legacy layers. */
 
 import { isValidGradientFill } from './fills.js';
+import { isValidLayerBlendMode } from './layer-blend.js';
 
 export const MAX_STROKES_PER_NODE = 32;
 
@@ -48,7 +49,7 @@ export function createStroke(overrides = {}) {
   const stroke = {
     id: id(), color: '#1e1e1e', width: 1, opacity: 1, visible: true,
     cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10,
-    startDecoration: 'none', endDecoration: 'none',
+    startDecoration: 'none', endDecoration: 'none', blendMode: 'normal',
     ...overrides
   };
   if (Object.hasOwn(stroke, 'gradient')) {
@@ -92,6 +93,7 @@ export function updateStroke(node, strokeId, changes = {}) {
   if (!stroke) return null;
   if (Object.hasOwn(changes, 'visible') && typeof changes.visible === 'boolean') stroke.visible = changes.visible;
   if (Object.hasOwn(changes, 'opacity') && Number.isFinite(changes.opacity) && changes.opacity >= 0 && changes.opacity <= 1) stroke.opacity = changes.opacity;
+  if (Object.hasOwn(changes, 'blendMode') && isValidLayerBlendMode(changes.blendMode)) stroke.blendMode = changes.blendMode;
   if (Object.hasOwn(changes, 'color') && validColor(changes.color)) stroke.color = changes.color;
   if (Object.hasOwn(changes, 'width') && Number.isFinite(changes.width) && changes.width >= 0 && changes.width <= 100_000) stroke.width = changes.width;
   if (Object.hasOwn(changes, 'cap') && caps.has(changes.cap)) stroke.cap = changes.cap;
@@ -156,6 +158,7 @@ export function isValidStroke(stroke) {
     && validColor(stroke.color)
     && Number.isFinite(stroke.width) && stroke.width >= 0 && stroke.width <= 100_000
     && Number.isFinite(stroke.opacity) && stroke.opacity >= 0 && stroke.opacity <= 1
+    && (!Object.hasOwn(stroke, 'blendMode') || isValidLayerBlendMode(stroke.blendMode))
     && typeof stroke.visible === 'boolean'
     && caps.has(stroke.cap) && joins.has(stroke.join) && patterns.has(stroke.pattern)
     && Number.isFinite(stroke.miterLimit) && stroke.miterLimit >= 1 && stroke.miterLimit <= 1000
