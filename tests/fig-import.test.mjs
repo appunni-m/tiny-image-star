@@ -5,6 +5,7 @@ import test from 'node:test';
 import { zipSync } from 'fflate';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
+import { applyAutoLayout } from '../src/layout-engine.js';
 
 const fixture = name => new URL(`./fixtures/fig-import/${name}`, import.meta.url);
 const circlePath = fixture('circle-v101.fig');
@@ -152,6 +153,154 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(imported.report.unsupportedTypes.MYSTERY_LEAF, 1);
   assert.equal(imported.report.unsupportedTypes.__proto__, 1);
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
+});
+
+test('imports horizontal and vertical auto layout as editable local layout instead of fixed positions', () => {
+  const pageGuid = { sessionID: 3, localID: 1 };
+  const horizontalGuid = { sessionID: 3, localID: 2 };
+  const verticalGuid = { sessionID: 3, localID: 5 };
+  const parsed = {
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: horizontalGuid, name: 'Toolbar', size: { x: 360, y: 120 }, stackMode: 'HORIZONTAL',
+        stackPrimarySizing: 'FIXED', stackCounterSizing: 'FIXED',
+        stackPrimaryAlignItems: 4, stackCounterAlignItems: 1,
+        stackSpacing: 16, stackCounterSpacing: 12, stackHorizontalPadding: 20,
+        stackVerticalPadding: 10, stackPaddingRight: 24, stackPaddingBottom: 8, stackWrap: 'WRAP'
+      }),
+      node('RECTANGLE', 3, horizontalGuid, 'a', {
+        name: 'Flexible action', size: { x: 64, y: 30 }, stackChildPrimaryGrow: 1,
+        stackChildAlignSelf: 3, minSize: { x: 40, y: 20 }, maxSize: { x: 200, y: 90 }
+      }),
+      node('RECTANGLE', 4, horizontalGuid, 'b', {
+        name: 'Floating action', size: { x: 24, y: 24 }, stackPositioning: 'ABSOLUTE',
+        transform: { m00: 1, m01: 0, m02: 310, m10: 0, m11: 1, m12: 12 }
+      }),
+      node('FRAME', 5, pageGuid, 'z', {
+        guid: verticalGuid, name: 'Vertical card', size: { x: 220, y: 160 }, stackMode: 2,
+        stackPrimarySizing: 2, stackCounterSizing: 0, stackSpacing: 14,
+        stackPadding: 8, stackPrimaryAlignItems: 0, stackCounterAlignItems: 1
+      }),
+      node('TEXT', 6, verticalGuid, 'a', { name: 'Title', size: { x: 120, y: 36 } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'auto-layout.fig' });
+  const [toolbar, card] = imported.document.pages[0].children;
+
+  assert.deepEqual(toolbar.autoLayout, {
+    axis: 'horizontal', gap: 16, padding: { top: 10, right: 24, bottom: 8, left: 20 },
+    rowGap: 12, columnGap: 16, columns: 2, rows: 'auto', autoPositioning: true,
+    align: 'center', justify: 'space-between', wrap: true, mainSizing: 'fixed', crossSizing: 'fixed'
+  });
+  assert.equal(toolbar.children[0].layoutSizingMain, 'fill');
+  assert.equal(toolbar.children[0].layoutAlignSelf, 'stretch');
+  assert.deepEqual([toolbar.children[0].minWidth, toolbar.children[0].minHeight, toolbar.children[0].maxWidth, toolbar.children[0].maxHeight], [40, 20, 200, 90]);
+  assert.equal(toolbar.children[1].layoutPositioning, 'absolute');
+  assert.deepEqual([toolbar.children[1].x, toolbar.children[1].y], [310, 12]);
+  assert.equal(card.autoLayout.axis, 'vertical');
+  assert.equal(card.autoLayout.mainSizing, 'hug');
+  assert.equal(card.autoLayout.crossSizing, 'fixed');
+  assert.equal(card.autoLayout.align, 'center');
+  assert.deepEqual(card.autoLayout.padding, { top: 8, right: 8, bottom: 8, left: 8 });
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT, undefined);
+
+  applyAutoLayout(toolbar);
+  assert.equal(toolbar.children[0].width, 200, 'fill sizing honors the imported maximum width');
+  assert.equal(toolbar.children[0].height, 90, 'child stretch honors the imported cross-axis alignment, padding, and maximum size');
+  assert.deepEqual([toolbar.children[1].x, toolbar.children[1].y], [310, 12], 'absolute children keep their imported local position');
+});
+
+test('imports editable manual grid tracks, placements, spans, gaps, padding, and cell alignment', () => {
+  const pageGuid = { sessionID: 4, localID: 1 };
+  const frameGuid = { sessionID: 4, localID: 2 };
+  const column1 = { sessionID: 4, localID: 10 };
+  const column2 = { sessionID: 4, localID: 11 };
+  const row1 = { sessionID: 4, localID: 12 };
+  const row2 = { sessionID: 4, localID: 13 };
+  const parsed = {
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, name: 'Manual grid', size: { x: 400, y: 300 }, stackMode: 3,
+        stackHorizontalPadding: 10, stackVerticalPadding: 12, stackPaddingRight: 20, stackPaddingBottom: 8,
+        gridRowGap: 10, gridColumnGap: 10, gridAutoTracks: 0, gridReflowEnabled: false,
+        gridColumns: { entries: [{ id: column2, position: 'b' }, { id: column1, position: 'a' }] },
+        gridRows: { entries: [{ id: row2, position: 'b' }, { id: row1, position: 'a' }] },
+        gridColumnsSizing: { entries: [
+          { id: column2, trackSize: { minSizing: { type: 0, value: 2 }, maxSizing: { type: 0, value: 2 } } },
+          { id: column1, trackSize: { minSizing: { type: 1, value: 80 }, maxSizing: { type: 1, value: 80 } } }
+        ] },
+        gridRowsSizing: { entries: [
+          { id: row2, trackSize: { minSizing: { type: 0, value: 1 }, maxSizing: { type: 0, value: 1 } } },
+          { id: row1, trackSize: { minSizing: { type: 1, value: 80 }, maxSizing: { type: 1, value: 80 } } }
+        ] }
+      }),
+      node('RECTANGLE', 3, frameGuid, 'a', {
+        name: 'Spanning cell', size: { x: 100, y: 30 }, gridRowAnchor: row1, gridColumnAnchor: column1,
+        gridColumnSpan: 2, gridRowSpan: 1, gridChildHorizontalAlign: 2, gridChildVerticalAlign: 1
+      }),
+      node('RECTANGLE', 4, frameGuid, 'b', {
+        name: 'Anchored cell', size: { x: 40, y: 20 }, gridRowAnchor: row2, gridColumnAnchor: column2,
+        gridChildHorizontalAlign: 3, gridChildVerticalAlign: 2
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'grid.fig' });
+  const frame = imported.document.pages[0].children[0];
+  assert.deepEqual(frame.autoLayout, {
+    axis: 'grid', gap: 10, padding: { top: 12, right: 20, bottom: 8, left: 10 },
+    rowGap: 10, columnGap: 10, columns: 2, rows: 2, autoPositioning: false,
+    align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
+    columnTracks: [{ mode: 'fixed', value: 80 }, { mode: 'fill', weight: 2 }],
+    rowTracks: [{ mode: 'fixed', value: 80 }, { mode: 'fill', weight: 1 }]
+  });
+  assert.deepEqual(frame.children[0].gridCell, { row: 1, column: 1, rowSpan: 1, columnSpan: 2, alignX: 'center', alignY: 'start' });
+  assert.deepEqual(frame.children[1].gridCell, { row: 2, column: 2, alignX: 'end', alignY: 'center' });
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_GRID, undefined);
+
+  applyAutoLayout(frame);
+  assert.deepEqual([frame.children[0].x, frame.children[0].y], [145, 12], 'a spanning child aligns to its full two-column area');
+  assert.deepEqual([frame.children[1].x, frame.children[1].y], [340, 187], 'manual anchors use ordered track IDs and fill track weights');
+});
+
+test('imports row-major grid flow and automatic hug rows', () => {
+  const pageGuid = { sessionID: 5, localID: 1 };
+  const frameGuid = { sessionID: 5, localID: 2 };
+  const column1 = { sessionID: 5, localID: 10 };
+  const column2 = { sessionID: 5, localID: 11 };
+  const row1 = { sessionID: 5, localID: 12 };
+  const parsed = {
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, name: 'Flow grid', size: { x: 220, y: 160 }, stackMode: 'GRID',
+        gridRowGap: 5, gridColumnGap: 20, gridAutoTracks: 1, gridReflowEnabled: true,
+        gridColumns: { entries: [{ id: column1, position: 'a' }, { id: column2, position: 'b' }] },
+        gridRows: { entries: [{ id: row1, position: 'a' }] },
+        gridColumnsSizing: { entries: [
+          { id: column1, trackSize: { minSizing: { type: 'FLEX', value: 1 }, maxSizing: { type: 'FLEX', value: 1 } } },
+          { id: column2, trackSize: { minSizing: { type: 'FLEX', value: 1 }, maxSizing: { type: 'FLEX', value: 1 } } }
+        ] },
+        gridRowsSizing: { entries: [{ id: row1, trackSize: { minSizing: { type: 'HUG' }, maxSizing: { type: 'HUG' } } }] }
+      }),
+      node('RECTANGLE', 5, frameGuid, 'c', { name: 'Third', size: { x: 70, y: 25 } }),
+      node('RECTANGLE', 3, frameGuid, 'a', { name: 'First', size: { x: 50, y: 20 } }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'Second', size: { x: 60, y: 30 } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'flow-grid.fig' });
+  const frame = imported.document.pages[0].children[0];
+  assert.deepEqual([frame.autoLayout.rows, frame.autoLayout.autoPositioning], ['auto', true]);
+  assert.deepEqual(frame.children.map(child => child.name), ['First', 'Second', 'Third']);
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_GRID, undefined);
+
+  applyAutoLayout(frame);
+  assert.deepEqual(frame.children.map(child => [child.gridCell.row, child.gridCell.column]), [[1, 1], [1, 2], [2, 1]]);
+  assert.deepEqual(frame.children.map(child => [child.x, child.y]), [[0, 0], [120, 0], [0, 35]]);
 });
 
 test('bounds cyclic and deeply nested decoded parent graphs and reports detached visible nodes', () => {

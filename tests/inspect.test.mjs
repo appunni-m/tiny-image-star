@@ -234,6 +234,31 @@ test('Inspect output describes responsive grid layout and multiple selected laye
   assert.deepEqual(JSON.parse(output.json).map(node => node.id), [card.id, badge.id]);
 });
 
+test('Inspect preserves per-child cross-axis alignment in CSS and handoff data', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    name: 'Aligned actions', width: 240, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', align: 'stretch' })
+  });
+  const alignments = ['start', 'center', 'end', 'stretch'];
+  const children = alignments.map(layoutAlignSelf => createNode('rectangle', {
+    name: `Action ${layoutAlignSelf}`, width: 40, height: 24, layoutAlignSelf
+  }));
+  addNode(document, frame);
+  for (const child of children) addNode(document, child, { parentId: frame.id });
+
+  const output = buildInspectOutput(document, children.map(child => findNode(document, child.id)));
+  const layers = new Map(output.layers.map(layer => [layer.id, layer]));
+
+  assert.match(output.css, /align-self: flex-start;/);
+  assert.match(output.css, /align-self: center;/);
+  assert.match(output.css, /align-self: flex-end;/);
+  assert.match(output.css, /align-self: stretch;/);
+  for (const [child, alignment] of children.map((node, index) => [node, alignments[index]])) {
+    assert.deepEqual(layers.get(child.id).layout.sizing, { main: 'fixed', cross: 'fixed', alignSelf: alignment });
+  }
+});
+
 test('Inspect output preserves authored fixed, hug, and weighted grid tracks and cell fill sizing', () => {
   const document = createDocument();
   const grid = createNode('frame', {

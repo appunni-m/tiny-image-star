@@ -75,8 +75,7 @@ export function createAutoLayout(overrides = {}) {
     ? { top: 16, right: 16, bottom: 16, left: 16, ...overrides.padding }
     : { top: overrides.padding ?? 16, right: overrides.padding ?? 16, bottom: overrides.padding ?? 16, left: overrides.padding ?? 16 };
   const settings = {
-    axis: 'vertical', gap, padding: { top: 16, right: 16, bottom: 16, left: 16 },
-    rowGap: gap, columnGap: gap, columns: 2, rows: 'auto', autoPositioning: true,
+    axis: 'vertical',
     align: 'start', justify: 'start', wrap: false, mainSizing: 'fixed', crossSizing: 'fixed',
     ...overrides,
     gap,
@@ -151,6 +150,11 @@ function linearFootprint(sizes, gap) {
     cursor += size + gap;
   }
   return { min, max, extent: Math.max(0, max - min) };
+}
+
+function childAlign(node, settings) {
+  return ['start', 'center', 'end', 'stretch'].includes(node.layoutAlignSelf)
+    ? node.layoutAlignSelf : settings.align;
 }
 
 function normalizedCell(node) {
@@ -334,16 +338,20 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     : Math.max(0, frame.width - padding.left - padding.right);
   const naturalCrossSizes = groups.map(group => group.reduce((max, item) => Math.max(max, horizontal ? item.height : item.width), 0));
   const naturalCrossExtent = linearFootprint(naturalCrossSizes, crossGap).extent;
-  const stretchPerGroup = settings.align === 'stretch' && settings.crossSizing !== 'hug' && groups.length
-    ? Math.max(0, crossAvailable - naturalCrossExtent) / groups.length
+  const stretchGroups = settings.crossSizing !== 'hug'
+    ? groups.filter(group => settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch')).length
     : 0;
+  const stretchPerGroup = stretchGroups
+    ? Math.max(0, crossAvailable - naturalCrossExtent) / stretchGroups : 0;
   const crossFootprint = linearFootprint(naturalCrossSizes, crossGap);
   let crossCursor = (horizontal ? padding.top : padding.left) - crossFootprint.min;
   let computedMain = 0;
 
   for (const [groupIndex, group] of groups.entries()) {
     const lineCross = naturalCrossSizes[groupIndex];
-    const groupCross = lineCross + stretchPerGroup;
+    const canStretchGroup = settings.crossSizing !== 'hug'
+      && (settings.align === 'stretch' || group.some(item => childAlign(item, settings) === 'stretch'));
+    const groupCross = lineCross + (canStretchGroup ? stretchPerGroup : 0);
     const fillItems = settings.mainSizing === 'fixed' ? group.filter(item => item.layoutSizingMain === 'fill') : [];
     if (fillItems.length) {
       const usedByFixedItems = group.filter(item => item.layoutSizingMain !== 'fill').reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0);
@@ -357,9 +365,10 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
     for (const item of group) {
       const mainSize = horizontal ? item.width : item.height;
       const crossSize = horizontal ? item.height : item.width;
-      const canStretch = settings.align === 'stretch' && item.layoutSizingCross !== 'fixed';
+      const align = childAlign(item, settings);
+      const canStretch = align === 'stretch' && item.layoutSizingCross !== 'fixed';
       const nextCrossSize = canStretch ? constrainSize(item, horizontal ? 'Height' : 'Width', groupCross) : crossSize;
-      const alignOffset = settings.align === 'center' ? (groupCross - crossSize) / 2 : settings.align === 'end' ? groupCross - crossSize : 0;
+      const alignOffset = align === 'center' ? (groupCross - crossSize) / 2 : align === 'end' ? groupCross - crossSize : 0;
       if (horizontal) {
         item.x = mainCursor;
         item.y = crossCursor + Math.max(0, alignOffset);

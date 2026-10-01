@@ -207,6 +207,20 @@ test('wrapped horizontal stacks use distinct row and column gaps', () => {
   assert.deepEqual([first.x, first.y, second.x, second.y, third.x, third.y], [10, 10, 60, 10, 10, 45]);
 });
 
+test('linear auto layout keeps each child cross-axis alignment override', () => {
+  const frame = createNode('frame', {
+    width: 240, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', padding: 10, align: 'start' })
+  });
+  const centered = createNode('rectangle', { width: 20, height: 20, layoutAlignSelf: 'center' });
+  const ended = createNode('rectangle', { width: 30, height: 10, layoutAlignSelf: 'end' });
+  const stretched = createNode('rectangle', { width: 15, height: 8, layoutAlignSelf: 'stretch' });
+  frame.children.push(centered, ended, stretched);
+  applyAutoLayout(frame);
+  assert.deepEqual([centered.y, ended.y, stretched.y], [40, 80, 10]);
+  assert.equal(stretched.height, 80);
+});
+
 test('wrapped stretch alignment sizes items to their own row without overlap', () => {
   const frame = createNode('frame', {
     width: 130, height: 100,

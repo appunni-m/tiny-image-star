@@ -1909,6 +1909,11 @@ function autoLayoutChildPositioningSection(node) {
   const absolute = node.layoutPositioning === 'absolute';
   return section('Position in auto layout', `<label class="field-caption" for="auto-layout-positioning">Placement</label><select id="auto-layout-positioning" class="prop-input select-field" data-prop="layoutPositioning" aria-label="Position in auto layout"><option value="flow"${absolute ? '' : ' selected'}>Auto layout flow</option><option value="absolute"${absolute ? ' selected' : ''}>Absolute</option></select><div class="image-properties-note">Absolute layers stay at their X/Y position and do not affect the frame’s flow. Position and size them in the section above.</div>`);
 }
+function autoLayoutChildAlignmentSection(node) {
+  const value = node.layoutAlignSelf || 'auto';
+  const options = [['auto', 'Use frame alignment'], ['start', 'Start'], ['center', 'Center'], ['end', 'End'], ['stretch', 'Stretch']];
+  return section('Cross-axis alignment', `<select class="prop-input select-field" data-prop="layoutAlignSelf" aria-label="Cross-axis alignment">${options.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`);
+}
 function constraintsSection(node) {
   const constraints = { horizontal: 'left', vertical: 'top', ...(node.constraints || {}) };
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="constraints.${prop}" aria-label="${prop} constraint">${values.map(([key, label]) => `<option value="${key}"${value === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
@@ -2812,6 +2817,7 @@ function renderInspector() {
     if (node.layoutPositioning !== 'absolute') {
       if (parent.autoLayout.axis === 'grid') body += gridPlacementSection(node, { ...parent, autoLayout: createAutoLayout(parent.autoLayout) });
       else {
+        body += autoLayoutChildAlignmentSection(node);
         const sizing = node.layoutSizingMain || 'hug';
         const axis = parent.autoLayout.axis === 'horizontal' ? 'Width' : 'Height';
         const cross = node.layoutSizingCross || 'hug';
@@ -6659,7 +6665,7 @@ function updateInspectorInput(event) {
       if (key === 'solarize') syncImageToneControls(input, node.adjustments, node.locked);
       schedulePreview(node);
     }
-    if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
+    if (prop === 'width' || prop === 'height' || prop === 'layoutSizingMain' || prop === 'layoutSizingCross' || prop === 'layoutAlignSelf' || prop === 'layoutSizingX' || prop === 'layoutSizingY') {
       if (node.type === 'frame' && node.autoLayout) applyAutoLayout(node);
       const parent = findNode(state.document, node.id)?.parent;
       if (parent?.autoLayout) applyAutoLayout(parent);
@@ -12549,6 +12555,13 @@ function applyInspectorAction(action, details = {}) {
       for (const property of Object.keys(node.variableBindings || {})) if (property.startsWith('autoLayout.')) delete node.variableBindings[property];
       if (!Object.keys(node.variableBindings || {}).length) delete node.variableBindings;
       recordNodeComponentOverrides(node, ['autoLayout', 'variableBindings']);
+      for (const child of node.children || []) {
+        const removed = [];
+        for (const property of ['layoutPositioning', 'layoutAlignSelf']) {
+          if (Object.hasOwn(child, property)) { delete child[property]; removed.push(property); }
+        }
+        if (removed.length) recordNodeComponentOverrides(child, removed);
+      }
     }
     else { node.autoLayout = createAutoLayout(); applyAutoLayout(node); }
     renderInspector(); renderLayers(); renderer.invalidate(); queueSave();

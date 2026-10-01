@@ -6,6 +6,7 @@ import {
   resetComponentSlotContent, setComponentSlotContent, syncAllComponentInstances, syncComponentInstances, validateDocument
 } from '../src/model.js';
 import { addPrototypeInteraction } from '../src/prototype.js';
+import { createAutoLayout } from '../src/layout-engine.js';
 
 test('component instances link to a main component and can be placed on another page', () => {
   const document = createDocument();
@@ -73,6 +74,33 @@ test('deleting a layer inside a nested component instance survives nested and ow
   syncAllComponentInstances(reloaded);
   assert.deepEqual(findNode(reloaded, outerInstance.id).node.children[0].children, [], 'reload and owner refresh must keep the nested child deleted');
   assert.equal(validateDocument(reloaded), true);
+});
+
+test('component child alignment overrides survive auto-layout sync and reload', () => {
+  const document = createDocument();
+  const master = createNode('frame', {
+    name: 'Toolbar', autoLayout: createAutoLayout({ axis: 'horizontal' })
+  });
+  const action = createNode('rectangle', { name: 'Action', layoutAlignSelf: 'center' });
+  addNode(document, master);
+  addNode(document, action, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Toolbar');
+  const instance = createComponentInstance(document, component.id);
+  const instanceAction = instance.children[0];
+  instanceAction.layoutAlignSelf = 'end';
+  instance.componentOverrides[instanceAction.componentSourceId] = { layoutAlignSelf: 'end' };
+
+  assert.equal(validateDocument(document), true);
+  syncAllComponentInstances(document);
+  assert.equal(instance.children[0].layoutAlignSelf, 'end');
+
+  const reloaded = parseDocument(serializeDocument(document));
+  syncAllComponentInstances(reloaded);
+  const reloadedInstance = findNode(reloaded, instance.id).node;
+  assert.equal(reloadedInstance.children[0].layoutAlignSelf, 'end');
+  assert.equal(validateDocument(reloaded), true);
+  reloadedInstance.componentOverrides[instanceAction.componentSourceId].layoutAlignSelf = 'baseline';
+  assert.throws(() => validateDocument(reloaded), /Invalid component auto layout child alignment override/);
 });
 
 test('component synchronization remaps internal prototype scroll targets to each instance', () => {

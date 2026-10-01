@@ -204,7 +204,9 @@ function cssForEntry(document, entry) {
   } else if (parentLayout) {
     if (node.layoutSizingMain === 'fill') declarations.push('flex: 1 1 0;', ...(parentLayout.axis === 'horizontal' ? [Number.isFinite(node.minWidth) ? '' : 'min-width: 0;'] : [Number.isFinite(node.minHeight) ? '' : 'min-height: 0;']).filter(Boolean));
     else declarations.push('flex: 0 0 auto;');
-    if (node.layoutSizingCross === 'fill') declarations.push('align-self: stretch;');
+    const selfAlignment = ({ start: 'flex-start', center: 'center', end: 'flex-end', stretch: 'stretch' })[node.layoutAlignSelf];
+    if (selfAlignment) declarations.push(`align-self: ${selfAlignment};`);
+    else if (node.layoutSizingCross === 'fill') declarations.push('align-self: stretch;');
   }
   const rotation = isCodegenRoot && !parentLayout ? generatedRootRotation(document, entry) : Number(geometry.rotation) || 0;
   if (rotation) declarations.push(`transform: rotate(${number(rotation)}deg);`, 'transform-origin: center;');
@@ -542,7 +544,11 @@ function summaryForEntry(document, entry) {
       positioning: node.layoutPositioning === 'absolute' ? 'absolute' : 'flow',
       sizing: parent.autoLayout.axis === 'grid'
         ? { width: node.layoutSizingX || 'fixed', height: node.layoutSizingY || 'fixed' }
-        : { main: node.layoutSizingMain || 'fixed', cross: node.layoutSizingCross || 'fixed' },
+        : {
+            main: node.layoutSizingMain || 'fixed',
+            cross: node.layoutSizingCross || 'fixed',
+            ...(node.layoutAlignSelf ? { alignSelf: node.layoutAlignSelf } : {})
+          },
       ...(parent.autoLayout.axis === 'grid' ? { gridCell: structuredClone(node.gridCell || {}) } : {})
     };
   } else if (parent?.type === 'frame') {

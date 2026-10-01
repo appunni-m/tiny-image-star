@@ -39,7 +39,7 @@ const NODE_PROPERTIES = new Set([
   'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit',
   'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'maskSourceId', 'effects',
   'effectStyleId', 'constraints', 'autoLayout', 'layoutPositioning', 'layoutSizingMain',
-  'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
+  'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth',
   'minHeight', 'maxHeight', 'gridCell', 'fillGradient', 'imageFill', 'fillVariableId',
   'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings', 'points',
   'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges',

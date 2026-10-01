@@ -2,6 +2,7 @@ import { getBlobBytes, parseFigBinary, resolveVectorNodePaths, parseSVGPathData 
 import { createDocument, createId, createNode, MAX_DOCUMENT_TREE_DEPTH, parseDocument } from './model.js';
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { createImageFill } from './image-fills.js';
+import { createAutoLayout } from './layout-engine.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 
 const MAX_WARNINGS = 40;
@@ -23,11 +24,12 @@ function safeName(value, fallback = 'Untitled') {
   return name || fallback;
 }
 
-function idOf(node) {
-  const guid = node?.guid;
+function guidKey(guid) {
   if (!guid || !Number.isSafeInteger(guid.sessionID) || !Number.isSafeInteger(guid.localID)) return null;
   return `${guid.sessionID}:${guid.localID}`;
 }
+
+function idOf(node) { return guidKey(node?.guid); }
 
 function positionOrder(left, right) {
   const a = String(left.parentIndex?.position || '');
@@ -387,7 +389,321 @@ function isValidBooleanChildren(children) {
     && (child.type !== 'network' || child.faces?.length > 0));
 }
 
-function createLayer(source, children, context, pageId, depth = 0) {
+const stackEnumValues = {
+  stackMode: ['NONE', 'HORIZONTAL', 'VERTICAL', 'GRID'],
+  stackPrimarySizing: ['FIXED', 'RESIZE_TO_FIT', 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE'],
+  stackCounterSizing: ['FIXED', 'RESIZE_TO_FIT', 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE'],
+  stackPrimaryAlignItems: ['MIN', 'CENTER', 'MAX', 'SPACE_EVENLY', 'SPACE_BETWEEN'],
+  stackCounterAlignItems: ['MIN', 'CENTER', 'MAX', 'BASELINE'],
+  stackChildAlignSelf: ['MIN', 'CENTER', 'MAX', 'STRETCH', 'AUTO', 'BASELINE'],
+  stackPositioning: ['AUTO', 'ABSOLUTE'],
+  stackWrap: ['NO_WRAP', 'WRAP'],
+  stackCounterAlignContent: ['AUTO', 'SPACE_BETWEEN']
+};
+
+const gridEnumValues = {
+  gridChildHorizontalAlign: ['AUTO', 'MIN', 'CENTER', 'MAX'],
+  gridChildVerticalAlign: ['AUTO', 'MIN', 'CENTER', 'MAX'],
+  gridAutoTracks: ['NONE', 'ROWS'],
+  gridTrackSizingType: ['FLEX', 'FIXED', 'HUG']
+};
+
+function stackEnum(source, property) {
+  const value = source?.[property];
+  if (typeof value === 'string') return value.toUpperCase();
+  if (Number.isInteger(value) && value >= 0) return stackEnumValues[property]?.[value] || null;
+  return null;
+}
+
+function gridEnum(source, property) {
+  const value = source?.[property];
+  if (typeof value === 'string') return value.toUpperCase();
+  if (Number.isInteger(value) && value >= 0) return gridEnumValues[property]?.[value] || null;
+  return null;
+}
+
+function mapStackSizing(source, property, report, name) {
+  const value = stackEnum(source, property);
+  if (!value) return 'fixed';
+  if (value === 'FIXED') return 'fixed';
+  if (['RESIZE_TO_FIT', 'RESIZE_TO_FIT_WITH_IMPLICIT_SIZE'].includes(value)) return 'hug';
+  warn(report, 'flattened', 'AUTO_LAYOUT_SIZING', name, `The ${property} value ${value} was kept at its imported frame size.`);
+  return 'fixed';
+}
+
+function mapPrimaryAlignment(source, report, name) {
+  const value = stackEnum(source, 'stackPrimaryAlignItems');
+  const alignment = ({ MIN: 'start', CENTER: 'center', MAX: 'end', SPACE_BETWEEN: 'space-between', SPACE_AROUND: 'space-around', SPACE_EVENLY: 'space-evenly' })[value];
+  if (alignment) return alignment;
+  if (value) warn(report, 'flattened', 'AUTO_LAYOUT_ALIGNMENT', name, `Primary-axis alignment ${value} was reset to start.`);
+  return 'start';
+}
+
+function mapCounterAlignment(source, report, name) {
+  const value = stackEnum(source, 'stackCounterAlignItems');
+  const alignment = ({ MIN: 'start', CENTER: 'center', MAX: 'end', STRETCH: 'stretch', AUTO: 'start' })[value];
+  if (alignment) return alignment;
+  if (value) warn(report, 'flattened', 'AUTO_LAYOUT_ALIGNMENT', name, `Counter-axis alignment ${value} was reset to start.`);
+  return 'start';
+}
+
+function finiteLayoutMetric(source, property, fallback, report, name, { min = 0, max = 100_000, warning = 'AUTO_LAYOUT_METRIC' } = {}) {
+  if (source?.[property] == null) return fallback;
+  const value = Number(source[property]);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    warn(report, 'flattened', warning, name, `${property} was outside the supported range and was reset to ${fallback}.`);
+    return fallback;
+  }
+  return value;
+}
+
+function autoLayoutAxis(source) {
+  const mode = stackEnum(source, 'stackMode');
+  return mode === 'HORIZONTAL' ? 'horizontal' : mode === 'VERTICAL' ? 'vertical' : mode === 'GRID' ? 'grid' : null;
+}
+
+function supportsStackAutoLayout(source) {
+  return ['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL'].includes(source?.type) && Boolean(autoLayoutAxis(source));
+}
+
+function mapAutoLayoutPadding(source, report, name) {
+  const uniformPadding = typeof source.stackPadding === 'object' && source.stackPadding
+    ? null : finiteLayoutMetric(source, 'stackPadding', 0, report, name, { warning: 'AUTO_LAYOUT_PADDING' });
+  const horizontalPadding = finiteLayoutMetric(source, 'stackHorizontalPadding', uniformPadding ?? 0, report, name, { warning: 'AUTO_LAYOUT_PADDING' });
+  const verticalPadding = finiteLayoutMetric(source, 'stackVerticalPadding', uniformPadding ?? 0, report, name, { warning: 'AUTO_LAYOUT_PADDING' });
+  const objectPadding = typeof source.stackPadding === 'object' && source.stackPadding ? source.stackPadding : {};
+  return {
+    left: finiteLayoutMetric({ stackPaddingLeft: source.stackPaddingLeft ?? objectPadding.left ?? horizontalPadding }, 'stackPaddingLeft', horizontalPadding, report, name, { warning: 'AUTO_LAYOUT_PADDING' }),
+    right: finiteLayoutMetric({ stackPaddingRight: source.stackPaddingRight ?? objectPadding.right ?? horizontalPadding }, 'stackPaddingRight', horizontalPadding, report, name, { warning: 'AUTO_LAYOUT_PADDING' }),
+    top: finiteLayoutMetric({ stackPaddingTop: source.stackPaddingTop ?? objectPadding.top ?? verticalPadding }, 'stackPaddingTop', verticalPadding, report, name, { warning: 'AUTO_LAYOUT_PADDING' }),
+    bottom: finiteLayoutMetric({ stackPaddingBottom: source.stackPaddingBottom ?? objectPadding.bottom ?? verticalPadding }, 'stackPaddingBottom', verticalPadding, report, name, { warning: 'AUTO_LAYOUT_PADDING' })
+  };
+}
+
+function gridPositionEntries(source, property, report, name) {
+  const value = source?.[property];
+  if (value == null) return [];
+  const entries = Array.isArray(value) ? value : value?.entries;
+  if (!Array.isArray(entries)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACKS', name, `${property} could not be decoded; default grid tracks were used.`);
+    return [];
+  }
+  if (entries.length > 64) warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACKS', name, `${property} has more than 64 tracks; only the first 64 ordered tracks were imported.`);
+  const valid = [];
+  for (const entry of entries.slice(0, 4096)) {
+    const id = guidKey(entry?.id);
+    if (!id || typeof entry.position !== 'string') {
+      warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACKS', name, `${property} contains an invalid track identity or order and that track was omitted.`);
+      continue;
+    }
+    valid.push({ id, position: entry.position });
+  }
+  valid.sort((left, right) => left.position < right.position ? -1 : left.position > right.position ? 1 : 0);
+  return valid.slice(0, 64);
+}
+
+function gridTrackSizingFunction(value, report, name) {
+  if (!value || typeof value !== 'object') return null;
+  const rawType = value.type;
+  const type = typeof rawType === 'string' ? rawType.toUpperCase()
+    : Number.isInteger(rawType) && rawType >= 0 ? gridEnumValues.gridTrackSizingType[rawType] || null : null;
+  if (!['FLEX', 'FIXED', 'HUG'].includes(type)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_SIZE', name, 'A grid track sizing type was unknown and the local default track size was used.');
+    return null;
+  }
+  if (type === 'HUG') return { mode: 'hug' };
+  const raw = Number(value.value ?? (type === 'FLEX' ? 1 : 0));
+  if (!Number.isFinite(raw) || raw < 0 || raw > 100_000 || (type === 'FLEX' && raw === 0)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_SIZE', name, 'A grid track size was outside the supported range and the local default track size was used.');
+    return null;
+  }
+  return type === 'FLEX' ? { mode: 'fill', weight: Math.max(0.01, raw) } : { mode: 'fixed', value: raw };
+}
+
+function mapGridTrackSize(source, report, name) {
+  if (!source || typeof source !== 'object') return null;
+  // Older exports may store the public type/value pair directly.
+  if (source.type != null && source.minSizing == null && source.maxSizing == null) {
+    return gridTrackSizingFunction(source, report, name);
+  }
+  const minimum = gridTrackSizingFunction(source.minSizing, report, name);
+  const maximum = gridTrackSizingFunction(source.maxSizing, report, name);
+  if (!minimum && !maximum) return null;
+  if (Boolean(minimum) !== Boolean(maximum)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This grid track has only one valid min/max sizing function; the available value was used.');
+  }
+  if (minimum && maximum && (minimum.mode !== maximum.mode
+    || (minimum.mode === 'fixed' && minimum.value !== maximum.value)
+    || (minimum.mode === 'fill' && minimum.weight !== maximum.weight))) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This min/max grid track bound cannot be represented locally; it was approximated with the maximum sizing function.');
+  }
+  return maximum || minimum;
+}
+
+function gridTrackDefinitions(source, property, orderedTracks, report, name) {
+  const value = source?.[property];
+  if (value == null) return [];
+  const entries = Array.isArray(value) ? value : value?.entries;
+  if (!Array.isArray(entries)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACKS', name, `${property} could not be decoded; default grid track sizes were used.`);
+    return [];
+  }
+  const byId = new Map();
+  for (const entry of entries.slice(0, 4096)) {
+    const id = guidKey(entry?.id);
+    if (!id || byId.has(id)) {
+      warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACKS', name, `${property} contains an invalid or duplicate track size; the affected entry was ignored.`);
+      continue;
+    }
+    byId.set(id, mapGridTrackSize(entry.trackSize || entry.size || entry, report, name));
+  }
+  return orderedTracks.map(track => byId.get(track.id) || undefined);
+}
+
+function gridAnchorIndex(anchor, tracks) {
+  const key = guidKey(anchor);
+  return key ? tracks.findIndex(track => track.id === key) : -1;
+}
+
+function gridTracksForParent(source, context, report, name) {
+  let tracks = context.gridTracksByParent.get(source);
+  if (!tracks) {
+    tracks = {
+      columns: gridPositionEntries(source, 'gridColumns', report, name),
+      rows: gridPositionEntries(source, 'gridRows', report, name)
+    };
+    context.gridTracksByParent.set(source, tracks);
+  }
+  return tracks;
+}
+
+function mapGridAutoLayout(source, report, name) {
+  const columns = gridPositionEntries(source, 'gridColumns', report, name);
+  const rows = gridPositionEntries(source, 'gridRows', report, name);
+  const autoTracks = gridEnum(source, 'gridAutoTracks');
+  const rowMode = autoTracks || 'NONE';
+  if (autoTracks && !['NONE', 'ROWS'].includes(autoTracks)) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_ROWS', name, `Grid automatic-track mode ${autoTracks} was reset to fixed rows.`);
+  }
+  const reflow = source.gridReflowEnabled;
+  if (reflow != null && typeof reflow !== 'boolean') warn(report, 'flattened', 'AUTO_LAYOUT_GRID_FLOW', name, 'The automatic grid-positioning setting was invalid; row-major flow was used.');
+  const columnTracks = gridTrackDefinitions(source, 'gridColumnsSizing', columns, report, name);
+  const rowTracks = gridTrackDefinitions(source, 'gridRowsSizing', rows, report, name);
+  const rowGap = finiteLayoutMetric(source, 'gridRowGap', 0, report, name, { warning: 'AUTO_LAYOUT_GRID_GAP' });
+  const columnGap = finiteLayoutMetric(source, 'gridColumnGap', 0, report, name, { warning: 'AUTO_LAYOUT_GRID_GAP' });
+  return createAutoLayout({
+    axis: 'grid', columns: Math.max(1, columns.length), rows: rowMode === 'ROWS' ? 'auto' : Math.max(1, rows.length),
+    rowGap, columnGap, gap: columnGap, padding: mapAutoLayoutPadding(source, report, name),
+    rowTracks, columnTracks, autoPositioning: typeof reflow === 'boolean' ? reflow : true
+  });
+}
+
+function mapAutoLayout(source, report, name) {
+  const mode = stackEnum(source, 'stackMode');
+  const axis = autoLayoutAxis(source);
+  if (!axis) {
+    if (mode && mode !== 'NONE') warn(report, 'flattened', 'AUTO_LAYOUT', name, `Auto-layout mode ${mode} was flattened to the imported positions.`);
+    return null;
+  }
+
+  if (axis === 'grid') return mapGridAutoLayout(source, report, name);
+
+  const padding = mapAutoLayoutPadding(source, report, name);
+  const gap = finiteLayoutMetric(source, 'stackSpacing', 0, report, name, { min: -100_000, warning: 'AUTO_LAYOUT_GAP' });
+  const counterGap = finiteLayoutMetric(source, 'stackCounterSpacing', gap, report, name, { warning: 'AUTO_LAYOUT_GAP' });
+  const wrapValue = stackEnum(source, 'stackWrap');
+  const wrap = wrapValue === 'WRAP';
+  if (wrapValue && !['WRAP', 'NO_WRAP'].includes(wrapValue)) warn(report, 'flattened', 'AUTO_LAYOUT_WRAP', name, `Wrap mode ${wrapValue} was reset to no-wrap.`);
+  const contentAlignment = stackEnum(source, 'stackCounterAlignContent');
+  if (wrap && contentAlignment && contentAlignment !== 'AUTO') {
+    warn(report, 'flattened', 'AUTO_LAYOUT_WRAP_ALIGNMENT', name, 'Wrapped-track distribution was reset to the local start alignment.');
+  }
+
+  return createAutoLayout({
+    axis,
+    gap,
+    columnGap: axis === 'horizontal' ? gap : counterGap,
+    rowGap: axis === 'vertical' ? gap : counterGap,
+    padding,
+    align: mapCounterAlignment(source, report, name),
+    justify: mapPrimaryAlignment(source, report, name),
+    mainSizing: mapStackSizing(source, 'stackPrimarySizing', report, name),
+    crossSizing: mapStackSizing(source, 'stackCounterSizing', report, name),
+    wrap,
+    autoPositioning: true
+  });
+}
+
+function mapChildAutoLayout(source, parentSource, overrides, report, name, context) {
+  if (!supportsStackAutoLayout(parentSource)) return;
+  const parentAxis = autoLayoutAxis(parentSource);
+  const positioning = stackEnum(source, 'stackPositioning');
+  if (positioning === 'ABSOLUTE') overrides.layoutPositioning = 'absolute';
+  else if (positioning && positioning !== 'AUTO') warn(report, 'flattened', 'AUTO_LAYOUT_POSITION', name, `Positioning mode ${positioning} was kept in the auto-layout flow.`);
+
+  if (parentAxis === 'grid') {
+    if (overrides.layoutPositioning === 'absolute') return;
+    const { columns, rows } = gridTracksForParent(parentSource, context, report, name);
+    const column = gridAnchorIndex(source.gridColumnAnchor, columns);
+    const row = gridAnchorIndex(source.gridRowAnchor, rows);
+    const cell = {};
+    if (column >= 0) cell.column = column + 1;
+    else if (source.gridColumnAnchor != null && !parentSource.gridReflowEnabled) warn(report, 'flattened', 'AUTO_LAYOUT_GRID_PLACEMENT', name, 'The explicit grid column anchor could not be matched; the layer will use the next available cell.');
+    if (row >= 0) cell.row = row + 1;
+    else if (source.gridRowAnchor != null && !parentSource.gridReflowEnabled) warn(report, 'flattened', 'AUTO_LAYOUT_GRID_PLACEMENT', name, 'The explicit grid row anchor could not be matched; the layer will use the next available cell.');
+    for (const [key, sourceKey] of [['rowSpan', 'gridRowSpan'], ['columnSpan', 'gridColumnSpan']]) {
+      if (source[sourceKey] == null) continue;
+      const value = Number(source[sourceKey]);
+      if (Number.isInteger(value) && value >= 1 && value <= 64) cell[key] = value;
+      else warn(report, 'flattened', 'AUTO_LAYOUT_GRID_SPAN', name, `${sourceKey} was invalid and the default span of 1 was used.`);
+    }
+    for (const [key, sourceKey] of [['alignX', 'gridChildHorizontalAlign'], ['alignY', 'gridChildVerticalAlign']]) {
+      const alignment = gridEnum(source, sourceKey);
+      const mapped = ({ MIN: 'start', CENTER: 'center', MAX: 'end' })[alignment];
+      if (mapped) cell[key] = mapped;
+      else if (alignment && alignment !== 'AUTO') warn(report, 'flattened', 'AUTO_LAYOUT_GRID_ALIGNMENT', name, `${sourceKey} value ${alignment} uses the default cell alignment.`);
+    }
+    if (Object.keys(cell).length) overrides.gridCell = cell;
+    if (source.stackChildPrimaryGrow != null && Number(source.stackChildPrimaryGrow) > 0) {
+      warn(report, 'flattened', 'AUTO_LAYOUT_GRID_SIZING', name, 'Grid fill sizing could not be inferred from the flex growth field; imported layer size was preserved.');
+    }
+    for (const [sourceKey, minKey, maxKey] of [['minSize', 'minWidth', 'minHeight'], ['maxSize', 'maxWidth', 'maxHeight']]) {
+      const value = source[sourceKey];
+      if (!value || typeof value !== 'object') continue;
+      for (const [coordinate, target] of [['x', minKey], ['y', maxKey]]) {
+        const metric = value[coordinate];
+        if (metric == null) continue;
+        if (Number.isFinite(Number(metric)) && Number(metric) >= 0 && Number(metric) <= 100_000) overrides[target] = Number(metric);
+        else warn(report, 'flattened', 'AUTO_LAYOUT_SIZE_LIMIT', name, `${sourceKey}.${coordinate} was invalid and was omitted.`);
+      }
+    }
+    return;
+  }
+
+  const grow = source.stackChildPrimaryGrow;
+  if (grow != null) {
+    const amount = Number(grow);
+    if (Number.isFinite(amount) && amount > 0) overrides.layoutSizingMain = 'fill';
+    else if (!Number.isFinite(amount) || amount < 0) warn(report, 'flattened', 'AUTO_LAYOUT_SIZING', name, 'Invalid primary-axis growth was reset to fixed sizing.');
+  }
+  const self = stackEnum(source, 'stackChildAlignSelf');
+  const alignSelf = ({ INHERIT: 'auto', AUTO: 'auto', MIN: 'start', CENTER: 'center', MAX: 'end', STRETCH: 'stretch' })[self];
+  if (alignSelf) overrides.layoutAlignSelf = alignSelf;
+  else if (self) warn(report, 'flattened', 'AUTO_LAYOUT_ALIGNMENT', name, `Child alignment ${self} follows the parent alignment.`);
+
+  for (const [sourceKey, minKey, maxKey] of [['minSize', 'minWidth', 'minHeight'], ['maxSize', 'maxWidth', 'maxHeight']]) {
+    const value = source[sourceKey];
+    if (!value || typeof value !== 'object') continue;
+    for (const [coordinate, target] of [['x', minKey], ['y', maxKey]]) {
+      const metric = value[coordinate];
+      if (metric == null) continue;
+      if (Number.isFinite(Number(metric)) && Number(metric) >= 0 && Number(metric) <= 100_000) overrides[target] = Number(metric);
+      else warn(report, 'flattened', 'AUTO_LAYOUT_SIZE_LIMIT', name, `${sourceKey}.${coordinate} was invalid and was omitted.`);
+    }
+  }
+}
+
+function createLayer(source, children, context, pageId, depth = 0, parentSource = null) {
   const type = modelType(source.type);
   const name = safeName(source.name, source.type || 'Imported layer');
   if (source.visible === false && source.type === 'CANVAS') return null;
@@ -431,9 +747,13 @@ function createLayer(source, children, context, pageId, depth = 0) {
     try { paths = resolveVectorNodePaths(context.parsed, source); }
     catch { warn(context.report, 'unsupported', 'VECTOR', name, 'Its vector data could not be resolved.'); }
     const transform = localTransform(source, context.report);
-    const node = createNode('group', {
+    const overrides = {
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
       visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children: vectorChildren(source, paths, context)
+    };
+    mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+    const node = createNode('group', {
+      ...overrides
     });
     if (!node.children.length) {
       warn(context.report, 'unsupported', 'VECTOR', name, 'This vector contains no editable paths.');
@@ -446,10 +766,12 @@ function createLayer(source, children, context, pageId, depth = 0) {
   if (!type) {
     if (children?.length) {
       const transform = localTransform(source, context.report);
-      const node = createNode('group', {
+      const overrides = {
         name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
         visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children
-      });
+      };
+      mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
+      const node = createNode('group', overrides);
       warn(context.report, 'flattened', source.type || 'NODE', name, 'An unsupported container was kept as an editable group so its children remain available.');
       context.report.importedNodes += 1;
       return node;
@@ -490,8 +812,14 @@ function createLayer(source, children, context, pageId, depth = 0) {
     overrides.clip = typeof source.clipsContent === 'boolean'
       ? source.clipsContent
       : typeof source.frameMaskDisabled === 'boolean' ? !source.frameMaskDisabled : false;
-    if (source.stackMode && source.stackMode !== 'NONE') warn(context.report, 'flattened', 'AUTO_LAYOUT', name, 'Auto-layout behavior was flattened to the imported positions.');
+    const autoLayout = mapAutoLayout(source, context.report, name);
+    if (autoLayout) overrides.autoLayout = autoLayout;
   }
+  if (['COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'SYMBOL'].includes(source.type)) {
+    const autoLayout = mapAutoLayout(source, context.report, name);
+    if (autoLayout) overrides.autoLayout = autoLayout;
+  }
+  mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
   const constraints = mapConstraints(source, context.report);
   if (constraints) overrides.constraints = constraints;
   if (source.isMask || source.maskType) warn(context.report, 'unsupported', 'MASK', name, 'Figma mask layers do not map to the local mask-group model and were imported as ordinary layers.');
@@ -546,7 +874,7 @@ function buildChildrenMap(parsed) {
   return map;
 }
 
-function recursivelyConvert(node, childrenMap, context, pageId, depth = 0) {
+function recursivelyConvert(node, childrenMap, context, pageId, depth = 0, parentSource = null) {
   const name = safeName(node.name, node.type || 'Imported layer');
   if (depth >= MAX_DOCUMENT_TREE_DEPTH) {
     warn(context.report, 'unsupported', node.type || 'NODE', name, 'This node exceeds the local layer nesting limit.');
@@ -570,10 +898,10 @@ function recursivelyConvert(node, childrenMap, context, pageId, depth = 0) {
     const converted = [];
     for (const child of children) {
       if (child.phase === 'REMOVED' || child.type === 'CANVAS' || child.type === 'DOCUMENT') continue;
-      const next = recursivelyConvert(child, childrenMap, context, pageId, depth + 1);
+      const next = recursivelyConvert(child, childrenMap, context, pageId, depth + 1, node);
       if (next) converted.push(next);
     }
-    return createLayer(node, converted, context, pageId, depth);
+    return createLayer(node, converted, context, pageId, depth, parentSource);
   } finally {
     context.traversalActive.delete(node);
   }
@@ -603,6 +931,7 @@ export function convertFigDocument(parsed, { fileName = 'Imported design.fig', f
     visited: new WeakSet(),
     traversalSeen: new WeakSet(),
     traversalActive: new WeakSet(),
+    gridTracksByParent: new WeakMap(),
     totalVectorSourceBytes: 0,
     totalVectorPathChars: 0,
     report

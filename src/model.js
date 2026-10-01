@@ -391,7 +391,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder', '__deletedChildren'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -3260,6 +3260,8 @@ export function validateDocument(document) {
         || ['row', 'column', 'rowSpan', 'columnSpan'].some(key => node.gridCell[key] != null && (!Number.isInteger(Number(node.gridCell[key])) || Number(node.gridCell[key]) < 1 || Number(node.gridCell[key]) > 64))
         || (node.gridCell.alignX != null && !['start', 'center', 'end'].includes(node.gridCell.alignX))
         || (node.gridCell.alignY != null && !['start', 'center', 'end'].includes(node.gridCell.alignY)))) throw new TypeError(`Invalid grid cell on layer ${node.name || node.id}.`);
+      if (node.layoutAlignSelf != null && (!['auto', 'start', 'center', 'end', 'stretch'].includes(node.layoutAlignSelf)
+        || !parent?.autoLayout)) throw new TypeError(`Invalid auto layout child alignment on layer ${node.name || node.id}.`);
       if (node.layoutPositioning != null && (!['auto', 'absolute'].includes(node.layoutPositioning)
         || (node.layoutPositioning === 'absolute' && !parent?.autoLayout))) {
         throw new TypeError(`Invalid layout positioning on layer ${node.name || node.id}.`);
@@ -3379,6 +3381,10 @@ export function validateDocument(document) {
           if (overrides.layoutPositioning != null && (!['auto', 'absolute'].includes(overrides.layoutPositioning)
             || (overrides.layoutPositioning === 'absolute' && !findNodeAcrossPages(document, sourceId)?.parent?.autoLayout))) {
             throw new TypeError(`Invalid component layout positioning override on ${node.name || node.id}.`);
+          }
+          if (overrides.layoutAlignSelf != null && (!['auto', 'start', 'center', 'end', 'stretch'].includes(overrides.layoutAlignSelf)
+            || !findNodeAcrossPages(document, sourceId)?.parent?.autoLayout)) {
+            throw new TypeError(`Invalid component auto layout child alignment override on ${node.name || node.id}.`);
           }
         }
       }
