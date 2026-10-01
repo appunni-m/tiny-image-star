@@ -1,8 +1,10 @@
 # Local workspace and live design sharing
 
-**Status:** accepted architecture; folder persistence and WebRTC sharing are not implemented yet. Updated 2026-10-01.
+**Status:** accepted architecture; workspace and capsule foundations are implemented but not yet connected to the editor. Folder-backed design persistence and WebRTC sharing are not implemented. Updated 2026-10-01.
 
 **Current state:** Tiny Image Star presently saves designs and image assets in IndexedDB and supports portable `.flocal` export/import. It does not yet use a user-selected workspace folder, a per-page folder tree, or live WebRTC collaboration. This accepted architecture defines the migration from that local-first base. Existing IndexedDB designs must remain recoverable until a verified folder migration succeeds.
+
+**Implementation checkpoint:** `src/workspace/workspace-store.js` now defines a versioned workspace manifest, creates the `designs/` and transaction roots, rechecks read/write permission on reopen, serializes initialization with the browser Web Locks API, fails closed if that cross-tab lock is unavailable, and exposes validated design/page handle lookup. `tests/workspace-store.test.mjs` exercises those contracts with an in-memory File System Access API fake. It does not yet write design/page documents, journal edits, migrate IndexedDB, or appear in the app UI. `src/collaboration/session-capsules.js` now encodes and verifies bounded P-256-signed offer/answer capsules and stable invitations, with focused tests in `tests/session-capsules.test.mjs`; it does not establish a WebRTC connection or enforce one-time session consumption. The host integration must atomically reject replayed session IDs before accepting any answer or sending design data. These primitives are foundations, not a shipped sharing workflow.
 
 ## Goal
 
