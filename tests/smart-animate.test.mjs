@@ -603,7 +603,7 @@ test('smart animation interpolates compatible modern fill stacks on frames and l
   assert.deepEqual(to, originals[1], 'interpolation leaves the destination frame and its paints unchanged');
 });
 
-test('smart animation midpoint-snaps fill stacks with incompatible type, topology, visibility, or bindings', () => {
+test('smart animation crossfades fill type and gradient topology changes while preserving discrete bindings', () => {
   const solid = (id, changes = {}) => ({ id, type: 'solid', visible: true, opacity: .25, color: '#000000', ...changes });
   const linear = (id, stops = 2) => ({
     id, type: 'linear', visible: true, opacity: .5,
@@ -626,27 +626,36 @@ test('smart animation midpoint-snaps fill stacks with incompatible type, topolog
     createNode('rectangle', { name: 'Length', fills: [solid('length-after'), solid('length-extra')] })
   ] });
   to.children[2].fills[0].visible = false;
-  const before = interpolateSmartFrame(from, to, .499).children;
+  const before = interpolateSmartFrame(from, to, .25).children;
   const atMidpoint = interpolateSmartFrame(from, to, .5).children;
-  for (let index = 0; index < from.children.length; index += 1) {
+  for (const index of [0, 1]) {
+    assert.deepEqual(before[index].fills.map(fill => fill.type), [from.children[index].fills[0].type, to.children[index].fills[0].type]);
+    assert.ok(before[index].fills[0].opacity > 0 && before[index].fills[1].opacity > 0, 'both incompatible paints contribute before halfway');
+    assert.ok(atMidpoint[index].fills[0].opacity > 0 && atMidpoint[index].fills[1].opacity > 0, 'both incompatible paints contribute at halfway');
+  }
+  for (const index of [2, 3, 4]) {
     assert.deepEqual(before[index].fills, from.children[index].fills, `case ${from.children[index].name} stays on the source stack before halfway`);
     assert.deepEqual(atMidpoint[index].fills, to.children[index].fills, `case ${from.children[index].name} takes the destination stack at halfway`);
   }
 });
 
-test('smart animation switches image-fill references at halfway while interpolating fill opacity', () => {
+test('smart animation crossfades image-fill replacements while preserving exact endpoints', () => {
   const fromFill = { id: 'photo-before', type: 'image', visible: true, opacity: .2, imageFill: createImageFill('asset-before') };
   const toFill = { id: 'photo-after', type: 'image', visible: true, opacity: .8, imageFill: createImageFill('asset-after') };
   const from = createNode('frame', { children: [createNode('rectangle', { name: 'Photo', fills: [fromFill] })] });
   const to = createNode('frame', { children: [createNode('rectangle', { name: 'Photo', fills: [toFill] })] });
-  const at = progress => interpolateSmartFrame(from, to, progress).children[0].fills[0];
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].fills;
 
   const quarter = at(.25);
-  assert.deepEqual({ ...quarter, opacity: fromFill.opacity }, fromFill, 'image source stays fixed before halfway');
-  assert.ok(Math.abs(quarter.opacity - .35) < Number.EPSILON * 2, 'image opacity moves smoothly');
-  assert.deepEqual(at(.5), { ...toFill, opacity: .5 }, 'image reference switches at halfway and opacity remains continuous');
-  assert.deepEqual(at(0), fromFill, 'the source image fill snapshot stays exact');
-  assert.deepEqual(at(1), toFill, 'the destination image fill snapshot stays exact');
+  assert.deepEqual(quarter.map(fill => fill.imageFill.assetId), ['asset-before', 'asset-after']);
+  assert.ok(quarter.every(fill => fill.__smartAnimateLiveImageFill), 'both fills render from their source bitmaps instead of stale processed previews');
+  assert.ok(Math.abs(quarter[0].opacity - .15) < Number.EPSILON * 2);
+  assert.equal(quarter[1].opacity, .2, 'both image fills contribute with their own opacity');
+  const middle = at(.5);
+  assert.deepEqual(middle.map(fill => fill.imageFill.assetId), ['asset-before', 'asset-after']);
+  assert.deepEqual(middle.map(fill => fill.opacity), [.1, .4], 'the crossfade remains continuous at halfway');
+  assert.deepEqual(at(0), [fromFill], 'the source image fill snapshot stays exact');
+  assert.deepEqual(at(1), [toFill], 'the destination image fill snapshot stays exact');
 });
 
 test('smart animation interpolates valid same-asset image crops and preserves quarter-turn transforms', () => {
@@ -673,6 +682,8 @@ test('smart animation interpolates valid same-asset image crops and preserves qu
   assert.deepEqual([threeQuarter.transforms.rotation, threeQuarter.transforms.flipHorizontal, threeQuarter.transforms.flipVertical], [90, false, true]);
   for (const [field, expected] of Object.entries({ left: .15, top: .2, right: .85, bottom: .8 })) near(quarter.transforms.crop[field], expected);
   for (const [field, expected] of Object.entries({ left: .25, top: .3, right: .75, bottom: .7 })) near(threeQuarter.transforms.crop[field], expected);
+  assert.equal(quarter.__smartAnimateLiveImageTransforms, true, 'the renderer receives the interpolated crop instead of a cached endpoint preview');
+  assert.equal(threeQuarter.__smartAnimateLiveImageTransforms, true);
   assert.equal(quarter.rotation, 355, 'the image layer itself follows continuous shortest-path rotation');
   assert.equal(at(.5).rotation, 360);
   assert.deepEqual(at(0).transforms, fromTransforms, 'the authored source transform remains exact');
@@ -692,7 +703,7 @@ test('smart animation interpolates valid same-asset image crops and preserves qu
     'layer fit and transform switch together at the midpoint');
 });
 
-test('smart animation interpolates same-asset image fill crops but snaps asset, fit, and flip changes', () => {
+test('smart animation interpolates image crops and crossfades source-renderable asset, fit, and flip changes', () => {
   const cropA = { left: .1, top: .1, right: .9, bottom: .9 };
   const cropB = { left: .3, top: .2, right: .8, bottom: .7 };
   const imageFill = (assetId, crop, options = {}) => createImageFill(assetId, {
@@ -704,26 +715,37 @@ test('smart animation interpolates same-asset image fill crops but snaps asset, 
   });
   const cases = [
     { name: 'same asset', from: imageFill('photo', cropA), to: imageFill('photo', cropB), interpolates: true },
-    { name: 'asset replacement', from: imageFill('photo-a', cropA), to: imageFill('photo-b', cropB), interpolates: false },
-    { name: 'fit change', from: imageFill('photo', cropA), to: imageFill('photo', cropB, { fit: 'contain' }), interpolates: false },
-    { name: 'flip topology change', from: imageFill('photo', cropA), to: imageFill('photo', cropB, {
-      transforms: { crop: cropB, rotation: 0, flipHorizontal: true, flipVertical: false }
-    }), interpolates: false }
+    { name: 'asset replacement', from: imageFill('photo-a', null), to: imageFill('photo-b', null), crossfades: true },
+    { name: 'fit change', from: imageFill('photo', null), to: imageFill('photo', null, { fit: 'contain' }), crossfades: true },
+    { name: 'flip topology change', from: imageFill('photo', null), to: imageFill('photo', null, {
+      transforms: { crop: null, rotation: 0, flipHorizontal: true, flipVertical: false }
+    }), crossfades: true },
+    { name: 'cropped asset replacement', from: imageFill('photo-a', cropA), to: imageFill('photo-b', cropB), crossfades: true },
+    { name: 'adjusted asset replacement', from: imageFill('photo-a', null, { adjustments: { brightness: 10 } }), to: imageFill('photo-b', null), crossfades: false },
+    { name: 'adjusted crop change', from: imageFill('photo', cropA, { adjustments: { brightness: 10 } }), to: imageFill('photo', cropB), crossfades: false }
   ];
   const from = createNode('frame', { children: cases.map(item => make(item.name, item.from, .2)) });
   const to = createNode('frame', { children: cases.map(item => make(item.name, item.to, .8)) });
 
   for (const [index, item] of cases.entries()) {
-    const quarter = interpolateSmartFrame(from, to, .25).children[index].fills[0];
-    const middle = interpolateSmartFrame(from, to, .5).children[index].fills[0];
-    assert.ok(Math.abs(quarter.opacity - .35) < Number.EPSILON * 2, `${item.name} opacity remains continuous`);
+    const quarter = interpolateSmartFrame(from, to, .25).children[index].fills;
+    const middle = interpolateSmartFrame(from, to, .5).children[index].fills;
     if (item.interpolates) {
-      assert.equal(quarter.imageFill.assetId, 'photo');
-      assert.ok(Math.abs(quarter.imageFill.transforms.crop.left - .15) < Number.EPSILON * 2);
-      assert.equal(quarter.imageFill.fit, 'cover');
+      assert.equal(quarter.length, 1);
+      assert.equal(quarter[0].imageFill.assetId, 'photo');
+      assert.ok(Math.abs(quarter[0].imageFill.transforms.crop.left - .15) < Number.EPSILON * 2);
+      assert.equal(quarter[0].imageFill.fit, 'cover');
+      assert.equal(quarter[0].__smartAnimateLiveImageFill, true);
+    } else if (item.crossfades) {
+      assert.equal(quarter.length, 2, `${item.name} keeps both configurations alive before halfway`);
+      assert.deepEqual(quarter.map(fill => fill.imageFill), [item.from, item.to]);
+      assert.deepEqual(middle.map(fill => fill.imageFill), [item.from, item.to], `${item.name} remains a crossfade at halfway`);
+      assert.ok(quarter.every(fill => fill.opacity > 0));
+      assert.ok(quarter.every(fill => fill.__smartAnimateLiveImageFill), `${item.name} renders each source configuration directly`);
     } else {
-      assert.deepEqual(quarter.imageFill, item.from, `${item.name} keeps its source configuration before halfway`);
-      assert.deepEqual(middle.imageFill, item.to, `${item.name} switches to the destination configuration at halfway`);
+      assert.equal(quarter.length, 1, `${item.name} keeps its processed preview on the source snapshot before halfway`);
+      assert.deepEqual(quarter[0].imageFill, item.from);
+      assert.deepEqual(middle[0].imageFill, item.to, `${item.name} switches to the processed destination at halfway`);
     }
   }
 });

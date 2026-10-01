@@ -15,6 +15,7 @@ import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToN
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
+import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { hitTestVisibleGeometry } from './shape-hit-testing.js';
@@ -211,6 +212,39 @@ function drawFittedImage(ctx, image, x, y, width, height, fit = 'cover') {
   return true;
 }
 
+/** Draw from the immutable source using the live image crop/rotation/flip values. */
+export function drawImageWithTransforms(ctx, image, x, y, width, height, fit = 'cover', transforms = {}) {
+  if (!image || width <= 0 || height <= 0 || !image.width || !image.height) return false;
+  const normalized = normalizeImageTransforms(transforms);
+  const crop = imageCropPixels(normalized.crop, image.width, image.height)
+    || { left: 0, top: 0, right: image.width, bottom: image.height };
+  const sourceWidth = crop.right - crop.left;
+  const sourceHeight = crop.bottom - crop.top;
+  if (sourceWidth <= 0 || sourceHeight <= 0) return false;
+  const quarterTurn = normalized.rotation === 90 || normalized.rotation === 270;
+  const orientedWidth = quarterTurn ? sourceHeight : sourceWidth;
+  const orientedHeight = quarterTurn ? sourceWidth : sourceHeight;
+  const scale = fit === 'contain'
+    ? Math.min(width / orientedWidth, height / orientedHeight)
+    : Math.max(width / orientedWidth, height / orientedHeight);
+  if (!Number.isFinite(scale) || scale <= 0) return false;
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  ctx.save();
+  try {
+    ctx.translate(x + width / 2, y + height / 2);
+    if (normalized.flipHorizontal || normalized.flipVertical) {
+      ctx.scale(normalized.flipHorizontal ? -1 : 1, normalized.flipVertical ? -1 : 1);
+    }
+    ctx.rotate(normalized.rotation * Math.PI / 180);
+    ctx.drawImage(image, crop.left, crop.top, sourceWidth, sourceHeight,
+      -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+  } finally {
+    ctx.restore();
+  }
+  return true;
+}
+
 export function drawCropSourceImage(ctx, image, x, y, bounds, rotation = 0, flipHorizontal = false, flipVertical = false) {
   if (!image || !bounds || bounds.width <= 0 || bounds.height <= 0) return false;
   const turn = ((rotation % 360) + 360) % 360;
@@ -277,7 +311,9 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
       if (paint) { ctx.fillStyle = paint; fillCurrentPath(ctx, node); }
     } else if (fill.type === 'image') {
       const imageFill = fill.imageFill;
-      const image = imageFill && imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
+      const liveSource = (fill.__smartAnimateLiveImageFill || (!Array.isArray(node.fills) && node.__smartAnimateLiveImageFill)) && imageFill
+        ? assets.get(imageFill.assetId)?.bitmap : null;
+      const image = liveSource || (imageFill && imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id)));
       if (image) {
         ctx.save();
         if (node.type === 'path') ctx.clip(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
@@ -298,7 +334,8 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
             && (previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated'))) {
             drawFittedImage(ctx, preview, x, y, width, height, imageFill.fit);
           }
-        } else drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
+        } else if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, imageFill.fit, imageFill.transforms);
+        else drawFittedImage(ctx, image, x, y, width, height, imageFill.fit);
         ctx.restore();
       }
     }
@@ -947,7 +984,8 @@ export class SceneRenderer {
       const asset = assets.get(node.assetId);
       const cropOverlay = cropEditing ? state.imageCropOverlay : null;
       const sourceImage = cropOverlay ? asset?.bitmap : null;
-      const image = sourceImage || imageForNode(node, assets, state);
+      const liveTransformSource = node.__smartAnimateLiveImageTransforms ? asset?.bitmap : null;
+      const image = sourceImage || liveTransformSource || imageForNode(node, assets, state);
       if (image) {
         if (cropOverlay && sourceImage) {
           drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation,
@@ -963,7 +1001,8 @@ export class SceneRenderer {
         else {
           ctx.save();
           ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
-          drawFittedImage(ctx, image, x, y, width, height, node.fit);
+          if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
+          else drawFittedImage(ctx, image, x, y, width, height, node.fit);
           ctx.restore();
         }
       } else {
@@ -1007,7 +1046,8 @@ export class SceneRenderer {
         // paint; they must not replace an image or gradient paint.
         if (!Array.isArray(node.fills)) {
           const color = getNodeColor(document, node, 'fill');
-          const fillImage = node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
+          const liveSource = node.__smartAnimateLiveImageFill && node.imageFill ? assets.get(node.imageFill.assetId)?.bitmap : null;
+          const fillImage = liveSource || (node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null);
           const faceFill = face.fill ?? color;
           if ((!faceFill || faceFill === 'transparent') && !node.fillGradient && !node.imageFill) continue;
           ctx.beginPath();
@@ -1015,7 +1055,11 @@ export class SceneRenderer {
             const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
             ctx.save();
             ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
-            if (node.imageFill && fillImage) { ctx.clip(); drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit); }
+            if (node.imageFill && fillImage) {
+              ctx.clip();
+              if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, node.imageFill.fit, node.imageFill.transforms);
+              else drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit);
+            }
             else { ctx.fillStyle = gradient || rgba(faceFill || color || '#000000', 1); ctx.fill(); }
             ctx.restore();
           }
@@ -1037,8 +1081,13 @@ export class SceneRenderer {
             const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
             if (paint) { ctx.fillStyle = paint; ctx.fill(); }
           } else if (fill.type === 'image') {
-            const image = imageForNode(node, assets, state, fill.imageFill.assetId, imagePreviewKey(node.id, fill.id));
-            if (image) { ctx.clip(); drawFittedImage(ctx, image, x, y, width, height, fill.imageFill.fit); }
+            const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(fill.imageFill.assetId)?.bitmap : null;
+            const image = liveSource || imageForNode(node, assets, state, fill.imageFill.assetId, imagePreviewKey(node.id, fill.id));
+            if (image) {
+              ctx.clip();
+              if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, fill.imageFill.fit, fill.imageFill.transforms);
+              else drawFittedImage(ctx, image, x, y, width, height, fill.imageFill.fit);
+            }
           }
           ctx.restore();
         }
@@ -1727,9 +1776,11 @@ export class SceneRenderer {
             paintContext.fillStyle = paint; paintContext.fillRect(0, 0, node.width, node.height);
           } else if (fillLayer.type === 'image') {
             const imageFill = fillLayer.imageFill;
-            const image = imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fillLayer.id));
+            const liveSource = fillLayer.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
+            const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fillLayer.id));
             if (!image) continue;
-            drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+            if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
+            else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
           }
           paintContext.globalAlpha = 1;
           paintContext.globalCompositeOperation = 'destination-in';
@@ -1741,8 +1792,12 @@ export class SceneRenderer {
       } else {
         mask.save();
         mask.globalCompositeOperation = 'source-in';
-        const fillImage = !maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null;
-        if (fillImage) drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
+        const liveSource = !maskMode && node.__smartAnimateLiveImageFill && node.imageFill ? assets.get(node.imageFill.assetId)?.bitmap : null;
+        const fillImage = liveSource || (!maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null);
+        if (fillImage) {
+          if (liveSource) drawImageWithTransforms(mask, liveSource, 0, 0, node.width, node.height, node.imageFill.fit, node.imageFill.transforms);
+          else drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
+        }
         else {
           mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
           mask.fillRect(0, 0, node.width, node.height);

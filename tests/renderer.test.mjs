@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawImageWithTransforms, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { imagePreviewKey } from '../src/image-preview-runtime.js';
+import { createImageFill } from '../src/image-fills.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
@@ -51,6 +53,84 @@ test('single slice selection exposes eight axis-aligned resize handles and no ro
   } });
   assert.equal(sliceSelectionHandles({ type: 'rectangle', x: 0, y: 0, width: 10, height: 10 }), null);
   assert.equal(sliceSelectionHandles({ type: 'slice', x: 0, y: 0, width: 0, height: 10 }), null);
+});
+
+test('live smart-image rendering crops the original bitmap before fitting, rotating, and flipping', () => {
+  const calls = [];
+  const context = {
+    save: () => calls.push(['save']),
+    restore: () => calls.push(['restore']),
+    translate: (...args) => calls.push(['translate', ...args]),
+    scale: (...args) => calls.push(['scale', ...args]),
+    rotate: (...args) => calls.push(['rotate', ...args]),
+    drawImage: (...args) => calls.push(['drawImage', ...args])
+  };
+  const image = { width: 400, height: 200 };
+  assert.equal(drawImageWithTransforms(context, image, 10, 20, 100, 100, 'contain', {
+    crop: { left: .25, top: .25, right: .75, bottom: .75 },
+    rotation: 90, flipHorizontal: true, flipVertical: false
+  }), true);
+  assert.deepEqual(calls, [
+    ['save'], ['translate', 60, 70], ['scale', -1, 1], ['rotate', Math.PI / 2],
+    ['drawImage', image, 100, 50, 200, 100, -50, -25, 100, 50], ['restore']
+  ]);
+});
+
+test('live smart-image cover fitting uses the rotated crop bounds', () => {
+  const calls = [];
+  const context = {
+    save() {}, restore() {}, translate() {}, rotate() {},
+    drawImage: (...args) => calls.push(args)
+  };
+  const image = { width: 400, height: 200 };
+  assert.equal(drawImageWithTransforms(context, image, 0, 0, 120, 80, 'cover', {
+    crop: { left: .25, top: .25, right: .75, bottom: .75 },
+    rotation: 90, flipHorizontal: false, flipVertical: false
+  }), true);
+  assert.deepEqual(calls, [[image, 100, 50, 200, 100, -120, -60, 240, 120]]);
+});
+
+test('scene renderer bypasses endpoint previews for live smart-animate image layers and fills', () => {
+  const document = createDocument();
+  const source = { name: 'original bitmap', width: 400, height: 200 };
+  const preview = { name: 'endpoint preview', width: 200, height: 200 };
+  const fillId = 'smart-fill';
+  const fillNode = createNode('rectangle', {
+    width: 100, height: 80,
+    fills: [{ id: fillId, type: 'image', visible: true, opacity: 1,
+      imageFill: createImageFill('photo', { transforms: { crop: { left: .2, top: .1, right: .8, bottom: .9 } } }),
+      __smartAnimateLiveImageFill: true }]
+  });
+  const imageNode = createNode('image', {
+    assetId: 'photo', width: 100, height: 80,
+    transforms: { crop: { left: .1, top: .2, right: .9, bottom: .8 }, rotation: 90 },
+    __smartAnimateLiveImageTransforms: true
+  });
+  const fillKey = imagePreviewKey(fillNode.id, fillId);
+  const state = {
+    document, assets: new Map([['photo', { bitmap: source }]]),
+    previews: new Map([[fillKey, preview], [imageNode.id, preview]]),
+    zoom: 1, selectedIds: [], imageCropMode: false, presenting: true
+  };
+  const calls = [];
+  const context = new Proxy({ globalAlpha: 1, globalCompositeOperation: 'source-over' }, {
+    get(target, property) {
+      if (property in target) return target[property];
+      return (...args) => calls.push([property, ...args]);
+    },
+    set(target, property, value) { target[property] = value; return true; }
+  });
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => state;
+  renderer.drawNode(context, fillNode, 0, 0, state.assets);
+  renderer.drawNode(context, imageNode, 0, 0, state.assets);
+
+  const imageCalls = calls.filter(([method]) => method === 'drawImage');
+  assert.equal(imageCalls.length, 2);
+  assert.ok(imageCalls.every(([, image]) => image === source), 'live paints must draw the source, never the baked endpoint preview');
+  assert.deepEqual(imageCalls.map(call => call.slice(2, 6)), [
+    [80, 20, 240, 160], [40, 40, 320, 120]
+  ], 'each draw uses its own current crop rectangle from the source bitmap');
 });
 
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {

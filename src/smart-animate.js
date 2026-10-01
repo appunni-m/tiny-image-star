@@ -3,6 +3,7 @@ import { isValidLayerEffects } from './layer-effects.js';
 import { cornerRadiiForNode, cornerRadiusKeys } from './corner-radii.js';
 import { isValidStrokeStack } from './strokes.js';
 import { isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
+import { defaultImageAdjustments, isValidImageFill } from './image-fills.js';
 
 const numericProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'fillOpacity', 'strokeWidth', 'strokeOpacity', 'strokeMiterLimit', 'radius', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing'];
 const colorProperties = ['fill', 'stroke', 'color'];
@@ -131,14 +132,55 @@ function canInterpolateFillStack(fromNode, toNode) {
     && fillBindingKey(fromNode, from[0] || {}) === fillBindingKey(toNode, to[0] || {})
     && from.every((fill, index) => {
       const destination = to[index];
-      if (!fill || !destination || fill.type !== destination.type
-          || fill.visible !== destination.visible
-          || fillBindingKey(fromNode, fill) !== fillBindingKey(toNode, destination)) return false;
-      if (gradientTypes.has(fill.type)) {
-        return canInterpolateGradient(fill.gradient, destination.gradient);
-      }
-      return ['solid', 'image'].includes(fill.type);
+      return Boolean(fill && destination && fill.visible === destination.visible
+        && fillBindingKey(fromNode, fill) === fillBindingKey(toNode, destination)
+        && isRenderableFill(fill) && isRenderableFill(destination));
     });
+}
+
+function isRenderableFill(fill) {
+  if (fill?.type === 'solid') return typeof fill.color === 'string';
+  if (gradientTypes.has(fill?.type)) return isValidGradientFill(fill.gradient);
+  return fill?.type === 'image' && isValidImageFill(fill.imageFill);
+}
+
+function hasFillBinding(node, fill) {
+  return Boolean(node.fillVariableId || node.fillStyleId || node.variableBindings?.fill
+    || fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
+}
+
+function imageAdjustmentsAreDefault(adjustments = {}) {
+  return Boolean(adjustments && typeof adjustments === 'object' && !Array.isArray(adjustments)
+    && Object.keys(adjustments).every(property => Object.hasOwn(defaultImageAdjustments, property))
+    && Object.entries(defaultImageAdjustments).every(([property, value]) => (adjustments[property] ?? value) === value));
+}
+
+function imageFillCanRenderLive(imageFill) {
+  if (!imageFill || !isValidImageFill({ ...imageFill, adjustments: imageFill.adjustments || {} })) return false;
+  return imageAdjustmentsAreDefault(imageFill.adjustments);
+}
+
+function canCrossfadeFill(fromNode, toNode, from, to) {
+  if (!from.visible || !to.visible || hasFillBinding(fromNode, from) || hasFillBinding(toNode, to)) return false;
+  if (from.type === 'image' && !imageFillCanRenderLive(from.imageFill)) return false;
+  if (to.type === 'image' && !imageFillCanRenderLive(to.imageFill)) return false;
+  return true;
+}
+
+function fadedFill(fill, index, side, amount) {
+  const copy = structuredClone(fill);
+  const originalId = typeof fill.id === 'string' ? fill.id : 'paint';
+  copy.id = `smart-animate:${index}:${side}:${originalId.slice(-180)}`;
+  copy.opacity = (Number.isFinite(fill.opacity) ? fill.opacity : 1) * amount;
+  if (copy.type === 'image' && imageFillCanRenderLive(copy.imageFill)) copy.__smartAnimateLiveImageFill = true;
+  return copy;
+}
+
+function crossfadeFills(from, to, index, progress) {
+  return [
+    fadedFill(from, index, 'source', 1 - progress),
+    fadedFill(to, index, 'target', progress)
+  ];
 }
 
 function interpolateFillStack(fromNode, toNode, progress) {
@@ -147,30 +189,42 @@ function interpolateFillStack(fromNode, toNode, progress) {
   if (!canInterpolateFillStack(fromNode, toNode)) return null;
 
   const boundPrimary = Boolean(toNode.fillVariableId || toNode.fillStyleId || toNode.variableBindings?.fill);
-  return toNode.fills.map((fill, index) => {
+  return toNode.fills.flatMap((fill, index) => {
     const start = fromNode.fills[index];
     const categorical = progress < 0.5 ? start : fill;
     const result = structuredClone(categorical);
     if (Number.isFinite(start.opacity) && Number.isFinite(fill.opacity)) {
       result.opacity = start.opacity + (fill.opacity - start.opacity) * progress;
     }
+    if (start.type !== fill.type) {
+      return canCrossfadeFill(fromNode, toNode, start, fill)
+        ? crossfadeFills(start, fill, index, progress) : [result];
+    }
     if (fill.type === 'solid') {
       const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
       if (!(index === 0 && boundPrimary) && !boundPaint) {
         const color = interpolateColor(start.color, fill.color, progress);
         if (color) result.color = color;
-        else if (progress >= 0.5) result.color = structuredClone(fill.color);
+        else return canCrossfadeFill(fromNode, toNode, start, fill)
+          ? crossfadeFills(start, fill, index, progress) : [result];
       }
     } else if (gradientTypes.has(fill.type)) {
       const boundPaint = Boolean(fill.variableId || fill.fillVariableId || fill.styleId || fill.fillStyleId || fill.variableBindings);
-      if (!boundPaint) result.gradient = interpolateGradient(start.gradient, fill.gradient, progress);
+      if (!boundPaint && canInterpolateGradient(start.gradient, fill.gradient)) result.gradient = interpolateGradient(start.gradient, fill.gradient, progress);
+      else if (!boundPaint && canCrossfadeFill(fromNode, toNode, start, fill)) {
+        return crossfadeFills(start, fill, index, progress);
+      }
     } else if (fill.type === 'image') {
       const imageFill = interpolateImageFill(start.imageFill, fill.imageFill, progress);
-      if (imageFill) result.imageFill = imageFill;
+      if (imageFill && imageFillCanRenderLive(start.imageFill) && imageFillCanRenderLive(fill.imageFill)) {
+        result.imageFill = imageFill;
+        result.__smartAnimateLiveImageFill = true;
+      }
+      else if (canCrossfadeFill(fromNode, toNode, start, fill)) return crossfadeFills(start, fill, index, progress);
     }
-    // Image references and incompatible crop/fit transforms remain categorical;
-    // compatible same-asset crop transforms can move with the shared source.
-    return result;
+    // Same-source crops interpolate above; configurations that need processed
+    // previews stay on the existing midpoint snapshot path.
+    return [result];
   });
 }
 
@@ -595,11 +649,17 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
       from.assetId, from.fit, from.transforms,
       to.assetId, to.fit, to.transforms, progress
     );
-    if (transforms) copy.transforms = transforms;
+    if (transforms && imageAdjustmentsAreDefault(from.adjustments) && imageAdjustmentsAreDefault(to.adjustments)) {
+      copy.transforms = transforms;
+      copy.__smartAnimateLiveImageTransforms = true;
+    }
   }
   if (from.imageFill && to.imageFill) {
     const imageFill = interpolateImageFill(from.imageFill, to.imageFill, progress);
-    if (imageFill) copy.imageFill = imageFill;
+    if (imageFill && imageFillCanRenderLive(from.imageFill) && imageFillCanRenderLive(to.imageFill)) {
+      copy.imageFill = imageFill;
+      if (!Array.isArray(copy.fills)) copy.__smartAnimateLiveImageFill = true;
+    }
   }
   const effects = interpolateEffects(from.effects, to.effects, progress);
   if (effects) copy.effects = effects;
