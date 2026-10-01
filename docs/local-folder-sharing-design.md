@@ -14,6 +14,10 @@ The sharing model is deliberately one-master. It gives collaborators a clear ans
 
 ```mermaid
 flowchart LR
+  subgraph Distribution[Static app distribution — files only]
+    AppFiles[Editor HTML / JS / WASM\nno API, rooms, tokens, or design data]
+  end
+
   subgraph Host[Host device — canonical master]
     UI[Editor and live view]
     Sequencer[Authorize, transform, order, dedupe edits]
@@ -48,11 +52,15 @@ flowchart LR
   Host -. optional user-supplied relay .-> Relay
   Guest -. optional user-supplied relay .-> Relay
   GuestUI -. divergent history: save locally, stop writes .-> GuestFolder
+  AppFiles -. loads editor only .-> UI
+  AppFiles -. loads editor only .-> GuestUI
 ```
 
 **No Tiny Image Star collaboration backend is part of this design.** The deployed app can remain static. WebRTC still needs signaling data, so the host creates a one-time SDP offer and sends it in the invite URL/code; the guest creates an SDP answer and returns it to the host through the same user-selected messaging app, share sheet, clipboard, or nearby QR scan. The host pastes or scans the answer to finish ICE negotiation. This manual exchange is required without a rendezvous service: a stable design URL alone cannot discover an open host or start a live session. The app does not run a room directory, signaling endpoint, document server, or TURN service.
 
 **Confirmed constraint: no central Tiny Image Star server.** Static hosting serves only the editor files; the canonical design, folder handle, operation journal, and live edit authority stay on the owner's device. No app backend receives designs, stores room state, issues share tokens, or forwards collaboration messages. The offer and answer move directly between users through a channel they choose. This deliberately gives up one-click joining from a permanent URL: a live join requires the owner to be online and a fresh offer/answer exchange. A persistent URL can identify and authorize a design, but without a rendezvous service it cannot locate the owner's browser.
+
+**No-server product contract:** the stable per-design URL is a local capability/deep link. It can identify which design the owner meant to share and prove that the recipient has the secret; it cannot create a session, wake the owner, queue edits, or promise reachability. Starting a live session always creates a fresh, expiring SDP offer and requires the guest to return an SDP answer through a user-chosen channel. The static site is only software distribution and must not gain a collaboration API as a hidden dependency. The host stores capability grants and revocation state in its own workspace. If the owner is offline, the guest may view or save a local fork from already received data, but cannot change the canonical design.
 
 There are two distinct meanings of “serverless,” and the product must describe which one is active:
 

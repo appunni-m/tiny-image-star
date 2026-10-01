@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteEffectStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -2369,13 +2369,19 @@ function renderAssetsTab() {
   const styles = $('#color-styles-list'); styles.replaceChildren();
   const colorStyles = state.document.colorStyles || [];
   if (!colorStyles.length) {
-    const empty = document.createElement('div'); empty.className = 'color-styles-empty'; empty.textContent = 'Create styles from a layer’s Fill or Text color.'; styles.append(empty);
+    const empty = document.createElement('div'); empty.className = 'color-styles-empty'; empty.textContent = 'Create styles from a solid Fill or Text color.'; styles.append(empty);
   }
   for (const style of colorStyles) {
-    const card = document.createElement('button'); card.className = 'color-style-card'; card.dataset.colorStyleId = style.id; card.title = `${style.name} · ${style.value}`;
+    const row = document.createElement('div'); row.className = 'color-style-row';
+    const card = document.createElement('button'); card.type = 'button'; card.className = 'color-style-card'; card.dataset.colorStyleId = style.id; card.title = `Apply ${style.name} · ${style.value}`;
     const swatch = document.createElement('span'); swatch.className = 'color-style-swatch'; swatch.style.background = style.value;
     const name = document.createElement('span'); name.className = 'color-style-name'; name.textContent = style.name;
-    card.append(swatch, name); styles.append(card);
+    card.append(swatch, name);
+    const actions = document.createElement('div'); actions.className = 'typography-style-actions';
+    const update = document.createElement('button'); update.type = 'button'; update.dataset.colorStyleAction = 'update'; update.dataset.colorStyleId = style.id; update.textContent = 'Update'; update.title = `Update ${style.name} from the selected layer`;
+    const rename = document.createElement('button'); rename.type = 'button'; rename.dataset.colorStyleAction = 'rename'; rename.dataset.colorStyleId = style.id; rename.textContent = 'Rename'; rename.title = `Rename ${style.name}`;
+    const remove = document.createElement('button'); remove.type = 'button'; remove.dataset.colorStyleAction = 'delete'; remove.dataset.colorStyleId = style.id; remove.textContent = '×'; remove.title = `Delete ${style.name}`; remove.setAttribute('aria-label', `Delete ${style.name}`);
+    actions.append(update, rename, remove); row.append(card, actions); styles.append(row);
   }
   const textStyles = $('#text-styles-list'); textStyles.replaceChildren();
   const typographyStyles = state.document.typographyStyles || [];
@@ -7103,16 +7109,50 @@ function saveTypographyStyleFor(nodeId) {
 function applyStyleToSelection(styleId) {
   const style = state.document.colorStyles?.find(item => item.id === styleId);
   if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
-  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text'
-    : !['text', 'image', 'line', 'path', 'slice'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0));
+  const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text' : isFillStackSupported(node));
   if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
   for (const node of compatible) {
     applyColorStyle(state.document, node.id, style.id);
     const instanceRoot = componentInstanceRoot(node.id);
-    if (instanceRoot) recordComponentOverride(instanceRoot, node, style.kind === 'text' ? 'textStyleId' : 'fillStyleId');
+    if (instanceRoot) {
+      if (style.kind === 'text') recordComponentOverride(instanceRoot, node, 'textStyleId');
+      else recordNodeComponentOverrides(node, ['fills', 'fill', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId', 'variableBindings']);
+    }
   }
   renderUI(); queueSave();
+}
+
+function updateColorStyleFromSelection(styleId) {
+  const style = state.document.colorStyles?.find(item => item.id === styleId);
+  const nodes = selectedNodes().filter(node => style?.kind === 'text' ? node.type === 'text'
+    : isFillStackSupported(node) && fillStackForNode(node)[0]?.type === 'solid');
+  if (!style) { showToast('This color style no longer exists.'); return; }
+  if (nodes.length !== 1) { showToast('Select one compatible layer to update a color style.'); return; }
+  checkpoint(`Update ${style.name}`);
+  if (!updateColorStyle(state.document, style.id, nodes[0].id)) { showToast('Could not update this color style.'); return; }
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(`Updated “${style.name}” for every linked layer.`);
+}
+
+function renameColorStyleInAssets(styleId) {
+  const style = state.document.colorStyles?.find(item => item.id === styleId);
+  if (!style) { showToast('This color style no longer exists.'); return; }
+  const name = prompt('Color style name', style.name);
+  if (name == null) return;
+  if (name.trim() === style.name) return;
+  checkpoint(`Rename ${style.name}`);
+  if (!renameColorStyle(state.document, style.id, name)) { showToast('Enter a color style name of 1–160 characters.'); return; }
+  renderUI(); queueSave(); showToast(`Renamed color style to “${style.name}”.`);
+}
+
+function removeColorStyleFromAssets(styleId) {
+  const style = state.document.colorStyles?.find(item => item.id === styleId);
+  if (!style) { showToast('This color style no longer exists.'); return; }
+  checkpoint(`Delete ${style.name}`);
+  deleteColorStyle(state.document, style.id);
+  renderUI(); queueSave(); renderer.invalidate();
+  showToast(`Deleted “${style.name}” and kept its current color on linked layers.`);
 }
 
 function applyTypographyStyleToSelection(styleId) {
@@ -7489,7 +7529,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   }
   const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text'
     ? selectedNodes().some(item => item.type === 'text')
-    : selectedNodes().some(item => !['text', 'image', 'line', 'path', 'slice'].includes(item.type) && (item.type !== 'network' || (item.faces || []).length > 0)));
+    : selectedNodes().some(item => isFillStackSupported(item)));
   if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
   const textTargets = selectedNodes().filter(item => item.type === 'text');
   const typographyStyles = state.document.typographyStyles || [];
@@ -10917,6 +10957,8 @@ function applyInspectorAction(action, details = {}) {
     try {
       checkpoint('Create color style');
       const style = createColorStyle(state.document, node.id, name);
+      const instanceRoot = componentInstanceRoot(node.id);
+      if (instanceRoot) recordComponentOverride(instanceRoot, node, style.kind === 'text' ? 'textStyleId' : 'fillStyleId');
       renderUI(); queueSave(); showToast(`Color style “${style.name}” created.`);
     } catch (error) { showToast(error.message); }
   }
@@ -11743,7 +11785,17 @@ function initEvents() {
     const variantValue = event.target.closest('[data-variant-master-property]');
     if (variantValue) changeMainVariantProperty(variantValue.dataset.componentId, variantValue.dataset.variantMasterProperty, variantValue.value);
   });
-  $('#color-styles-list').addEventListener('click', event => { const style = event.target.closest('[data-color-style-id]'); if (style) applyStyleToSelection(style.dataset.colorStyleId); });
+  $('#color-styles-list').addEventListener('click', event => {
+    const action = event.target.closest('[data-color-style-action]');
+    if (action) {
+      if (action.dataset.colorStyleAction === 'update') updateColorStyleFromSelection(action.dataset.colorStyleId);
+      else if (action.dataset.colorStyleAction === 'rename') renameColorStyleInAssets(action.dataset.colorStyleId);
+      else if (action.dataset.colorStyleAction === 'delete') removeColorStyleFromAssets(action.dataset.colorStyleId);
+      return;
+    }
+    const style = event.target.closest('button[data-color-style-id]');
+    if (style) applyStyleToSelection(style.dataset.colorStyleId);
+  });
   $('#text-styles-list').addEventListener('click', event => {
     const action = event.target.closest('[data-text-style-action]');
     if (action) {

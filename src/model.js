@@ -1,5 +1,5 @@
 import { isValidLayerEffects } from './layer-effects.js';
-import { isValidFillStack, isValidGradientFill } from './fills.js';
+import { ensureFillStack, fillStackForNode, isFillStackSupported, isValidFillStack, isValidGradientFill, syncLegacyFillFields } from './fills.js';
 import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageAdjustments, isValidImageFill, normalizeImageAdjustments } from './image-fills.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
@@ -1606,14 +1606,86 @@ export function createColorStyle(document, nodeId, name, pageId = document.activ
   if (!node) throw new Error('Select a layer before creating a color style.');
   if (node.type === 'network' && !(node.faces || []).length) throw new TypeError('Open vector networks use stroke styles; close a region before creating a fill style.');
   const kind = node.type === 'text' ? 'text' : 'fill';
+  if (kind === 'fill' && (!isFillStackSupported(node) || fillStackForNode(node)[0]?.type !== 'solid')) throw new TypeError('Color styles require a solid primary fill on a fillable layer.');
   const value = getNodeColor(document, node, kind);
   if (!/^#[0-9a-f]{6}$/i.test(value)) throw new TypeError('Color styles require a solid six-digit color.');
-  const style = { id: createId('style'), name: String(name).trim() || `${node.name} color`, kind, value };
+  const styleName = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || `${node.name} color`;
+  if (styleName.length > 160) throw new TypeError('Color style names can contain up to 160 characters.');
+  const style = { id: createId('style'), name: styleName, kind, value };
   document.colorStyles ||= [];
+  if (document.colorStyles.length >= 1000) throw new Error('A design can contain up to 1,000 color styles.');
   document.colorStyles.push(style);
   if (kind === 'text') { delete node.textVariableId; node.textStyleId = style.id; }
   else { delete node.fillVariableId; node.fillStyleId = style.id; }
   return style;
+}
+
+/** Refresh a shared solid color style from one compatible selected layer. */
+export function updateColorStyle(document, styleId, nodeId, pageId = document.activePageId) {
+  const style = document.colorStyles?.find(item => item.id === styleId);
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (!style || !node) return false;
+  if (style.kind === 'text' && node.type !== 'text') return false;
+  if (style.kind === 'fill' && (!isFillStackSupported(node)
+    || fillStackForNode(node)[0]?.type !== 'solid')) return false;
+  const value = getNodeColor(document, node, style.kind);
+  if (!/^#[0-9a-f]{6}$/i.test(value)) return false;
+  style.value = value;
+  return true;
+}
+
+/** Rename a color style without changing its linked layers. */
+export function renameColorStyle(document, styleId, name) {
+  const style = document.colorStyles?.find(item => item.id === styleId);
+  if (!style || typeof name !== 'string') return false;
+  const normalized = name.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  if (!normalized || normalized.length > 160) return false;
+  style.name = normalized;
+  return true;
+}
+
+/** Delete a color style while detaching every linked layer at its current color. */
+export function deleteColorStyle(document, styleId) {
+  const styles = document.colorStyles || [];
+  const index = styles.findIndex(style => style.id === styleId);
+  if (index < 0) return false;
+  const style = styles[index];
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (style.kind === 'fill' && node.fillStyleId === style.id) {
+      const color = getNodeColor(document, node, 'fill');
+      delete node.fillStyleId;
+      if (/^#[0-9a-f]{6}$/i.test(color)) {
+        if (Array.isArray(node.fills)) {
+          const primary = node.fills[0];
+          if (primary?.type === 'solid') primary.color = color;
+          syncLegacyFillFields(node);
+        } else node.fill = color;
+      }
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override?.fillStyleId === style.id) {
+        delete override.fillStyleId;
+        override.fills = clone(node.fills || fillStackForNode(node));
+        override.fill = node.fill ?? null;
+        override.fillOpacity = node.fillOpacity ?? 1;
+        override.fillGradient = node.fillGradient ? clone(node.fillGradient) : null;
+        override.imageFill = node.imageFill ? clone(node.imageFill) : null;
+      }
+    }
+    if (style.kind === 'text' && node.textStyleId === style.id) {
+      const color = getNodeColor(document, node, 'text');
+      delete node.textStyleId;
+      if (/^#[0-9a-f]{6}$/i.test(color)) node.color = color;
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override?.textStyleId === style.id) {
+        delete override.textStyleId;
+        override.color = node.color;
+      }
+    }
+  });
+  styles.splice(index, 1);
+  return true;
 }
 
 export function applyColorStyle(document, nodeId, styleId, pageId = document.activePageId) {
@@ -1621,7 +1693,17 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   const style = document.colorStyles?.find(item => item.id === styleId);
   if (!node || !style) return false;
   if (style.kind === 'text' && node.type === 'text') { delete node.textVariableId; node.textStyleId = style.id; }
-  else if (style.kind === 'fill' && !['text', 'image', 'line', 'path'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0)) { delete node.fillVariableId; node.fillStyleId = style.id; }
+  else if (style.kind === 'fill' && isFillStackSupported(node)) {
+    const primary = ensureFillStack(node)[0];
+    if (!primary) return false;
+    primary.type = 'solid';
+    primary.color = style.value;
+    delete primary.gradient;
+    delete primary.imageFill;
+    syncLegacyFillFields(node);
+    delete node.fillVariableId;
+    node.fillStyleId = style.id;
+  }
   else return false;
   return true;
 }

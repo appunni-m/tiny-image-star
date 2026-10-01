@@ -134,7 +134,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .assets-list { min-height: 0; flex: 1 1 0; display: flex; flex-direction: column; gap: 8px; padding: 5px; overflow: auto; }
 .placed-image-assets { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 8px; }
 .image-library-root { min-width: 0; min-height: 0; flex: 1 0 auto; }
-.color-styles-list { max-height: 38%; flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 4px 5px 10px; overflow: auto; }
+.color-styles-list { max-height: 38%; flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 4px 5px 10px; overflow: auto; }
+.color-style-row { min-width: 0; display: flex; align-items: center; gap: 4px; }
 .components-list { max-height: 25%; flex: 0 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 4px 5px 9px; overflow: auto; }
 .local-component-library-heading { flex: 0 0 auto; }
 .component-library-list { min-height: 0; max-height: 24%; flex: 0 1 auto; overflow: auto; padding: 3px 5px 8px; }
@@ -240,7 +241,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .component-slot-reset { width: 38px; height: 38px; border: 1px solid #e2e5e9; }
 .variant-control { min-width: 0; display: grid; grid-template-columns: 68px minmax(0, 1fr); align-items: center; gap: 6px; color: #777; font-size: 9px; }
 .variant-control .prop-input { min-width: 0; width: 100%; height: 27px; }
-.color-style-card { min-width: 0; height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 1px solid #ededed; border-radius: 5px; text-align: left; }
+.color-style-card { min-width: 0; height: 34px; flex: 1 1 auto; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 1px solid #ededed; border-radius: 5px; text-align: left; }
 .color-style-card:hover { border-color: #cfcfcf; background: #fafafa; }
 .color-style-swatch { width: 16px; height: 16px; flex: 0 0 16px; border: 1px solid rgba(0,0,0,.12); border-radius: 4px; }
 .color-style-name { overflow: hidden; color: #555; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }

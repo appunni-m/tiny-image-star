@@ -815,10 +815,18 @@ try {
   dispatchClick(app.querySelector('[data-action="create-color-style"]'));
   await waitFor(() => app.querySelector('#color-styles-list [data-color-style-id]'), 'shared color style creation');
   const colorStyleId = app.querySelector('#color-styles-list [data-color-style-id]').dataset.colorStyleId;
+  const colorStyleRow = app.querySelector(`[data-color-style-id="${colorStyleId}"]`).closest('.color-style-row');
+  assert(colorStyleRow?.querySelector('[data-color-style-action="update"]')
+    && colorStyleRow.querySelector('[data-color-style-action="rename"]')
+    && colorStyleRow.querySelector('[data-color-style-action="delete"]'),
+  'Assets should expose update, rename, and delete for reusable color styles');
+  app.defaultView.prompt = () => 'Smoke white renamed';
+  dispatchClick(colorStyleRow.querySelector('[data-color-style-action="rename"]'));
+  await waitFor(() => [...app.querySelectorAll('#color-styles-list .color-style-name')].some(name => name.textContent === 'Smoke white renamed'), 'color style rename');
   const destinationRow = app.querySelector(`[data-layer-id="${destinationFrame.id}"]`);
   assert(destinationRow, 'the destination frame was not available for shared styling');
   dispatchContextMenu(destinationRow);
-  const applyColorStyle = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.trim() === 'Smoke white');
+  const applyColorStyle = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.trim() === 'Smoke white renamed');
   assert(applyColorStyle, 'the layer context menu did not expose shared color styles');
   dispatchClick(applyColorStyle);
   await new Promise(resolve => setTimeout(resolve, 350));
@@ -827,6 +835,15 @@ try {
   const styledNodes = flattenNodes(styledDocument?.pages.flatMap(page => page.children));
   assert(styledDocument?.colorStyles.some(style => style.id === colorStyleId), 'the shared color style did not persist');
   assert(styledNodes.find(node => node.id === destinationFrame.id)?.fillStyleId === colorStyleId, 'the shared color style was not applied to the destination frame');
+  const savedStyleValue = styledDocument.colorStyles.find(style => style.id === colorStyleId)?.value;
+  dispatchClick(app.querySelector(`[data-color-style-action="delete"][data-color-style-id="${colorStyleId}"]`));
+  await waitFor(() => !app.querySelector(`[data-color-style-id="${colorStyleId}"]`), 'color style deletion');
+  await waitForSaveCycle(app, 'detached color style autosave');
+  const detachedStyleRecords = await readStore('documents'); detachedStyleRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const detachedStyleNode = flattenNodes(detachedStyleRecords[0]?.document?.pages.flatMap(page => page.children))
+    .find(node => node.id === destinationFrame.id);
+  assert(detachedStyleNode?.fillStyleId == null && detachedStyleNode?.fill === savedStyleValue,
+    'deleting the style should preserve the applied color while removing its reference');
 
   let componentPrompt = 0;
   app.defaultView.prompt = (message, initial = '') => message === 'Component name'
