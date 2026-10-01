@@ -254,7 +254,7 @@ function crossfadeFills(from, to, index, progress) {
   ];
 }
 
-function interpolateFillStack(fromNode, toNode, progress) {
+function interpolateFillStack(fromNode, toNode, progress, resolveImageTransition = null) {
   if (progress === 0) return structuredClone(fromNode.fills);
   if (progress === 1) return structuredClone(toNode.fills);
   if (!canInterpolateFillStack(fromNode, toNode)) return null;
@@ -291,7 +291,16 @@ function interpolateFillStack(fromNode, toNode, progress) {
         result.imageFill = imageFill;
         result.__smartAnimateLiveImageFill = true;
       }
-      else if (canCrossfadeFill(fromNode, toNode, start, fill)) return crossfadeFills(start, fill, index, progress);
+      else {
+        const transition = resolveImageTransition?.({
+          kind: 'image-fill', fromNode, toNode, fromFill: start, toFill: fill, progress
+        });
+        if (transition) {
+          result.__smartAnimateImageTransition = { ...structuredClone(transition), progress };
+          return [result];
+        }
+        if (canCrossfadeFill(fromNode, toNode, start, fill)) return crossfadeFills(start, fill, index, progress);
+      }
     }
     // Same-source crops interpolate above; configurations that need processed
     // previews stay on the existing midpoint snapshot path.
@@ -712,7 +721,7 @@ function fadeLayer(node, progress, entering) {
   return copy;
 }
 
-function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress) {
+function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null) {
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
   if (from.type === 'image' && to.type === 'image') {
@@ -723,6 +732,9 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
     if (transforms && imageAdjustmentsAreDefault(from.adjustments) && imageAdjustmentsAreDefault(to.adjustments)) {
       copy.transforms = transforms;
       copy.__smartAnimateLiveImageTransforms = true;
+    } else {
+      const transition = resolveImageTransition?.({ kind: 'image-layer', fromNode: from, toNode: to, progress });
+      if (transition) copy.__smartAnimateImageTransition = { ...structuredClone(transition), progress };
     }
   }
   if (from.imageFill && to.imageFill) {
@@ -730,6 +742,9 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
     if (imageFill && imageFillCanRenderLive(from.imageFill) && imageFillCanRenderLive(to.imageFill)) {
       copy.imageFill = imageFill;
       if (!Array.isArray(copy.fills)) copy.__smartAnimateLiveImageFill = true;
+    } else if (!Array.isArray(copy.fills)) {
+      const transition = resolveImageTransition?.({ kind: 'legacy-image-fill', fromNode: from, toNode: to, progress });
+      if (transition) copy.__smartAnimateImageFillTransition = { ...structuredClone(transition), progress };
     }
   }
   const effects = interpolateEffects(from.effects, to.effects, progress);
@@ -774,7 +789,7 @@ function interpolateLayer(from, to, progress, resolveRadius = null, geometryProg
   if (!from.fillVariableId && !to.fillVariableId && canInterpolateGradient(from.fillGradient, to.fillGradient)) {
     copy.fillGradient = interpolateGradient(from.fillGradient, to.fillGradient, progress);
   }
-  const fills = interpolateFillStack(from, to, progress);
+  const fills = interpolateFillStack(from, to, progress, resolveImageTransition);
   if (fills) copy.fills = fills;
   const strokes = interpolateStrokeStack(from, to, progress);
   if (strokes) copy.strokes = strokes;
@@ -893,7 +908,7 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress) {
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress, resolveImageTransition = null) {
   const fromKeys = siblingKeys(fromChildren);
   const toKeys = siblingKeys(toChildren);
   const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
@@ -909,7 +924,7 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
       const source = sourceByKey.get(endpointKeys[index])?.node;
       const destination = destinationByKey.get(endpointKeys[index])?.node;
       return source && destination && canMatch(source, destination)
-        ? interpolateLayer(source, destination, progress, resolveRadius, geometryProgress)
+        ? interpolateLayer(source, destination, progress, resolveRadius, geometryProgress, resolveImageTransition)
         : structuredClone(node);
     });
   }
@@ -919,7 +934,7 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null,
     const match = sourceByKey.get(toKeys[index]);
     if (match && canMatch(match.node, node)) {
       matchedSourceIndexes.add(match.index);
-      return { node: interpolateLayer(match.node, node, progress, resolveRadius, geometryProgress), sourceIndex: match.index };
+      return { node: interpolateLayer(match.node, node, progress, resolveRadius, geometryProgress, resolveImageTransition), sourceIndex: match.index };
     }
     return { node: fadeLayer(node, progress, true), sourceIndex: null };
   });
@@ -1018,6 +1033,7 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   if (allowOvershoot ? requestedProgress === 0 : amount === 0) return structuredClone(fromFrame);
   if (allowOvershoot ? requestedProgress === 1 : amount === 1) return structuredClone(toFrame);
   const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
+  const resolveImageTransition = typeof options?.resolveImageTransition === 'function' ? options.resolveImageTransition : null;
   const frame = structuredClone(toFrame);
   snapProperties(frame, fromFrame, toFrame, amount);
   for (const property of ['width', 'height', 'opacity', 'rotation']) {
@@ -1037,10 +1053,10 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   if (!fromFrame.fillVariableId && !toFrame.fillVariableId && canInterpolateGradient(fromFrame.fillGradient, toFrame.fillGradient)) {
     frame.fillGradient = interpolateGradient(fromFrame.fillGradient, toFrame.fillGradient, amount);
   }
-  const fills = interpolateFillStack(fromFrame, toFrame, amount);
+  const fills = interpolateFillStack(fromFrame, toFrame, amount, resolveImageTransition);
   if (fills) frame.fills = fills;
   const strokes = interpolateStrokeStack(fromFrame, toFrame, amount);
   if (strokes) frame.strokes = strokes;
-  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress);
+  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress, resolveImageTransition);
   return frame;
 }

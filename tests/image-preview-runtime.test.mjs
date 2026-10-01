@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { History } from '../src/history.js';
-import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from '../src/image-preview-runtime.js';
+import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from '../src/image-preview-runtime.js';
 
 function runtimeMaps() {
   return {
@@ -11,6 +11,7 @@ function runtimeMaps() {
     previewUrls: new Map(),
     previewAssetIds: new Map(),
     previewVersions: new Map(),
+    previewSignatures: new Map(),
     imageStatus: new Map(),
     renderVersion: new Map(),
   };
@@ -44,6 +45,65 @@ test('live preview references include raster and image-fill layers across every 
   ]);
   assert.equal(imagePreviewKey('shape', 'fill-1'), 'image-fill:["shape","fill-1"]');
   assert.notEqual(imagePreviewKey('copy-a', 'fill-1'), imagePreviewKey('copy-b', 'fill-1'), 'duplicated layers do not share per-fill preview resources');
+});
+
+test('preview settings signatures are stable and include every rendered image input', () => {
+  const first = imagePreviewSettingsSignature({
+    assetId: 'photo', adjustments: { contrast: 12, brightness: 4 },
+    transforms: { rotation: 90, crop: { left: .1, top: 0, right: .9, bottom: 1 } },
+    inpaintStrokes: [{ radius: 8, points: [{ x: 2, y: 4 }] }], outputFormat: 'jpeg', outputQuality: 82
+  });
+  const reordered = imagePreviewSettingsSignature({
+    outputQuality: 82, outputFormat: 'jpeg',
+    inpaintStrokes: [{ points: [{ y: 4, x: 2 }], radius: 8 }],
+    transforms: { crop: { bottom: 1, right: .9, top: 0, left: .1 }, rotation: 90 },
+    adjustments: { brightness: 4, contrast: 12 }, assetId: 'photo'
+  });
+  assert.equal(first, reordered, 'object property order cannot invalidate a preview');
+  for (const input of [
+    { assetId: 'other' },
+    { adjustments: { brightness: 5 } },
+    { transforms: { rotation: 180 } },
+    { inpaintStrokes: [] },
+    { outputFormat: 'png' },
+    { outputQuality: 90 }
+  ]) {
+    const changed = imagePreviewSettingsSignature({
+      assetId: 'photo', adjustments: { contrast: 12, brightness: 4 },
+      transforms: { rotation: 90, crop: { left: .1, top: 0, right: .9, bottom: 1 } },
+      inpaintStrokes: [{ radius: 8, points: [{ x: 2, y: 4 }] }], outputFormat: 'jpeg', outputQuality: 82,
+      ...input
+    });
+    assert.notEqual(changed, first, 'asset, adjustments, transforms, erase strokes, and encoding changes invalidate a preview');
+  }
+});
+
+test('presentation crossfades only current Pillow preview settings and receives the live preview maps', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('async function renderImagePreview(');
+  const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  const renderBody = source.slice(renderStart, renderEnd);
+  assert.ok(renderBody.indexOf('state.previewSignatures.set(previewKey, imagePreviewSettingsSignature')
+    > renderBody.indexOf('state.previewAssetIds.set(previewKey, assetId)'),
+  'a signature is committed with the decoded preview after the matching asset ID');
+
+  const endpointStart = source.indexOf('function smartAnimateImageTransitionEndpoint(');
+  const endpointEnd = source.indexOf('\nfunction resolveSmartAnimateImageTransition', endpointStart);
+  const endpointBody = source.slice(endpointStart, endpointEnd);
+  assert.match(endpointBody, /state\.previewSignatures\.get\(previewKey\) === signature/,
+    'settings edits invalidate a prior preview even when its asset ID still matches');
+  assert.match(endpointBody, /status\.startsWith\('Ready'\) \|\| status\.startsWith\('Updated'\)/,
+    'processing and failed previews cannot become transition endpoints');
+  assert.match(endpointBody, /if \(!previewIsCurrent && !sourceRenderable\) return null/,
+    'edited images require their exact endpoint preview, while unedited images can render from source bytes');
+
+  const frameStart = source.indexOf('function renderPresentationFrame(');
+  const frameEnd = source.indexOf('\nfunction ', frameStart + 10);
+  const frameBody = source.slice(frameStart, frameEnd);
+  assert.match(frameBody, /resolveImageTransition: resolveSmartAnimateImageTransition/,
+    'presentation gives Smart Animate the verified-preview resolver');
+  assert.match(frameBody, /presentRenderState\.previewSignatures = state\.previewSignatures/,
+    'the presentation renderer gets the same freshness metadata as the editor');
 });
 
 test('asset reachability includes current, undo, and redo snapshots before releasing source resources', () => {
@@ -233,6 +293,8 @@ test('pruning deleted nodes cancels timers and releases only orphan preview reso
   runtime.previewAssetIds.set('deleted-preview', sharedAsset);
   runtime.previewVersions.set('live-on-another-page', 4);
   runtime.previewVersions.set('deleted-preview', 5);
+  runtime.previewSignatures.set('live-on-another-page', 'live-settings');
+  runtime.previewSignatures.set('deleted-preview', 'deleted-settings');
   runtime.imageStatus.set('live-on-another-page', 'Updated');
   runtime.imageStatus.set('deleted-preview', 'Updated');
   runtime.renderVersion.set('live-on-another-page', 40);
@@ -256,6 +318,7 @@ test('pruning deleted nodes cancels timers and releases only orphan preview reso
   assert.equal(runtime.previews.has('live-on-another-page'), true);
   assert.equal(runtime.previewUrls.get('live-on-another-page'), 'blob:live');
   assert.equal(runtime.previewAssetIds.get('live-on-another-page'), sharedAsset);
+  assert.equal(runtime.previewSignatures.get('live-on-another-page'), 'live-settings');
   assert.equal(runtime.renderVersion.get('live-on-another-page'), 40);
 });
 

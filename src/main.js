@@ -30,7 +30,7 @@ import { LocalInpaintEngine } from './inpaint-engine.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
-import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
+import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, imagePreviewSettingsSignature, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
 import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
 import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
 import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, deleteDesign as deleteWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
@@ -113,7 +113,7 @@ const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
   gradientGeometryTarget: null,
-  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
+  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
   componentSetSelectedVariants: new Map(),
@@ -7123,9 +7123,10 @@ function releasePreviewResources(previewKey) {
   state.previewUrls.delete(previewKey);
   try { if (url) URL.revokeObjectURL(url); } catch { /* URL may already be revoked */ }
   state.previewAssetIds.delete(previewKey);
+  state.previewSignatures.delete(previewKey);
   try { imageMemoryBudget.release(previewMemoryKey(previewKey)); } catch { /* always finish dropping preview references */ }
   if (!previewKey.startsWith('image-fill:')) updateImageAssetThumbnail(previewKey);
-  renderer?.invalidate();
+  renderer?.invalidate(); presentRenderer?.invalidate();
 }
 
 function inpaintStageLabel(stage) {
@@ -7241,11 +7242,17 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
       state.previewUrls.set(previewKey, previewUrl);
       state.previews.set(previewKey, bitmap);
       state.previewAssetIds.set(previewKey, assetId);
+      state.previewSignatures.set(previewKey, imagePreviewSettingsSignature({
+        assetId, adjustments, transforms,
+        inpaintStrokes: imageNode?.type === 'image' ? imageNode.inpaintStrokes : [],
+        outputFormat: imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png',
+        outputQuality: imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90,
+      }));
       state.previewVersions.set(previewKey, (state.previewVersions.get(previewKey) || 0) + 1);
       previewUrl = null;
       bitmap = null;
       state.imageStatus.set(previewKey, 'Updated · Pillow-RS WASM');
-      renderer.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
+      renderer.invalidate(); presentRenderer?.invalidate(); if (!fillId) updateImageAssetThumbnail(nodeId);
       updateSelectedImageStatus(nodeId, previewKey, fillId);
       return true;
     });
@@ -7285,6 +7292,7 @@ function reconcileImagePreviewRuntime() {
     previewUrls: state.previewUrls,
     previewAssetIds: state.previewAssetIds,
     previewVersions: state.previewVersions,
+    previewSignatures: state.previewSignatures,
     imageStatus: state.imageStatus,
     renderVersion: state.renderVersion,
   });
@@ -9280,6 +9288,7 @@ async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null
       if (inpaint) { inpaint.abort(); state.inpaintControllers.delete(previewKey); }
       state.renderVersion.delete(previewKey);
       state.previewVersions.delete(previewKey);
+      state.previewSignatures.delete(previewKey);
       state.imageStatus.delete(previewKey);
       releasePreviewResources(previewKey);
     }
@@ -10301,6 +10310,45 @@ function scrollPresentationGesture(event, gesture) {
   return true;
 }
 
+function smartAnimateImageTransitionEndpoint(node, fill, kind) {
+  const isImageLayer = kind === 'image-layer';
+  if (isImageLayer && (node?.type !== 'image' || node.variableBindings?.opacity)) return null;
+  if (!isImageLayer && (node.fillVariableId || node.fillStyleId || node.variableBindings?.fill
+    || fill?.variableId || fill?.fillVariableId || fill?.styleId || fill?.fillStyleId || fill?.variableBindings)) return null;
+  const imageFill = isImageLayer ? null : (fill?.imageFill || (!fill ? node?.imageFill : null));
+  const assetId = isImageLayer ? node.assetId : imageFill?.assetId;
+  if (typeof assetId !== 'string' || !assetId) return null;
+  const adjustments = isImageLayer ? node.adjustments : imageFill?.adjustments;
+  const transforms = isImageLayer ? node.transforms : imageFill?.transforms;
+  const inpaintStrokes = isImageLayer ? node.inpaintStrokes : [];
+  const outputFormat = isImageLayer ? node.outputFormat ?? 'png' : 'png';
+  const outputQuality = isImageLayer ? node.outputQuality ?? 90 : 90;
+  const previewKey = imagePreviewKey(node.id, isImageLayer || !fill ? null : fill.id);
+  const signature = imagePreviewSettingsSignature({
+    assetId, adjustments, transforms, inpaintStrokes, outputFormat, outputQuality
+  });
+  const sourceRenderable = Object.keys(adjustments || {}).every(property => Object.hasOwn(defaultImageAdjustments, property))
+    && Object.entries(defaultImageAdjustments).every(([property, value]) => (adjustments?.[property] ?? value) === value)
+    && (!inpaintStrokes || inpaintStrokes.length === 0)
+    && outputFormat === 'png' && outputQuality === 90;
+  const status = state.imageStatus.get(previewKey) || '';
+  const previewIsCurrent = state.previews.has(previewKey) && state.previewAssetIds.get(previewKey) === assetId
+    && state.previewSignatures.get(previewKey) === signature
+    && (status.startsWith('Ready') || status.startsWith('Updated'));
+  if (!previewIsCurrent && !sourceRenderable) return null;
+  return {
+    previewKey, assetId, signature, fit: isImageLayer ? node.fit || 'cover' : imageFill?.fit || 'cover',
+    transforms: structuredClone(transforms || {}), sourceRenderable,
+    opacity: isImageLayer ? node.opacity ?? 1 : fill?.opacity ?? node.fillOpacity ?? 1
+  };
+}
+
+function resolveSmartAnimateImageTransition({ kind, fromNode, toNode, fromFill = null, toFill = null }) {
+  const from = smartAnimateImageTransitionEndpoint(fromNode, fromFill, kind);
+  const to = smartAnimateImageTransitionEndpoint(toNode, toFill, kind);
+  return from && to ? { from, to } : null;
+}
+
 function renderPresentationFrame(interaction = null, previousFrame = null, progress = null) {
   if (!state.presenting || !presentRenderState) return;
   const runtimeDocument = presentRuntimeDocument || state.document;
@@ -10316,7 +10364,11 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     ? resolveVariableValueWithModeOverrides(runtimeDocument, node.variableBindings.radius, state.presenting.variableModes || {}, node)
     : node.radius;
   const displayFrame = applySessionVariableModes(previousFrame && Number.isFinite(progress)
-    ? interpolateSmartFrame(previousFrame, target.node, progress, { resolveRadius: resolveTransitionRadius, allowOvershoot: true })
+    ? interpolateSmartFrame(previousFrame, target.node, progress, {
+      resolveRadius: resolveTransitionRadius,
+      resolveImageTransition: resolveSmartAnimateImageTransition,
+      allowOvershoot: true
+    })
     : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
@@ -10340,6 +10392,10 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
   };
   presentRenderState.assets = state.assets;
   presentRenderState.previews = state.previews;
+  presentRenderState.previewAssetIds = state.previewAssetIds;
+  presentRenderState.previewVersions = state.previewVersions;
+  presentRenderState.previewSignatures = state.previewSignatures;
+  presentRenderState.imageStatus = state.imageStatus;
   const rect = $('#present-canvas').getBoundingClientRect();
   const width = Math.max(1, rect.width); const height = Math.max(1, rect.height);
   const margin = Math.min(72, Math.max(24, Math.min(width, height) * .08));
@@ -10484,7 +10540,12 @@ function startPresentation(selectedId = null) {
   configurePresentationFlowPicker(flowId);
   presentationPointerGesture = null;
   presentRuntimeDocument = cloneDocument(state.document);
-  presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], presentationScrollOffsets: new Map(), zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
+  presentRenderState = {
+    document: null, assets: state.assets, previews: state.previews, previewAssetIds: state.previewAssetIds,
+    previewVersions: state.previewVersions, previewSignatures: state.previewSignatures, imageStatus: state.imageStatus,
+    selectedIds: [], presentationScrollOffsets: new Map(), zoom: 1, panX: 0, panY: 0,
+    draftNode: null, marquee: null, inspectorTab: 'design'
+  };
   $('#present-canvas').style.touchAction = 'none';
   dialog.showModal();
   requestAnimationFrame(() => {
@@ -11033,7 +11094,7 @@ function releaseImageRuntimeForDocumentSwitch() {
   for (const bitmap of state.previews.values()) bitmap.close?.();
   for (const url of state.previewUrls.values()) URL.revokeObjectURL(url);
   previewsEvictedForCapacity.clear();
-  state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear();
+  state.assets.clear(); state.previews.clear(); state.previewUrls.clear(); state.previewAssetIds.clear(); state.previewSignatures.clear();
   state.previewVersions.clear(); state.imageStatus.clear(); state.renderVersion.clear();
   imageMemoryBudget.releaseEntries();
 }

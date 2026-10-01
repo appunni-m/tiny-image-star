@@ -207,7 +207,7 @@ function setTextSurfaceTransform(context, x, y, width, height, pixelWidth, pixel
   return { scaleX, scaleY };
 }
 
-function drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces) {
+function drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces, transitionRenderer = null) {
   if (!Array.isArray(node.fills) || width <= 0 || height <= 0) return false;
   const transform = ctx.getTransform?.();
   const requestedScale = transform ? Math.hypot(transform.a, transform.b)
@@ -242,7 +242,7 @@ function drawTextFillStack(ctx, node, document, assets, state, x, y, width, heig
       stroke: null, strokeWidth: 0, strokes: []
     };
     drawFillStack(paintContext, paintNode, assets, state, x, y, width, height,
-      null, motionValues, true, index, motionFillIndex);
+      null, motionValues, true, index, motionFillIndex, transitionRenderer);
 
     paintContext.save();
     paintContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -415,7 +415,7 @@ function fillCurrentPath(ctx, node) {
   else ctx.fill();
 }
 
-function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false, fillIndexOffset = 0, motionFillIndexOverride = null) {
+function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false, fillIndexOffset = 0, motionFillIndexOverride = null, transitionRenderer = null) {
   const fills = fillStackForNode(node);
   const motionFillIndex = motionFillIndexOverride ?? fills.findIndex(fill => fill.type === 'solid');
   for (let index = 0; index < fills.length; index += 1) {
@@ -443,6 +443,17 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
       if (paint) { ctx.fillStyle = paint; fillCurrentPath(ctx, node); }
     } else if (fill.type === 'image') {
       const imageFill = fill.imageFill;
+      const imageTransition = fill.__smartAnimateImageTransition
+        || (!Array.isArray(node.fills) ? node.__smartAnimateImageFillTransition : null);
+      if (imageTransition) {
+        ctx.save();
+        if (node.type === 'path') ctx.clip(node.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
+        else ctx.clip();
+        transitionRenderer?.drawSmartAnimateImageTransition(ctx, imageTransition, assets, state, x, y, width, height);
+        ctx.restore();
+        ctx.restore();
+        continue;
+      }
       const liveSource = (fill.__smartAnimateLiveImageFill || (!Array.isArray(node.fills) && node.__smartAnimateLiveImageFill)) && imageFill
         ? assets.get(imageFill.assetId)?.bitmap : null;
       const image = liveSource || (imageFill && imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id)));
@@ -505,13 +516,14 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
 }
 
 function hasBlendedFillPaint(node) {
-  return Array.isArray(node?.fills) && node.fills.some(fill => fill?.visible !== false && fill?.blendMode && fill.blendMode !== 'normal');
+  return Boolean(node?.__smartAnimateImageFillTransition)
+    || (Array.isArray(node?.fills) && node.fills.some(fill => fill?.visible !== false
+      && ((fill?.blendMode && fill.blendMode !== 'normal') || fill?.__smartAnimateImageTransition)));
 }
 
-function drawBooleanFillStack(ctx, node, maskSurface, assets, state, x, y) {
-  const surface = typeof OffscreenCanvas === 'function'
-    ? new OffscreenCanvas(maskSurface.width, maskSurface.height)
-    : Object.assign(document.createElement('canvas'), { width: maskSurface.width, height: maskSurface.height });
+function drawBooleanFillStack(renderer, ctx, node, maskSurface, assets, state, x, y) {
+  const surface = renderer.booleanPaintSurface = resizeTextSurface(renderer.booleanPaintSurface, maskSurface.width, maskSurface.height);
+  if (!surface) return;
   const paintContext = surface.getContext('2d');
   if (!paintContext) return;
   const scaleX = maskSurface.width / Math.max(1, node.width);
@@ -538,11 +550,17 @@ function drawBooleanFillStack(ctx, node, maskSurface, assets, state, x, y) {
       if (paint) { paintContext.fillStyle = paint; paintContext.fillRect(0, 0, node.width, node.height); }
     } else if (fill.type === 'image') {
       const imageFill = fill.imageFill;
-      const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
-      const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
-      if (image) {
-        if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
-        else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+      const imageTransition = fill.__smartAnimateImageTransition
+        || (!Array.isArray(node.fills) ? node.__smartAnimateImageFillTransition : null);
+      if (imageTransition) {
+        renderer.drawSmartAnimateImageTransition(paintContext, imageTransition, assets, state, 0, 0, node.width, node.height);
+      } else {
+        const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(imageFill.assetId)?.bitmap : null;
+        const image = liveSource || imageForNode(node, assets, state, imageFill.assetId, imagePreviewKey(node.id, fill.id));
+        if (image) {
+          if (liveSource) drawImageWithTransforms(paintContext, liveSource, 0, 0, node.width, node.height, imageFill.fit, imageFill.transforms);
+          else drawFittedImage(paintContext, image, 0, 0, node.width, node.height, imageFill.fit);
+        }
       }
     }
     paintContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -929,6 +947,70 @@ export class SceneRenderer {
     return { width, height, dpr, cssWidth: rect.width, cssHeight: rect.height };
   }
 
+  drawSmartAnimateImageTransition(ctx, transition, assets, state, x, y, width, height) {
+    if (!transition?.from || !transition?.to || width <= 0 || height <= 0) return false;
+    const progress = Math.max(0, Math.min(1, Number(transition.progress) || 0));
+    const resolveEndpoint = endpoint => {
+      const status = state.imageStatus?.get(endpoint.previewKey) || '';
+      const preview = state.previews?.get(endpoint.previewKey);
+      if (preview && state.previewAssetIds?.get(endpoint.previewKey) === endpoint.assetId
+        && state.previewSignatures?.get(endpoint.previewKey) === endpoint.signature
+        && (status.startsWith('Ready') || status.startsWith('Updated'))) {
+        return { image: preview, transforms: null };
+      }
+      if (endpoint.sourceRenderable) {
+        const bitmap = assets.get(endpoint.assetId)?.bitmap;
+        if (bitmap) return { image: bitmap, transforms: endpoint.transforms || {} };
+      }
+      return null;
+    };
+    const fromImage = resolveEndpoint(transition.from);
+    const toImage = resolveEndpoint(transition.to);
+    if (!fromImage && !toImage) return false;
+
+    const transform = ctx.getTransform?.();
+    const requestedScale = transform ? Math.hypot(transform.a, transform.b)
+      : (globalThis.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+    const dimensions = booleanSurfaceDimensions(width, height, requestedScale);
+    this.imageTransitionSurface = resizeTextSurface(this.imageTransitionSurface, dimensions.width, dimensions.height);
+    const surfaceContext = this.imageTransitionSurface?.getContext('2d');
+    if (!surfaceContext) return false;
+    surfaceContext.setTransform(1, 0, 0, 1, 0, 0);
+    surfaceContext.globalAlpha = 1;
+    surfaceContext.globalCompositeOperation = 'source-over';
+    surfaceContext.clearRect(0, 0, dimensions.width, dimensions.height);
+    surfaceContext.setTransform(dimensions.width / width, 0, 0, dimensions.height / height, 0, 0);
+
+    const drawEndpoint = (resolved, endpoint) => {
+      if (resolved.transforms) return drawImageWithTransforms(surfaceContext, resolved.image, 0, 0, width, height, endpoint.fit, resolved.transforms);
+      return drawFittedImage(surfaceContext, resolved.image, 0, 0, width, height, endpoint.fit);
+    };
+    if (fromImage && toImage) {
+      const fromWeight = Math.max(0, Number(transition.from.opacity) || 0) * (1 - progress);
+      const toWeight = Math.max(0, Number(transition.to.opacity) || 0) * progress;
+      const totalWeight = fromWeight + toWeight;
+      if (totalWeight <= 0) return false;
+      surfaceContext.globalCompositeOperation = 'lighter';
+      surfaceContext.globalAlpha = fromWeight / totalWeight;
+      drawEndpoint(fromImage, transition.from);
+      surfaceContext.globalAlpha = toWeight / totalWeight;
+      drawEndpoint(toImage, transition.to);
+    } else {
+      // A preview may be evicted while a presentation is running. Use the
+      // one verified endpoint that remains, at full weight, rather than
+      // exposing a stale preview or producing a transparent hole.
+      const endpoint = fromImage ? transition.from : transition.to;
+      const resolved = fromImage || toImage;
+      surfaceContext.globalCompositeOperation = 'source-over';
+      surfaceContext.globalAlpha = 1;
+      drawEndpoint(resolved, endpoint);
+    }
+    surfaceContext.globalAlpha = 1;
+    surfaceContext.globalCompositeOperation = 'source-over';
+    ctx.drawImage(this.imageTransitionSurface, x, y, width, height);
+    return true;
+  }
+
   /** Sample the document scene on a private local surface, without editor overlays. */
   sampleColor(clientX, clientY) {
     const state = this.getState();
@@ -1137,6 +1219,16 @@ export class SceneRenderer {
       return;
     }
     if (maskMode && node.type === 'image') {
+      if (node.__smartAnimateImageTransition) {
+        ctx.save();
+        ctx.beginPath();
+        roundedRect(ctx, x, y, width, height, radius || 0);
+        ctx.clip();
+        this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageTransition, assets, state, x, y, width, height);
+        ctx.restore();
+        ctx.restore();
+        return;
+      }
       const liveTransformSource = node.__smartAnimateLiveImageTransforms ? assets.get(node.assetId)?.bitmap : null;
       const image = liveTransformSource || imageForNode(node, assets, state);
       if (image) {
@@ -1208,42 +1300,54 @@ export class SceneRenderer {
     }
 
     if (node.type === 'image') {
-      const asset = assets.get(node.assetId);
-      const cropOverlay = cropEditing ? state.imageCropOverlay : null;
-      const sourceImage = cropOverlay ? asset?.bitmap : null;
-      const liveTransformSource = node.__smartAnimateLiveImageTransforms ? asset?.bitmap : null;
-      const image = sourceImage || liveTransformSource || imageForNode(node, assets, state);
-      if (image) {
-        if (cropOverlay && sourceImage) {
-          drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation,
-            cropOverlay.flipHorizontal, cropOverlay.flipVertical);
-          const cropPreview = state.previews?.get(node.id);
-          const previewAssetId = state.previewAssetIds?.get(node.id);
-          const previewStatus = state.imageStatus?.get(node.id) || '';
-          const previewReady = previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated');
-          if (cropPreview && previewAssetId === node.assetId && previewReady) {
-            drawCropPreview(ctx, cropPreview, x, y, width, height, node.fit, radius || 0);
-          }
-        }
-        else {
-          ctx.save();
-          ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
-          if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
-          else drawFittedImage(ctx, image, x, y, width, height, node.fit);
-          ctx.restore();
-        }
-      } else {
-        if (renderOptions.showImageLoadingPlaceholder !== false) {
+      if (node.__smartAnimateImageTransition) {
+        ctx.save();
+        ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
+        const drawn = this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageTransition, assets, state, x, y, width, height);
+        if (!drawn && renderOptions.showImageLoadingPlaceholder !== false) {
           ctx.fillStyle = '#d9d9d9'; ctx.fill();
           ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          ctx.fillText('Loading image…', cx, cy);
+          ctx.fillText('Updating image…', cx, cy);
+        }
+        ctx.restore();
+      } else {
+        const asset = assets.get(node.assetId);
+        const cropOverlay = cropEditing ? state.imageCropOverlay : null;
+        const sourceImage = cropOverlay ? asset?.bitmap : null;
+        const liveTransformSource = node.__smartAnimateLiveImageTransforms ? asset?.bitmap : null;
+        const image = sourceImage || liveTransformSource || imageForNode(node, assets, state);
+        if (image) {
+          if (cropOverlay && sourceImage) {
+            drawCropSourceImage(ctx, sourceImage, x, y, cropOverlay.virtualBounds, cropOverlay.rotation,
+              cropOverlay.flipHorizontal, cropOverlay.flipVertical);
+            const cropPreview = state.previews?.get(node.id);
+            const previewAssetId = state.previewAssetIds?.get(node.id);
+            const previewStatus = state.imageStatus?.get(node.id) || '';
+            const previewReady = previewStatus.startsWith('Ready') || previewStatus.startsWith('Updated');
+            if (cropPreview && previewAssetId === node.assetId && previewReady) {
+              drawCropPreview(ctx, cropPreview, x, y, width, height, node.fit, radius || 0);
+            }
+          }
+          else {
+            ctx.save();
+            ctx.beginPath(); roundedRect(ctx, x, y, width, height, radius || 0); ctx.clip();
+            if (liveTransformSource) drawImageWithTransforms(ctx, liveTransformSource, x, y, width, height, node.fit, node.transforms);
+            else drawFittedImage(ctx, image, x, y, width, height, node.fit);
+            ctx.restore();
+          }
+        } else {
+          if (renderOptions.showImageLoadingPlaceholder !== false) {
+            ctx.fillStyle = '#d9d9d9'; ctx.fill();
+            ctx.fillStyle = '#8a8a8a'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('Loading image…', cx, cy);
+          }
         }
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius), maskMode);
     } else if (node.type === 'text') {
       if (Array.isArray(node.fills) && !maskMode) {
         const surfaces = this.textPaintSurfaces || (this.textPaintSurfaces = { glyph: null, paint: null });
-        const rendered = drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces);
+        const rendered = drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces, this);
         if (!rendered && node.fills.length) {
           // Keep text visible if a browser cannot allocate an auxiliary surface.
           drawTextLayerContent(ctx, node, document, x, y, width, height);
@@ -1273,9 +1377,10 @@ export class SceneRenderer {
             const gradient = !face.fill ? createGradientPaint(ctx, node.fillGradient, x, y, width, height) : null;
             ctx.save();
             ctx.globalAlpha *= (node.fillOpacity ?? 1) * (face.fillOpacity ?? 1);
-            if (node.imageFill && fillImage) {
+            if (node.imageFill && (fillImage || node.__smartAnimateImageFillTransition)) {
               ctx.clip();
-              if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, node.imageFill.fit, node.imageFill.transforms);
+              if (node.__smartAnimateImageFillTransition) this.drawSmartAnimateImageTransition(ctx, node.__smartAnimateImageFillTransition, assets, state, x, y, width, height);
+              else if (liveSource) drawImageWithTransforms(ctx, liveSource, x, y, width, height, node.imageFill.fit, node.imageFill.transforms);
               else drawFittedImage(ctx, fillImage, x, y, width, height, node.imageFill.fit);
             }
             else { ctx.fillStyle = gradient || rgba(faceFill || color || '#000000', 1); ctx.fill(); }
@@ -1303,6 +1408,13 @@ export class SceneRenderer {
             const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
             if (paint) { ctx.fillStyle = paint; ctx.fill(); }
           } else if (fill.type === 'image') {
+            const imageTransition = fill.__smartAnimateImageTransition;
+            if (imageTransition) {
+              ctx.clip();
+              this.drawSmartAnimateImageTransition(ctx, imageTransition, assets, state, x, y, width, height);
+              ctx.restore();
+              continue;
+            }
             const liveSource = fill.__smartAnimateLiveImageFill ? assets.get(fill.imageFill.assetId)?.bitmap : null;
             const image = liveSource || imageForNode(node, assets, state, fill.imageFill.assetId, imagePreviewKey(node.id, fill.id));
             if (image) {
@@ -1316,7 +1428,7 @@ export class SceneRenderer {
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => traceVectorNetworkEdges(pathContext, node, x, y), maskMode);
     } else {
-      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode);
+      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) drawFillStack(ctx, node, assets, state, x, y, width, height, null, motionValues, maskMode, 0, null, this);
       drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode);
     }
 
@@ -1914,7 +2026,7 @@ export class SceneRenderer {
     const contextScale = transform ? Math.hypot(transform.a, transform.b) : (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
     const surface = this.getBooleanSurface(node, assets, maskMode, contextScale, renderOptions);
     if (!maskMode && hasBlendedFillPaint(node)) {
-      drawBooleanFillStack(ctx, node, surface, assets, state, x, y);
+      drawBooleanFillStack(this, ctx, node, surface, assets, state, x, y);
       return;
     }
     ctx.save();
@@ -1925,7 +2037,8 @@ export class SceneRenderer {
 
   getBooleanSurface(node, assets, maskMode = false, contextScale = null, renderOptions = {}) {
     const state = this.getState();
-    const fill = maskMode ? '#ffffff' : getNodeColor(state.document, node, 'fill');
+    const cacheContainsMaskOnly = !maskMode && hasBlendedFillPaint(node);
+    const fill = maskMode ? '#ffffff' : cacheContainsMaskOnly ? '' : getNodeColor(state.document, node, 'fill');
     const requestedScale = contextScale ?? (window.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
     const { width, height } = booleanSurfaceDimensions(node.width, node.height, requestedScale);
     const fillPreviewVersions = (node.fills || []).filter(fillLayer => fillLayer.type === 'image').map(fillLayer => {
@@ -1937,7 +2050,17 @@ export class SceneRenderer {
       ? [legacyPreviewKey, state.previewVersions?.get(legacyPreviewKey) || 0, state.previewAssetIds?.get(legacyPreviewKey) || null]
       : null;
     const resolvedChildren = node.children.map(child => booleanNodeCacheState(state.document, child));
-    const key = `${maskMode ? 'mask' : 'paint'}|${JSON.stringify(node)}|${JSON.stringify(resolvedChildren)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
+    let cacheNode = node;
+    if (cacheContainsMaskOnly) {
+      // These paints are drawn against the live destination after the Boolean
+      // mask is fetched. Excluding them prevents animation progress from
+      // manufacturing a new cached alpha mask for every frame.
+      cacheNode = { ...node };
+      for (const property of ['fills', 'fill', 'fillGradient', 'imageFill', 'fillOpacity', 'fillVariableId', 'fillStyleId', '__smartAnimateImageFillTransition']) {
+        delete cacheNode[property];
+      }
+    }
+    const key = `${maskMode ? 'mask' : 'paint'}|${JSON.stringify(cacheNode)}|${JSON.stringify(resolvedChildren)}|${fill}|${JSON.stringify([imagePreviewVersion, fillPreviewVersions])}|${width}x${height}`;
     let entry = this.booleanCache.get(key);
     if (entry) {
       this.booleanCache.delete(key);
@@ -1977,7 +2100,7 @@ export class SceneRenderer {
       // Boolean source geometry is scaled into the current group bounds above.
       // Paint the completed mask and group fills back in the unscaled surface box.
       mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
-      if (Array.isArray(node.fills) && hasBlendedFillPaint(node) && !maskMode) {
+      if (hasBlendedFillPaint(node) && !maskMode) {
         // Keep only the Boolean alpha mask in the cache. Paint blend modes
         // depend on the live page backdrop, so they are drawn in order by
         // drawBooleanFillStack when this cached mask is presented.

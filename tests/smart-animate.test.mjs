@@ -859,6 +859,50 @@ test('smart animation interpolates image crops and crossfades source-renderable 
   }
 });
 
+test('smart animation carries verified endpoint descriptors for processed image layers and fills', () => {
+  const fromImage = createNode('image', {
+    name: 'Edited image', assetId: 'photo', adjustments: { brightness: 12 },
+    transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false },
+    inpaintStrokes: [{ radius: .04, points: [{ x: .1, y: .12 }] }]
+  });
+  const toImage = createNode('image', {
+    name: 'Edited image', assetId: 'photo', adjustments: { brightness: 34 },
+    transforms: { crop: null, rotation: 0, flipHorizontal: false, flipVertical: false },
+    inpaintStrokes: [{ radius: .06, points: [{ x: .2, y: .24 }] }]
+  });
+  const fromFill = createNode('rectangle', {
+    name: 'Processed fill', fills: [{ id: 'photo-fill', type: 'image', visible: true, opacity: .2,
+      imageFill: createImageFill('photo-fill-source', { adjustments: { contrast: 14 } }) }]
+  });
+  const toFill = createNode('rectangle', {
+    name: 'Processed fill', fills: [{ id: 'photo-fill', type: 'image', visible: true, opacity: .8,
+      imageFill: createImageFill('photo-fill-target', { adjustments: { contrast: 42 } }) }]
+  });
+  const from = createNode('frame', { children: [fromImage, fromFill] });
+  const to = createNode('frame', { children: [toImage, toFill] });
+  const calls = [];
+  const resolveImageTransition = input => {
+    calls.push(input);
+    return {
+      from: { previewKey: `${input.kind}:from`, assetId: 'source', opacity: .2 },
+      to: { previewKey: `${input.kind}:to`, assetId: 'target', opacity: .8 }
+    };
+  };
+
+  const middle = interpolateSmartFrame(from, to, .25, { resolveImageTransition });
+  const image = middle.children.find(node => node.name === 'Edited image');
+  const fill = middle.children.find(node => node.name === 'Processed fill').fills[0];
+  assert.equal(image.__smartAnimateImageTransition.progress, .25);
+  assert.deepEqual(image.__smartAnimateImageTransition.from, { previewKey: 'image-layer:from', assetId: 'source', opacity: .2 });
+  assert.equal(fill.__smartAnimateImageTransition.progress, .25);
+  assert.equal(fill.__smartAnimateImageTransition.to.previewKey, 'image-fill:to');
+  assert.equal(fill.imageFill.assetId, 'photo-fill-source', 'the transition marker keeps a safe categorical fallback paint');
+  assert.deepEqual(calls.map(call => call.kind).sort(), ['image-fill', 'image-layer']);
+
+  const endpoint = interpolateSmartFrame(from, to, 1, { resolveImageTransition: () => { throw new Error('endpoints must stay exact clones'); } });
+  assert.equal(endpoint.children.find(node => node.name === 'Edited image').__smartAnimateImageTransition, undefined);
+});
+
 test('smart animation keeps malformed image transforms discrete instead of interpolating them', () => {
   const from = createNode('frame', { children: [createNode('image', {
     name: 'Malformed photo', assetId: 'photo', transforms: { crop: null, rotation: 0 }

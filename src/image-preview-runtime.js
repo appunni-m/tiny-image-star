@@ -5,6 +5,31 @@ export function imagePreviewKey(nodeId, fillId = null) {
   return fillId ? `image-fill:${JSON.stringify([nodeId, fillId])}` : nodeId;
 }
 
+function stableSettingsValue(value) {
+  if (Array.isArray(value)) return value.map(stableSettingsValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableSettingsValue(value[key])]));
+}
+
+/** Identify the exact inputs used to build a local image preview. */
+export function imagePreviewSettingsSignature({
+  assetId,
+  adjustments = {},
+  transforms = {},
+  inpaintStrokes = [],
+  outputFormat = 'png',
+  outputQuality = 90,
+} = {}) {
+  return JSON.stringify(stableSettingsValue({
+    assetId: assetId ?? null,
+    adjustments: adjustments ?? {},
+    transforms: transforms ?? {},
+    inpaintStrokes: inpaintStrokes ?? [],
+    outputFormat: outputFormat || 'png',
+    outputQuality: Number.isFinite(outputQuality) ? outputQuality : 90,
+  }));
+}
+
 export function collectLiveImagePreviewNodeIds(document) {
   const liveNodeIds = new Set();
   for (const page of document?.pages || []) {
@@ -104,6 +129,7 @@ export function pruneImagePreviewRuntime({
   previewUrls,
   previewAssetIds,
   previewVersions,
+  previewSignatures,
   imageStatus,
   renderVersion,
   clearTimer = clearTimeout,
@@ -116,6 +142,7 @@ export function pruneImagePreviewRuntime({
     ...previewUrls.keys(),
     ...previewAssetIds.keys(),
     ...previewVersions.keys(),
+    ...(previewSignatures?.keys?.() || []),
     ...imageStatus.keys(),
     ...renderVersion.keys(),
   ]);
@@ -146,6 +173,7 @@ export function pruneImagePreviewRuntime({
 
     previewAssetIds.delete(nodeId);
     previewVersions.delete(nodeId);
+    previewSignatures?.delete(nodeId);
     imageStatus.delete(nodeId);
     // Removing the token makes every render that captured it stale. Callers
     // must use globally unique tokens so a later node with the same ID cannot

@@ -134,6 +134,74 @@ test('scene renderer bypasses endpoint previews for live smart-animate image lay
   ], 'each draw uses its own current crop rectangle from the source bitmap');
 });
 
+test('processed Smart Animate previews blend additively and reject stale endpoint settings', () => {
+  const canvases = [];
+  class TransitionCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.calls = [];
+      this.context = {
+        globalAlpha: 1, globalCompositeOperation: 'source-over',
+        setTransform(...args) { this.calls.push({ method: 'setTransform', args }); },
+        clearRect(...args) { this.calls.push({ method: 'clearRect', args }); },
+        drawImage(...args) { this.calls.push({ method: 'drawImage', args, alpha: this.globalAlpha, composite: this.globalCompositeOperation }); }
+      };
+      this.context.calls = this.calls;
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = TransitionCanvas;
+  try {
+    const document = createDocument();
+    const from = { previewKey: 'from-image', assetId: 'asset-a', signature: 'settings-a', fit: 'cover', opacity: .2, sourceRenderable: false };
+    const to = { previewKey: 'to-image', assetId: 'asset-b', signature: 'settings-b', fit: 'contain', opacity: .8, sourceRenderable: false };
+    const fromBitmap = { name: 'processed source', width: 200, height: 100 };
+    const toBitmap = { name: 'processed target', width: 100, height: 200 };
+    const state = {
+      document, zoom: 1, previews: new Map([[from.previewKey, fromBitmap], [to.previewKey, toBitmap]]),
+      previewAssetIds: new Map([[from.previewKey, from.assetId], [to.previewKey, to.assetId]]),
+      previewSignatures: new Map([[from.previewKey, from.signature], [to.previewKey, to.signature]]),
+      imageStatus: new Map([[from.previewKey, 'Updated · Pillow-RS WASM'], [to.previewKey, 'Updated · Pillow-RS WASM']])
+    };
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => state;
+    const destination = [];
+    const ctx = {
+      getTransform: () => ({ a: 1, b: 0 }),
+      drawImage: (...args) => destination.push(args)
+    };
+    const transition = { from, to, progress: .25 };
+
+    assert.equal(renderer.drawSmartAnimateImageTransition(ctx, transition, new Map(), state, 4, 8, 120, 80), true);
+    assert.equal(canvases.length, 1);
+    const blended = canvases[0].calls.filter(call => call.method === 'drawImage');
+    assert.deepEqual(blended.map(call => [call.args[0].name, call.composite]), [
+      ['processed source', 'lighter'], ['processed target', 'lighter']
+    ]);
+    assert.ok(Math.abs(blended[0].alpha - 3 / 7) < Number.EPSILON * 2);
+    assert.ok(Math.abs(blended[1].alpha - 4 / 7) < Number.EPSILON * 2,
+      'endpoint opacities are normalized once before additive premultiplied compositing');
+    assert.equal(destination.length, 1);
+    assert.equal(destination[0][0], canvases[0]);
+    assert.deepEqual(destination[0].slice(1), [4, 8, 120, 80]);
+
+    state.previewSignatures.set(to.previewKey, 'stale-settings');
+    assert.equal(renderer.drawSmartAnimateImageTransition(ctx, transition, new Map(), state, 4, 8, 120, 80), true,
+      'one still-verified endpoint remains visible if the other preview becomes stale');
+    const latestDraws = canvases[0].calls.filter(call => call.method === 'drawImage').slice(-1);
+    assert.equal(latestDraws[0].args[0], fromBitmap);
+    assert.equal(latestDraws[0].alpha, 1);
+
+    state.previewSignatures.set(from.previewKey, 'also-stale');
+    assert.equal(renderer.drawSmartAnimateImageTransition(ctx, transition, new Map(), state, 4, 8, 120, 80), false,
+      'stale endpoint previews are never rendered as current edits');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('image and container layers contribute their alpha when used as mask sources', () => {
   const document = createDocument();
   const sourceBitmap = { name: 'source bitmap', width: 200, height: 100 };
