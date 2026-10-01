@@ -929,6 +929,56 @@ test('imports horizontal and vertical auto layout as editable local layout inste
   assert.deepEqual([toolbar.children[1].x, toolbar.children[1].y], [310, 12], 'absolute children keep their imported local position');
 });
 
+test('imports wrapped track space-between distribution from string and numeric Figma enums', () => {
+  for (const [index, contentAlignment] of ['SPACE_BETWEEN', 1].entries()) {
+    const pageGuid = { sessionID: 6 + index, localID: 1 };
+    const frameGuid = { sessionID: 6 + index, localID: 2 };
+    const parsed = {
+      nodes: [
+        node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+        node('FRAME', 2, pageGuid, '!', {
+          guid: frameGuid, name: 'Wrapped toolbar', size: { x: 200, y: 140 }, stackMode: 'HORIZONTAL',
+          stackPrimarySizing: 'FIXED', stackCounterSizing: 'FIXED', stackSpacing: 10,
+          stackCounterSpacing: 10, stackWrap: 'WRAP', stackCounterAlignContent: contentAlignment
+        }),
+        node('RECTANGLE', 3, frameGuid, 'a', { name: 'First', size: { x: 70, y: 20 } }),
+        node('RECTANGLE', 4, frameGuid, 'b', { name: 'Second', size: { x: 70, y: 20 } }),
+        node('RECTANGLE', 5, frameGuid, 'c', { name: 'Third', size: { x: 70, y: 20 } })
+      ],
+      images: new Map(), message: { blobs: [] }
+    };
+    const imported = convertFigDocument(parsed, { fileName: 'wrapped-space-between.fig' });
+    const frame = imported.document.pages[0].children[0];
+
+    assert.equal(frame.autoLayout.wrapDistribution, 'space-between');
+    assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_WRAP_ALIGNMENT, undefined,
+      'supported track distribution must not be reported as flattened');
+    applyAutoLayout(frame);
+    assert.deepEqual(frame.children.map(child => child.y), [0, 0, 120],
+      'the last wrapped row should be distributed against the opposite frame edge');
+  }
+});
+
+test('unknown wrapped track distribution still warns and safely falls back to start', () => {
+  const pageGuid = { sessionID: 8, localID: 1 };
+  const frameGuid = { sessionID: 8, localID: 2 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, size: { x: 200, y: 140 }, stackMode: 'HORIZONTAL', stackWrap: 'WRAP',
+        stackCounterAlignContent: 'SPACE_AROUND'
+      }),
+      node('RECTANGLE', 3, frameGuid, 'a', { size: { x: 70, y: 20 } })
+    ],
+    images: new Map(), message: { blobs: [] }
+  }, { fileName: 'unknown-wrap-alignment.fig' });
+  const frame = imported.document.pages[0].children[0];
+
+  assert.equal(frame.autoLayout.wrapDistribution, 'start');
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_WRAP_ALIGNMENT, 1);
+});
+
 test('imports editable manual grid tracks, placements, spans, gaps, padding, and cell alignment', () => {
   const pageGuid = { sessionID: 4, localID: 1 };
   const frameGuid = { sessionID: 4, localID: 2 };

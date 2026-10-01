@@ -997,7 +997,8 @@ function mapAutoLayout(source, report, name) {
   const wrap = wrapValue === 'WRAP';
   if (wrapValue && !['WRAP', 'NO_WRAP'].includes(wrapValue)) warn(report, 'flattened', 'AUTO_LAYOUT_WRAP', name, `Wrap mode ${wrapValue} was reset to no-wrap.`);
   const contentAlignment = stackEnum(source, 'stackCounterAlignContent');
-  if (wrap && contentAlignment && contentAlignment !== 'AUTO') {
+  const wrapDistribution = contentAlignment === 'SPACE_BETWEEN' ? 'space-between' : 'start';
+  if (wrap && contentAlignment && !['AUTO', 'SPACE_BETWEEN'].includes(contentAlignment)) {
     warn(report, 'flattened', 'AUTO_LAYOUT_WRAP_ALIGNMENT', name, 'Wrapped-track distribution was reset to the local start alignment.');
   }
 
@@ -1012,6 +1013,7 @@ function mapAutoLayout(source, report, name) {
     mainSizing: mapStackSizing(source, 'stackPrimarySizing', report, name),
     crossSizing: mapStackSizing(source, 'stackCounterSizing', report, name),
     wrap,
+    wrapDistribution,
     autoPositioning: true
   });
 }
