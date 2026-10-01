@@ -83,7 +83,7 @@ export function componentTreeForPublication(root, { useSourceIds = false, create
         && interaction.action !== 'set-variable-mode' && !interaction.condition?.variableId);
       if (!node.interactions.length) delete node.interactions;
     }
-    for (const property of ['fillStyleId', 'textStyleId', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableBindings', 'variableModes']) {
+    for (const property of ['fillStyleId', 'textStyleId', 'typographyStyleId', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableBindings', 'variableModes']) {
       delete node[property];
     }
     node.children = (original.children || []).map((child, index) => {

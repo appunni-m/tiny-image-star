@@ -330,7 +330,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -1708,7 +1708,8 @@ export function applyColorStyle(document, nodeId, styleId, pageId = document.act
   return true;
 }
 
-const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration'];
+const typographyStyleProperties = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'];
+const legacyTypographyStyleProperties = ['color', 'align', 'verticalAlign'];
 
 function typographyStyleValues(document, node) {
   return {
@@ -1721,12 +1722,30 @@ function typographyStyleValues(document, node) {
     paragraphSpacing: Number(node.paragraphSpacing) || 0,
     firstLineIndent: Number(node.firstLineIndent) || 0,
     listSpacing: Number(node.listSpacing) || 0,
-    align: node.align || 'left',
-    verticalAlign: textVerticalAlignments.has(node.verticalAlign) ? node.verticalAlign : 'top',
-    color: getNodeColor(document, node, 'text'),
     textCase: textCases.has(node.textCase) ? node.textCase : 'none',
     textDecoration: textDecorations.has(node.textDecoration) ? node.textDecoration : 'none'
   };
+}
+
+function applyTypographyStyleValues(node, style) {
+  for (const property of typographyStyleProperties) {
+    if (property === 'paragraphSpacing' || property === 'firstLineIndent' || property === 'listSpacing') node[property] = Number(style[property]) || 0;
+    else if (property === 'textCase') node[property] = textCases.has(style[property]) ? style[property] : 'none';
+    else if (property === 'textDecoration') node[property] = textDecorations.has(style[property]) ? style[property] : 'none';
+    else node[property] = style[property];
+  }
+  // Files saved before linked typography styles existed included these
+  // layer-local fields in their style records. Continue honoring them only
+  // when reading/applying those legacy records; new styles omit them.
+  for (const property of legacyTypographyStyleProperties) {
+    if (Object.hasOwn(style, property)) node[property] = style[property];
+  }
+  if (Object.hasOwn(style, 'color')) {
+    node.textVariableId = null;
+    node.textStyleId = null;
+  }
+  node.typographyStyleId = style.id;
+  return node;
 }
 
 export function createTypographyStyle(document, nodeId, name, pageId = document.activePageId) {
@@ -1735,8 +1754,10 @@ export function createTypographyStyle(document, nodeId, name, pageId = document.
   document.typographyStyles ||= [];
   if (document.typographyStyles.length >= 1000) throw new Error('A design can contain up to 1,000 text styles.');
   const styleName = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || `${node.name} text`;
-  const style = { id: createId('typography'), name: styleName.slice(0, 120), ...typographyStyleValues(document, node) };
+  if (styleName.length > 120) throw new TypeError('Text style names can contain up to 120 characters.');
+  const style = { id: createId('typography'), name: styleName, ...typographyStyleValues(document, node) };
   document.typographyStyles.push(style);
+  node.typographyStyleId = style.id;
   return style;
 }
 
@@ -1744,17 +1765,10 @@ export function applyTypographyStyle(document, nodeId, styleId, pageId = documen
   const node = findNode(document, nodeId, pageId)?.node;
   const style = document.typographyStyles?.find(item => item.id === styleId);
   if (!node || node.type !== 'text' || !style) return false;
-  for (const property of typographyStyleProperties) {
-    if (property === 'paragraphSpacing' || property === 'firstLineIndent' || property === 'listSpacing') node[property] = Number(style[property]) || 0;
-    else node[property] = style[property];
-  }
-  node.textVariableId = null;
-  node.textStyleId = null;
+  applyTypographyStyleValues(node, style);
   node.variableBindings ||= {};
   for (const property of ['fontSize', 'lineHeight', 'letterSpacing']) delete node.variableBindings[property];
-  node.textCase = textCases.has(style.textCase) ? style.textCase : 'none';
-  node.verticalAlign = textVerticalAlignments.has(style.verticalAlign) ? style.verticalAlign : 'top';
-  node.textDecoration = textDecorations.has(style.textDecoration) ? style.textDecoration : 'none';
+  if (!Object.keys(node.variableBindings).length) delete node.variableBindings;
   return true;
 }
 
@@ -1763,6 +1777,27 @@ export function updateTypographyStyle(document, styleId, nodeId, pageId = docume
   const style = document.typographyStyles?.find(item => item.id === styleId);
   if (!node || node.type !== 'text' || !style) return false;
   Object.assign(style, typographyStyleValues(document, node));
+  for (const property of legacyTypographyStyleProperties) delete style[property];
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node: linkedNode, parents }) => {
+    if (linkedNode.type !== 'text' || linkedNode.typographyStyleId !== style.id) return;
+    applyTypographyStyleValues(linkedNode, style);
+    const instanceRoot = [...parents].reverse().find(parent => parent.isInstance);
+    const override = instanceRoot?.componentOverrides?.[linkedNode.componentSourceId];
+    if (override?.typographyStyleId === style.id) {
+      for (const property of typographyStyleProperties) override[property] = clone(linkedNode[property]);
+      for (const property of legacyTypographyStyleProperties) delete override[property];
+    }
+  });
+  return true;
+}
+
+/** Rename a reusable typography style without changing its linked text layers. */
+export function renameTypographyStyle(document, styleId, name) {
+  const style = document.typographyStyles?.find(item => item.id === styleId);
+  if (!style || typeof name !== 'string') return false;
+  const normalized = name.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  if (!normalized || normalized.length > 120) return false;
+  style.name = normalized;
   return true;
 }
 
@@ -2030,7 +2065,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
         if (key === '__childOrder' || !componentOverrideProperties.has(key)) continue;
-        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
+        if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
       }
@@ -2194,9 +2229,22 @@ export function resetComponentSlotContent(document, instanceId, propertyId, page
 }
 
 export function deleteTypographyStyle(document, styleId) {
-  const index = (document.typographyStyles || []).findIndex(style => style.id === styleId);
+  const styles = document.typographyStyles || [];
+  const index = styles.findIndex(style => style.id === styleId);
   if (index < 0) return false;
-  document.typographyStyles.splice(index, 1);
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parents }) => {
+    if (node.type !== 'text' || node.typographyStyleId !== styleId) return;
+    delete node.typographyStyleId;
+    const instanceRoot = [...parents].reverse().find(parent => parent.isInstance);
+    const overrides = instanceRoot?.componentOverrides;
+    const override = overrides?.[node.componentSourceId];
+    if (override?.typographyStyleId === styleId) {
+      delete override.typographyStyleId;
+      if (!Object.keys(override).length) delete overrides[node.componentSourceId];
+      if (!Object.keys(overrides).length) delete instanceRoot.componentOverrides;
+    }
+  });
+  styles.splice(index, 1);
   return true;
 }
 
@@ -3459,7 +3507,15 @@ export function validateDocument(document) {
       if (node.textStyleId && !styleIds.has(node.textStyleId)) throw new TypeError(`Missing text style on layer ${node.name || node.id}.`);
     });
   }
-  if (document.typographyStyles != null) {
+  const hasTypographyStyleReferences = document.pages.some(page => {
+    let found = false;
+    walkNodes(page.children, ({ node }) => {
+      if (node.typographyStyleId != null
+        || Object.values(node.componentOverrides || {}).some(overrides => overrides?.typographyStyleId != null)) found = true;
+    });
+    return found;
+  });
+  if (document.typographyStyles != null || hasTypographyStyleReferences) {
     if (!Array.isArray(document.typographyStyles) || document.typographyStyles.length > 1000) throw new TypeError('Text styles must be a list of up to 1,000 presets.');
     const styleIds = new Set();
     for (const style of document.typographyStyles) {
@@ -3474,13 +3530,23 @@ export function validateDocument(document) {
         || (style.paragraphSpacing != null && (!Number.isFinite(style.paragraphSpacing) || style.paragraphSpacing < 0 || style.paragraphSpacing > 10_000))
         || (style.firstLineIndent != null && (!Number.isFinite(style.firstLineIndent) || style.firstLineIndent < 0 || style.firstLineIndent > 10_000))
         || (style.listSpacing != null && (!Number.isFinite(style.listSpacing) || style.listSpacing < 0 || style.listSpacing > 10_000))
-        || !textAlignments.has(style.align)
+        || (style.align != null && !textAlignments.has(style.align))
         || (style.verticalAlign != null && !textVerticalAlignments.has(style.verticalAlign))
         || (style.textCase != null && !textCases.has(style.textCase))
         || (style.textDecoration != null && !textDecorations.has(style.textDecoration))
-        || !/^#[0-9a-f]{6}$/i.test(style.color || '')) throw new TypeError('Invalid or duplicate text style.');
+        || (style.color != null && !/^#[0-9a-f]{6}$/i.test(style.color))) throw new TypeError('Invalid or duplicate text style.');
       styleIds.add(style.id);
     }
+    for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+      if (node.typographyStyleId != null && (node.type !== 'text' || !styleIds.has(node.typographyStyleId))) {
+        throw new TypeError(`Missing text style on layer ${node.name || node.id}.`);
+      }
+      for (const overrides of Object.values(node.componentOverrides || {})) {
+        if (overrides?.typographyStyleId != null && !styleIds.has(overrides.typographyStyleId)) {
+          throw new TypeError(`Missing text style override on layer ${node.name || node.id}.`);
+        }
+      }
+    });
   }
   if (document.effectStyles != null) {
     if (!Array.isArray(document.effectStyles) || document.effectStyles.length > MAX_EFFECT_STYLES) throw new TypeError(`Effect styles must be a list of up to ${MAX_EFFECT_STYLES.toLocaleString()} presets.`);

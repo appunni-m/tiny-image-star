@@ -4,6 +4,7 @@ import {
   addNode, addVariableMode, applyTypographyStyle, bindColorVariable, bindVariable,
   createColorVariable, createDocument, createNode, createTypographyStyle, createVariable,
   createVariableCollection, deleteTypographyStyle, getNodeColor, getNodePropertyValue,
+  renameTypographyStyle,
   parseDocument, serializeDocument, setColorVariableValue, setVariableValue,
   updateTypographyStyle, validateDocument
 } from '../src/model.js';
@@ -18,8 +19,6 @@ const styleValues = style => ({
   paragraphSpacing: style.paragraphSpacing,
   firstLineIndent: style.firstLineIndent,
   listSpacing: style.listSpacing,
-  align: style.align,
-  color: style.color,
   textCase: style.textCase,
   textDecoration: style.textDecoration
 });
@@ -57,11 +56,12 @@ test('typography styles snapshot resolved text values and update from a text lay
   const style = createTypographyStyle(document, source.id, '  Display heading  ');
   assert.equal(style.name, 'Display heading');
   assert.equal(source.textVariableId, ink.id, 'saving a style does not unbind its source layer');
+  assert.equal(source.typographyStyleId, style.id, 'saving a style links its source text layer');
   assert.equal(source.textStyleId, undefined);
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
-    listSpacing: 5, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, textCase: 'capitalize', textDecoration: 'underline'
   });
 
   const id = style.id;
@@ -74,7 +74,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 34, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.55, letterSpacing: 0.75, paragraphSpacing: 9, firstLineIndent: 18,
-    listSpacing: 5, align: 'center', color: '#bd623f', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, textCase: 'capitalize', textDecoration: 'underline'
   }, 'existing style values do not follow later variable edits');
 
   assert.equal(updateTypographyStyle(document, style.id, source.id), true);
@@ -83,7 +83,7 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
-    listSpacing: 5, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, textCase: 'capitalize', textDecoration: 'underline'
   });
 
   setColorVariableValue(document, ink.id, '#1e824c', dark.id);
@@ -91,11 +91,11 @@ test('typography styles snapshot resolved text values and update from a text lay
   assert.deepEqual(styleValues(style), {
     fontFamily: 'Atkinson Hyperlegible, sans-serif', fontSize: 42, fontWeight: 650,
     fontStyle: 'italic', lineHeight: 1.35, letterSpacing: 1.25, paragraphSpacing: 9, firstLineIndent: 18,
-    listSpacing: 5, align: 'center', color: '#8b4bc0', textCase: 'capitalize', textDecoration: 'underline'
+    listSpacing: 5, textCase: 'capitalize', textDecoration: 'underline'
   }, 'updated values remain a snapshot');
 });
 
-test('applying a typography style preserves text and geometry and clears conflicting bindings', () => {
+test('applying a typography style preserves text, geometry, color links, and layer-local alignment', () => {
   const { document, collection, frame, source } = makeTypographyFixture();
   const style = createTypographyStyle(document, source.id, 'Display');
   const oldInk = createColorVariable(document, collection.id, 'Old ink', '#123456');
@@ -127,10 +127,12 @@ test('applying a typography style preserves text and geometry and clears conflic
     { x: target.x, y: target.y, width: target.width, height: target.height, rotation: target.rotation },
     original.geometry
   );
-  assert.equal(target.textVariableId, null);
-  assert.equal(target.textStyleId, null);
-  assert.deepEqual(target.variableBindings, {}, 'font-size, line-height, and tracking bindings are cleared');
-  assert.equal(getNodeColor(document, target, 'text'), target.color, 'the copied color is now local to the layer');
+  assert.equal(target.textVariableId, oldInk.id, 'text color variables stay independent from typography styles');
+  assert.equal(target.textStyleId, 'old-text-style', 'text color styles stay independent from typography styles');
+  assert.equal(target.typographyStyleId, style.id);
+  assert.equal(target.variableBindings, undefined, 'font-size, line-height, and tracking bindings are cleared');
+  assert.equal(getNodeColor(document, target, 'text'), '#123456', 'the target color variable remains linked');
+  assert.equal(target.align, 'right', 'alignment remains local to the text layer');
   assert.equal(getNodePropertyValue(document, target, 'fontSize'), style.fontSize);
   assert.equal(target.listSpacing, 5, 'applying a text style copies its list spacing setting');
 
@@ -157,20 +159,95 @@ test('typography styles are deleted by identity and survive document serializati
   assert.equal(deleteTypographyStyle(document, 'missing-style'), false);
 });
 
-test('justified paragraph alignment survives style save, serialization, update, and application', () => {
+test('updating a text style updates linked layers across pages while local color, alignment, and resize stay local', () => {
+  const document = createDocument();
+  const source = createNode('text', { text: 'Heading', fontFamily: 'Inter', fontSize: 28, fontWeight: 600, align: 'left' });
+  addNode(document, source);
+  const style = createTypographyStyle(document, source.id, 'Heading');
+  const first = createNode('text', { text: 'First', color: '#ab4521', align: 'right', textFit: 'fixed' });
+  addNode(document, first);
+  assert.equal(applyTypographyStyle(document, first.id, style.id), true);
+
+  const secondPage = { id: 'page-second', name: 'Page 2', children: [], guides: [] };
+  document.pages.push(secondPage);
+  const second = createNode('text', { text: 'Second', color: '#3277bb', align: 'center', textFit: 'auto-width' });
+  addNode(document, second, { pageId: secondPage.id });
+  assert.equal(applyTypographyStyle(document, second.id, style.id, secondPage.id), true);
+  const unrelated = createNode('text', { text: 'Unlinked', fontSize: 14 });
+  addNode(document, unrelated, { pageId: secondPage.id });
+
+  source.fontSize = 44;
+  source.fontWeight = 700;
+  source.letterSpacing = 1.5;
+  assert.equal(updateTypographyStyle(document, style.id, source.id), true);
+
+  for (const linked of [source, first, second]) {
+    assert.equal(linked.typographyStyleId, style.id);
+    assert.equal(linked.fontSize, 44);
+    assert.equal(linked.fontWeight, 700);
+    assert.equal(linked.letterSpacing, 1.5);
+  }
+  assert.equal(first.color, '#ab4521');
+  assert.equal(first.align, 'right');
+  assert.equal(first.textFit, 'fixed');
+  assert.equal(second.color, '#3277bb');
+  assert.equal(second.align, 'center');
+  assert.equal(second.textFit, 'auto-width');
+  assert.equal(unrelated.fontSize, 14);
+  assert.equal(unrelated.typographyStyleId, undefined);
+
+  assert.equal(renameTypographyStyle(document, style.id, '  Display / Hero  '), true);
+  assert.equal(style.name, 'Display / Hero');
+  assert.equal(renameTypographyStyle(document, style.id, 'x'.repeat(121)), false);
+  assert.equal(renameTypographyStyle(document, style.id, '   '), false);
+  assert.equal(validateDocument(document), true);
+});
+
+test('deleting a text style detaches linked text and clears only stale component style overrides', () => {
+  const document = createDocument();
+  const source = createNode('text', { text: 'Heading', fontSize: 32, color: '#804020' });
+  addNode(document, source);
+  const style = createTypographyStyle(document, source.id, 'Heading');
+  const instance = createNode('frame', {
+    isInstance: true,
+    componentOverrides: { 'source-text': { typographyStyleId: style.id, fontSize: 24, color: '#123456' } }
+  });
+  const instanceText = createNode('text', { text: 'Instance', componentSourceId: 'source-text', typographyStyleId: style.id, fontSize: 24 });
+  addNode(document, instance);
+  addNode(document, instanceText, { parentId: instance.id });
+
+  assert.equal(deleteTypographyStyle(document, style.id), true);
+  assert.equal(source.typographyStyleId, undefined);
+  assert.equal(instanceText.typographyStyleId, undefined);
+  assert.deepEqual(instance.componentOverrides['source-text'], { fontSize: 24, color: '#123456' });
+  assert.equal(source.fontSize, 32);
+  assert.equal(source.color, '#804020');
+  assert.equal(document.typographyStyles.length, 0);
+});
+
+test('document validation rejects dangling text style references when the style catalog is missing', () => {
+  const document = createDocument();
+  const node = createNode('text', { text: 'Styled' });
+  addNode(document, node);
+  node.typographyStyleId = 'missing-style';
+  delete document.typographyStyles;
+  assert.throws(() => validateDocument(document), /Text styles must be a list/);
+});
+
+test('text style save, apply, and update leave alignment local to each text layer', () => {
   const { document, source } = makeTypographyFixture();
   source.align = 'justify';
   const style = createTypographyStyle(document, source.id, 'Justified body');
-  assert.equal(style.align, 'justify');
+  assert.equal(style.align, undefined);
   const restored = parseDocument(serializeDocument(document));
-  assert.equal(restored.typographyStyles[0].align, 'justify');
+  assert.equal(restored.typographyStyles[0].align, undefined);
   const target = createNode('text', { align: 'center' });
   addNode(restored, target);
   assert.equal(applyTypographyStyle(restored, target.id, style.id), true);
-  assert.equal(target.align, 'justify');
+  assert.equal(target.align, 'center');
   target.align = 'left';
   assert.equal(updateTypographyStyle(restored, style.id, target.id), true);
-  assert.equal(restored.typographyStyles[0].align, 'left');
+  assert.equal(restored.typographyStyles[0].align, undefined);
 });
 
 test('legacy typography styles without case or decoration remain valid and apply with defaults', () => {

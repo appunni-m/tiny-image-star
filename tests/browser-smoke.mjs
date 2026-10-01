@@ -2011,8 +2011,8 @@ try {
   await waitForSaveCycle(app, 'typography style apply to first target');
   typographyRecord = await savedDocument();
   let savedTypographyTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyTarget.id);
-  assert(savedTypographyTarget.fontFamily === 'Georgia, serif' && savedTypographyTarget.fontSize === 31 && savedTypographyTarget.fontWeight === 700 && savedTypographyTarget.fontStyle === 'italic' && savedTypographyTarget.color === '#e14a6d',
-    'the saved typography style did not apply to another text layer');
+  assert(savedTypographyTarget.fontFamily === 'Georgia, serif' && savedTypographyTarget.fontSize === 31 && savedTypographyTarget.fontWeight === 700 && savedTypographyTarget.fontStyle === 'italic' && savedTypographyTarget.color === '#1e1e1e' && savedTypographyTarget.typographyStyleId === typographyStyleId,
+    'the linked typography style did not apply while preserving the target color');
   assert(savedTypographyTarget.text === 'First target' && savedTypographyTarget.x === typographyTarget.x && savedTypographyTarget.y === typographyTarget.y,
     'applying a typography style changed the target text or placement');
 
@@ -2032,8 +2032,11 @@ try {
   await waitForSaveCycle(app, 'typography style update');
   typographyRecord = await savedDocument();
   savedTypographyStyle = typographyRecord.typographyStyles?.find(style => style.id === typographyStyleId);
-  assert(savedTypographyStyle?.fontFamily === 'Arial, sans-serif' && savedTypographyStyle.fontSize === 36 && savedTypographyStyle.fontWeight === 600 && savedTypographyStyle.fontStyle === 'normal' && savedTypographyStyle.color === '#3264c8',
+  assert(savedTypographyStyle?.fontFamily === 'Arial, sans-serif' && savedTypographyStyle.fontSize === 36 && savedTypographyStyle.fontWeight === 600 && savedTypographyStyle.fontStyle === 'normal' && !Object.hasOwn(savedTypographyStyle, 'color'),
     'updating the typography style did not capture the selected text properties');
+  const updatedLinkedTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyTarget.id);
+  assert(updatedLinkedTarget.fontFamily === 'Arial, sans-serif' && updatedLinkedTarget.fontSize === 36 && updatedLinkedTarget.fontWeight === 600 && updatedLinkedTarget.fontStyle === 'normal' && updatedLinkedTarget.color === '#1e1e1e' && updatedLinkedTarget.typographyStyleId === typographyStyleId,
+    'updating the typography style did not update the linked target while preserving its local color');
 
   selectTypographyLayer(typographyUpdatedTarget.id);
   const updatedTargetRow = app.querySelector(`[data-layer-id="${typographyUpdatedTarget.id}"]`);
@@ -2044,8 +2047,8 @@ try {
   await waitForSaveCycle(app, 'updated typography style apply to third target');
   typographyRecord = await savedDocument();
   const savedTypographyUpdatedTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyUpdatedTarget.id);
-  assert(savedTypographyUpdatedTarget.fontFamily === 'Arial, sans-serif' && savedTypographyUpdatedTarget.fontSize === 36 && savedTypographyUpdatedTarget.fontWeight === 600 && savedTypographyUpdatedTarget.fontStyle === 'normal' && savedTypographyUpdatedTarget.color === '#3264c8',
-    'the updated typography style did not apply to the third text layer');
+  assert(savedTypographyUpdatedTarget.fontFamily === 'Arial, sans-serif' && savedTypographyUpdatedTarget.fontSize === 36 && savedTypographyUpdatedTarget.fontWeight === 600 && savedTypographyUpdatedTarget.fontStyle === 'normal' && savedTypographyUpdatedTarget.color === '#1e1e1e' && savedTypographyUpdatedTarget.typographyStyleId === typographyStyleId,
+    'the updated typography style did not link to the third text layer while preserving its local color');
   dispatchClick(app.querySelector('[data-sidebar-tab="assets"]'));
   await waitFor(() => typographyStyleCard(), 'updated typography style card before phone layout check');
   const desktopFrameSizeForTypography = { width: frame.style.width, height: frame.style.height };
@@ -2054,10 +2057,19 @@ try {
   const mobileTypographyApply = typographyStyleCard();
   const mobileTypographyRow = mobileTypographyApply?.closest('.typography-style-row');
   const mobileTypographyUpdate = mobileTypographyRow?.querySelector(`[data-text-style-action="update"][data-text-style-id="${typographyStyleId}"]`);
-  assert(mobileTypographyApply?.getBoundingClientRect().height >= 44 && mobileTypographyUpdate?.getBoundingClientRect().height >= 40,
-    'text style apply and update actions do not meet mobile touch target sizing');
+  const mobileTypographyRename = mobileTypographyRow?.querySelector(`[data-text-style-action="rename"][data-text-style-id="${typographyStyleId}"]`);
+  assert(mobileTypographyApply?.getBoundingClientRect().height >= 44 && mobileTypographyUpdate?.getBoundingClientRect().height >= 40 && mobileTypographyRename?.getBoundingClientRect().height >= 40,
+    'text style apply, update, and rename actions do not meet mobile touch target sizing');
   assert(mobileTypographyRow.getBoundingClientRect().right <= app.querySelector('#left-panel').getBoundingClientRect().right,
     'the text style card overflows the mobile Assets panel');
+  const renameTypographyStyle = mobileTypographyRow.querySelector(`[data-text-style-action="rename"][data-text-style-id="${typographyStyleId}"]`);
+  app.defaultView.prompt = () => 'Renamed smoke typography';
+  dispatchClick(renameTypographyStyle);
+  app.defaultView.prompt = originalPrompt;
+  await waitForSaveCycle(app, 'typography style rename');
+  typographyRecord = await savedDocument();
+  assert(typographyRecord.typographyStyles?.find(style => style.id === typographyStyleId)?.name === 'Renamed smoke typography',
+    'renaming the text style did not persist');
   dispatchClick(app.querySelector('[data-sidebar-tab="layers"]'));
   const mobileLeftPanel = app.querySelector('#left-panel');
   if (!mobileLeftPanel.classList.contains('is-open')) dispatchClick(app.querySelector('#sidebar-toggle'));
@@ -2091,6 +2103,9 @@ try {
   await waitFor(() => !typographyStyleCard(), 'typography style deletion from Assets');
   typographyRecord = await savedDocument();
   assert(!typographyRecord.typographyStyles?.some(style => style.id === typographyStyleId), 'deleting the typography style did not remove it from the local document');
+  const detachedTypographyTarget = flattenNodes(typographyRecord.pages.flatMap(page => page.children)).find(node => node.id === typographyTarget.id);
+  assert(!detachedTypographyTarget.typographyStyleId && detachedTypographyTarget.fontFamily === 'Arial, sans-serif' && detachedTypographyTarget.fontSize === 36 && detachedTypographyTarget.color === '#1e1e1e',
+    'deleting a text style did not detach linked layers while retaining their current values');
 
   selectTypographyLayer(variableHeading.id);
   const textBinding = app.querySelector('[data-variable-property-binding="text"]');

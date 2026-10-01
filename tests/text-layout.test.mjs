@@ -682,7 +682,7 @@ test('text case and decoration accept only supported values on text layers', () 
   assert.throws(() => validateDocument(document), /Invalid text decoration/);
 });
 
-test('text vertical alignment validates, defaults old documents to top, and round-trips in saved text styles', () => {
+test('text vertical alignment validates and remains layer-local when applying reusable text styles', () => {
   const document = createDocument();
   const text = createNode('text', { verticalAlign: 'bottom' });
   addNode(document, text);
@@ -701,16 +701,22 @@ test('text vertical alignment validates, defaults old documents to top, and roun
   document.pages[0].children.pop();
 
   const style = createTypographyStyle(document, text.id, 'Bottom text');
-  assert.equal(style.verticalAlign, 'bottom');
+  assert.equal(style.verticalAlign, undefined, 'new typography styles do not capture layer-local vertical alignment');
   text.verticalAlign = 'top';
   assert.equal(applyTypographyStyle(document, text.id, style.id), true);
-  assert.equal(text.verticalAlign, 'bottom');
+  assert.equal(text.verticalAlign, 'top', 'applying a new style preserves the layer alignment');
 
-  delete style.verticalAlign;
   text.verticalAlign = 'bottom';
   assert.equal(validateDocument(document), true, 'older typography styles may omit vertical alignment');
   assert.equal(applyTypographyStyle(document, text.id, style.id), true);
-  assert.equal(text.verticalAlign, 'top', 'applying a legacy text style uses the historical top-aligned default');
+  assert.equal(text.verticalAlign, 'bottom', 'a style without the optional alignment field leaves the current value unchanged');
+
+  const legacyStyle = { ...style, id: 'legacy-style', verticalAlign: 'middle', align: 'right', color: '#123456' };
+  document.typographyStyles.push(legacyStyle);
+  assert.equal(applyTypographyStyle(document, text.id, legacyStyle.id), true);
+  assert.equal(text.verticalAlign, 'middle', 'legacy style alignment remains readable');
+  assert.equal(text.align, 'right');
+  assert.equal(text.color, '#123456');
 });
 
 test('text vertical alignment can be stored as an instance override for a nested component label', () => {

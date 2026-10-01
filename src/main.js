@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameTypographyStyle, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -90,6 +90,10 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
 const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
+const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'
+]);
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
   gradientGeometryTarget: null,
@@ -1661,7 +1665,11 @@ function textSection(node) {
     .map(([weight, label]) => `<option value="${weight}"${Number(node.fontWeight || 400) === weight ? ' selected' : ''}>${label}</option>`).join('');
   const styleOptions = [['normal', 'Regular'], ['italic', 'Italic']]
     .map(([value, label]) => `<option value="${value}"${(node.fontStyle || 'normal') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 1, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button><button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const linkedStyle = state.document.typographyStyles?.find(style => style.id === node.typographyStyleId);
+  const styleStatus = linkedStyle
+    ? `<div class="image-properties-note">Text style · ${escapeHtml(linkedStyle.name)} · typography changes update this layer.</div><button class="add-fill" data-action="detach-typography-style">Detach text style</button>`
+    : '';
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 1, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -2388,20 +2396,21 @@ function renderAssetsTab() {
   if (!typographyStyles.length) {
     const empty = document.createElement('div'); empty.className = 'typography-styles-empty'; empty.textContent = 'Save typography from a text layer to reuse it here.'; textStyles.append(empty);
   } else {
-    const hint = document.createElement('div'); hint.className = 'typography-styles-hint'; hint.textContent = 'Applying copies settings into selected text. Updates affect future applications.'; textStyles.append(hint);
+    const hint = document.createElement('div'); hint.className = 'typography-styles-hint'; hint.textContent = 'Applying links supported typography settings. Updates reach linked text; color, alignment, and resizing stay local.'; textStyles.append(hint);
   }
   for (const style of typographyStyles) {
     const row = document.createElement('div'); row.className = 'typography-style-row';
     const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'typography-style-apply'; apply.dataset.typographyStyleId = style.id; apply.title = `Apply ${style.name} to selected text`;
-    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = style.color; mark.style.textAlign = style.align; mark.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(style.textCase) ? style.textCase : 'none'; mark.style.textDecoration = ['underline', 'line-through'].includes(style.textDecoration) ? style.textDecoration : 'none';
+    const mark = document.createElement('span'); mark.className = 'typography-style-mark'; mark.textContent = 'Tt'; mark.style.fontFamily = style.fontFamily; mark.style.fontSize = `${Math.max(12, Math.min(22, style.fontSize))}px`; mark.style.fontWeight = String(style.fontWeight); mark.style.fontStyle = style.fontStyle; mark.style.color = '#1e1e1e'; mark.style.textAlign = 'left'; mark.style.textTransform = ['uppercase', 'lowercase', 'capitalize'].includes(style.textCase) ? style.textCase : 'none'; mark.style.textDecoration = ['underline', 'line-through'].includes(style.textDecoration) ? style.textDecoration : 'none';
     const copy = document.createElement('span'); copy.className = 'typography-style-copy';
     const name = document.createElement('span'); name.className = 'typography-style-name'; name.textContent = style.name;
     const detail = document.createElement('small'); detail.textContent = `${style.fontFamily} · ${style.fontSize}px · ${style.fontWeight}`;
     copy.append(name, detail); apply.append(mark, copy);
     const actions = document.createElement('div'); actions.className = 'typography-style-actions';
     const update = document.createElement('button'); update.type = 'button'; update.dataset.textStyleAction = 'update'; update.dataset.textStyleId = style.id; update.textContent = 'Update'; update.title = `Update ${style.name} from selected text`;
+    const rename = document.createElement('button'); rename.type = 'button'; rename.dataset.textStyleAction = 'rename'; rename.dataset.textStyleId = style.id; rename.textContent = 'Rename'; rename.title = `Rename ${style.name}`;
     const remove = document.createElement('button'); remove.type = 'button'; remove.dataset.textStyleAction = 'delete'; remove.dataset.textStyleId = style.id; remove.textContent = '×'; remove.title = `Delete ${style.name}`; remove.setAttribute('aria-label', `Delete ${style.name}`);
-    actions.append(update, remove); row.append(apply, actions); textStyles.append(row);
+    actions.append(update, rename, remove); row.append(apply, actions); textStyles.append(row);
   }
   renderLocalFontAssets();
   const imageLibraryCallbacks = {
@@ -5834,6 +5843,10 @@ function updateInspectorInput(event) {
   const key = adjustments ? prop.slice('adjustments.'.length) : layoutSetting ? prop.slice('autoLayout.'.length) : constraintSetting ? prop.slice('constraints.'.length) : prop;
   for (const node of selectedNodes()) {
     const instanceRoot = componentInstanceRoot(node.id);
+    if (node.type === 'text' && TYPOGRAPHY_STYLE_PROPERTIES.has(prop) && node.typographyStyleId) {
+      delete node.typographyStyleId;
+      if (instanceRoot) recordComponentOverride(instanceRoot, node, 'typographyStyleId');
+    }
     const oldRawWidth = node.width; const oldRawHeight = node.height;
     const oldWidth = resolvedGeometry(node).width; const oldHeight = resolvedGeometry(node).height;
     let adjustedSizeLimit = null;
@@ -7102,6 +7115,8 @@ function saveTypographyStyleFor(nodeId) {
   try {
     checkpoint('Create text style');
     const style = createTypographyStyle(state.document, node.id, name);
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'typographyStyleId');
     renderUI(); queueSave(); showToast(`Text style “${style.name}” saved.`);
   } catch (error) { showToast(error.message); }
 }
@@ -7160,7 +7175,8 @@ function applyTypographyStyleToSelection(styleId) {
   const compatible = selectedNodes().filter(node => node.type === 'text');
   if (!style || !compatible.length) { showToast('Select one or more text layers to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
-  const overriddenProperties = ['width', 'height', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'align', 'verticalAlign', 'color', 'textCase', 'textDecoration', 'textVariableId', 'textStyleId', 'variableBindings'];
+  const overriddenProperties = ['typographyStyleId', ...TYPOGRAPHY_STYLE_PROPERTIES, 'variableBindings', 'width', 'height'];
+  for (const property of ['color', 'align', 'verticalAlign']) if (Object.hasOwn(style, property)) overriddenProperties.push(property);
   const layoutParents = new Set();
   for (const node of compatible) {
     applyTypographyStyle(state.document, node.id, style.id);
@@ -7183,7 +7199,35 @@ function updateTypographyStyleFromSelection(styleId) {
   if (nodes.length !== 1) { showToast('Select one text layer to update a style.'); return; }
   checkpoint(`Update ${style.name}`);
   if (!updateTypographyStyle(state.document, style.id, nodes[0].id)) { showToast('Could not update this text style.'); return; }
-  renderUI(); queueSave(); showToast(`Updated “${style.name}” for future applications.`);
+  const layoutParents = new Set();
+  for (const page of state.document.pages) walkNodes(page.children || [], ({ node, parent }) => {
+    if (node.type !== 'text' || node.typographyStyleId !== style.id) return;
+    if (resizeTextNode(node) && parent?.autoLayout) layoutParents.add(parent);
+  });
+  for (const parent of layoutParents) applyAutoLayout(parent);
+  renderUI(); queueSave(); renderer.invalidate(); showToast(`Updated “${style.name}” on linked text layers.`);
+}
+
+function renameTypographyStyleInAssets(styleId) {
+  const style = state.document.typographyStyles?.find(item => item.id === styleId);
+  if (!style) { showToast('This text style no longer exists.'); return; }
+  const name = prompt('Text style name', style.name);
+  if (name == null || name.trim() === style.name) return;
+  checkpoint(`Rename ${style.name}`);
+  if (!renameTypographyStyle(state.document, style.id, name)) { showToast('Enter a text style name of 1–120 characters.'); return; }
+  renderUI(); queueSave(); showToast(`Renamed text style to “${style.name}”.`);
+}
+
+function detachTypographyStyleFromSelection() {
+  const nodes = selectedNodes().filter(node => node.type === 'text' && node.typographyStyleId);
+  if (!nodes.length) return;
+  checkpoint('Detach text style');
+  for (const node of nodes) {
+    delete node.typographyStyleId;
+    const instanceRoot = componentInstanceRoot(node.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, node, 'typographyStyleId');
+  }
+  renderUI(); queueSave();
 }
 
 function saveEffectStyleFor(nodeId) {
@@ -10965,6 +11009,9 @@ function applyInspectorAction(action, details = {}) {
   else if (action === 'create-typography-style') {
     saveTypographyStyleFor(node?.id);
   }
+  else if (action === 'detach-typography-style' && node?.type === 'text') {
+    detachTypographyStyleFromSelection();
+  }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
     checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover';
@@ -11800,6 +11847,7 @@ function initEvents() {
     const action = event.target.closest('[data-text-style-action]');
     if (action) {
       if (action.dataset.textStyleAction === 'update') updateTypographyStyleFromSelection(action.dataset.textStyleId);
+      else if (action.dataset.textStyleAction === 'rename') renameTypographyStyleInAssets(action.dataset.textStyleId);
       else if (action.dataset.textStyleAction === 'delete') removeTypographyStyleFromAssets(action.dataset.textStyleId);
       return;
     }
