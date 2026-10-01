@@ -14,6 +14,20 @@ test('portable local design restores its metadata and byte-exact image assets', 
   assert.equal(decoded.assets[0].bytes.buffer, packed.buffer, 'image payloads should remain views into the bounded package buffer until import persists them');
 });
 
+test('portable local design includes image-library-only sources and validates their bytes', () => {
+  const document = createDocument();
+  document.imageLibrary = [{ assetId: 'library-only', name: 'library.png', type: 'image/png', width: 3, height: 2 }];
+  const sourceBytes = new Uint8Array([0, 5, 10, 255]);
+
+  assert.throws(() => packLocalPackage(document, []), /library-only.*bytes are missing/i,
+    'a saved library source is a portable design reference even before it is placed on a page');
+  const decoded = unpackLocalPackage(packLocalPackage(document, [
+    { id: 'library-only', name: 'library.png', type: 'image/png', bytes: sourceBytes }
+  ]));
+  assert.deepEqual(decoded.document.imageLibrary, document.imageLibrary);
+  assert.deepEqual(decoded.assets[0].bytes, sourceBytes);
+});
+
 test('portable package builders enforce a byte limit before allocating a packed payload', () => {
   const document = createDocument();
   const image = { id: 'bounded-image', name: 'large.png', type: 'image/png', bytes: new Uint8Array(64) };

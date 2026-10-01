@@ -25,7 +25,7 @@ import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimen
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
-import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -42,7 +42,7 @@ import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExp
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
 import { importDtcgTokens, mergeDtcgTokens, stringifyDtcgTokens } from './design-token-interop.js';
-import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
+import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, listPrototypeFrames, normalizePrototypeLinkUrl, prototypeEasingTimingFunction, removePrototypeInteraction, restartPrototypeSession, resolvePrototypePresentationStart, schedulePrototypeDelay, updatePrototypeInteraction } from './prototype.js';
 import { planPrototypeScrollTo } from './prototype-scroll.js';
 import { createPrototypeFlow, deletePrototypeFlow, listPrototypeFlows, renamePrototypeFlow, setPrototypeFlowStartPoint, setPrototypeStartFlow } from './prototype.js';
 import { deletePage as deleteManagedPage, duplicatePage as duplicateManagedPage, renamePage as renameManagedPage, reorderPage as reorderManagedPage } from './page-management.js';
@@ -76,6 +76,10 @@ import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVarian
 import { createThemePreferenceController } from './theme-preference.js';
 import { contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
+import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES, migrateImageLibraryEntry, removeImageLibraryEntry } from './image-asset-library.js';
+import { scopeImageAssetReferences } from './image-asset-restoration.js';
+import { mountImageLibraryView } from './image-library-view.js';
+import { createImageLibraryThumbnailBlob } from './image-library-thumbnail.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -83,10 +87,11 @@ const themePreferences = createThemePreferenceController();
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
+const IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT = 128;
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
   gradientGeometryTarget: null,
-  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
+  assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], appearanceClipboard: null, controlEdit: false, layerSelectionMode: false,
   componentSetSelectedVariants: new Map(),
@@ -129,6 +134,7 @@ let layerRowsById = new Map();
 const collapsedLayerIds = new Set();
 let currentToastTimer = 0;
 let presentationAnimationFrame = 0;
+const presentationTransitionFrames = new Set();
 let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
 const previewTimers = new Map();
@@ -1033,6 +1039,9 @@ function imageFillSources() {
     if (sources.has(reference.assetId)) continue;
     const asset = state.assets.get(reference.assetId);
     sources.set(reference.assetId, { assetId: reference.assetId, name: asset?.name || reference.name || 'Image' });
+  }
+  for (const entry of state.document.imageLibrary || []) {
+    if (!sources.has(entry.assetId)) sources.set(entry.assetId, { assetId: entry.assetId, name: state.assets.get(entry.assetId)?.name || entry.name || 'Image' });
   }
   return [...sources.values()];
 }
@@ -2166,9 +2175,83 @@ function renderLocalComponentLibraries() {
   }
 }
 
+function cacheImageLibraryThumbnail(assetId, blob) {
+  const previous = state.imageLibraryThumbnailUrls.get(assetId);
+  if (previous) URL.revokeObjectURL(previous);
+  const url = URL.createObjectURL(blob);
+  state.imageLibraryThumbnailUrls.delete(assetId);
+  state.imageLibraryThumbnailUrls.set(assetId, url);
+  while (state.imageLibraryThumbnailUrls.size > IMAGE_LIBRARY_THUMBNAIL_CACHE_LIMIT) {
+    const oldestAssetId = state.imageLibraryThumbnailUrls.keys().next().value;
+    const oldestUrl = state.imageLibraryThumbnailUrls.get(oldestAssetId);
+    state.imageLibraryThumbnailUrls.delete(oldestAssetId);
+    URL.revokeObjectURL(oldestUrl);
+  }
+  return url;
+}
+
+async function persistImageLibraryThumbnail(assetId, bitmap, generation = state.documentGeneration) {
+  const blob = await createImageLibraryThumbnailBlob(bitmap);
+  if (generation !== state.documentGeneration
+    || !state.document.imageLibrary?.some(item => item.assetId === assetId)) return '';
+  try { await saveImageAssetThumbnail(assetId, new Uint8Array(await blob.arrayBuffer())); }
+  catch (error) { console.warn('Could not save a compact local image thumbnail.', error); }
+  if (generation !== state.documentGeneration
+    || !state.document.imageLibrary?.some(item => item.assetId === assetId)) return '';
+  return cacheImageLibraryThumbnail(assetId, blob);
+}
+
+function imageLibraryThumbnailBlob(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.byteLength) return null;
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  return new Blob([bytes], { type: jpeg ? 'image/jpeg' : 'image/png' });
+}
+
+function resolveImageLibraryThumbnail(entry) {
+  const assetId = entry?.assetId;
+  if (!assetId) return '';
+  const cached = state.imageLibraryThumbnailUrls.get(assetId);
+  if (cached) {
+    state.imageLibraryThumbnailUrls.delete(assetId);
+    state.imageLibraryThumbnailUrls.set(assetId, cached);
+    return cached;
+  }
+  const pending = state.imageLibraryThumbnailLoads.get(assetId);
+  if (pending) return pending;
+  const generation = state.documentGeneration;
+  const request = (async () => {
+    let blob = null;
+    try { blob = imageLibraryThumbnailBlob(await loadImageAssetThumbnail(assetId)); }
+    catch { /* A resident decoded source can regenerate a missing thumbnail. */ }
+    if (!blob) {
+      const resident = state.assets.get(assetId);
+      if (!resident?.bitmap) return '';
+      return persistImageLibraryThumbnail(assetId, resident.bitmap, generation);
+    }
+    if (generation !== state.documentGeneration
+      || !state.document.imageLibrary?.some(item => item.assetId === assetId)) return '';
+    return cacheImageLibraryThumbnail(assetId, blob);
+  })();
+  state.imageLibraryThumbnailLoads.set(assetId, request);
+  return request.finally(() => {
+    if (state.imageLibraryThumbnailLoads.get(assetId) === request) state.imageLibraryThumbnailLoads.delete(assetId);
+  });
+}
+
 function renderAssetsTab() {
-  const list = $('#assets-list'); list.replaceChildren();
   state.assetThumbnailImages.clear();
+  const placedImages = $('#placed-image-assets');
+  placedImages.replaceChildren();
+  for (const node of imageNodes()) {
+    const asset = state.assets.get(node.assetId);
+    const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
+    const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
+    const image = document.createElement('img'); image.alt = ''; image.src = state.previewUrls.get(node.id) || asset?.bitmapUrl || '';
+    state.assetThumbnailImages.set(node.id, image);
+    thumb.append(image);
+    const name = document.createElement('span'); name.className = 'asset-card-name'; name.textContent = node.name;
+    card.append(thumb, name); placedImages.append(card);
+  }
   const components = $('#components-list');
   const expandedComponentSets = new Set([...components.querySelectorAll('[data-component-set-editor][open]')].map(item => item.dataset.componentSetEditor));
   components.replaceChildren();
@@ -2287,16 +2370,17 @@ function renderAssetsTab() {
     actions.append(update, remove); row.append(apply, actions); textStyles.append(row);
   }
   renderLocalFontAssets();
-  for (const node of imageNodes()) {
-    const asset = state.assets.get(node.assetId);
-    const card = document.createElement('button'); card.className = 'asset-card'; card.dataset.layerId = node.id; card.title = `Place ${node.name}`;
-    const thumb = document.createElement('span'); thumb.className = 'asset-thumb';
-    const image = document.createElement('img'); image.alt = ''; image.src = state.previewUrls.get(node.id) || asset?.bitmapUrl || '';
-    state.assetThumbnailImages.set(node.id, image);
-    thumb.append(image);
-    const name = document.createElement('span'); name.className = 'asset-card-name'; name.textContent = node.name;
-    card.append(thumb, name); list.append(card);
-  }
+  const imageLibraryCallbacks = {
+    documentData: state.document,
+    onAdd: () => $('#image-library-input').click(),
+    onPlace: assetId => placeImageLibraryAsset(assetId),
+    onRemove: assetId => removeImageFromLibrary(assetId),
+    getThumbnail: resolveImageLibraryThumbnail,
+    pageSize: 48
+  };
+  const libraryRoot = $('#image-library-root');
+  if (!state.imageLibraryView) state.imageLibraryView = mountImageLibraryView(libraryRoot, imageLibraryCallbacks);
+  else state.imageLibraryView.refresh(state.document);
 }
 
 function renderUI() {
@@ -5890,7 +5974,20 @@ function schedulePreview(node, immediate = false, fillId = null) {
   const assetId = imageFill?.assetId || node.assetId;
   const adjustments = imageFill?.adjustments || node.adjustments;
   const transforms = imageFill?.transforms || node.transforms;
-  const run = () => renderImagePreview(node.id, assetId, adjustments, transforms, fillId, null, pageId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); renderInspector(); });
+  const generation = state.documentGeneration;
+  const version = state.renderVersion.get(previewKey);
+  const run = async () => {
+    try {
+      if (!state.assets.get(assetId)?.sourceBytes) await restoreImageAssets(generation, { assetIds: [assetId] });
+      if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return;
+      if (!state.assets.get(assetId)?.sourceBytes) throw new Error('The original image source is unavailable. Reimport it before continuing.');
+      await renderImagePreview(node.id, assetId, adjustments, transforms, fillId, null, pageId);
+    } catch (error) {
+      state.imageStatus.set(previewKey, imagePreviewFailureStatus(error));
+      showToast(error.message || 'Could not update the image preview.');
+      renderInspector();
+    }
+  };
   let timer;
   timer = setTimeout(() => {
     if (previewTimers.get(previewKey) !== timer) return;
@@ -6077,24 +6174,68 @@ function setZoomButtonHandlers() {
 }
 
 function chooseImageFiles() { $('#image-input').click(); }
-async function importImageFiles(files, point = null) {
+function removeImageFromLibrary(assetId) {
+  const entry = state.document.imageLibrary?.find(item => item.assetId === assetId);
+  if (!entry || state.documentTransitioning) return false;
+  checkpoint(`Remove ${entry.name} from image library`);
+  if (!removeImageLibraryEntry(state.document, assetId)) return false;
+  renderUI(); queueSave();
+  showToast(`Removed “${entry.name}” from the image library. Placed images are unchanged.`);
+  return true;
+}
+
+async function placeImageLibraryAsset(assetId) {
+  if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before placing an image.');
+  const entry = state.document.imageLibrary?.find(item => item.assetId === assetId);
+  if (!entry) throw new Error('That source image is no longer in this design’s library.');
+  const generation = state.documentGeneration;
+  if (!state.assets.get(assetId)?.sourceBytes) {
+    await restoreImageAssets(generation, { assetIds: [assetId] });
+  }
+  if (generation !== state.documentGeneration || state.documentTransitioning) return false;
+  const asset = state.assets.get(assetId);
+  if (!asset?.sourceBytes || !asset.bitmap) throw new Error(`The original image “${entry.name}” could not be restored. Reimport the source file and try again.`);
+  const width = Math.max(1, asset.bitmap.width || asset.sourceWidth || entry.width);
+  const height = Math.max(1, asset.bitmap.height || asset.sourceHeight || entry.height);
+  const center = { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
+  const fileName = asset.name || entry.name;
+  const node = createNode('image', {
+    id: createId('image'), name: fileName.replace(/\.[^.]+$/, ''), fileName, assetId,
+    width, height, sourceWidth: asset.sourceWidth || entry.width, sourceHeight: asset.sourceHeight || entry.height,
+    x: center.x - width / 2, y: center.y - height / 2, fit: 'cover'
+  });
+  const parent = deepestContainerAt(center);
+  checkpoint(`Place ${entry.name}`);
+  localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
+  state.imageStatus.set(node.id, 'Processing locally…');
+  renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => {
+    state.imageStatus.set(node.id, imagePreviewFailureStatus(error));
+    showToast(error.message || 'Could not render the image preview.');
+  });
+  setSelection([node.id]); queueSave(); renderer.invalidate();
+  return true;
+}
+
+async function importImageFiles(files, point = null, { place = true, input = $('#image-input') } = {}) {
   if (state.documentTransitioning) {
     showToast('Wait for the current design switch to finish before importing images.');
     return;
   }
   const generation = state.documentGeneration;
   const inputs = [...files].filter(isImageImportCandidate);
-  if (!inputs.length) { showToast('Choose an image file to place it on the canvas.'); return; }
+  if (!inputs.length) { showToast(`Choose an image file to ${place ? 'place on the canvas' : 'add to the local image library'}.`); return; }
   state.pendingImageImports += 1;
   try {
-  checkpoint(`Place ${inputs.length} image${inputs.length === 1 ? '' : 's'}`);
+  checkpoint(`${place ? 'Place' : 'Add'} ${inputs.length} image${inputs.length === 1 ? '' : 's'}${place ? '' : ' to image library'}`);
   const defaultWorld = point || { x: (canvas.clientWidth / 2 - state.panX) / state.zoom, y: (canvas.clientHeight / 2 - state.panY) / state.zoom };
   let imported = 0;
+  let placedCount = 0;
   const memoryLimitedFiles = [];
   for (const [index, file] of inputs.entries()) {
     const fileName = typeof file.name === 'string' && file.name.trim()
       ? file.name
       : clipboardImageFilename(file.type, index + 1);
+    const displayName = fileName.split(/[\\/]/u).at(-1)?.replace(/[\x00-\x1f\x7f]/gu, ' ').slice(0, 512).trim() || `Image ${index + 1}`;
     let assetId = null;
     let assetReservation = null;
     let decodeReservation = null;
@@ -6103,6 +6244,7 @@ async function importImageFiles(files, point = null) {
     let retainedAsset = false;
     let assetWriteAttempted = false;
     let placed = false;
+    let retainedInLibrary = false;
     let pillowFallbackUsed = false;
     try {
       assetId = createId('asset');
@@ -6143,21 +6285,30 @@ async function importImageFiles(files, point = null) {
       imageMemoryBudget.commit(assetReservation, assetMemoryKey(assetId), { bytes: assetBytes, kind: 'asset' });
       assetReservation = null;
       retainedAsset = true;
-      state.assets.set(assetId, { id: assetId, name: fileName, type: file.type, sourceBytes, bitmap, bitmapUrl, sourceWidth, sourceHeight });
+      state.assets.set(assetId, { id: assetId, name: displayName, type: file.type, sourceBytes, bitmap, bitmapUrl, sourceWidth, sourceHeight });
       bitmap = null; bitmapUrl = null;
-      const node = createNode('image', { id: createId('image'), name: fileName.replace(/\.[^.]+$/, ''), fileName, assetId, width, height, sourceWidth, sourceHeight, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
-      const center = { x: node.x + width / 2, y: node.y + height / 2 };
-      const parent = deepestContainerAt(center);
-      localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
-      state.imageStatus.set(node.id, 'Processing locally…');
-      renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, imagePreviewFailureStatus(error)); showToast(error.message); });
-      state.selectedIds = [node.id]; imported += 1; placed = true;
+      addImageLibraryEntry(state.document, { assetId, name: displayName, type: file.type || '', width: sourceWidth, height: sourceHeight });
+      retainedInLibrary = true;
+      imported += 1;
+      try { await persistImageLibraryThumbnail(assetId, state.assets.get(assetId)?.bitmap, generation); }
+      catch (error) { console.warn('Could not create a compact local image thumbnail.', error); }
+      if (place) {
+        const node = createNode('image', { id: createId('image'), name: fileName.replace(/\.[^.]+$/, ''), fileName, assetId, width, height, sourceWidth, sourceHeight, x: defaultWorld.x - width / 2 + index * 24, y: defaultWorld.y - height / 2 + index * 24, fit: 'cover' });
+        const center = { x: node.x + width / 2, y: node.y + height / 2 };
+        const parent = deepestContainerAt(center);
+        localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
+        placed = true;
+        placedCount += 1;
+        state.imageStatus.set(node.id, 'Processing locally…');
+        renderImagePreview(node.id, assetId, node.adjustments, node.transforms).catch(error => { state.imageStatus.set(node.id, imagePreviewFailureStatus(error)); showToast(error.message); });
+        state.selectedIds = [node.id];
+      }
     } catch (error) {
       if (decodeReservation) imageMemoryBudget.releaseReservation(decodeReservation);
       if (assetReservation) imageMemoryBudget.releaseReservation(assetReservation);
       bitmap?.close?.();
       if (bitmapUrl) URL.revokeObjectURL(bitmapUrl);
-      if (retainedAsset && !placed && assetId) {
+      if (retainedAsset && !placed && !retainedInLibrary && assetId) {
         const retained = state.assets.get(assetId);
         retained?.bitmap?.close?.();
         if (retained?.bitmapUrl) URL.revokeObjectURL(retained.bitmapUrl);
@@ -6168,32 +6319,47 @@ async function importImageFiles(files, point = null) {
       if (error instanceof ImageMemoryLimitError) memoryLimitedFiles.push(fileName);
       else showToast(`${fileName}: ${error.message || 'Could not load image.'}`);
     } finally {
-      if (assetWriteAttempted && !placed && assetId) {
+      if (assetWriteAttempted && !placed && !retainedInLibrary && assetId) {
         try { await deleteImageAsset(assetId); }
         catch (error) { showToast(`${fileName}: the failed import could not be removed from local storage (${error.message || 'storage error'}).`); }
       }
-      if (pillowFallbackUsed && !placed && assetId) imageEngine.dispose(assetId);
+      if (pillowFallbackUsed && !placed && !retainedInLibrary && assetId) imageEngine.dispose(assetId);
     }
   }
   if (imported) { renderUI(); queueSave(); }
   if (memoryLimitedFiles.length) {
     const examples = memoryLimitedFiles.slice(0, 3).join(', ');
     const more = memoryLimitedFiles.length > 3 ? `, and ${memoryLimitedFiles.length - 3} more` : '';
-    showToast(`${imported} placed · ${memoryLimitedFiles.length} skipped at the local memory limit: ${examples}${more}.`);
-  } else if (imported) showToast(`${imported} image${imported === 1 ? '' : 's'} placed. Source images stay on this device.`);
+    showToast(`${place ? `${placedCount} placed` : `${imported} added to the image library`} · ${memoryLimitedFiles.length} skipped at the local memory limit: ${examples}${more}.`);
+  } else if (imported) {
+    if (place && placedCount === imported) showToast(`${placedCount} image${placedCount === 1 ? '' : 's'} placed. Source images stay in this design’s library.`);
+    else if (place) showToast(`${imported} source image${imported === 1 ? '' : 's'} added to the library · ${placedCount} placed.`);
+    else showToast(`${imported} image${imported === 1 ? '' : 's'} added to this design’s library.`);
+  }
   } finally {
     state.pendingImageImports -= 1;
-    $('#image-input').value = '';
+    input.value = '';
   }
 }
 
-async function restoreImageAssets(generation = state.documentGeneration) {
-  const references = imageAssetReferencesAcrossPages();
+async function restoreImageAssets(generation = state.documentGeneration, { assetIds = [] } = {}) {
+  const references = scopeImageAssetReferences(imageAssetReferencesAcrossPages(), assetIds);
+  const requestedLibraryAssets = new Set(assetIds);
+  for (const entry of state.document.imageLibrary || []) {
+    if (!requestedLibraryAssets.has(entry.assetId)) continue;
+    references.push({
+      node: { id: `image-library:${entry.assetId}` },
+      previewKey: `image-library:${entry.assetId}`,
+      assetId: entry.assetId,
+      name: entry.name,
+      librarySource: true
+    });
+  }
   const unavailableAssetIds = new Set();
   let memoryLimitedCount = 0;
   for (const reference of references) {
     if (generation !== state.documentGeneration) return;
-    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, name, adjustments, transforms } = reference;
+    const { node, fillId = null, previewKey = imagePreviewKey(node.id), assetId, name, adjustments, transforms, librarySource = false } = reference;
     if (unavailableAssetIds.has(assetId)) { state.imageStatus.set(previewKey, 'Local image memory limit reached'); continue; }
     const reservations = { assetReservation: null, decodeReservation: null };
     let bitmap = null;
@@ -6203,11 +6369,11 @@ async function restoreImageAssets(generation = state.documentGeneration) {
     try {
       const existing = state.assets.get(assetId);
       if (existing?.sourceBytes) {
-        renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
-          setImagePreviewFailureStatus(state.imageStatus, previewKey, error);
-          updateSelectedImageStatus(node.id, previewKey, fillId);
-          showToast(error.message || 'Could not restore the image preview.');
-        });
+        if (!librarySource) renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => {
+            setImagePreviewFailureStatus(state.imageStatus, previewKey, error);
+            updateSelectedImageStatus(node.id, previewKey, fillId);
+            showToast(error.message || 'Could not restore the image preview.');
+          });
         continue;
       }
       const metadata = await loadImageAssetMetadata(assetId);
@@ -6266,8 +6432,10 @@ async function restoreImageAssets(generation = state.documentGeneration) {
       retainedAsset = true;
       state.assets.set(assetId, { id: assetId, name: saved.name || name, type: saved.type, sourceBytes, bitmap, bitmapUrl, sourceWidth: actualDimensions.width, sourceHeight: actualDimensions.height });
       bitmap = null; bitmapUrl = null;
-      state.imageStatus.set(previewKey, 'Restoring local preview…');
-      renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); });
+      if (!librarySource) {
+        state.imageStatus.set(previewKey, 'Restoring local preview…');
+        renderImagePreview(node.id, assetId, adjustments, transforms, fillId).catch(error => { state.imageStatus.set(previewKey, imagePreviewFailureStatus(error)); showToast(error.message); });
+      }
     } catch (error) {
       releaseImageMemoryReservations(imageMemoryBudget, reservations);
       if (pillowFallbackUsed && !retainedAsset) imageEngine.dispose(assetId);
@@ -8250,9 +8418,9 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     const canvasElement = $('#present-canvas');
     canvasElement.style.opacity = '0';
     canvasElement.style.transform = enterFrom;
-    requestAnimationFrame(() => {
+    requestPresentationTransitionFrame(() => {
       presentRenderer?.invalidate();
-      requestAnimationFrame(() => { canvasElement.style.opacity = '1'; canvasElement.style.transform = 'translateX(0)'; });
+      requestPresentationTransitionFrame(() => { canvasElement.style.opacity = '1'; canvasElement.style.transform = 'translateX(0)'; });
     });
   } else {
     $('#present-canvas').style.opacity = '1';
@@ -8264,6 +8432,18 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
 function cancelPresentationAnimation() {
   if (presentationAnimationFrame) cancelAnimationFrame(presentationAnimationFrame);
   presentationAnimationFrame = 0;
+  for (const frame of presentationTransitionFrames) cancelAnimationFrame(frame);
+  presentationTransitionFrames.clear();
+}
+
+function requestPresentationTransitionFrame(callback) {
+  let frame = 0;
+  frame = requestAnimationFrame(() => {
+    presentationTransitionFrames.delete(frame);
+    callback();
+  });
+  presentationTransitionFrames.add(frame);
+  return frame;
 }
 
 function clearPresentationDelay() {
@@ -8313,11 +8493,12 @@ function animateSmartTransition(fromFrame, interaction) {
 }
 
 function startPresentation(selectedId = null) {
-  const start = getPrototypeStartFrame(state.document, selectedId);
+  const { start, flowId } = resolvePrototypePresentationStart(state.document, selectedId);
   if (!start) { showToast('Create a frame before presenting this design.'); return; }
   cancelPresentationAnimation();
   const dialog = $('#present-dialog');
-  state.presenting = createPrototypeSession(start);
+  state.presenting = createPrototypeSession(start, flowId);
+  configurePresentationFlowPicker(flowId);
   presentationPointerGesture = null;
   presentRuntimeDocument = cloneDocument(state.document);
   presentRenderState = { document: null, assets: state.assets, previews: state.previews, selectedIds: [], presentationScrollOffsets: new Map(), zoom: 1, panX: 0, panY: 0, draftNode: null, marquee: null, inspectorTab: 'design' };
@@ -8328,6 +8509,67 @@ function startPresentation(selectedId = null) {
     renderPresentationFrame();
     schedulePresentationDelay();
   });
+}
+
+function configurePresentationFlowPicker(flowId) {
+  const picker = $('#present-flow-picker');
+  const select = $('#present-flow-select');
+  const flows = listPrototypeFlows(state.document);
+  picker.hidden = flows.length === 0;
+  const options = [];
+  if (!flowId && flows.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Selected frame';
+    options.push(option);
+  }
+  select.replaceChildren(...options, ...flows.map(flow => {
+    const option = document.createElement('option');
+    option.value = flow.id;
+    option.textContent = flow.name;
+    return option;
+  }));
+  select.value = flows.some(flow => flow.id === flowId)
+    ? flowId
+    : (options.some(option => option.value === '') ? '' : (flows[0]?.id || ''));
+}
+
+function restartPresentation(flowId = undefined) {
+  if (!state.presenting || !presentRuntimeDocument || !presentRenderState) return;
+  const requestedFlowId = flowId === undefined
+    ? ($('#present-flow-picker').hidden ? state.presenting.flowId : ($('#present-flow-select').value || null))
+    : (flowId || null);
+  clearPresentationDelay();
+  cancelPresentationAnimation();
+  if (presentationPointerGesture) {
+    const canvasElement = $('#present-canvas');
+    try {
+      if (canvasElement.hasPointerCapture(presentationPointerGesture.pointerId)) {
+        canvasElement.releasePointerCapture(presentationPointerGesture.pointerId);
+      }
+    } catch { /* A synthetic or already-canceled pointer may have no capture. */ }
+  }
+  presentationPointerGesture = null;
+  const session = restartPrototypeSession(state.document, state.presenting, requestedFlowId);
+  if (!session) {
+    $('#present-flow-select').value = state.presenting.flowId || '';
+    showToast('That prototype flow is no longer available.');
+    return;
+  }
+  state.presenting = session;
+  // Variant interactions mutate the private runtime copy; restoring the source
+  // document clears them along with session variable modes and hover state.
+  presentRuntimeDocument = cloneDocument(state.document);
+  presentRenderState.presentationScrollOffsets = new Map();
+  $('#present-flow-select').value = session.flowId || '';
+  const canvasElement = $('#present-canvas');
+  canvasElement.style.transition = 'none';
+  canvasElement.style.opacity = '1';
+  canvasElement.style.transform = 'translateX(0)';
+  canvasElement.getBoundingClientRect();
+  canvasElement.style.removeProperty('transition');
+  renderPresentationFrame();
+  schedulePresentationDelay();
 }
 
 function navigatePresentation(interaction) {
@@ -8553,6 +8795,13 @@ async function buildLocalDesignPackageSnapshot() {
     const metadata = await loadImageAssetMetadata(reference.assetId);
     if (!metadata) throw new Error(`The local image “${reference.name || reference.assetId}” is missing or damaged. Restore it before sharing this design.`);
     assetReferences.push({ reference, metadata });
+  }
+  for (const entry of design.imageLibrary || []) {
+    if (seenAssets.has(entry.assetId)) continue;
+    seenAssets.add(entry.assetId);
+    const metadata = await loadImageAssetMetadata(entry.assetId);
+    if (!metadata) throw new Error(`The library image “${entry.name || entry.assetId}” is missing or damaged. Reimport it before sharing this design.`);
+    assetReferences.push({ reference: { assetId: entry.assetId, name: entry.name }, metadata });
   }
   const fontReferences = (await listFontAssets()).filter(font => documentUsesFontFamily(design, font.family));
   const assetManifestBytes = new TextEncoder().encode(JSON.stringify(assetReferences.map(({ metadata }) => ({
@@ -8824,6 +9073,8 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
       return false;
     }
     if (beforeSwitch) await beforeSwitch(nextDocument);
+    try { await ensureImageLibraryCompatibility(nextDocument); }
+    catch (error) { console.warn('Could not add legacy image sources to the reusable image library.', error); }
     const nextStoredRecord = await loadDocumentRecordById(nextDocument.id);
     const sameDocumentAfterSave = saveCurrent && nextDocument.id === currentDocumentId;
     const nextStorageRevision = sameDocumentAfterSave
@@ -9059,6 +9310,29 @@ function imageAssetReferencesAcrossPages(documentData = state.document) {
     }
   });
   return result;
+}
+
+async function ensureImageLibraryCompatibility(documentData) {
+  const existing = new Set((documentData.imageLibrary || []).map(entry => entry.assetId));
+  const references = new Map();
+  for (const reference of imageAssetReferencesAcrossPages(documentData)) {
+    if (!reference.assetId || existing.has(reference.assetId) || references.has(reference.assetId)) continue;
+    references.set(reference.assetId, reference);
+  }
+  if (!references.size || existing.size >= MAX_IMAGE_LIBRARY_ENTRIES) return false;
+  const additions = [];
+  const pending = [...references.values()].slice(0, MAX_IMAGE_LIBRARY_ENTRIES - existing.size);
+  for (let offset = 0; offset < pending.length; offset += 8) {
+    const batch = pending.slice(offset, offset + 8);
+    const metadata = await Promise.all(batch.map(reference => loadImageAssetMetadata(reference.assetId).catch(() => null)));
+    for (let index = 0; index < batch.length; index += 1) {
+      const entry = migrateImageLibraryEntry(batch[index], metadata[index]);
+      if (entry) additions.push(entry);
+    }
+  }
+  if (!additions.length) return false;
+  addImageLibraryEntries(documentData, additions);
+  return true;
 }
 
 function exportBoundsForNode(nodeId) {
@@ -10838,7 +11112,8 @@ function initEvents() {
     event.preventDefault(); $('#canvas-drop-overlay').classList.remove('is-visible');
     const point = screenToWorld(event, canvas, state); importImageFiles(event.dataTransfer.files, point);
   });
-  $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files));
+  $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files, null, { input: event.currentTarget }));
+  $('#image-library-input').addEventListener('change', event => importImageFiles(event.currentTarget.files, null, { place: false, input: event.currentTarget }));
   $('#add-local-font').addEventListener('click', () => {
     if (typeof FontFace !== 'function' || !document.fonts?.add) { showToast('This browser cannot load local font files.'); return; }
     $('#font-input').value = '';
@@ -11329,7 +11604,6 @@ function initEvents() {
       state.controlEdit = false; renderUI(); queueSave(); renderer.invalidate();
     }
   });
-  $('#assets-list').addEventListener('click', event => { const card = event.target.closest('[data-layer-id]'); if (!card) return; const node = findNode(state.document, card.dataset.layerId)?.node; if (!node) return; const point = { x: canvas.clientWidth / 2 - state.panX / state.zoom + 18, y: canvas.clientHeight / 2 - state.panY / state.zoom + 18 }; checkpoint('Place asset'); const copy = duplicateNode(state.document, node.id); if (copy) { copy.x = point.x; copy.y = point.y; setSelection([copy.id]); queueSave(); } });
   $('#create-component-library').addEventListener('click', () => {
     void createLocalComponentLibrary().catch(error => showToast(error.message || 'Could not create a local component library.'));
   });
@@ -11471,6 +11745,8 @@ function initEvents() {
   $$('.inspector-tab').forEach(tab => tab.addEventListener('click', () => setInspectorTab(tab.dataset.inspectorTab)));
   $('#present-button').addEventListener('click', () => startPresentation());
   $('#present-back').addEventListener('click', backPresentation);
+  $('#present-restart').addEventListener('click', () => restartPresentation());
+  $('#present-flow-select').addEventListener('change', event => restartPresentation(event.currentTarget.value));
   $('#present-exit').addEventListener('click', () => $('#present-dialog').close());
   $('#present-dialog').addEventListener('close', () => {
     clearPresentationDelay();
@@ -11751,6 +12027,7 @@ function onKeyUp(event) {
 async function boot() {
   let restoreReadSucceeded = false;
   let restoredSavedDocument = false;
+  let migratedImageLibrary = false;
   try {
     const restoration = await loadLatestValidDocument(parseDocument);
     restoreReadSucceeded = true;
@@ -11758,6 +12035,8 @@ async function boot() {
       state.document = restoration.document;
       state.documentStorageRevision = restoration.revision;
       restoredSavedDocument = true;
+      try { migratedImageLibrary = await ensureImageLibraryCompatibility(state.document); }
+      catch (error) { console.warn('Could not migrate legacy image sources into the local image library.', error); }
       state.pendingRecipeRecovery = await recipeRecoveryForDocument(state.document.id);
     }
     if (restoration.invalidRecords.length) {
@@ -11776,7 +12055,8 @@ async function boot() {
   try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
   renderRecipeRecoveryPrompt();
   if (restoreReadSucceeded) {
-    if (restoredSavedDocument) setSaveState('saved', 'Saved locally');
+    if (restoredSavedDocument && migratedImageLibrary) await persistCurrentDocumentNow();
+    else if (restoredSavedDocument) setSaveState('saved', 'Saved locally');
     else await persistCurrentDocumentNow();
   } else if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
   else setSaveState('saved', 'Saved locally');
@@ -11784,7 +12064,7 @@ async function boot() {
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });
-  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
+  window.addEventListener('beforeunload', () => { imageEngine.destroy(); for (const item of state.assets.values()) { item.bitmap?.close?.(); if (item.bitmapUrl) URL.revokeObjectURL(item.bitmapUrl); } for (const bitmap of state.previews.values()) bitmap.close?.(); for (const url of state.previewUrls.values()) URL.revokeObjectURL(url); for (const url of state.imageLibraryThumbnailUrls.values()) URL.revokeObjectURL(url); imageMemoryBudget.clear(); });
 }
 
 syncMobilePanelAccessibility();

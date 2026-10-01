@@ -54,14 +54,14 @@ test('asset reachability includes current, undo, and redo snapshots before relea
       { type: 'image', imageFill: { assetId: 'current-fill' } },
       { type: 'solid', color: '#fff' }
     ] }] }
-  ] }] };
+  ] }], imageLibrary: [{ assetId: 'library-only-source' }] };
   const undo = { pages: [{ children: [{ type: 'image', assetId: 'undo-only', children: [] }] }] };
   const redo = { pages: [{ children: [{ type: 'rectangle', fills: [
     { type: 'image', imageFill: { assetId: 'redo-only' } }
   ], children: [] }] }] };
   const clipboardNodes = [{ type: 'image', assetId: 'clipboard-only', children: [] }];
   const liveAssetIds = collectLiveImageAssetIds([current, undo, redo], clipboardNodes);
-  assert.deepEqual([...liveAssetIds].sort(), ['clipboard-only', 'current-fill', 'current-image', 'redo-only', 'shared-asset', 'undo-only']);
+  assert.deepEqual([...liveAssetIds].sort(), ['clipboard-only', 'current-fill', 'current-image', 'library-only-source', 'redo-only', 'shared-asset', 'undo-only']);
 
   const closed = [];
   const revoked = [];

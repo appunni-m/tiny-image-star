@@ -228,6 +228,27 @@ export function getPrototypeStartFrame(document, selectedId = null, flowId = doc
   return activeFrames[0] ?? listPrototypeFrames(document)[0] ?? null;
 }
 
+/** Resolve the session-only presentation start without changing the saved flow. */
+export function resolvePrototypePresentationStart(document, selectedId = null) {
+  if (selectedId) {
+    const selected = findNodeAcrossPages(document, selectedId);
+    if (selected) {
+      const frame = selected.node.type === 'frame'
+        ? selected.node
+        : [...selected.parents].reverse().find(parent => parent.type === 'frame');
+      if (frame) {
+        const flow = document.prototypeFlows?.find(item => item.pageId === selected.page.id && item.nodeId === frame.id);
+        return { start: { page: selected.page, frame }, flowId: flow?.id || null };
+      }
+    }
+  }
+  const flows = listPrototypeFlows(document);
+  const defaultFlow = flows.find(flow => flow.id === document.prototypeStartFlowId) || flows[0] || null;
+  const flowId = defaultFlow?.id || null;
+  const start = flowId ? getPrototypeStartFrame(document, null, flowId) : getPrototypeStartFrame(document, null, null);
+  return { start, flowId };
+}
+
 export function addPrototypeInteraction(document, sourceId, destinationId, {
   sourcePageId = document.activePageId,
   destinationPageId,
@@ -359,9 +380,41 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   return interaction;
 }
 
-export function createPrototypeSession(start) {
+export function createPrototypeSession(start, flowId = null) {
   if (!start?.page?.id || start.frame?.type !== 'frame') throw new TypeError('Choose a frame to start this prototype.');
-  return { pageId: start.page.id, frameId: start.frame.id, stack: [], overlays: [], variableModes: {}, variantSelections: {}, lastHoverInteractionId: null };
+  return {
+    pageId: start.page.id,
+    frameId: start.frame.id,
+    startPageId: start.page.id,
+    startFrameId: start.frame.id,
+    flowId: typeof flowId === 'string' ? flowId : null,
+    stack: [],
+    overlays: [],
+    variableModes: {},
+    variantSelections: {},
+    lastHoverInteractionId: null
+  };
+}
+
+/** Return a fresh presentation session at its original or selected named-flow start. */
+export function restartPrototypeSession(document, session, flowId = session?.flowId ?? null) {
+  let start = null;
+  if (flowId != null) {
+    const flow = document.prototypeFlows?.find(item => item.id === flowId);
+    const entry = flow && findNode(document, flow.nodeId, flow.pageId);
+    const page = flow && document.pages.find(item => item.id === flow.pageId);
+    if (!entry || entry.node.type !== 'frame' || !page) return null;
+    start = { page, frame: entry.node };
+  } else if (session?.startPageId && session?.startFrameId) {
+    const entry = findNode(document, session.startFrameId, session.startPageId);
+    const page = document.pages.find(item => item.id === session.startPageId);
+    if (entry?.node.type === 'frame' && page) start = { page, frame: entry.node };
+  } else {
+    // Older callers can restart a session created before start-point metadata
+    // was added. Keep their historical document-default behavior.
+    start = getPrototypeStartFrame(document);
+  }
+  return start ? createPrototypeSession(start, flowId) : null;
 }
 
 function isPrototypeNodeVisible(document, node, session) {

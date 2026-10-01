@@ -64,7 +64,10 @@
             <div class="image-properties-note local-fonts-note">Font files stay on this device and travel with exported .flocal designs.</div>
             <div id="font-assets-list" class="font-assets-list" aria-live="polite"></div>
             <div class="section-heading local-assets-heading"><span>Local images</span><button class="tiny-icon-button" id="place-image-assets" title="Place image">＋</button></div>
-            <div id="assets-list" class="assets-list"></div>
+            <div id="assets-list" class="assets-list">
+              <div id="placed-image-assets" class="placed-image-assets" aria-label="Images used on this page"></div>
+              <div id="image-library-root" class="image-library-root"></div>
+            </div>
             <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
           </section>
           <div class="sidebar-footer"><span class="device-icon">◉</span><span>Stored on this device</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
@@ -172,6 +175,7 @@
       <div class="context-menu" id="context-menu" role="menu" aria-label="Editor actions" hidden></div>
       <div class="toast-region" id="toast-region" aria-live="polite"></div>
       <input id="image-input" type="file" accept="image/*" multiple hidden />
+      <input id="image-library-input" type="file" accept="image/*" multiple hidden />
       <input id="font-input" type="file" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf" hidden />
       <datalist id="font-family-options"></datalist>
       <input id="open-file-input" type="file" accept=".flocal,application/octet-stream" hidden />
@@ -251,7 +255,12 @@
         <canvas id="present-canvas" aria-label="Prototype preview"></canvas>
         <div class="presentation-toolbar">
           <button class="presentation-control" id="present-back" type="button" aria-label="Back to previous frame" title="Back" disabled>←</button>
+          <button class="presentation-control" id="present-restart" type="button" aria-label="Restart presentation" title="Restart at the selected flow">↻</button>
           <div class="presentation-title"><strong id="present-title">Prototype</strong><span>Local preview</span></div>
+          <label class="presentation-flow-picker" id="present-flow-picker" hidden>
+            <span>Flow</span>
+            <select class="select-field" id="present-flow-select" aria-label="Presentation flow"></select>
+          </label>
           <button class="presentation-control presentation-exit" id="present-exit" type="button" aria-label="Close presentation" title="Close">×</button>
         </div>
         <div class="presentation-help">Press Esc to exit</div>

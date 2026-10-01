@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, parseDocument, removeNode, serializeDocument, validateDocument } from '../src/model.js';
 import {
   createPrototypeFlow,
+  createPrototypeSession,
   deletePrototypeFlow,
   getPrototypeStartFrame,
   listPrototypeFlows,
   renamePrototypeFlow,
+  resolvePrototypePresentationStart,
+  restartPrototypeSession,
   setPrototypeFlowStartPoint,
   setPrototypeStartFlow,
   setPrototypeStartPoint
@@ -114,4 +117,76 @@ test('removing a flow start frame prunes its flow and selects a valid survivor',
   assert.equal(document.prototypeStartFlowId, null);
   assert.equal(document.prototypeStartPoint, null);
   assert.equal(validateDocument(document), true);
+});
+
+test('presentation restart selects a named flow and clears all session-only navigation state', () => {
+  const { document, first, second } = documentWithFrames();
+  const home = createPrototypeFlow(document, first.id, { name: 'Home flow' });
+  const details = createPrototypeFlow(document, second.id, { name: 'Details flow' });
+  const session = createPrototypeSession({ page: document.pages[0], frame: first }, home.id);
+  Object.assign(session, {
+    pageId: document.pages[0].id,
+    frameId: second.id,
+    stack: [{ pageId: document.pages[0].id, frameId: first.id, overlays: [] }],
+    overlays: [{ pageId: document.pages[0].id, frameId: first.id }],
+    variableModes: { theme: 'dark' },
+    variantSelections: { instance: 'hover' },
+    lastHoverInteractionId: 'hover-interaction',
+    hoverVariantOriginal: { interactionId: 'hover-interaction' }
+  });
+
+  const restarted = restartPrototypeSession(document, session, details.id);
+  assert.notEqual(restarted, session, 'restart returns a fresh session so stale callbacks cannot act on it');
+  assert.equal(restarted.pageId, document.pages[0].id);
+  assert.equal(restarted.frameId, second.id);
+  assert.equal(restarted.startFrameId, second.id);
+  assert.equal(restarted.flowId, details.id);
+  assert.deepEqual(restarted.stack, []);
+  assert.deepEqual(restarted.overlays, []);
+  assert.deepEqual(restarted.variableModes, {});
+  assert.deepEqual(restarted.variantSelections, {});
+  assert.equal(restarted.lastHoverInteractionId, null);
+  assert.equal(restarted.hoverVariantOriginal, undefined);
+  assert.equal(session.flowId, home.id, 'the existing session is left untouched');
+  assert.equal(restartPrototypeSession(document, session, 'missing-flow'), null,
+    'a stale flow ID cannot silently restart at a different flow');
+});
+
+test('legacy presentation restart returns to its original frame without a named flow', () => {
+  const { document, first, second } = documentWithFrames();
+  const session = createPrototypeSession({ page: document.pages[0], frame: first });
+  session.pageId = document.pages[0].id;
+  session.frameId = second.id;
+  session.stack.push({ pageId: document.pages[0].id, frameId: first.id });
+  session.overlays.push({ pageId: document.pages[0].id, frameId: second.id });
+  session.variableModes.theme = 'dark';
+
+  const restarted = restartPrototypeSession(document, session, null);
+  assert.equal(restarted.frameId, first.id);
+  assert.equal(restarted.flowId, null);
+  assert.deepEqual(restarted.stack, []);
+  assert.deepEqual(restarted.overlays, []);
+  assert.deepEqual(restarted.variableModes, {});
+});
+
+test('presenting a selected frame starts there without changing the saved default flow', () => {
+  const { document, first, second } = documentWithFrames();
+  const home = createPrototypeFlow(document, first.id, { name: 'Home flow' });
+  const details = createPrototypeFlow(document, second.id, { name: 'Details flow' });
+  setPrototypeStartFlow(document, home.id);
+  const independent = createNode('frame', { name: 'Scratch frame' });
+  addNode(document, independent);
+
+  const selectedFlow = resolvePrototypePresentationStart(document, second.id);
+  assert.equal(selectedFlow.start.frame.id, second.id);
+  assert.equal(selectedFlow.flowId, details.id);
+
+  const adHocStart = resolvePrototypePresentationStart(document, independent.id);
+  assert.equal(adHocStart.start.frame.id, independent.id);
+  assert.equal(adHocStart.flowId, null, 'an unflowed selected frame remains a session-only start');
+
+  const defaultStart = resolvePrototypePresentationStart(document);
+  assert.equal(defaultStart.start.frame.id, first.id);
+  assert.equal(defaultStart.flowId, home.id);
+  assert.equal(document.prototypeStartFlowId, home.id, 'opening a preview never changes the saved default');
 });

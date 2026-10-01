@@ -43,6 +43,11 @@ export function collectLiveImageAssetIds(documents, extraNodes = []) {
   };
   for (const document of snapshots) {
     for (const page of document?.pages || []) visit(page.children);
+    // Source library entries can outlive every placed layer. Keep those
+    // original bytes available across edits and undo/redo snapshots too.
+    for (const entry of document?.imageLibrary || []) {
+      if (typeof entry?.assetId === 'string' && entry.assetId) liveAssetIds.add(entry.assetId);
+    }
   }
   visit(extraNodes);
   return liveAssetIds;

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { deflateSync } from 'node:zlib';
 import { readFile } from 'node:fs/promises';
 import { createDocument, createNode, createFillLayer, createLayerEffect, createEffectStyle, addNode, createComponent, createComponentInstance, findNode, parseDocument, syncComponentInstances } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
@@ -8,14 +9,14 @@ import { MAX_IMAGE_SOURCE_PIXELS } from '../src/image-engine.js';
 import {
   claimRecipeBatchRecovery, deleteFontAsset, deleteRecipeBatchRecovery, deleteStoredDocument, duplicateStoredDocument, importLocalPackage,
   listDocumentVersions, listFontAssets, listSavedDocuments, loadDocumentById, loadDocumentVersion, loadFontAsset,
-  loadImageAsset, loadImageAssetMetadata, loadLatestDocument, loadRecipeBatchRecovery, renameStoredDocument,
-  saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes
+  loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadRecipeBatchRecovery, renameStoredDocument,
+  saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail
 } from '../src/storage.js';
 
 function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
   const stores = new Map();
   const clone = value => structuredClone(value);
-  const observations = { cursorRecordsRead: 0, fontCursorRecordsRead: 0, fontBinaryGets: [], fontBinaryGetAllCalls: 0, openVersion: null };
+  const observations = { cursorRecordsRead: 0, fontCursorRecordsRead: 0, fontBinaryGets: [], fontBinaryGetAllCalls: 0, assetBinaryGets: [], assetKeyChecks: [], openVersion: null };
   const database = {
     objectStoreNames: { contains: name => stores.has(name) },
     close() { this.closed = true; },
@@ -47,8 +48,19 @@ function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
           get(key) {
             const request = {};
             if (name === 'fontAssets') observations.fontBinaryGets.push(key);
+            if (name === 'assets') observations.assetBinaryGets.push(key);
             queueMicrotask(() => {
               request.result = clone(store.records.get(key));
+              request.onsuccess?.();
+              completeSoon();
+            });
+            return request;
+          },
+          getKey(key) {
+            const request = {};
+            if (name === 'assets') observations.assetKeyChecks.push(key);
+            queueMicrotask(() => {
+              request.result = store.records.has(key) ? key : undefined;
               request.onsuccess?.();
               completeSoon();
             });
@@ -108,11 +120,13 @@ function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
       };
       return transaction;
     },
-    seed(name, record) { stores.get(name)?.records.set(record[stores.get(name).keyPath], clone(record)); }
+    seed(name, record) { stores.get(name)?.records.set(record[stores.get(name).keyPath], clone(record)); },
+    inspect(name, key) { return clone(stores.get(name)?.records.get(key)); }
   };
   return {
     database,
     observations,
+    inspect: database.inspect,
     open(_name, version) {
       const request = {};
       queueMicrotask(() => {
@@ -503,7 +517,10 @@ test('package import reuses identical sources and remaps asset and document coll
   globalThis.indexedDB = createIndexedDbMock();
   const originalBytes = pngHeader(3, 2);
   const incomingBytes = pngHeader(5, 4);
+  const libraryOriginalBytes = pngHeader(1, 1);
+  const libraryIncomingBytes = pngHeader(2, 1);
   await saveImageAssetBytes('shared-asset', 'original.png', 'image/png', originalBytes);
+  await saveImageAssetBytes('library-shared', 'library-original.png', 'image/png', libraryOriginalBytes);
   const existingDocument = createDocument();
   existingDocument.name = 'Existing';
   await saveDocument(existingDocument);
@@ -511,21 +528,33 @@ test('package import reuses identical sources and remaps asset and document coll
   incomingDocument.id = existingDocument.id;
   incomingDocument.name = 'Imported';
   addNode(incomingDocument, createNode('image', { assetId: 'shared-asset' }));
+  incomingDocument.imageLibrary = [
+    { assetId: 'shared-asset', name: 'imported.png', type: 'image/png', width: 5, height: 4 },
+    { assetId: 'library-shared', name: 'library.png', type: 'image/png', width: 2, height: 1 }
+  ];
 
   const imported = await importLocalPackage(incomingDocument, [
     { id: 'shared-asset', name: 'imported.png', type: 'image/png', bytes: incomingBytes },
+    { id: 'library-shared', name: 'library.png', type: 'image/png', bytes: libraryIncomingBytes },
     { id: 'new-asset', name: 'new.png', type: 'image/png', bytes: originalBytes }
   ]);
   assert.notEqual(imported.assetIds.get('shared-asset'), 'shared-asset');
   assert.equal(imported.assetIds.get('new-asset'), 'new-asset');
   assert.notEqual(imported.document.id, existingDocument.id);
   assert.equal(imported.document.pages[0].children[0].assetId, imported.assetIds.get('shared-asset'));
+  assert.deepEqual(imported.document.imageLibrary, [
+    { assetId: imported.assetIds.get('shared-asset'), name: 'imported.png', type: 'image/png', width: 5, height: 4 },
+    { assetId: imported.assetIds.get('library-shared'), name: 'library.png', type: 'image/png', width: 2, height: 1 }
+  ], 'manifest-only sources follow the same collision mapping as placed sources');
   assert.deepEqual(new Uint8Array((await loadImageAsset('shared-asset')).bytes), originalBytes);
   assert.deepEqual(new Uint8Array((await loadImageAsset(imported.assetIds.get('shared-asset'))).bytes), incomingBytes);
+  assert.notEqual(imported.assetIds.get('library-shared'), 'library-shared');
+  assert.deepEqual(new Uint8Array((await loadImageAsset('library-shared')).bytes), libraryOriginalBytes);
+  assert.deepEqual(new Uint8Array((await loadImageAsset(imported.assetIds.get('library-shared'))).bytes), libraryIncomingBytes);
   assert.equal((await loadDocumentById(existingDocument.id)).name, 'Existing');
   assert.equal((await loadDocumentById(imported.document.id)).name, 'Imported');
 
-  const repeatedDocument = { ...incomingDocument, id: createDocument().id };
+  const repeatedDocument = { ...incomingDocument, id: createDocument().id, imageLibrary: [] };
   const identical = await importLocalPackage(repeatedDocument, [
     { id: 'shared-asset', name: 'same-source.png', type: 'image/png', bytes: originalBytes }
   ]);
@@ -641,6 +670,48 @@ function pngHeader(width, height) {
   return bytes;
 }
 
+function thumbnailPng(width = 7, height = 5) {
+  const crc32 = bytes => {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const typeBytes = Buffer.from(type, 'ascii');
+    const payload = Buffer.from(data);
+    const output = Buffer.alloc(12 + payload.length);
+    output.writeUInt32BE(payload.length, 0);
+    typeBytes.copy(output, 4);
+    payload.copy(output, 8);
+    output.writeUInt32BE(crc32(output.subarray(4, 8 + payload.length)), 8 + payload.length);
+    return output;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const rowLength = 1 + width * 4;
+  const raw = Buffer.alloc(height * rowLength);
+  const idat = deflateSync(raw);
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))
+  ]));
+}
+
+function thumbnailJpeg(width = 7, height = 5) {
+  return new Uint8Array([
+    0xff, 0xd8,
+    0xff, 0xc0, 0x00, 0x0b, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x01, 0x01, 0x11, 0x00,
+    0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
+    0x01, 0xff, 0xd9
+  ]);
+}
+
 function webpExifHeader(width, height, orientation) {
   const chunk = (type, payload) => {
     const bytes = Buffer.alloc(8 + payload.length + (payload.length & 1));
@@ -673,6 +744,56 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
   assert.equal(indexedDb.observations.openVersion, 6, 'opening the store upgrades the legacy database schema for local fonts, metadata, versions, and recipe recovery');
+});
+
+test('small image-library PNG and JPEG thumbnails share compact metadata without reading source bytes', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?image-library-thumbnail-roundtrip-test');
+  const source = pngHeader(7, 5);
+  const png = thumbnailPng(7, 5);
+  const jpeg = thumbnailJpeg(9, 4);
+  await storage.saveImageAssetBytes('thumb-png', 'source.png', 'image/png', source);
+  await storage.saveImageAssetBytes('thumb-jpeg', 'source.jpg', 'image/jpeg', source);
+  indexedDb.observations.assetBinaryGets.length = 0;
+
+  assert.equal(await storage.saveImageAssetThumbnail('thumb-png', png), true);
+  assert.equal(await storage.saveImageAssetThumbnail('thumb-jpeg', jpeg), true);
+  const storedPng = indexedDb.inspect('assetMetadata', 'thumb-png');
+  const storedJpeg = indexedDb.inspect('assetMetadata', 'thumb-jpeg');
+  assert.ok(storedPng.thumbnail instanceof ArrayBuffer);
+  assert.ok(storedJpeg.thumbnail instanceof ArrayBuffer);
+  assert.ok(storedPng.thumbnail.byteLength <= 48 * 1024);
+  assert.ok(storedJpeg.thumbnail.byteLength <= 48 * 1024);
+  assert.deepEqual(await storage.loadImageAssetThumbnail('thumb-png'), png);
+  assert.deepEqual(await storage.loadImageAssetThumbnail('thumb-jpeg'), jpeg);
+  assert.deepEqual(indexedDb.observations.assetBinaryGets, [], 'thumbnail save and load only check the source key; they never retrieve source bytes');
+  assert.deepEqual(indexedDb.observations.assetKeyChecks, ['thumb-png', 'thumb-jpeg', 'thumb-png', 'thumb-jpeg']);
+  assert.equal(indexedDb.observations.openVersion, 6, 'thumbnail persistence reuses assetMetadata without a schema upgrade');
+
+  const detached = await storage.loadImageAssetThumbnail('thumb-png');
+  detached[0] = 0;
+  assert.deepEqual(await storage.loadImageAssetThumbnail('thumb-png'), png, 'callers receive detached thumbnail bytes');
+  assert.equal(indexedDb.observations.assetBinaryGets.length, 0);
+});
+
+test('image-library thumbnails reject missing sources and malformed, oversized, or oversized-dimension inputs', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?image-library-thumbnail-validation-test');
+  await storage.saveImageAssetBytes('thumbnail-source', 'source.png', 'image/png', pngHeader(2, 2));
+
+  await assert.rejects(storage.saveImageAssetThumbnail('missing-thumbnail-source', thumbnailPng()), /original image source is no longer saved/i);
+  assert.equal(await storage.loadImageAssetThumbnail('missing-thumbnail-source'), null);
+  await assert.rejects(storage.saveImageAssetThumbnail('thumbnail-source', new Uint8Array(48 * 1024 + 1)), /48 KiB/i);
+  await assert.rejects(storage.saveImageAssetThumbnail('thumbnail-source', thumbnailPng(129, 1)), /128 × 128/i);
+  await assert.rejects(storage.saveImageAssetThumbnail('thumbnail-source', new Uint8Array([0xff, 0xd8, 0xff, 0xd9])), /complete, valid PNG or JPEG/i);
+  const damagedPng = thumbnailPng();
+  damagedPng[29] ^= 0xff;
+  await assert.rejects(storage.saveImageAssetThumbnail('thumbnail-source', damagedPng), /complete, valid PNG or JPEG/i);
+  const truncatedJpeg = thumbnailJpeg().slice(0, -1);
+  await assert.rejects(storage.saveImageAssetThumbnail('thumbnail-source', truncatedJpeg), /complete, valid PNG or JPEG/i);
+  assert.equal(await storage.loadImageAssetThumbnail('thumbnail-source'), null, 'failed saves do not leave partial thumbnail metadata');
 });
 
 test('image catalog metadata preserves non-default WebP EXIF orientation for restore validation', async () => {

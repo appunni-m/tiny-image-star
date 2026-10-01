@@ -8,6 +8,7 @@ import { isValidCornerRadii } from './corner-radii.js';
 import { isValidStrokeStack, syncLegacyStrokeFields } from './strokes.js';
 import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
+import { isValidImageLibraryManifest } from './image-asset-library.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -166,6 +167,7 @@ export function createDocument() {
     name: 'Untitled',
     activePageId: pageId,
     pages: [{ id: pageId, name: 'Page 1', children: [], guides: [] }],
+    imageLibrary: [],
     components: [],
     componentSets: [],
     recipes: [],
@@ -2836,6 +2838,9 @@ export function validateDocument(document) {
   if (!document || document.schema !== 'figma-local/1'
     || typeof document.id !== 'string' || !document.id || document.id.trim() !== document.id
     || !Array.isArray(document.pages) || !document.pages.length) throw new TypeError('Invalid local design file.');
+  if (Object.hasOwn(document, 'imageLibrary') && !isValidImageLibraryManifest(document.imageLibrary)) {
+    throw new TypeError('Invalid image library manifest.');
+  }
   assertDocumentTreeBounds(document);
   const pageIds = new Set();
   const nodeIds = new Set();
@@ -3419,6 +3424,9 @@ export function parseDocument(json) {
   // enough to fail inside cloning before ordinary validation gets control.
   assertDocumentTreeBounds(source);
   const document = typeof json === 'string' ? source : clone(source);
+  // Image libraries were added after the initial local document format. Older
+  // designs and packages have no manifest; promote them to an empty library.
+  if (!Object.hasOwn(document, 'imageLibrary')) document.imageLibrary = [];
   // Older local files stored only one prototypeStartPoint. Promote that entry to
   // the named-flow model while retaining the legacy field for older readers.
   if (!Array.isArray(document.prototypeFlows)) document.prototypeFlows = [];

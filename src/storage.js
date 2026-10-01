@@ -2,6 +2,7 @@ import { assertDocumentTreeBounds, createId } from './model.js';
 import { publishComponent, publishComponentSet, validateComponentLibrary } from './component-library.js';
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { validateLocalFontAsset } from './font-assets.js';
+import { isValidImageLibraryManifest } from './image-asset-library.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
@@ -12,6 +13,8 @@ export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
 const MAX_RECIPE_BATCH_TARGET_IDS = 100_000;
 const MAX_RECIPE_BATCH_ID_LENGTH = 256;
 const MAX_RECIPE_BATCH_RECIPE_BYTES = 256 * 1024;
+const MAX_IMAGE_ASSET_THUMBNAIL_BYTES = 48 * 1024;
+const MAX_IMAGE_ASSET_THUMBNAIL_SIDE = 128;
 export const RECIPE_BATCH_RECOVERY_LEASE_MS = 120_000;
 // Older tabs wrote recovery rows without a renewable lease. Hold those rows
 // through one bounded compatibility window before allowing a newer tab to
@@ -130,6 +133,129 @@ function asBytes(value) {
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   return null;
+}
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const PNG_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function pngCrc32(bytes, start, end) {
+  let crc = 0xffffffff;
+  for (let index = start; index < end; index += 1) crc = PNG_CRC_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function validThumbnailPng(bytes) {
+  if (bytes.length < 45 || !PNG_SIGNATURE.every((byte, index) => bytes[index] === byte)) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 8;
+  let dimensions = null;
+  let sawPalette = false;
+  let sawImageData = false;
+  let imageDataEnded = false;
+  let imageDataLength = 0;
+  while (offset < bytes.length) {
+    if (offset + 12 > bytes.length) return false;
+    const length = view.getUint32(offset, false);
+    const typeOffset = offset + 4;
+    const dataOffset = offset + 8;
+    const crcOffset = dataOffset + length;
+    if (!Number.isSafeInteger(crcOffset) || crcOffset + 4 > bytes.length) return false;
+    let type = '';
+    for (let index = 0; index < 4; index += 1) type += String.fromCharCode(bytes[typeOffset + index]);
+    if (pngCrc32(bytes, typeOffset, crcOffset) !== view.getUint32(crcOffset, false)) return false;
+
+    if (!dimensions) {
+      if (type !== 'IHDR' || offset !== 8 || length !== 13) return false;
+      const width = view.getUint32(dataOffset, false);
+      const height = view.getUint32(dataOffset + 4, false);
+      const bitDepth = bytes[dataOffset + 8];
+      const colorType = bytes[dataOffset + 9];
+      const legalDepths = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+      if (!width || !height || width > MAX_IMAGE_ASSET_THUMBNAIL_SIDE || height > MAX_IMAGE_ASSET_THUMBNAIL_SIDE
+        || !legalDepths[colorType]?.includes(bitDepth) || bytes[dataOffset + 10] !== 0 || bytes[dataOffset + 11] !== 0
+        || bytes[dataOffset + 12] > 1) return false;
+      dimensions = { width, height, colorType };
+    } else if (type === 'IHDR') {
+      return false;
+    } else if (type === 'PLTE') {
+      if (sawImageData || sawPalette || length === 0 || length > 768 || length % 3 !== 0 || dimensions.colorType === 0 || dimensions.colorType === 4) return false;
+      sawPalette = true;
+    } else if (type === 'IDAT') {
+      if (imageDataEnded || (dimensions.colorType === 3 && !sawPalette)) return false;
+      sawImageData = true;
+      imageDataLength += length;
+      if (!Number.isSafeInteger(imageDataLength) || imageDataLength > MAX_IMAGE_ASSET_THUMBNAIL_BYTES) return false;
+    } else if (type === 'IEND') {
+      if (length !== 0 || !sawImageData || imageDataLength === 0 || offset + 12 !== bytes.length) return false;
+      return true;
+    } else {
+      if (sawImageData) imageDataEnded = true;
+      // Unknown critical chunks can change how pixels are interpreted. Animated
+      // PNG is deliberately excluded because library thumbnails are stills.
+      if (type === 'acTL' || type === 'fcTL' || type === 'fdAT' || (type[0] >= 'A' && type[0] <= 'Z')) return false;
+    }
+    if (sawImageData && type !== 'IDAT') imageDataEnded = true;
+    offset = crcOffset + 4;
+  }
+  return false;
+}
+
+function validThumbnailJpeg(bytes) {
+  if (bytes.length < 16 || bytes[0] !== 0xff || bytes[1] !== 0xd8
+    || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) return false;
+  let offset = 2;
+  let sawFrame = false;
+  while (offset < bytes.length - 2) {
+    if (bytes[offset] !== 0xff) return false;
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length) return false;
+    const marker = bytes[offset++];
+    if (marker === 0xd9 || marker === 0xd8 || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7)) return false;
+    if (offset + 2 > bytes.length - 2) return false;
+    const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > bytes.length - 2) return false;
+    if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+      if (sawFrame || segmentLength < 11) return false;
+      const componentCount = bytes[offset + 7];
+      if (componentCount < 1 || segmentLength !== 8 + componentCount * 3) return false;
+      sawFrame = true;
+    }
+    const segmentEnd = offset + segmentLength;
+    if (marker === 0xda) {
+      if (!sawFrame || segmentLength < 8 || bytes[offset + 2] < 1 || segmentLength !== 6 + bytes[offset + 2] * 2) return false;
+      // The first scan's entropy-coded bytes are opaque here; the overall input
+      // is capped to 48 KiB and the dimensions are validated separately.
+      return segmentEnd < bytes.length - 2;
+    }
+    offset = segmentEnd;
+  }
+  return false;
+}
+
+function validatedImageThumbnailBytes(value) {
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > MAX_IMAGE_ASSET_THUMBNAIL_BYTES) {
+    throw new TypeError(`An image library thumbnail must be a PNG or JPEG no larger than ${MAX_IMAGE_ASSET_THUMBNAIL_BYTES / 1024} KiB.`);
+  }
+  const bytes = value.slice();
+  const dimensions = inspectRasterDimensions(bytes);
+  if (dimensions && (dimensions.width > MAX_IMAGE_ASSET_THUMBNAIL_SIDE || dimensions.height > MAX_IMAGE_ASSET_THUMBNAIL_SIDE)) {
+    throw new TypeError(`An image library thumbnail must be no larger than ${MAX_IMAGE_ASSET_THUMBNAIL_SIDE} × ${MAX_IMAGE_ASSET_THUMBNAIL_SIDE} pixels.`);
+  }
+  const validPng = validThumbnailPng(bytes);
+  const validJpeg = !validPng && validThumbnailJpeg(bytes);
+  if (!validPng && !validJpeg) throw new TypeError('An image library thumbnail must be a complete, valid PNG or JPEG.');
+  if (!dimensions) {
+    throw new TypeError(`An image library thumbnail must be no larger than ${MAX_IMAGE_ASSET_THUMBNAIL_SIDE} × ${MAX_IMAGE_ASSET_THUMBNAIL_SIDE} pixels.`);
+  }
+  return bytes;
 }
 
 function imageAssetMetadata(id, name, type, sourceBytes) {
@@ -720,6 +846,14 @@ function referencedPackageAssetIds(document) {
     if (!page || !Array.isArray(page.children)) throw new TypeError('Local design package contains an invalid page.');
     for (const node of page.children) visitNode(node);
   }
+  // Sources retained only in the document's reusable image library are still
+  // part of the portable design and must travel with its package.
+  if (Object.hasOwn(document, 'imageLibrary')) {
+    if (!isValidImageLibraryManifest(document.imageLibrary)) {
+      throw new TypeError('Local design package contains an invalid image library.');
+    }
+    for (const entry of document.imageLibrary) references.add(entry.assetId);
+  }
   return references;
 }
 
@@ -1022,6 +1156,50 @@ export async function saveImageAsset(id, file) {
   return saveImageAssetBytes(id, file.name, file.type, new Uint8Array(await file.arrayBuffer()));
 }
 
+/** Save one small PNG/JPEG preview alongside an existing source's compact metadata. */
+export async function saveImageAssetThumbnail(assetId, bytes) {
+  if (typeof assetId !== 'string' || !assetId || assetId.length > 256 || assetId.trim() !== assetId) {
+    throw new TypeError('An image library thumbnail needs a valid source asset ID.');
+  }
+  const thumbnail = validatedImageThumbnailBytes(bytes);
+  const db = await openDatabase();
+  const tx = db.transaction(['assets', 'assetMetadata'], 'readwrite');
+  const assetStore = tx.objectStore('assets');
+  const metadataStore = tx.objectStore('assetMetadata');
+  if (typeof assetStore.getKey !== 'function') {
+    throw new Error('This browser cannot verify a saved image source without loading its original bytes.');
+  }
+  const sourceRequest = assetStore.getKey(assetId);
+  const metadataRequest = metadataStore.get(assetId);
+  const done = transactionDone(tx);
+  let operationError = null;
+  let pendingReads = 2;
+  const writeWhenReady = () => {
+    pendingReads -= 1;
+    if (pendingReads !== 0) return;
+    if (sourceRequest.result === undefined) {
+      operationError = new Error('The original image source is no longer saved. Import it again before saving a thumbnail.');
+      return;
+    }
+    if (!metadataRequest.result) {
+      operationError = new Error('The saved image source has no compact metadata record. Restore it before saving a thumbnail.');
+      return;
+    }
+    metadataStore.put({ ...metadataRequest.result, thumbnail: thumbnail.slice().buffer });
+  };
+  sourceRequest.onsuccess = writeWhenReady;
+  metadataRequest.onsuccess = writeWhenReady;
+  sourceRequest.onerror = () => { operationError = sourceRequest.error || new Error('Could not verify the saved image source.'); };
+  metadataRequest.onerror = () => { operationError = metadataRequest.error || new Error('Could not read image source metadata.'); };
+  try {
+    await done;
+  } catch (error) {
+    throw operationError || error;
+  }
+  if (operationError) throw operationError;
+  return true;
+}
+
 export async function saveImageAssetBytes(id, name, type, bytes) {
   if (typeof id !== 'string' || !id || !(bytes instanceof Uint8Array)
     || typeof name !== 'string' || typeof type !== 'string') {
@@ -1221,6 +1399,9 @@ export async function importLocalPackage(document, assets, fonts = []) {
         for (const page of importedDocument.pages) {
           visitPackageNodes(page.children || [], node => remapPackageNodeAssets(node, mapping));
         }
+        for (const entry of importedDocument.imageLibrary || []) {
+          if (mapping.has(entry.assetId)) entry.assetId = mapping.get(entry.assetId);
+        }
         documentStore.add({ id: importedDocument.id, savedAt: Date.now(), revision: 0, document: importedDocument });
         resolve({ document: importedDocument, assetIds: mapping, fontIds: fontMapping, fontFamilies: familyAliases });
       } catch (error) {
@@ -1285,6 +1466,27 @@ export async function importLocalPackage(document, assets, fonts = []) {
 export async function loadImageAsset(id) {
   const db = await openDatabase();
   return requestResult(db.transaction('assets').objectStore('assets').get(id));
+}
+
+/** Return a detached, validated thumbnail without retrieving the original source bytes. */
+export async function loadImageAssetThumbnail(assetId) {
+  if (typeof assetId !== 'string' || !assetId || assetId.length > 256 || assetId.trim() !== assetId) return null;
+  const db = await openDatabase();
+  const tx = db.transaction(['assets', 'assetMetadata'], 'readonly');
+  const assetStore = tx.objectStore('assets');
+  if (typeof assetStore.getKey !== 'function') return null;
+  const done = transactionDone(tx);
+  const [sourceKey, metadata] = await Promise.all([
+    requestResult(assetStore.getKey(assetId)),
+    requestResult(tx.objectStore('assetMetadata').get(assetId))
+  ]);
+  await done;
+  if (sourceKey === undefined || !metadata?.thumbnail) return null;
+  try {
+    return validatedImageThumbnailBytes(asBytes(metadata.thumbnail));
+  } catch {
+    return null;
+  }
 }
 
 /**
