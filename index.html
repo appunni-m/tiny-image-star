@@ -219,9 +219,9 @@
       <dialog class="modal" id="recipe-dialog" aria-labelledby="recipe-dialog-title">
         <form method="dialog" id="recipe-form">
           <div class="modal-title-row"><div><span class="modal-eyebrow">IMAGE RECIPE</span><h2 id="recipe-dialog-title">Save recipe</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
-          <p class="modal-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
-          <label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required />
-          <div class="recipe-output-controls"><label class="field-label" for="recipe-format">Output format</label><select id="recipe-format" class="select-field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select><label class="field-label" for="recipe-quality">Quality <output id="recipe-quality-value">90%</output></label><input id="recipe-quality" type="range" min="1" max="100" step="1" value="90" aria-label="Recipe output quality" /></div>
+          <p class="modal-copy" id="recipe-dialog-copy">Save this image’s look, then apply it to selected images from the canvas or Layers panel.</p>
+          <div id="recipe-name-fields"><label class="field-label" for="recipe-name">Recipe name</label><input id="recipe-name" class="text-field" maxlength="60" value="My image recipe" required /></div>
+          <div class="recipe-output-controls" id="recipe-output-controls"><label class="field-label" for="recipe-format">Output format</label><select id="recipe-format" class="select-field"><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select><label class="field-label" for="recipe-quality">Quality <output id="recipe-quality-value">90%</output></label><input id="recipe-quality" type="range" min="1" max="100" step="1" value="90" aria-label="Recipe output quality" /></div>
           <div class="recipe-preview" id="recipe-preview"><span class="recipe-preview-icon">✦</span><span id="recipe-preview-summary">Brightness · Contrast · Color</span></div>
           <div class="dialog-actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" id="save-recipe-confirm" value="save">Save recipe</button></div>
         </form>

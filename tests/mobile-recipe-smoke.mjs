@@ -316,6 +316,75 @@ try {
     return records[0]?.document?.recipes?.some(recipe => recipe.name === 'Phone batch look');
   }, 'saved local recipe');
 
+  // The catalog controls stay reachable on a phone. Exercise the full
+  // save/update/rename/delete lifecycle without changing the recipe used by
+  // the subsequent bulk render.
+  const mainRecipeRecord = await (async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    return records[0]?.document?.recipes?.find(recipe => recipe.name === 'Phone batch look');
+  })();
+  assert(mainRecipeRecord?.id && mainRecipeRecord.createdAt, 'the saved recipe should have a stable catalog identity.');
+  tap(app, app.querySelector('[data-action="save-image-recipe"]'));
+  assert(dialog.open, 'a second recipe can be saved from the phone inspector.');
+  app.querySelector('#recipe-name').value = 'Phone temporary recipe';
+  tap(app, app.querySelector('#save-recipe-confirm'));
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    return records[0]?.document?.recipes?.some(recipe => recipe.name === 'Phone temporary recipe');
+  }, 'saved temporary recipe');
+  const temporaryRecipe = await (async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    return records[0]?.document?.recipes?.find(recipe => recipe.name === 'Phone temporary recipe');
+  })();
+  assert(temporaryRecipe?.id && temporaryRecipe.createdAt, 'the temporary recipe should be saved with identity metadata.');
+
+  setInspectorInput(app, '[data-prop="adjustments.brightness"]', -44);
+  let managerPicker = app.querySelector('#selection-image-recipe');
+  managerPicker.value = temporaryRecipe.id;
+  managerPicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  const managerDetails = app.querySelector('.recipe-management');
+  assert(managerDetails, 'the selected phone image should expose its saved recipe manager.');
+  tap(app, managerDetails.querySelector('summary'));
+  const updateRecipe = app.querySelector('[data-action="update-image-recipe"]');
+  assertTouchTarget(app, updateRecipe, 'Update recipe from image');
+  tap(app, updateRecipe);
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    const current = records[0]?.document?.recipes?.find(recipe => recipe.id === temporaryRecipe.id);
+    return current?.createdAt === temporaryRecipe.createdAt && current?.id === temporaryRecipe.id
+      && current?.adjustments?.brightness === -44;
+  }, 'recipe update preserving its identity');
+  setInspectorInput(app, '[data-prop="adjustments.brightness"]', -65);
+
+  managerPicker = app.querySelector('#selection-image-recipe');
+  managerPicker.value = temporaryRecipe.id;
+  managerPicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  tap(app.querySelector('.recipe-management summary'));
+  tap(app.querySelector('[data-action="rename-image-recipe"]'));
+  assert(dialog.open && app.querySelector('#recipe-dialog-title').textContent === 'Rename recipe', 'recipe rename should use a focused, labeled dialog.');
+  app.querySelector('#recipe-name').value = 'Phone renamed recipe';
+  tap(app, app.querySelector('#save-recipe-confirm'));
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    const current = records[0]?.document?.recipes?.find(recipe => recipe.id === temporaryRecipe.id);
+    return current?.name === 'Phone renamed recipe' && current?.createdAt === temporaryRecipe.createdAt;
+  }, 'recipe rename preserving its identity');
+
+  managerPicker = app.querySelector('#selection-image-recipe');
+  managerPicker.value = temporaryRecipe.id;
+  managerPicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
+  tap(app.querySelector('.recipe-management summary'));
+  const originalConfirm = app.defaultView.confirm;
+  app.defaultView.confirm = () => true;
+  try { tap(app, app.querySelector('[data-action="delete-image-recipe"]')); }
+  finally { app.defaultView.confirm = originalConfirm; }
+  await waitFor(async () => {
+    const records = await readDocuments(app); records.sort((a, b) => b.savedAt - a.savedAt);
+    const recipes = records[0]?.document?.recipes || [];
+    return !recipes.some(recipe => recipe.id === temporaryRecipe.id)
+      && recipes.some(recipe => recipe.id === mainRecipeRecord.id && recipe.name === 'Phone batch look');
+  }, 'recipe deletion preserving other catalog entries');
+
   // Applying a recipe immediately after an adjustment must cancel that
   // adjustment's debounced preview. Otherwise the old timer renders its
   // captured settings after the recipe and replaces the correct thumbnail.

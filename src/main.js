@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -154,7 +154,7 @@ const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRet
 const canvas = $('#scene-canvas');
 const canvasScroll = $('#canvas-scroll');
 let renderer;
-let pendingRecipeNodeId = null;
+let pendingRecipeAction = null;
 let selectedEffectStyleId = '';
 let bulkBarTicker = null;
 let bulkConcurrencyTimer = 0;
@@ -1742,19 +1742,27 @@ function imageRecipeOptions(selectedId = '') {
     ? recipes.map(recipe => `<option value="${escapeHtml(recipe.id)}"${recipe.id === selectedId ? ' selected' : ''}>${escapeHtml(recipe.name)}</option>`).join('')
     : '<option value="">No saved recipes yet</option>';
 }
+function imageRecipeManagementControls({ nodeId = null } = {}) {
+  const recipes = state.document.recipes || [];
+  if (!recipes.length) return '';
+  const update = nodeId
+    ? `<button class="add-fill" type="button" data-action="update-image-recipe" data-node-id="${escapeHtml(nodeId)}">Update from this image</button>`
+    : '';
+  return `<details class="recipe-management"><summary>Manage saved recipe</summary><div class="recipe-management-actions">${update}<button class="add-fill" type="button" data-action="rename-image-recipe">Rename</button><button class="add-fill" type="button" data-action="delete-image-recipe">Delete</button></div></details>`;
+}
 function singleImageRecipesSection(node) {
   const recipes = state.document.recipes || [];
   const apply = recipes.length
     ? `<label class="field-label" for="selection-image-recipe">Apply a saved recipe</label><select class="select-field recipe-picker" id="selection-image-recipe" aria-label="Choose image recipe">${imageRecipeOptions()}</select><button class="add-fill" type="button" data-action="apply-image-recipe" data-node-id="${escapeHtml(node.id)}">Apply to this image</button>`
     : '<div class="image-properties-note">Save a look from an edited image to reuse it here or across a batch.</div>';
-  return section('Image recipes', `<button class="add-fill recipe-save-button" type="button" data-action="save-image-recipe" data-node-id="${escapeHtml(node.id)}">＋ Save current look as recipe</button>${apply}`);
+  return section('Image recipes', `<button class="add-fill recipe-save-button" type="button" data-action="save-image-recipe" data-node-id="${escapeHtml(node.id)}">＋ Save current look as recipe</button>${apply}${imageRecipeManagementControls({ nodeId: node.id })}`);
 }
 function selectionImageRecipesSection(imageCount) {
   const recipes = state.document.recipes || [];
   const picker = recipes.length
     ? `<label class="field-label" for="selection-image-recipe">Recipe</label><select class="select-field recipe-picker" id="selection-image-recipe" aria-label="Choose image recipe">${imageRecipeOptions()}</select><button class="primary-button recipe-apply-button" type="button" data-action="apply-selection-image-recipe">Apply to ${imageCount} image${imageCount === 1 ? '' : 's'}</button>`
     : '<div class="image-properties-note">Save a look from one image first, then apply it to selected images here.</div>';
-  return section('Image recipes', `<div class="image-properties-note">${imageCount} image${imageCount === 1 ? '' : 's'} selected. Recipe changes are applied to these image layers in place.</div>${picker}`);
+  return section('Image recipes', `<div class="image-properties-note">${imageCount} image${imageCount === 1 ? '' : 's'} selected. Recipe changes are applied to these image layers in place.</div>${picker}${imageRecipeManagementControls()}`);
 }
 function effectNumberField(label, effect, field, step = 0.01, min = 0, max = 100, disabled = false) {
   return `<div class="property-field"><label>${label}</label><input data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" type="number" step="${step}" min="${min}" max="${max}" value="${formatInspectorNumber(effect[field])}" aria-label="${label}"${disabled ? ' disabled' : ''}/></div>`;
@@ -8227,28 +8235,94 @@ function retryFailedRecipeTargets() {
   return startRecipe(structuredClone(previous.recipe), [...new Set(previous.failedTargets)], { concurrency: previous.concurrency, pageId: previous.pageId, replaceCompletedBatch: true });
 }
 
+function openImageRecipeDialog(type, { nodeId = null, recipeId = null } = {}) {
+  const node = type === 'save' ? findNode(state.document, nodeId)?.node : null;
+  const recipe = type === 'rename' ? state.document.recipes?.find(item => item.id === recipeId) : null;
+  if (type === 'save' && node?.type !== 'image') return;
+  if (type === 'rename' && !recipe) { showToast('This saved image recipe no longer exists.'); return; }
+  if (!['save', 'rename'].includes(type)) return;
+  pendingRecipeAction = { type, nodeId, recipeId };
+  const renaming = type === 'rename';
+  $('#recipe-dialog-title').textContent = renaming ? 'Rename recipe' : 'Save recipe';
+  $('#recipe-dialog-copy').textContent = renaming
+    ? 'Change the name shown in the recipe picker. Existing image edits stay the same.'
+    : 'Save this image’s current look, then apply it to selected images from the canvas or Layers panel.';
+  $('#recipe-name-fields').hidden = false;
+  $('#recipe-output-controls').hidden = renaming;
+  $('#recipe-preview').hidden = renaming;
+  $('#save-recipe-confirm').textContent = renaming ? 'Save name' : 'Save recipe';
+  if (renaming) $('#recipe-name').value = recipe.name;
+  else {
+    const adjustments = node.adjustments || {};
+    const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
+      .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
+    if (adjustments.autoContrast) active.push('Auto contrast');
+    if (Number(adjustments.posterizeBits) > 0) active.push(`Posterize ${adjustments.posterizeBits} bit`);
+    if (adjustments.solarize) active.push(`Solarize at ${adjustments.solarizeThreshold}`);
+    if (adjustments.invert) active.push('Invert');
+    const transforms = createImageTransforms(node.transforms || {});
+    if (transforms.crop) active.push(`Crop ${Math.round(transforms.crop.left * 100)}%/${Math.round(transforms.crop.top * 100)}% to ${Math.round(transforms.crop.right * 100)}%/${Math.round(transforms.crop.bottom * 100)}%`);
+    if (transforms.rotation) active.push(`Rotate ${transforms.rotation}°`);
+    if (transforms.flipHorizontal) active.push('Flip horizontal');
+    if (transforms.flipVertical) active.push('Flip vertical');
+    $('#recipe-name').value = `${node.name} look`;
+    $('#recipe-preview-summary').dataset.editSummary = active.length ? active.join(' · ') : 'Original image look · No adjustments';
+    $('#recipe-format').value = node.outputFormat ?? 'png';
+    $('#recipe-quality').value = String(node.outputQuality ?? 90);
+    syncRecipeOutputControls();
+  }
+  const dialog = $('#recipe-dialog');
+  dialog.returnValue = '';
+  dialog.showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
+}
+
 function saveRecipeFor(nodeId) {
+  openImageRecipeDialog('save', { nodeId });
+}
+
+function renameImageRecipeFromAssets(recipeId) {
+  openImageRecipeDialog('rename', { recipeId });
+}
+
+function updateImageRecipeFromAssets(recipeId, nodeId) {
+  const recipe = state.document.recipes?.find(item => item.id === recipeId);
   const node = findNode(state.document, nodeId)?.node;
-  if (!node || node.type !== 'image') return;
-  pendingRecipeNodeId = nodeId;
-  const adjustments = node.adjustments || {};
-  const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
-    .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
-  if (adjustments.autoContrast) active.push('Auto contrast');
-  if (Number(adjustments.posterizeBits) > 0) active.push(`Posterize ${adjustments.posterizeBits} bit`);
-  if (adjustments.solarize) active.push(`Solarize at ${adjustments.solarizeThreshold}`);
-  if (adjustments.invert) active.push('Invert');
-  const transforms = createImageTransforms(node.transforms || {});
-  if (transforms.crop) active.push(`Crop ${Math.round(transforms.crop.left * 100)}%/${Math.round(transforms.crop.top * 100)}% to ${Math.round(transforms.crop.right * 100)}%/${Math.round(transforms.crop.bottom * 100)}%`);
-  if (transforms.rotation) active.push(`Rotate ${transforms.rotation}°`);
-  if (transforms.flipHorizontal) active.push('Flip horizontal');
-  if (transforms.flipVertical) active.push('Flip vertical');
-  $('#recipe-name').value = `${node.name} look`;
-  $('#recipe-preview-summary').dataset.editSummary = active.length ? active.join(' · ') : 'Original image look · No adjustments';
-  $('#recipe-format').value = node.outputFormat ?? 'png';
-  $('#recipe-quality').value = String(node.outputQuality ?? 90);
-  syncRecipeOutputControls();
-  $('#recipe-dialog').showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
+  if (!recipe) { showToast('Choose a saved image recipe first.'); return; }
+  if (node?.type !== 'image') { showToast('Select one image layer to update this recipe.'); return; }
+  try {
+    checkpoint(`Update ${recipe.name}`);
+    if (!updateImageRecipe(state.document, recipe.id, node.id, {
+      format: node.outputFormat ?? 'png',
+      quality: node.outputQuality ?? 90,
+    })) { showToast('Could not update this image recipe.'); return; }
+    renderUI(); queueSave();
+    showToast(`Updated “${recipe.name}” from this image for future applications.`);
+  } catch (error) {
+    showToast(error.message || 'Could not update this image recipe.');
+  }
+}
+
+function renameImageRecipeInAssets(recipeId) {
+  const recipe = state.document.recipes?.find(item => item.id === recipeId);
+  if (!recipe) { showToast('This saved image recipe no longer exists.'); return; }
+  const name = $('#recipe-name').value;
+  const normalized = name.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  if (!normalized || normalized.length > 60) { showToast('Enter a recipe name of 1–60 characters.'); return; }
+  if (normalized === recipe.name) return;
+  checkpoint(`Rename ${recipe.name}`);
+  if (!renameImageRecipe(state.document, recipe.id, name)) { showToast('Enter a recipe name of 1–60 characters.'); return; }
+  renderUI(); queueSave();
+  showToast(`Renamed image recipe to “${recipe.name}”.`);
+}
+
+function deleteImageRecipeFromAssets(recipeId) {
+  const recipe = state.document.recipes?.find(item => item.id === recipeId);
+  if (!recipe) { showToast('Choose a saved image recipe first.'); return; }
+  if (!confirm(`Delete saved recipe “${recipe.name}”? Images already edited with it will stay unchanged.`)) return;
+  checkpoint(`Delete ${recipe.name}`);
+  if (!deleteImageRecipe(state.document, recipe.id)) { showToast('This saved image recipe no longer exists.'); return; }
+  renderUI(); queueSave();
+  showToast(`Deleted saved recipe “${recipe.name}”.`);
 }
 
 function syncRecipeOutputControls() {
@@ -12775,6 +12849,9 @@ function applyInspectorAction(action, details = {}) {
     return;
   }
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'update-image-recipe') { updateImageRecipeFromAssets($('#selection-image-recipe')?.value, details.nodeId || node?.id); return; }
+  if (action === 'rename-image-recipe') { renameImageRecipeFromAssets($('#selection-image-recipe')?.value); return; }
+  if (action === 'delete-image-recipe') { deleteImageRecipeFromAssets($('#selection-image-recipe')?.value); return; }
   if (action === 'toggle-image-erase-mode' && node?.type === 'image') {
     toggleImageEraseMode(node);
     return;
@@ -14319,14 +14396,27 @@ function initEvents() {
   $$('.sidebar-tab').forEach(tab => tab.addEventListener('click', () => { state.sidebarTab = tab.dataset.sidebarTab; syncSidebarTabAccessibility(); }));
   $('#export-selection').addEventListener('click', exportSelectionPng);
   $('#recipe-dialog').addEventListener('close', () => {
-    if ($('#recipe-dialog').returnValue !== 'save' || !pendingRecipeNodeId) return;
-    const node = findNode(state.document, pendingRecipeNodeId)?.node; if (!node) return;
-    checkpoint('Save image recipe');
-    const recipe = createImageRecipe(node, $('#recipe-name').value, {
-      format: $('#recipe-format').value,
-      quality: Number($('#recipe-quality').value),
-    }, state.document); state.document.recipes.push(recipe); pendingRecipeNodeId = null;
-    queueSave(); renderInspector(); showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
+    const pending = pendingRecipeAction;
+    pendingRecipeAction = null;
+    if ($('#recipe-dialog').returnValue !== 'save' || !pending) return;
+    if (pending.type === 'rename') {
+      renameImageRecipeInAssets(pending.recipeId);
+      return;
+    }
+    const node = pending.type === 'save' ? findNode(state.document, pending.nodeId)?.node : null;
+    if (node?.type !== 'image') { showToast('The source image no longer exists.'); return; }
+    try {
+      const recipe = createImageRecipe(node, $('#recipe-name').value, {
+        format: $('#recipe-format').value,
+        quality: Number($('#recipe-quality').value),
+      }, state.document);
+      checkpoint('Save image recipe');
+      state.document.recipes.push(recipe);
+      queueSave(); renderInspector();
+      showToast(`Recipe “${recipe.name}” saved. Use Image recipes to apply it.`);
+    } catch (error) {
+      showToast(error.message || 'Could not save this image recipe.');
+    }
   });
   $('#recipe-format').addEventListener('change', syncRecipeOutputControls);
   $('#recipe-quality').addEventListener('input', syncRecipeOutputControls);

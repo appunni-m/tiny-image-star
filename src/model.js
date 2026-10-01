@@ -1260,9 +1260,12 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
   const quality = output.quality ?? imageNode.outputQuality ?? 90;
   if (!exportFormats.has(format)) throw new TypeError('Image recipe output format must be PNG, JPEG, or WebP.');
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new TypeError('Image recipe quality must be an integer from 1 to 100.');
+  const fallbackName = `${imageNode.name || 'Image'} recipe`.slice(0, 60);
+  const recipeName = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim() || fallbackName;
+  if (recipeName.length > 60) throw new TypeError('Image recipe names can contain up to 60 characters.');
   return {
     id: createId('recipe'),
-    name: String(name).trim() || `${imageNode.name} recipe`,
+    name: recipeName,
     adjustments: normalizeImageAdjustments(imageNode.adjustments || {}),
     transforms: createImageTransforms(imageNode.transforms || {}),
     inpaintStrokes: normalizeImageEraseStrokes(imageNode.inpaintStrokes || []),
@@ -1274,6 +1277,40 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
     quality,
     createdAt: new Date().toISOString()
   };
+}
+
+/** Replace a saved recipe snapshot with the current look of one image layer. */
+export function updateImageRecipe(document, recipeId, nodeId, output = {}, pageId = document.activePageId) {
+  const recipeIndex = (document.recipes || []).findIndex(recipe => recipe.id === recipeId);
+  const node = findNode(document, nodeId, pageId)?.node;
+  if (recipeIndex < 0 || node?.type !== 'image') return false;
+  const recipe = document.recipes[recipeIndex];
+  // Build and validate the full replacement before touching the saved object.
+  const snapshot = createImageRecipe(node, recipe.name, output, document);
+  Object.assign(recipe, snapshot, {
+    id: recipe.id,
+    createdAt: recipe.createdAt
+  });
+  return true;
+}
+
+/** Rename a saved recipe without changing its snapshot or identity. */
+export function renameImageRecipe(document, recipeId, name) {
+  const recipe = document.recipes?.find(item => item.id === recipeId);
+  if (!recipe || typeof name !== 'string') return false;
+  const normalized = name.replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  if (!normalized || normalized.length > 60) return false;
+  recipe.name = normalized;
+  return true;
+}
+
+/** Delete one saved recipe; already-applied image edits remain unchanged. */
+export function deleteImageRecipe(document, recipeId) {
+  const recipes = document.recipes || [];
+  const index = recipes.findIndex(recipe => recipe.id === recipeId);
+  if (index < 0) return false;
+  recipes.splice(index, 1);
+  return true;
 }
 
 export function applyImageRecipe(document, nodeId, recipe, pageId = document.activePageId) {

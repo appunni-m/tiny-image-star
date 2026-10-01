@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createFillLayer, createGradientFill, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createFillLayer, createGradientFill, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, deleteImageRecipe, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, renameImageRecipe, serializeDocument, setComponentSlotContent, syncComponentInstances, updateImageRecipe, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -560,6 +560,69 @@ test('image recipes snapshot adjustments and apply to another source layer', () 
   const reopenedTarget = findNode(reopened, target.id).node;
   assert.equal(applyImageRecipe(reopened, reopenedTarget.id, savedRecipe), true);
   assert.deepEqual(reopenedTarget.adjustments, savedRecipe.adjustments, 'creative tone controls round-trip and apply to another source');
+});
+
+test('saved image recipes can be renamed, refreshed from a layer, and deleted without changing applied images', () => {
+  const document = createDocument();
+  const source = createNode('image', { assetId: 'asset-source', adjustments: { brightness: 12 }, outputFormat: 'png' });
+  const target = createNode('image', { assetId: 'asset-target', adjustments: { contrast: 7 }, outputFormat: 'jpeg', outputQuality: 83 });
+  addNode(document, source); addNode(document, target);
+  const recipe = createImageRecipe(source, 'Soft light');
+  recipe.catalogNote = 'preserved extension data';
+  document.recipes.push(recipe);
+  const stableId = recipe.id;
+  const stableCreatedAt = recipe.createdAt;
+
+  assert.equal(renameImageRecipe(document, recipe.id, '  Warm\nportrait  '), true);
+  assert.equal(recipe.name, 'Warm portrait', 'control characters are normalized and surrounding spaces are trimmed');
+  const renamedSnapshot = structuredClone(recipe);
+  assert.equal(renameImageRecipe(document, recipe.id, ''), false);
+  assert.equal(renameImageRecipe(document, recipe.id, 'x'.repeat(61)), false);
+  assert.deepEqual(recipe, renamedSnapshot, 'invalid names leave the saved recipe unchanged');
+
+  source.adjustments = { brightness: -31, highlights: 18, invert: true };
+  source.transforms = { crop: { left: 0.12, top: 0.08, right: 0.9, bottom: 0.94 }, rotation: 270, flipHorizontal: true };
+  source.outputFormat = 'webp'; source.outputQuality = 68;
+  source.opacity = 0.43; source.blendMode = 'multiply'; source.fit = 'contain';
+  source.effects = [createLayerEffect('drop-shadow', { color: '#123456', opacity: 0.5, offsetX: 3, blur: 8 })];
+  const targetBefore = structuredClone(target);
+  assert.equal(updateImageRecipe(document, recipe.id, source.id), true);
+  assert.equal(recipe.id, stableId, 'updating keeps a recipe’s stable ID');
+  assert.equal(recipe.createdAt, stableCreatedAt, 'updating keeps its creation date');
+  assert.equal(recipe.name, 'Warm portrait', 'updating keeps the catalog name');
+  assert.equal(recipe.catalogNote, 'preserved extension data', 'updating keeps unrelated metadata');
+  assert.deepEqual(recipe.adjustments, createImageRecipe(source, recipe.name, {}, document).adjustments);
+  assert.deepEqual(recipe.transforms, { crop: source.transforms.crop, rotation: 270, flipHorizontal: true, flipVertical: false });
+  assert.deepEqual([recipe.format, recipe.quality], ['webp', 68]);
+  assert.deepEqual([recipe.fit, recipe.opacity, recipe.blendMode], ['contain', 0.43, 'multiply']);
+  assert.deepEqual(recipe.effects, source.effects);
+  assert.deepEqual(target, targetBefore, 'refreshing a recipe never changes images that already exist');
+  assert.equal(applyImageRecipe(document, target.id, recipe), true);
+  assert.deepEqual(target.adjustments, recipe.adjustments, 'future applications use the refreshed snapshot');
+  assert.deepEqual([target.outputFormat, target.outputQuality], ['webp', 68]);
+
+  const beforeRejectedUpdate = structuredClone(recipe);
+  assert.equal(updateImageRecipe(document, 'missing-recipe', source.id), false);
+  assert.equal(updateImageRecipe(document, recipe.id, 'missing-layer'), false);
+  assert.throws(() => updateImageRecipe(document, recipe.id, source.id, { format: 'gif' }), /PNG, JPEG, or WebP/);
+  assert.deepEqual(recipe, beforeRejectedUpdate, 'an invalid refresh is atomic');
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(reopened.recipes[0].name, 'Warm portrait');
+  assert.equal(reopened.recipes[0].id, stableId);
+  assert.deepEqual(reopened.recipes[0].effects, recipe.effects);
+  assert.equal(deleteImageRecipe(reopened, stableId), true);
+  assert.deepEqual(reopened.recipes, []);
+  assert.equal(deleteImageRecipe(reopened, stableId), false, 'deleting an unknown recipe is a harmless no-op');
+  assert.equal(findNode(reopened, target.id).node.assetId, 'asset-target', 'recipe deletion does not remove or replace image assets');
+  assert.equal(validateDocument(reopened), true);
+});
+
+test('image recipe names are bounded and an empty name uses a safe layer-derived default', () => {
+  const image = createNode('image', { name: 'x'.repeat(90), assetId: 'asset-name' });
+  const recipe = createImageRecipe(image, '   ');
+  assert.equal(recipe.name.length, 60);
+  assert.throws(() => createImageRecipe(image, 'x'.repeat(61)), /up to 60 characters/);
 });
 
 test('legacy image recipes default to PNG output and reject invalid format or quality', () => {

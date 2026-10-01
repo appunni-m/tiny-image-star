@@ -127,6 +127,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .recipe-picker { width: 100%; margin-bottom: 8px; }
 .recipe-save-button, .recipe-apply-button { width: 100%; }
 .recipe-save-button { margin-bottom: 9px; }
+.recipe-management { margin-top: 8px; border-top: 1px solid var(--border); }
+.recipe-management > summary { min-height: 36px; display: flex; align-items: center; color: var(--muted); font-size: 12px; cursor: pointer; }
+.recipe-management-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 4px 0 2px; }
+.recipe-management-actions .add-fill { min-height: 38px; margin: 0; }
+.recipe-management-actions [data-action="update-image-recipe"] { grid-column: 1 / -1; }
 .empty-sidebar { display: flex; align-items: center; flex-direction: column; gap: 6px; padding: 42px 22px; color: #8a8a8a; text-align: center; }
 .empty-sidebar[hidden] { display: none; }
 .empty-sidebar strong { color: #666; font-size: 11px; font-weight: 550; }
@@ -956,6 +961,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .recipe-picker { box-sizing: border-box; min-height: 44px; font-size: 16px; }
   .recipe-save-button, .recipe-apply-button { min-height: 44px; font-size: 12px; }
   .property-section .primary-button.recipe-apply-button { height: auto; min-height: 44px; }
+  .recipe-management > summary { min-height: 44px; }
+  .recipe-management-actions { grid-template-columns: 1fr; gap: 8px; }
+  .recipe-management-actions .add-fill { min-height: 44px; }
   .component-library-list { max-height: min(35dvh, 280px); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
   .local-library-publish, .local-library-component { min-height: 44px; padding: 8px; font-size: 12px; }
   .bottom-toolbar { bottom: max(12px, env(safe-area-inset-bottom)); max-width: calc(100vw - 24px); overflow-x: auto; justify-content: flex-start; }
