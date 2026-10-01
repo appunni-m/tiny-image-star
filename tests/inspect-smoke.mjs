@@ -2,6 +2,7 @@ import { addNode, createDocument, createNode } from '../src/model.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
+let coarsePointerGradientTargetChecked = false;
 function assert(value, message) { if (!value) throw new Error(message); }
 function waitFor(test, label, timeout = 10000) {
   const start = performance.now();
@@ -44,7 +45,7 @@ function packageFile(documentData) {
 
 try {
   await waitFor(() => frame.contentDocument?.documentElement.dataset.appReady === 'true', 'editor startup');
-  const app = frame.contentDocument;
+  let app = frame.contentDocument;
   assert(app.title === 'Tiny Image Star', 'The editor should use Tiny Image Star as its public name.');
   const design = createDocument();
   const screen = createNode('frame', { name: 'Mobile screen', x: 30, y: 40, width: 350, height: 700, autoLayout: { axis: 'vertical', gap: 16, padding: 20 } });
@@ -133,12 +134,105 @@ try {
   assert(fillType && ['solid', 'linear', 'radial'].every(value => [...fillType.options].some(option => option.value === value)) && fillType.getBoundingClientRect().right <= rightPanel.right, 'gradient fill options should be available inside the phone inspector');
   fillType.value = 'linear'; fillType.dispatchEvent(new Event('input', { bubbles: true })); fillType.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'linear gradient');
+  const geometryToggle = app.querySelector('[data-action="toggle-gradient-geometry"]');
+  assert(geometryToggle && geometryToggle.getBoundingClientRect().right <= rightPanel.right, 'gradient geometry editing should be available inside the phone inspector');
+  if (app.defaultView.matchMedia('(max-width: 820px) and (pointer: coarse)').matches) {
+    assert(geometryToggle.getBoundingClientRect().height >= 44, 'gradient geometry editing should have a 44px phone touch target');
+    coarsePointerGradientTargetChecked = true;
+  }
+  click(geometryToggle);
+  const geometryInputs = [...app.querySelectorAll('[data-gradient-geometry-field]')];
+  assert(geometryInputs.length === 6 && geometryInputs.every(input => input.getBoundingClientRect().right <= rightPanel.right), 'all three editable gradient handles should expose fitting X/Y controls');
+  const startX = geometryInputs.find(input => input.dataset.gradientGeometryIndex === '0' && input.dataset.gradientGeometryAxis === 'x');
+  startX.value = '5'; startX.dispatchEvent(new Event('input', { bubbles: true })); startX.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'gradient geometry edit');
+  const geometryRecords = await readDocuments(); geometryRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const geometryButton = geometryRecords[0]?.document?.pages.flatMap(page => page.children.flatMap(parent => parent.children || [])).find(node => node.id === button.id);
+  const savedGradient = geometryButton?.fills?.[0]?.gradient || geometryButton?.fillGradient;
+  assert(Math.abs(savedGradient?.geometry?.handles?.[0]?.x - 0.05) < 1e-6, 'editing normalized gradient geometry should persist in the local design');
+  assert(!app.querySelector('[data-gradient-field="angle"]'), 'affine gradients should use their editable canvas handles instead of a disconnected angle field');
+  click(app.querySelector('[data-action="toggle-gradient-geometry"]'));
+  assert(app.querySelector('.gradient-geometry-fields')?.hidden, 'gradient geometry fields should close without changing the gradient');
   const firstStopColor = app.querySelector('[data-gradient-field="color"]');
   const firstStopPosition = app.querySelector('[data-gradient-field="position"]');
   assert(firstStopColor && firstStopPosition && firstStopPosition.getBoundingClientRect().right <= rightPanel.right, 'gradient stop controls should fit in the phone inspector');
   firstStopColor.value = '#00ff00'; firstStopColor.dispatchEvent(new Event('input', { bubbles: true })); firstStopColor.dispatchEvent(new Event('change', { bubbles: true }));
   firstStopPosition.value = '20'; firstStopPosition.dispatchEvent(new Event('input', { bubbles: true })); firstStopPosition.dispatchEvent(new Event('change', { bubbles: true }));
   await waitForSaveCycle(app, 'gradient stop tuning');
+  const gradientTrack = app.querySelector('[data-gradient-stop-track]');
+  assert(gradientTrack, 'the gradient stop rail should be available for direct stop editing');
+  const trackBounds = gradientTrack.getBoundingClientRect();
+  gradientTrack.dispatchEvent(new app.defaultView.MouseEvent('click', {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: trackBounds.left + trackBounds.width * 0.6,
+    clientY: trackBounds.top + trackBounds.height / 2
+  }));
+  await waitForSaveCycle(app, 'gradient rail stop insertion');
+  const insertedRow = [...app.querySelectorAll('[data-gradient-stop-row]')]
+    .find(row => row.querySelector('input[type="color"]')?.value === '#80ff80');
+  assert(insertedRow, 'clicking the gradient rail should insert a stop with the interpolated color');
+  const insertedStopId = insertedRow.dataset.gradientStopId;
+  const insertedHandle = [...app.querySelectorAll('[data-gradient-stop-handle]')]
+    .find(handle => handle.dataset.gradientStopId === insertedStopId);
+  assert(insertedHandle && Math.abs(Number(insertedHandle.getAttribute('aria-valuenow')) - 60) <= 1,
+    'the inserted gradient stop should be positioned at the clicked rail location');
+  if (app.defaultView.matchMedia('(max-width: 820px) and (pointer: coarse)').matches) {
+    const handleBounds = insertedHandle.getBoundingClientRect();
+    assert(handleBounds.width >= 44 && handleBounds.height >= 44,
+      'coarse-pointer gradient stop handles should provide a 44px touch target');
+    coarsePointerGradientTargetChecked = true;
+  }
+  const dispatchPointer = (type, clientX) => {
+    const event = new app.defaultView.Event(type, { bubbles: true, cancelable: true });
+    for (const [key, value] of Object.entries({ pointerId: 41, button: 0, clientX })) {
+      Object.defineProperty(event, key, { value });
+    }
+    insertedHandle.dispatchEvent(event);
+  };
+  dispatchPointer('pointerdown', trackBounds.left + trackBounds.width * 0.6);
+  dispatchPointer('pointermove', trackBounds.left + trackBounds.width * 0.64);
+  dispatchPointer('pointerup', trackBounds.left + trackBounds.width * 0.64);
+  assert(insertedHandle.getAttribute('aria-valuenow') === '64', 'dragging the slider handle should move the stop in the gradient');
+  await waitForSaveCycle(app, 'pointer gradient stop move');
+  insertedHandle.focus();
+  insertedHandle.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', {
+    bubbles: true, cancelable: true, key: 'ArrowRight'
+  }));
+  assert(insertedHandle.getAttribute('aria-valuenow') === '65',
+    'the focused gradient stop slider should move one percentage point with ArrowRight');
+  assert(!app.querySelector('#toast-region')?.textContent.includes('Auto layout controls'),
+    'gradient slider arrows should not escape to the layer-nudge shortcut');
+  await waitForSaveCycle(app, 'keyboard gradient stop move');
+  const savedGradientRecords = await readDocuments(); savedGradientRecords.sort((a, b) => b.savedAt - a.savedAt);
+  const findSavedGradientButton = documentData => documentData?.pages.flatMap(page => page.children)
+    .flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
+  const savedLinearGradient = savedGradientRecords.map(record => findSavedGradientButton(record.document))
+    .find(node => node?.fillGradient?.stops.some(stop => stop.id === insertedStopId));
+  const savedInsertedStop = savedLinearGradient?.fillGradient.stops.find(stop => stop.id === insertedStopId);
+  assert(savedInsertedStop?.color === '#80ff80' && Math.abs(savedInsertedStop.position - 0.65) < 1e-9
+    && savedLinearGradient.x === button.x,
+    'the interpolated stop color and keyboard-updated position should be saved locally');
+
+  const previousGradientApp = app;
+  app.defaultView.location.reload();
+  await waitFor(() => frame.contentDocument !== previousGradientApp
+    && frame.contentDocument?.documentElement.dataset.appReady === 'true', 'gradient design reload', 45000);
+  app = frame.contentDocument;
+  await waitFor(() => app.querySelector(`[data-layer-id="${screen.id}"]`), 'gradient screen restore after reload');
+  if (!app.querySelector(`[data-layer-id="${button.id}"]`)) {
+    click(app.querySelector(`[data-layer-id="${screen.id}"] [data-action="layer-toggle"]`));
+  }
+  await waitFor(() => app.querySelector(`[data-layer-id="${button.id}"]`), 'gradient layer restore after reload');
+  click(app.querySelector(`[data-layer-id="${button.id}"]`));
+  await waitFor(() => app.querySelector('[data-gradient-stop-track]'), 'reloaded gradient stop rail');
+  const reloadedInsertedRow = [...app.querySelectorAll('[data-gradient-stop-row]')]
+    .find(row => row.dataset.gradientStopId === insertedStopId);
+  const reloadedInsertedHandle = [...app.querySelectorAll('[data-gradient-stop-handle]')]
+    .find(handle => handle.dataset.gradientStopId === insertedStopId);
+  assert(reloadedInsertedRow?.querySelector('input[type="color"]')?.value === '#80ff80'
+    && reloadedInsertedRow.querySelector('input[type="number"]')?.value === '65'
+    && reloadedInsertedHandle?.getAttribute('aria-valuenow') === '65',
+  'the gradient stop color and moved position should remain editable after a local reload');
   click(app.querySelector('[data-action="add-gradient-stop"]'));
   await waitForSaveCycle(app, 'additional gradient stop');
   const radialType = app.querySelector('[data-prop="fillType"]');
@@ -146,7 +240,9 @@ try {
   await waitForSaveCycle(app, 'radial gradient');
   const gradientRecords = await readDocuments(); gradientRecords.sort((a, b) => b.savedAt - a.savedAt);
   const gradientButton = gradientRecords[0]?.document.pages.flatMap(page => page.children).flatMap(frameNode => frameNode.children || []).find(node => node.id === button.id);
-  assert(gradientButton?.fillGradient?.type === 'radial' && gradientButton.fillGradient.stops.length === 3 && gradientButton.fillGradient.stops[0].color === '#00ff00' && gradientButton.fillGradient.stops[0].position === 0.2, 'gradient type, stop position, color, and additional stop should persist');
+  assert(gradientButton?.fillGradient?.type === 'radial' && gradientButton.fillGradient.stops.length === 4 && gradientButton.fillGradient.stops[0].color === '#00ff00' && gradientButton.fillGradient.stops[0].position === 0.2
+    && gradientButton.fillGradient.stops.some(stop => stop.id === insertedStopId && stop.color === '#80ff80' && Math.abs(stop.position - 0.65) < 1e-9),
+  'gradient type, existing and inserted stop values, and an additional button-created stop should persist');
   click(app.querySelector('[data-action="add-stroke"]'));
   await waitForSaveCycle(app, 'add stroke');
   const strokeWidth = app.querySelector('[data-prop="strokeWidth"]');
@@ -255,7 +351,7 @@ try {
   const handoffLayer = JSON.parse(handoffJson)[0];
   const verticalCss = app.querySelector('.inspect-panel .inspect-code-card code')?.textContent || '';
   assert(verticalCss.includes('justify-content: flex-end;'), `Inspect CSS should hand off bottom-aligned text; control=${selectedVerticalAlign}, layer=${handoffLayer?.verticalAlign}, typography=${handoffLayer?.typography?.verticalAlign}; found: ${verticalCss}`);
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, nestedVueHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true, afterDelayPhoneControl: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', nestedPageCoordinates: true, resolvedStyleValues: true, nestedHtmlHandoff: true, nestedReactHandoff: true, nestedVueHandoff: true, strokeStyles: true, typography: true, verticalTextAlignment: true, exactLayerJson: true, clipboardCopy: true, phoneSizedActions: true, afterDelayPhoneControl: true, gradientStopRailInsert: true, gradientStopInterpolatedColor: true, gradientStopKeyboardMove: true, gradientStopLocalReload: true, coarsePointerGradientTargetChecked })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

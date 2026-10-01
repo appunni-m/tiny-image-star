@@ -12,7 +12,7 @@ import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFro
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
 import { createFallbackImage, createPillowFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from './image-intake.js';
-import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
+import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, gradientFillToCSS, insertGradientStop, isFillStackSupported, isValidGradientFill, moveFillLayer, removeFillLayer, resolveGradientGeometry, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
@@ -82,6 +82,7 @@ const CPU_LIMIT = Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4));
 const PDF_EXPORT_JPEG_LIMIT = Math.min(128 * 1024 * 1024, PDF_PACKAGER_LIMITS.maxAggregateJpegBytes - 1);
 const state = {
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
+  gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(),
   draftNode: null, penDraft: null, penHover: null, pencilDraft: null, marquee: null, smartGuides: [], interaction: null, pointerMap: new Map(),
   sidebarTab: 'layers', inspectorTab: 'design', clipboard: [], controlEdit: false, layerSelectionMode: false,
@@ -137,6 +138,7 @@ let presentationPointerGesture = null;
 const presentationDragThreshold = 7;
 let textMeasureContext = null;
 let pendingFontImport = null;
+let gradientStopDrag = null;
 
 function activePage() { return getActivePage(state.document); }
 function selectedEntries() { return state.selectedIds.map(id => findNode(state.document, id)).filter(Boolean); }
@@ -516,6 +518,10 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
     state.imageCropDraftSelection = null;
   }
   state.selectedIds = nextSelectedIds;
+  if (state.gradientGeometryTarget
+    && (state.selectedIds.length !== 1 || state.selectedIds[0] !== state.gradientGeometryTarget.nodeId)) {
+    state.gradientGeometryTarget = null;
+  }
   syncActiveImageSource();
   if (refreshLayers) renderLayers();
   else {
@@ -796,12 +802,47 @@ function variablePropertyBindingControl(node, property, label) {
   }).join('');
   return `<label class="variable-binding-row"><span>${escapeHtml(label)}</span><select class="select-field" data-variable-property-binding="${property}" aria-label="${escapeHtml(label)} variable"><option value="">No variable</option>${options}</select></label>`;
 }
+function gradientGeometryTargetFor(node, { fillId = '', strokeId = '' } = {}) {
+  return {
+    nodeId: node.id,
+    ...(fillId ? { fillId } : {}),
+    ...(strokeId ? { strokeId } : {})
+  };
+}
+function gradientGeometryTargetMatches(left, right) {
+  return Boolean(left && right && left.nodeId === right.nodeId
+    && (left.fillId || '') === (right.fillId || '')
+    && (left.strokeId || '') === (right.strokeId || ''));
+}
+function gradientGeometryControls(node, gradient, { fillId = '', strokeId = '' } = {}) {
+  const target = gradientGeometryTargetFor(node, { fillId, strokeId });
+  const active = gradientGeometryTargetMatches(state.gradientGeometryTarget, target);
+  const ownerData = `data-gradient-node-id="${escapeHtml(node.id)}"${fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : ''}${strokeId ? ` data-stroke-id="${escapeHtml(strokeId)}"` : ''}`;
+  const entry = findNodeAcrossPages(state.document, node.id);
+  const disabled = node.locked || entry?.parents.some(parent => parent.locked);
+  const geometry = { ...node, ...resolvedGeometry(node) };
+  const handles = resolveGradientGeometry(gradient, { width: geometry.width, height: geometry.height })?.handles || [];
+  const labels = gradient.type === 'linear' ? ['Start', 'End', 'Width'] : ['Center', 'Radius axis 1', 'Radius axis 2'];
+  const fields = handles.map((point, index) => {
+    const x = Number((point.x / Math.max(1, geometry.width) * 100).toFixed(2));
+    const y = Number((point.y / Math.max(1, geometry.height) * 100).toFixed(2));
+    return `<div class="gradient-geometry-point" role="group" aria-label="${labels[index]} handle"><strong>${labels[index]}</strong><label>X %<input type="number" step="0.1" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="x" ${ownerData} value="${x}" aria-label="${labels[index]} handle X position in percent"${disabled ? ' disabled' : ''}/></label><label>Y %<input type="number" step="0.1" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="y" ${ownerData} value="${y}" aria-label="${labels[index]} handle Y position in percent"${disabled ? ' disabled' : ''}/></label></div>`;
+  }).join('');
+  return `<div class="gradient-geometry-controls"><button class="add-fill gradient-geometry-toggle" type="button" data-action="toggle-gradient-geometry" ${ownerData} aria-pressed="${active}"${disabled || handles.length !== 3 ? ' disabled' : ''}>${active ? 'Done editing on canvas' : 'Edit geometry on canvas'}</button><div class="image-properties-note">Drag the ${gradient.type === 'linear' ? 'start, end, and width' : 'center and radius axis'} handles on the canvas, or set their normalized positions here.</div><div class="gradient-geometry-fields"${active ? '' : ' hidden'}>${fields}</div></div>`;
+}
+function gradientStopRail(node, gradient, { fillId = '', strokeId = '' } = {}) {
+  const background = gradientFillToCSS(gradient);
+  if (!background) return '';
+  const ownerData = `data-gradient-node-id="${escapeHtml(node.id)}"${fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : ''}${strokeId ? ` data-stroke-id="${escapeHtml(strokeId)}"` : ''}`;
+  const handles = gradient.stops.map((stop, index) => `<button class="gradient-stop-handle" type="button" role="slider" aria-orientation="horizontal" aria-label="Gradient stop ${index + 1} position" aria-valuemin="0" aria-valuemax="100" aria-valuestep="1" aria-valuenow="${Math.round(stop.position * 100)}" aria-valuetext="${Math.round(stop.position * 100)} percent" title="Drag to move stop ${index + 1}; use arrow keys to adjust" data-gradient-stop-handle data-gradient-stop-id="${escapeHtml(stop.id)}" style="left:${Number((stop.position * 100).toFixed(4))}%;--gradient-stop-color:${escapeHtml(stop.color)}"${node.locked ? ' disabled' : ''}></button>`).join('');
+  return `<div class="gradient-stop-rail" role="group" aria-label="Gradient color stops"><div class="gradient-stop-track" data-gradient-stop-track ${ownerData} style="--gradient-preview:${escapeHtml(background)}">${handles}</div></div>`;
+}
 function gradientFillControls(node, gradient = node.fillGradient, fillId = '') {
   if (!gradient) return '';
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
-  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
-  const angle = gradient.type === 'linear' ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
-  return `${angle}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${fillData}${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Gradients stay editable in the design.</div>`;
+  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
+  const angle = gradient.type === 'linear' && !gradient.geometry ? `<div class="property-grid"><div class="property-field"><label>°</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="Gradient angle"${node.locked ? ' disabled' : ''}/></div></div>` : '';
+  return `${angle}${gradientGeometryControls(node, gradient, { fillId })}<div class="gradient-editor">${gradientStopRail(node, gradient, { fillId })}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${fillData}${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>`;
 }
 function imageFillSources() {
   const sources = new Map();
@@ -918,7 +959,7 @@ function strokeStackControls(node) {
       : '';
     const opacity = Math.round(stroke.opacity * 100);
     const gradient = stroke.gradient;
-    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient']])}${gradient ? `<div class="stroke-gradient-controls">${gradient.type === 'linear' ? `<label class="stroke-field"><span>Angle</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="1" value="${gradient.angle}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Gradient stops stay editable and render along the stroke bounds.</div></div>` : ''}</div>`;
+    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient']])}${gradient ? `<div class="stroke-gradient-controls">${gradient.type === 'linear' && !gradient.geometry ? `<label class="stroke-field"><span>Angle</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="1" value="${gradient.angle}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
     return `<div class="layer-effect-card stroke-stack-card" data-stroke-row="${id}">
       <div class="layer-effect-heading">
         <strong>${name}</strong>
@@ -3189,6 +3230,17 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
   if (state.tool === 'pencil') { startPencilStroke(world, event); event.preventDefault(); return; }
   if (state.tool === 'select') {
+    const gradientHandle = gradientGeometryHandleAt(event);
+    if (gradientHandle) {
+      const handles = normalizedGradientHandles(gradientHandle);
+      if (!handles) return;
+      state.interaction = {
+        kind: 'gradient-geometry', ...gradientHandle, handles,
+        pointerId: event.pointerId, changed: false,
+        historyTransaction: beginCanvasHistoryTransaction('Edit gradient geometry')
+      };
+      event.preventDefault(); return;
+    }
     const vectorControl = vectorPathControlAt(world, event.pointerType);
     if (vectorControl) {
       if (vectorControl.node.type === 'network') {
@@ -3387,6 +3439,11 @@ function onCanvasPointerMove(event) {
     point.out = { ...world };
     point.in = { x: point.x - (world.x - point.x), y: point.y - (world.y - point.y) };
     state.penHover = world; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'gradient-geometry') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (moveGradientGeometryHandle(interaction, world)) renderer.invalidate();
+    return;
   }
   if (interaction.kind === 'vector-control') {
     const geometry = { ...interaction.node, ...resolvedGeometry(interaction.node) };
@@ -3654,6 +3711,13 @@ function onCanvasPointerUp(event) {
     const point = state.penDraft?.anchors[interaction.pointIndex];
     if (point && !interaction.moved) { point.in = { x: point.x, y: point.y }; point.out = { x: point.x, y: point.y }; }
     state.interaction = null; renderer.invalidate(); return;
+  }
+  if (interaction.kind === 'gradient-geometry') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    if (!commitCanvasHistoryTransaction(interaction)) { renderer.invalidate(); return; }
+    recordGradientTrackChange(interaction);
+    renderInspector(); queueSave(); renderer.invalidate(); return;
   }
   if (interaction.kind === 'vector-control') {
     if (!commitCanvasHistoryTransaction(interaction)) { state.interaction = null; renderInspector(); renderer.invalidate(); return; }
@@ -4629,7 +4693,303 @@ function updateGradientInput(input) {
     syncLegacyFillFields(node);
     recordNodeComponentOverrides(node, ['fills', 'fillGradient']);
   } else recordNodeComponentOverrides(node, ['fillGradient']);
+  const track = input.closest('.gradient-editor')?.querySelector('[data-gradient-stop-track]');
+  if (track) syncGradientStopTrack(track, gradient);
   renderer.invalidate();
+}
+
+function gradientTrackContext(track) {
+  const node = findNodeAcrossPages(state.document, track.dataset.gradientNodeId)?.node;
+  if (!node || node.locked) return null;
+  let fill = null; let stroke = null; let gradient = null;
+  if (track.dataset.strokeId) {
+    stroke = node.strokes?.find(item => item.id === track.dataset.strokeId) || null;
+    gradient = stroke?.gradient || null;
+  } else if (track.dataset.fillId) {
+    fill = node.fills?.find(item => item.id === track.dataset.fillId) || null;
+    if (fill) gradient = fill.gradient || null;
+    else if (!node.fills && track.dataset.fillId === `legacy-fill:${node.id}`) gradient = node.fillGradient || null;
+  } else gradient = node.fillGradient || null;
+  return gradient ? { node, fill, stroke, gradient } : null;
+}
+
+function gradientGeometryContext(target = state.gradientGeometryTarget) {
+  const entry = target?.nodeId ? findNodeAcrossPages(state.document, target.nodeId) : null;
+  const node = entry?.node;
+  if (!node || node.locked || entry.parents.some(parent => parent.locked)) return null;
+  let fill = null; let stroke = null; let gradient = null;
+  if (target.strokeId) {
+    stroke = node.strokes?.find(item => item.id === target.strokeId) || null;
+    gradient = stroke?.gradient || null;
+  } else if (target.fillId) {
+    fill = node.fills?.find(item => item.id === target.fillId) || null;
+    gradient = fill?.gradient || null;
+    if (!fill && !node.fills && target.fillId === `legacy-fill:${node.id}`) gradient = node.fillGradient || null;
+  } else gradient = node.fillGradient || null;
+  if (!gradient) return null;
+  const geometry = { ...node, ...resolvedGeometry(node) };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const resolved = resolveGradientGeometry(gradient, { width: geometry.width, height: geometry.height });
+  return resolved ? { node, fill, stroke, gradient, geometry, ancestors, handles: resolved.handles } : null;
+}
+
+function gradientGeometryHandleAt(event) {
+  const target = state.gradientGeometryTarget;
+  if (!target || state.selectedIds.length !== 1 || state.selectedIds[0] !== target.nodeId) return null;
+  const context = gradientGeometryContext(target);
+  if (!context) return null;
+  const handles = context.handles.map((point, index) => ({
+    index,
+    point: worldToScreen(nodeLocalToPage(context.geometry, point, context.ancestors), canvas, state)
+  }));
+  const hit = nearestScreenHandle({ x: event.clientX, y: event.clientY }, handles, event.pointerType === 'touch' ? 24 : 12);
+  return hit ? { ...context, handleIndex: hit.index } : null;
+}
+
+function normalizedGradientHandles(context) {
+  const width = Math.max(1, context.geometry.width);
+  const height = Math.max(1, context.geometry.height);
+  if (![width, height].every(Number.isFinite)) return null;
+  return context.handles.map(point => ({ x: point.x / width, y: point.y / height }));
+}
+
+function updateGradientGeometryInput(input) {
+  const target = {
+    nodeId: input.dataset.gradientNodeId,
+    ...(input.dataset.fillId ? { fillId: input.dataset.fillId } : {}),
+    ...(input.dataset.strokeId ? { strokeId: input.dataset.strokeId } : {})
+  };
+  const context = gradientGeometryContext(target);
+  const index = Number(input.dataset.gradientGeometryIndex);
+  const axis = input.dataset.gradientGeometryAxis;
+  const value = Number(input.value) / 100;
+  if (!context || !Number.isInteger(index) || index < 0 || index > 2 || !['x', 'y'].includes(axis)
+    || !Number.isFinite(value) || Math.abs(value) > 1_000_000) return;
+  const handles = context.gradient.geometry?.handles
+    ? structuredClone(context.gradient.geometry.handles)
+    : normalizedGradientHandles(context);
+  if (!handles) return;
+  const previous = handles[index][axis];
+  handles[index][axis] = value;
+  const candidate = { ...context.gradient, geometry: { ...(context.gradient.geometry || {}), handles } };
+  if (!isValidGradientFill(candidate)) {
+    input.setAttribute('aria-invalid', 'true');
+    return;
+  }
+  input.removeAttribute('aria-invalid');
+  if (Object.is(previous, value)) return;
+  if (!state.controlEdit) { checkpoint('Edit gradient geometry'); state.controlEdit = true; }
+  context.gradient.geometry = candidate.geometry;
+  recordGradientTrackChange(context);
+  renderer.invalidate();
+}
+
+function moveGradientGeometryHandle(interaction, world) {
+  const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+  const next = structuredClone(interaction.handles);
+  next[interaction.handleIndex] = {
+    x: local.x / Math.max(1, interaction.geometry.width),
+    y: local.y / Math.max(1, interaction.geometry.height)
+  };
+  const candidate = { ...interaction.gradient, geometry: { ...(interaction.gradient.geometry || {}), handles: next } };
+  if (!isValidGradientFill(candidate)) return false;
+  if (JSON.stringify(candidate.geometry.handles) === JSON.stringify(interaction.gradient.geometry?.handles)) return false;
+  interaction.gradient.geometry = candidate.geometry;
+  interaction.handles = next;
+  interaction.changed = true;
+  recordGradientTrackChange(interaction);
+  return true;
+}
+
+function insertGradientStopInLargestGap(gradient) {
+  const stops = [...(gradient?.stops || [])].sort((left, right) => left.position - right.position);
+  if (stops.length < 2 || stops.length >= 8) return null;
+  let left = stops[0]; let right = stops[1];
+  for (let index = 1; index < stops.length - 1; index += 1) {
+    if (stops[index + 1].position - stops[index].position > right.position - left.position) {
+      left = stops[index]; right = stops[index + 1];
+    }
+  }
+  return insertGradientStop(gradient, (left.position + right.position) / 2, createId('stop'));
+}
+
+function settleGradientEditBeforeGesture() {
+  if (!state.controlEdit) return;
+  clearTimeout(state.statusTimer);
+  state.statusTimer = 0;
+  state.controlEdit = false;
+  renderLayers();
+  renderAssetsTab();
+  queueSave();
+}
+
+function beginGradientTrackEdit(label) {
+  settleGradientEditBeforeGesture();
+  checkpoint(label);
+  state.controlEdit = true;
+}
+
+function recordGradientTrackChange(context) {
+  const { node, fill, stroke } = context;
+  if (stroke) {
+    syncLegacyStrokeFields(node);
+    recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+  } else if (fill) {
+    syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', 'fillGradient']);
+  } else recordNodeComponentOverrides(node, ['fillGradient']);
+}
+
+function syncGradientStopTrack(track, gradient, { reorder = true } = {}) {
+  const background = gradientFillToCSS(gradient);
+  if (!background) return;
+  track.style.setProperty('--gradient-preview', background);
+  if (reorder) for (const stop of gradient.stops) {
+    const handle = [...track.querySelectorAll('[data-gradient-stop-handle]')]
+      .find(item => item.dataset.gradientStopId === stop.id);
+    if (handle) track.append(handle);
+  }
+  for (const handle of track.querySelectorAll('[data-gradient-stop-handle]')) {
+    const current = gradient.stops.find(item => item.id === handle.dataset.gradientStopId);
+    if (!current) continue;
+    const percent = Math.round(current.position * 100);
+    const index = gradient.stops.indexOf(current);
+    handle.style.setProperty('--gradient-stop-color', current.color);
+    handle.style.left = `${Number((current.position * 100).toFixed(4))}%`;
+    handle.setAttribute('aria-valuenow', String(percent));
+    handle.setAttribute('aria-valuetext', `${percent} percent`);
+    handle.setAttribute('aria-label', `Gradient stop ${index + 1} position`);
+    handle.title = `Drag to move stop ${index + 1}; use arrow keys to adjust`;
+  }
+  const controls = track.closest('.gradient-editor, .stroke-gradient-controls');
+  const rowsContainer = controls?.querySelector('.gradient-stops');
+  if (reorder && rowsContainer) for (const stop of gradient.stops) {
+    const row = [...rowsContainer.querySelectorAll('[data-gradient-stop-row]')]
+      .find(item => item.dataset.gradientStopId === stop.id);
+    if (row) rowsContainer.append(row);
+  }
+  for (const row of controls?.querySelectorAll('[data-gradient-stop-row]') || []) {
+    const current = gradient.stops.find(item => item.id === row.dataset.gradientStopId);
+    if (!current) continue;
+    const index = gradient.stops.indexOf(current);
+    const percent = Math.round(current.position * 100);
+    const labels = row.querySelectorAll('label span');
+    if (labels[0]) labels[0].textContent = `Stop ${index + 1}`;
+    if (labels[1]) labels[1].textContent = `${percent}%`;
+    const colorInput = row.querySelector('input[type="color"]');
+    const positionInput = row.querySelector('input[type="number"]');
+    if (colorInput) colorInput.setAttribute('aria-label', `Gradient stop ${index + 1} color`);
+    if (positionInput) {
+      positionInput.value = String(percent);
+      positionInput.setAttribute('aria-label', `Gradient stop ${index + 1} position`);
+    }
+    row.querySelector('button[data-action="remove-gradient-stop"], button[data-action="remove-stroke-gradient-stop"]')
+      ?.setAttribute('aria-label', `Remove gradient stop ${index + 1}`);
+  }
+}
+
+function moveGradientStop(track, stopId, position, { reorder = true } = {}) {
+  const context = gradientTrackContext(track);
+  if (!context || !Number.isFinite(position)) return false;
+  const stop = context.gradient.stops.find(item => item.id === stopId);
+  if (!stop) return false;
+  const nextPosition = Math.max(0, Math.min(1, position));
+  if (stop.position === nextPosition) return false;
+  stop.position = nextPosition;
+  context.gradient.stops.sort((left, right) => left.position - right.position);
+  recordGradientTrackChange(context);
+  syncGradientStopTrack(track, context.gradient, { reorder });
+  renderer.invalidate();
+  return true;
+}
+
+function addGradientStopAtPosition(track, position) {
+  const context = gradientTrackContext(track);
+  if (!context) return;
+  const inserted = insertGradientStop(context.gradient, position, createId('stop'));
+  if (!inserted) { showToast('A gradient can have up to 8 color stops.'); return; }
+  settleGradientEditBeforeGesture();
+  checkpoint('Add gradient stop');
+  context.gradient.stops = inserted.stops;
+  recordGradientTrackChange(context);
+  renderInspector(); queueSave(); renderer.invalidate();
+}
+
+function beginGradientStopPointer(event) {
+  const handle = event.target.closest('[data-gradient-stop-handle]');
+  if (!handle || handle.disabled || event.button !== 0 || state.documentTransitioning || gradientStopDrag) return;
+  const track = handle.closest('[data-gradient-stop-track]');
+  const context = track && gradientTrackContext(track);
+  if (!context || !context.gradient.stops.some(stop => stop.id === handle.dataset.gradientStopId)) return;
+  settleGradientEditBeforeGesture();
+  gradientStopDrag = { pointerId: event.pointerId, track, handle, stopId: handle.dataset.gradientStopId, changed: false };
+  try { handle.setPointerCapture(event.pointerId); } catch { /* Pointer capture is optional in older embedded browsers. */ }
+  handle.focus({ preventScroll: true });
+  event.preventDefault();
+}
+
+function updateGradientStopPointer(event) {
+  const drag = gradientStopDrag;
+  if (!drag || drag.pointerId !== event.pointerId || state.documentTransitioning) return;
+  const bounds = drag.track.getBoundingClientRect();
+  if (!(bounds.width > 0)) return;
+  const position = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+  const context = gradientTrackContext(drag.track);
+  const stop = context?.gradient.stops.find(item => item.id === drag.stopId);
+  if (!stop || stop.position === position) return;
+  if (!drag.changed) {
+    beginGradientTrackEdit('Move gradient stop');
+    drag.changed = true;
+  }
+  moveGradientStop(drag.track, drag.stopId, position, { reorder: false });
+}
+
+function finishGradientStopPointer(event) {
+  if (!gradientStopDrag || (event?.pointerId != null && gradientStopDrag.pointerId !== event.pointerId)) return;
+  const { handle, pointerId, track, changed } = gradientStopDrag;
+  gradientStopDrag = null;
+  try { if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId); } catch { /* Pointer capture may already be gone. */ }
+  if (changed) {
+    const context = gradientTrackContext(track);
+    if (context) syncGradientStopTrack(track, context.gradient);
+  }
+  if (changed || state.controlEdit) finishGradientStopInput();
+}
+
+function handleGradientStopKey(event) {
+  const handle = event.target.closest('[data-gradient-stop-handle]');
+  if (!handle || handle.disabled || state.documentTransitioning) return false;
+  const track = handle.closest('[data-gradient-stop-track]');
+  const context = track && gradientTrackContext(track);
+  const stop = context?.gradient.stops.find(item => item.id === handle.dataset.gradientStopId);
+  if (!stop) return false;
+  const step = event.shiftKey ? 0.1 : 0.01;
+  let position = stop.position;
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') position -= step;
+  else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') position += step;
+  else if (event.key === 'Home') position = 0;
+  else if (event.key === 'End') position = 1;
+  else return false;
+  event.preventDefault();
+  event.stopPropagation();
+  position = Math.max(0, Math.min(1, position));
+  if (position !== stop.position) {
+    if (!state.controlEdit) beginGradientTrackEdit('Move gradient stop');
+    moveGradientStop(track, handle.dataset.gradientStopId, position);
+    finishGradientStopInput();
+  }
+  return true;
+}
+
+function finishGradientStopInput() {
+  if (!state.controlEdit) return;
+  clearTimeout(state.statusTimer);
+  state.statusTimer = setTimeout(() => {
+    state.controlEdit = false;
+    renderLayers();
+    renderAssetsTab();
+    queueSave();
+  }, 160);
 }
 
 function updateFillInput(input) {
@@ -4728,6 +5088,8 @@ function updateStrokeInput(input) {
   else return;
   syncLegacyStrokeFields(node);
   recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokeVariableId', 'variableBindings']);
+  const track = input.closest('.stroke-gradient-controls')?.querySelector('[data-gradient-stop-track]');
+  if (track && stroke.gradient) syncGradientStopTrack(track, stroke.gradient);
   renderer.invalidate();
 }
 
@@ -5307,6 +5669,7 @@ function updateNetworkFaceInput(input) {
 }
 
 function finishInspectorInput() {
+  if (gradientStopDrag) return;
   if (!state.controlEdit) return;
   clearTimeout(state.statusTimer);
   state.statusTimer = setTimeout(() => { state.controlEdit = false; renderLayers(); renderInspector(); renderAssetsTab(); queueSave(); }, 160);
@@ -6533,7 +6896,7 @@ function commitVariableNameDialog() {
 function showMenu(items, x, y, returnFocusElement = null, menuLabel = 'Editor actions') {
   const menu = $('#context-menu');
   menu._returnFocusElement?.setAttribute('aria-expanded', 'false');
-  menu.replaceChildren(); menu.hidden = false; menu._returnFocusElement = returnFocusElement;
+  menu.replaceChildren(); menu.hidden = false; menu._returnFocusElement = returnFocusElement; menu._focusAfterAction = null;
   menu.setAttribute('aria-label', menuLabel);
   if (returnFocusElement?.hasAttribute?.('aria-expanded')) returnFocusElement.setAttribute('aria-expanded', 'true');
   for (const item of items) {
@@ -6551,13 +6914,19 @@ function showMenu(items, x, y, returnFocusElement = null, menuLabel = 'Editor ac
       returnFocus?.setAttribute('aria-expanded', 'false');
       menu.hidden = true; menu._returnFocusElement = null;
       item.action?.();
-      if (returnFocus && !document.querySelector('dialog[open]')) {
-        const currentRow = (returnLayerId && layerRowsById.get(returnLayerId)) || layerRowsById.get(state.selectedIds[0]);
-        const fallback = currentRow?.querySelector('[data-action="layer-actions-menu"]')
-          || currentRow
-          || $('#layer-select-mode');
-        const target = menuFocusReturnTarget(returnFocus, fallback);
-        if (!target?.closest('[inert]')) target?.focus({ preventScroll: true });
+      const focusAfterAction = menu._focusAfterAction;
+      menu._focusAfterAction = null;
+      if (!document.querySelector('dialog[open]')) {
+        if (focusAfterAction?.isConnected) focusAfterAction.focus({ preventScroll: true });
+        else if (returnFocus) {
+          const currentRow = (returnLayerId && layerRowsById.get(returnLayerId)) || layerRowsById.get(state.selectedIds[0]);
+          const fallback = currentRow?.querySelector('[data-action="layer-actions-menu"]')
+            || currentRow
+            || $('#layer-select-mode');
+          const target = menuFocusReturnTarget(returnFocus, fallback);
+          if (!target?.closest('[inert]')) target?.focus({ preventScroll: true });
+          else if (!$('#bulk-bar').hidden) $('#bulk-bar')?.focus({ preventScroll: true });
+        }
       }
     });
     menu.append(button);
@@ -6650,7 +7019,18 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   if (images.length) {
     items.push({ separator: true }, { label: images.length > 1 ? `Export ${images.length} images as ZIP` : 'Export selected image', action: exportSelectionPng });
     items.push({ separator: true }, { label: `Apply recipe to ${images.length} image${images.length === 1 ? '' : 's'}`, labelOnly: true });
-    if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({ label: recipe.name, className: 'recipe-option', action: () => startRecipe(recipe, images.map(item => item.id)) });
+    if (state.document.recipes.length) for (const recipe of state.document.recipes) items.push({
+      label: recipe.name,
+      className: 'recipe-option',
+      action: () => {
+        state.layerSelectionMode = false;
+        renderLayers();
+        closeMobilePanels({ restoreFocus: false });
+        if (startRecipe(recipe, images.map(item => item.id))) {
+          $('#context-menu')._focusAfterAction = $('#bulk-bar');
+        }
+      }
+    });
     else items.push({ label: 'Save a recipe from an edited image first', className: 'recipe-option is-empty', disabled: true });
   }
   const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text'
@@ -9419,27 +9799,46 @@ function applyInspectorAction(action, details = {}) {
     showToast('Slices are export regions and cannot trigger prototype actions.');
     return;
   }
+  if (action === 'toggle-gradient-geometry') {
+    if (!node || node.locked) return;
+    const target = {
+      nodeId: details.gradientNodeId || node.id,
+      ...(details.fillId ? { fillId: details.fillId } : {}),
+      ...(details.strokeId ? { strokeId: details.strokeId } : {})
+    };
+    if (!gradientGeometryContext(target)) return;
+    state.gradientGeometryTarget = gradientGeometryTargetMatches(state.gradientGeometryTarget, target) ? null : target;
+    for (const button of $$('[data-action="toggle-gradient-geometry"]')) {
+      const buttonTarget = {
+        nodeId: button.dataset.gradientNodeId,
+        ...(button.dataset.fillId ? { fillId: button.dataset.fillId } : {}),
+        ...(button.dataset.strokeId ? { strokeId: button.dataset.strokeId } : {})
+      };
+      const active = gradientGeometryTargetMatches(state.gradientGeometryTarget, buttonTarget);
+      button.setAttribute('aria-pressed', String(active));
+      button.textContent = active ? 'Done editing on canvas' : 'Edit geometry on canvas';
+      const fields = button.parentElement?.querySelector('.gradient-geometry-fields');
+      if (fields) fields.hidden = !active;
+    }
+    renderer.invalidate();
+    return;
+  }
   if (action === 'add-stroke-gradient-stop' || action === 'remove-stroke-gradient-stop') {
     if (!node || node.locked) return;
     const stroke = ensureStrokeStack(node).find(item => item.id === details.strokeId);
     if (!stroke?.gradient) return;
     const gradient = structuredClone(stroke.gradient);
     if (action === 'add-stroke-gradient-stop') {
-      const stops = [...gradient.stops].sort((a, b) => a.position - b.position);
-      if (stops.length >= 8) { showToast('A gradient can have up to 8 color stops.'); return; }
-      let left = stops[0]; let right = stops[1];
-      for (let index = 1; index < stops.length - 1; index += 1) {
-        if (stops[index + 1].position - stops[index].position > right.position - left.position) { left = stops[index]; right = stops[index + 1]; }
-      }
-      gradient.stops.push({ id: createId('stop'), color: left.color, position: (left.position + right.position) / 2 });
-      gradient.stops.sort((a, b) => a.position - b.position);
+      const inserted = insertGradientStopInLargestGap(gradient);
+      if (!inserted) { showToast('A gradient can have up to 8 color stops.'); return; }
       checkpoint('Add stroke gradient stop');
+      updateStroke(node, stroke.id, { gradient: inserted });
     } else {
       if (gradient.stops.length <= 2 || !gradient.stops.some(stop => stop.id === details.stopId)) return;
       gradient.stops = gradient.stops.filter(stop => stop.id !== details.stopId);
       checkpoint('Remove stroke gradient stop');
+      updateStroke(node, stroke.id, { gradient });
     }
-    updateStroke(node, stroke.id, { gradient });
     recordNodeComponentOverrides(node, ['strokes', 'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit']);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
@@ -9549,24 +9948,21 @@ function applyInspectorAction(action, details = {}) {
   }
   if (action === 'align-selection') alignSelectedLayers(details.alignMode);
   else if (action === 'add-gradient-stop' && node && !node.locked) {
-    const fill = details.fillId ? ensureFillStack(node).find(item => item.id === details.fillId) : null;
-    const gradient = fill?.gradient || node.fillGradient;
+    const fill = details.fillId ? node.fills?.find(item => item.id === details.fillId) || null : null;
+    const legacyPrimary = !node.fills && (!details.fillId || details.fillId === `legacy-fill:${node.id}`);
+    const gradient = fill?.gradient || (legacyPrimary ? node.fillGradient : null);
     if (!gradient) return;
-    const stops = [...gradient.stops].sort((a, b) => a.position - b.position);
-    if (stops.length >= 8) { showToast('A gradient can have up to 8 color stops.'); return; }
-    let left = stops[0]; let right = stops[1];
-    for (let index = 1; index < stops.length - 1; index += 1) {
-      if (stops[index + 1].position - stops[index].position > right.position - left.position) { left = stops[index]; right = stops[index + 1]; }
-    }
+    const inserted = insertGradientStopInLargestGap(gradient);
+    if (!inserted) { showToast('A gradient can have up to 8 color stops.'); return; }
     checkpoint('Add gradient stop');
-    gradient.stops.push({ id: createId('stop'), color: left.color, position: (left.position + right.position) / 2 });
-    gradient.stops.sort((a, b) => a.position - b.position);
+    gradient.stops = inserted.stops;
     if (fill) { syncLegacyFillFields(node); recordNodeComponentOverrides(node, ['fills', 'fillGradient']); }
     else recordNodeComponentOverrides(node, ['fillGradient']);
     renderInspector(); queueSave(); renderer.invalidate();
   } else if (action === 'remove-gradient-stop' && node && !node.locked) {
-    const fill = details.fillId ? ensureFillStack(node).find(item => item.id === details.fillId) : null;
-    const gradient = fill?.gradient || node.fillGradient;
+    const fill = details.fillId ? node.fills?.find(item => item.id === details.fillId) || null : null;
+    const legacyPrimary = !node.fills && (!details.fillId || details.fillId === `legacy-fill:${node.id}`);
+    const gradient = fill?.gradient || (legacyPrimary ? node.fillGradient : null);
     if (!gradient || gradient.stops.length <= 2 || !gradient.stops.some(stop => stop.id === details.stopId)) return;
     checkpoint('Remove gradient stop');
     gradient.stops = gradient.stops.filter(stop => stop.id !== details.stopId);
@@ -10291,6 +10687,8 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    const gradientGeometryField = event.target.closest('[data-gradient-geometry-field]');
+    if (gradientGeometryField) { updateGradientGeometryInput(gradientGeometryField); return; }
     const strokeField = event.target.closest('[data-stroke-field]');
     if (strokeField) { updateStrokeInput(strokeField); return; }
     const fillField = event.target.closest('[data-fill-field]');
@@ -10369,6 +10767,7 @@ function initEvents() {
     if (event.target.matches('[data-stroke-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-fill-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-image-fill-field]')) { finishInspectorInput(); return; }
+    if (event.target.matches('[data-gradient-geometry-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-gradient-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-effect-field]')) { finishInspectorInput(); return; }
     if (event.target.matches('[data-network-face-fill], [data-network-face-opacity]')) { finishInspectorInput(); return; }
@@ -10464,8 +10863,22 @@ function initEvents() {
     if (event.target.id === 'prototype-overlay-color') state.prototypeOverlayBackgroundColor = event.target.value;
     if (event.target.id === 'prototype-overlay-opacity') state.prototypeOverlayBackgroundOpacity = Number(event.target.value) / 100;
   });
+  $('#inspector-content').addEventListener('pointerdown', beginGradientStopPointer);
+  $('#inspector-content').addEventListener('pointermove', updateGradientStopPointer);
+  $('#inspector-content').addEventListener('pointerup', finishGradientStopPointer);
+  $('#inspector-content').addEventListener('pointercancel', finishGradientStopPointer);
+  $('#inspector-content').addEventListener('lostpointercapture', finishGradientStopPointer);
+  $('#inspector-content').addEventListener('keydown', handleGradientStopKey);
   $('#inspector-content').addEventListener('focusout', finishInspectorInput);
   $('#inspector-content').addEventListener('click', event => {
+    const gradientHandle = event.target.closest('[data-gradient-stop-handle]');
+    if (gradientHandle) return;
+    const gradientTrack = event.target.closest('[data-gradient-stop-track]');
+    if (gradientTrack) {
+      const bounds = gradientTrack.getBoundingClientRect();
+      if (bounds.width > 0) addGradientStopAtPosition(gradientTrack, (event.clientX - bounds.left) / bounds.width);
+      return;
+    }
     const commentAction = event.target.closest('[data-comment-action]');
     if (commentAction) { handleCommentAction(commentAction); return; }
     const copy = event.target.closest('[data-inspect-copy]');

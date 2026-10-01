@@ -664,6 +664,7 @@ test('imports gradients that map faithfully to editable linear and radial fills'
   assert.equal(wide.fillGradient.type, 'linear');
   assert.equal(wide.fillGradient.angle, 0);
   assert.deepEqual(wide.fillGradient.stops.map(({ color, position }) => [color, position]), [['#ff0000', 0], ['#0000ff', 1]]);
+  assert.deepEqual(wide.fillGradient.geometry.handles, [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }]);
   assert.equal(new Set(wide.fillGradient.stops.map(stop => stop.id)).size, 2);
   const tall = nodes.find(node => node.name === 'tall');
   assert.equal(tall.fillGradient.type, 'linear');
@@ -671,9 +672,45 @@ test('imports gradients that map faithfully to editable linear and radial fills'
   const square = nodes.find(node => node.name === 'square');
   assert.equal(square.fillGradient.type, 'radial');
   assert.equal(square.fillOpacity, 0.5);
-  assert.ok(square.fillGradient.stops[1].position < 1, 'radial stop positions scale to the editor’s larger circle');
+  assert.deepEqual(square.fillGradient.geometry.handles, [{ x: .5, y: .5 }, { x: 1, y: .5 }, { x: .5, y: 1 }]);
+  assert.equal(square.fillGradient.stops[1].position, 1, 'radial stop positions stay attached to the explicit radius handles');
   const shifted = nodes.find(node => node.name === 'shifted-fill');
-  assert.deepEqual(shifted.fillGradient.stops.map(stop => stop.position), [0, 0.25, 0.75, 1]);
+  assert.deepEqual(shifted.fillGradient.geometry.handles, [{ x: .25, y: 0 }, { x: .75, y: 0 }, { x: .25, y: .5 }]);
+  assert.deepEqual(shifted.fillGradient.stops.map(stop => stop.position), [0, 1]);
+});
+
+test('imports and round-trips skewed linear and elliptical radial gradient geometry', () => {
+  const imported = importSvgToLayers(`<svg width="180" height="100">
+    <defs>
+      <linearGradient id="skewed" x1="10%" y1="20%" x2="90%" y2="70%" gradientTransform="matrix(1 .2 .35 1 .05 -.1)">
+        <stop offset="0" stop-color="#112233"/><stop offset=".4" stop-color="#44aa88"/><stop offset="1" stop-color="#ddeeff"/>
+      </linearGradient>
+      <radialGradient id="ellipse" cx="40%" cy="55%" r="35%" gradientTransform="matrix(1 .2 .4 .75 .1 .15)">
+        <stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/>
+      </radialGradient>
+    </defs>
+    <rect id="skewed-layer" x="10" y="10" width="100" height="50" fill="url(#skewed)"/>
+    <rect id="elliptical-layer" x="20" y="20" width="80" height="40" fill="url(#ellipse)"/>
+  </svg>`);
+  const nodes = allNodes(imported.nodes);
+  const cases = [
+    ['skewed-layer', 'linear'], ['elliptical-layer', 'radial']
+  ];
+  const close = (left, right) => Math.abs(left - right) < 1e-9;
+  for (const [name, type] of cases) {
+    const original = nodes.find(node => node.name === name);
+    assert.equal(original.fillGradient.type, type);
+    assert.equal(original.fillGradient.geometry.handles.length, 3);
+    const svg = exportNodeToSvg(original);
+    assert.match(svg, type === 'linear' ? /<linearGradient[^>]*gradientTransform="matrix\(/ : /<radialGradient[^>]*gradientTransform="matrix\(/);
+    const roundTripped = allNodes(importSvgToLayers(svg).nodes).find(node => node.fillGradient?.type === type);
+    assert.deepEqual(roundTripped.fillGradient.stops.map(({ color, position }) => [color, position]),
+      original.fillGradient.stops.map(({ color, position }) => [color, position]));
+    original.fillGradient.geometry.handles.forEach((handle, index) => {
+      assert.ok(close(roundTripped.fillGradient.geometry.handles[index].x, handle.x), `${name} handle ${index} x`);
+      assert.ok(close(roundTripped.fillGradient.geometry.handles[index].y, handle.y), `${name} handle ${index} y`);
+    });
+  }
 });
 
 test('rejects SVG gradients the editable fill model would render differently', () => {
@@ -681,6 +718,9 @@ test('rejects SVG gradients the editable fill model would render differently', (
   importFailure(`<svg><rect width="20" height="10" fill="url(#repeat)"/><defs><linearGradient id="repeat" spreadMethod="repeat"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'unsupported-gradient');
   importFailure(`<svg><rect width="20" height="10" fill="url(#alpha)"/><defs><linearGradient id="alpha"><stop stop-opacity=".2"/><stop offset="1" stop-opacity=".8"/></linearGradient></defs></svg>`, 'unsupported-gradient');
   importFailure(`<svg><rect width="20" height="10" fill="url(#focus)"/><defs><radialGradient id="focus" fx="20%"><stop/><stop offset="1"/></radialGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#singular)"/><defs><linearGradient id="singular" gradientTransform="scale(1 0)"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#near-singular)"/><defs><linearGradient id="near-singular" gradientTransform="matrix(1 1 1 1.000000000000001 0 0)"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'unsupported-gradient');
+  importFailure(`<svg><rect width="20" height="10" fill="url(#inner)"/><defs><radialGradient id="inner" fr="10%"><stop/><stop offset="1"/></radialGradient></defs></svg>`, 'unsupported-gradient');
   importFailure(`<svg><rect width="20" height="10" fill="url(#bad)"/><defs><linearGradient id="bad" href="#other"><stop/><stop offset="1"/></linearGradient></defs></svg>`, 'external-reference');
 });
 

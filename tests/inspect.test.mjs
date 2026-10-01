@@ -410,6 +410,21 @@ test('Inspect output includes editable gradient fills in CSS and structured laye
   assert.deepEqual(output.layers[0].fillGradient, gradient);
 });
 
+test('Inspect exports geometry gradients against the selected layer dimensions', () => {
+  const document = createDocument();
+  const gradient = createGradientFill('linear', '#ff0000');
+  gradient.stops[1].color = '#0000ff';
+  gradient.geometry = { handles: [
+    { x: 0.2, y: 0.2 }, { x: 0.8, y: 0.4 }, { x: 0.1, y: 0.9 }
+  ] };
+  const shape = createNode('rectangle', { width: 200, height: 100, fillGradient: gradient });
+  addNode(document, shape);
+
+  const output = buildInspectOutput(document, [findNode(document, shape.id)]);
+  assert.match(output.css, /background: linear-gradient\(105\.945396deg, rgba\(255, 0, 0, 1\) 20%, rgba\(0, 0, 255, 1\) 75%\);/);
+  assert.deepEqual(output.layers[0].fillGradient, gradient);
+});
+
 test('Inspect output preserves image-fill source and edit settings in layer data', () => {
   const document = createDocument();
   const imageFill = createImageFill('local-image-a', { fit: 'contain', adjustments: { brightness: -10, contrast: 8, saturation: 4, blur: 1 } });

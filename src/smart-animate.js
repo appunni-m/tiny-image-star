@@ -32,17 +32,64 @@ function interpolateColor(from, to, progress) {
 }
 
 function canInterpolateGradient(from, to) {
-  return isValidGradientFill(from) && isValidGradientFill(to)
-    && from.type === to.type && from.stops.length === to.stops.length;
+  if (!isValidGradientFill(from) || !isValidGradientFill(to)
+      || from.type !== to.type || from.stops.length !== to.stops.length) return false;
+
+  // Geometry is stored in normalized layer coordinates, so matching geometry
+  // can be interpolated without needing either node's bounds. A transition
+  // between geometry and angle-only legacy gradients needs those bounds to
+  // derive equivalent handles; keep that transition on the existing midpoint
+  // snapshot path instead of guessing.
+  const fromHasGeometry = from.geometry != null;
+  const toHasGeometry = to.geometry != null;
+  if (fromHasGeometry !== toHasGeometry) return false;
+  if (fromHasGeometry && (!isValidGradientGeometry(from.geometry) || !isValidGradientGeometry(to.geometry))) return false;
+  return true;
+}
+
+function isValidGradientGeometry(geometry) {
+  return Boolean(geometry && typeof geometry === 'object' && !Array.isArray(geometry)
+    && Array.isArray(geometry.handles) && geometry.handles.length === 3
+    && geometry.handles.every(handle => handle && typeof handle === 'object' && !Array.isArray(handle)
+      && Number.isFinite(handle.x) && Number.isFinite(handle.y)));
+}
+
+// Canvas and SVG gradient transforms become unstable well before their affine
+// basis reaches an exactly zero determinant. Compare the basis area against
+// the square of its longest axis so this remains scale-independent and also
+// catches one axis collapsing while the other stays finite.
+function hasStableGradientBasis(geometry) {
+  if (!isValidGradientGeometry(geometry)) return false;
+  const [origin, xAxis, yAxis] = geometry.handles;
+  const ux = xAxis.x - origin.x;
+  const uy = xAxis.y - origin.y;
+  const vx = yAxis.x - origin.x;
+  const vy = yAxis.y - origin.y;
+  const xLengthSquared = ux * ux + uy * uy;
+  const yLengthSquared = vx * vx + vy * vy;
+  const scaleSquared = Math.max(xLengthSquared, yLengthSquared);
+  const area = ux * vy - uy * vx;
+  return Number.isFinite(scaleSquared) && Number.isFinite(area)
+    && scaleSquared > 0 && Math.abs(area) > scaleSquared * 1e-8;
 }
 
 function interpolateGradient(from, to, progress) {
   if (progress === 0) return structuredClone(from);
   if (progress === 1) return structuredClone(to);
   const angle = interpolateRotation(from.angle, to.angle, progress);
-  return {
+  const result = {
     ...structuredClone(to),
     angle: ((angle % 360) + 360) % 360,
+    ...(from.geometry != null ? {
+      geometry: {
+        ...structuredClone(to.geometry),
+        handles: to.geometry.handles.map((handle, index) => ({
+          ...structuredClone(handle),
+          x: from.geometry.handles[index].x + (handle.x - from.geometry.handles[index].x) * progress,
+          y: from.geometry.handles[index].y + (handle.y - from.geometry.handles[index].y) * progress
+        }))
+      }
+    } : {}),
     stops: to.stops.map((stop, index) => {
       const start = from.stops[index];
       return {
@@ -52,6 +99,14 @@ function interpolateGradient(from, to, progress) {
       };
     })
   };
+  if (result.geometry && !hasStableGradientBasis(result.geometry)) {
+    // Keep all other animated gradient properties continuous, but never feed
+    // an almost-singular matrix to a renderer. Geometry changes are discrete
+    // only inside the narrow degenerate interval, with the same midpoint rule
+    // used for incompatible paint snapshots elsewhere in Smart Animate.
+    result.geometry = structuredClone(progress < 0.5 ? from.geometry : to.geometry);
+  }
+  return result;
 }
 
 function fillBindingKey(node, fill) {

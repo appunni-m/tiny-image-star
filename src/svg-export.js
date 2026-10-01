@@ -1,6 +1,6 @@
 import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
 import { layoutPlainText, layoutTextRuns, textGraphemes, transformTextCase } from './text-layout.js';
-import { fillStackForNode, isValidFillStack, isValidGradientFill } from './fills.js';
+import { fillStackForNode, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
 import { isImageFillSupported, isValidImageFill } from './image-fills.js';
 import { imageCropPixels, isValidImageTransforms, normalizeImageTransforms } from './image-transforms.js';
@@ -225,6 +225,52 @@ function color(document, node, kind) {
   return value;
 }
 
+function normalizedGradientHandles(node, gradient, width, height) {
+  if (gradient.geometry == null) return null;
+  const geometry = gradient.geometry;
+  const invalid = () => new TypeError(`SVG export requires exactly three finite object-space gradient handles on layer ${node.name || node.id || '(unnamed)'}.`);
+  if (!geometry || typeof geometry !== 'object' || Array.isArray(geometry)
+    || Object.keys(geometry).some(key => key !== 'handles')
+    || !Array.isArray(geometry.handles) || geometry.handles.length !== 3) throw invalid();
+  for (const handle of geometry.handles) {
+    if (!handle || typeof handle !== 'object' || Array.isArray(handle)
+      || Object.keys(handle).some(key => key !== 'x' && key !== 'y')
+      || !Number.isFinite(handle.x) || !Number.isFinite(handle.y)) throw invalid();
+  }
+  if (!isValidGradientBasis(geometry.handles)) {
+    throw new TypeError(`SVG export cannot represent a degenerate gradient geometry on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  const [origin, first, second] = geometry.handles;
+  const matrix = [
+    (first.x - origin.x) * width, (first.y - origin.y) * height,
+    (second.x - origin.x) * width, (second.y - origin.y) * height,
+    origin.x * width, origin.y * height
+  ];
+  if (!matrix.every(Number.isFinite)) {
+    throw new TypeError(`SVG export cannot represent a degenerate gradient geometry on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  const roundedMatrix = matrix.map(number);
+  const roundedBasis = [
+    { x: 0, y: 0 },
+    { x: roundedMatrix[0] / width, y: roundedMatrix[1] / height },
+    { x: roundedMatrix[2] / width, y: roundedMatrix[3] / height }
+  ];
+  // Preserve the compact normal form unless rounding would make the actual
+  // serialized basis invalid; in that case emit round-trip-safe coordinates.
+  const serializedMatrix = isValidGradientBasis(roundedBasis)
+    ? roundedMatrix
+    : matrix.map(gradientMatrixNumber);
+  return { matrix: serializedMatrix.join(' ') };
+}
+
+// Unlike the general SVG number formatter, gradient transforms must retain
+// tiny but valid axes: rounding them can turn a well-conditioned basis into a
+// singular matrix on import.
+function gradientMatrixNumber(value) {
+  if (!Number.isFinite(value)) throw new TypeError('SVG export requires finite gradient matrix values.');
+  return Object.is(value, -0) ? '0' : String(value);
+}
+
 function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis-gradient-${index}`) {
   if (!gradient) return null;
   if (!isValidGradientFill(gradient)) throw new TypeError(`SVG export requires a valid gradient fill on layer ${node.name || node.id || '(unnamed)'}.`);
@@ -235,6 +281,13 @@ function gradientDefinition(node, index, gradient = node.fillGradient, id = `tis
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);
   const stops = gradient.stops.map(stop => `<stop offset="${number(stop.position)}" stop-color="${escapeXml(stop.color)}"/>`).join('');
+  const geometry = normalizedGradientHandles(node, gradient, width, height);
+  if (geometry && gradient.type === 'linear') {
+    return { id, markup: `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0" gradientTransform="matrix(${geometry.matrix})">${stops}</linearGradient>` };
+  }
+  if (geometry && gradient.type === 'radial') {
+    return { id, markup: `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix(${geometry.matrix})">${stops}</radialGradient>` };
+  }
   if (gradient.type === 'linear') {
     const angle = gradient.angle * Math.PI / 180;
     const halfLength = Math.abs(Math.cos(angle)) * width / 2 + Math.abs(Math.sin(angle)) * height / 2;

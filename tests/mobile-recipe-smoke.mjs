@@ -237,23 +237,25 @@ try {
   await waitForPhonePanel(app, '#right-panel', 'right');
   const brightness = app.querySelector('[data-prop="adjustments.brightness"]');
   assert(brightness, 'the selected phone image should expose local WASM adjustments.');
+  assertTouchTarget(app, brightness, 'Brightness control', 44);
   setInput(app, brightness, -65);
   brightness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updating preview'), 'scheduled source preview');
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'source image preview');
   const sharpness = app.querySelector('[data-prop="adjustments.sharpness"]');
   assert(sharpness, 'the selected phone image should expose Pillow-RS sharpness.');
+  assertTouchTarget(app, sharpness, 'Sharpness control', 44);
   setInput(app, sharpness, 40);
   sharpness.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'phone sharpness preview');
   const highlights = app.querySelector('[data-prop="adjustments.highlights"]');
   const shadows = app.querySelector('[data-prop="adjustments.shadows"]');
   assert(highlights && shadows, 'the phone image inspector should expose highlights and shadows controls.');
-  assertTouchTarget(app, highlights, 'Highlights control', 34);
-  assertTouchTarget(app, shadows, 'Shadows control', 34);
+  assertTouchTarget(app, highlights, 'Highlights control', 44);
+  assertTouchTarget(app, shadows, 'Shadows control', 44);
   const cropLeft = app.querySelector('[data-image-transform-field="left"][data-image-transform-target="layer"]');
   assert(cropLeft, 'the phone image inspector should expose normalized crop bounds.');
-  assertTouchTarget(app, cropLeft, 'Crop left control', 34);
+  assertTouchTarget(app, cropLeft, 'Crop left control', 44);
   setInput(app, cropLeft, 20);
   cropLeft.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   const rotateRight = app.querySelector('[data-action="rotate-image"][data-direction="right"][data-transform-target="layer"]');
@@ -339,8 +341,8 @@ try {
   const recipePicker = app.querySelector('#selection-image-recipe');
   const applyRecipe = app.querySelector('[data-action="apply-selection-image-recipe"]');
   assert(recipePicker && [...recipePicker.options].some(option => option.textContent.trim() === 'Phone batch look'), 'the multi-image inspector should expose the saved recipe picker on a phone.');
-  assertTouchTarget(app, recipePicker, 'Recipe picker');
-  assertTouchTarget(app, applyRecipe, 'Apply selected recipe');
+  assertTouchTarget(app, recipePicker, 'Recipe picker', 44);
+  assertTouchTarget(app, applyRecipe, 'Apply selected recipe', 44);
   recipePicker.value = [...recipePicker.options].find(option => option.textContent.trim() === 'Phone batch look').value;
   recipePicker.dispatchEvent(new app.defaultView.Event('change', { bubbles: true }));
   tap(app, applyRecipe);
@@ -387,6 +389,30 @@ try {
 
   tap(app, app.querySelector('#bulk-done'));
   await waitFor(() => app.querySelector('#bulk-bar').hidden, 'multi-image recipe result dismissal');
+  tap(app, app.querySelector('#sidebar-toggle'));
+  await waitForPhonePanel(app, '#left-panel', 'left');
+  const layerMode = app.querySelector('#layer-select-mode');
+  if (layerMode.getAttribute('aria-pressed') !== 'true') tap(app, layerMode);
+  for (const id of imageIds) {
+    const row = app.querySelector(`[data-layer-id="${id}"]`);
+    if (!row.classList.contains('is-selected')) tap(app, row);
+  }
+  tap(app, app.querySelector(`[data-layer-id="${imageIds[0]}"] [data-action="layer-actions-menu"]`));
+  const menuRecipe = [...app.querySelectorAll('#context-menu [role="menuitem"]')]
+    .find(item => menuItemLabel(item) === 'Phone batch look');
+  assert(menuRecipe, 'the mobile layer context menu should offer saved recipes for the selected image set.');
+  tap(app, menuRecipe);
+  await waitFor(() => !app.querySelector('#bulk-bar').hidden, 'context-menu recipe batch start');
+  await waitFor(() => app.activeElement === app.querySelector('#bulk-bar'), 'focus moves to the in-place batch controls');
+  assert(app.querySelector('#context-menu').hidden, 'starting a recipe from the layer menu should dismiss the menu.');
+  assert(!app.querySelector('#left-panel').classList.contains('is-open') && !app.querySelector('#right-panel').classList.contains('is-open'),
+    'starting a recipe from the mobile layer menu should close the drawers.');
+  assert(!app.querySelector('#mobile-scrim').classList.contains('is-visible'), 'the context-menu recipe action should dismiss the mobile scrim.');
+  await waitFor(() => app.querySelector('#bulk-title')?.textContent === 'Recipe applied' && app.querySelector('#bulk-progress-label')?.textContent === '3 / 3',
+    'context-menu recipe batch completion');
+  tap(app, app.querySelector('#bulk-done'));
+  await waitFor(() => app.querySelector('#bulk-bar').hidden, 'context-menu recipe result dismissal');
+
   tap(app, app.querySelector('#sidebar-toggle'));
   await waitForPhonePanel(app, '#left-panel', 'left');
   const failureTargetId = imageIds[0];

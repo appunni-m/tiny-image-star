@@ -152,7 +152,7 @@
         </aside>
       </div>
 
-      <div class="bulk-bar" id="bulk-bar" hidden aria-live="polite">
+      <div class="bulk-bar" id="bulk-bar" role="region" aria-label="Image recipe batch controls" tabindex="-1" hidden aria-live="polite">
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span><span id="bulk-rate" class="bulk-rate" aria-live="off" aria-label="Batch processing speed and estimated time remaining">Starting…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
         <label class="speed-control" for="bulk-speed"><span>Speed</span><input id="bulk-speed" type="range" min="1" max="4" value="2" /><output id="bulk-speed-value">2 workers</output></label>

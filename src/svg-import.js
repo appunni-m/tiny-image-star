@@ -1,5 +1,6 @@
 import { createDocument, createNode, validateDocument } from './model.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
+import { isValidGradientBasis } from './fills.js';
 
 /** An SVG feature that cannot be represented safely as editable Tiny Image Star layers. */
 export class SvgImportError extends TypeError {
@@ -25,6 +26,7 @@ const MAX_NETWORK_FACES = 10_000;
 const NETWORK_METADATA_ATTRIBUTE = 'data-tiny-image-star-network-v1';
 const MAX_GRADIENTS = 1_000;
 const MAX_GRADIENT_STOPS = 8;
+const MAX_GRADIENT_HANDLE_COORDINATE = 1_000_000;
 const MAX_CLIP_PATHS = 1_000;
 const MAX_MASKS = 1_000;
 const MAX_FILTERS = 1_000;
@@ -1528,36 +1530,6 @@ function gradientBounds(subpath) {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
-function gradientColorAt(stops, position) {
-  if (position <= stops[0].position) return stops[0].color;
-  if (position >= stops.at(-1).position) return stops.at(-1).color;
-  const rightIndex = stops.findIndex(stop => stop.position >= position);
-  const left = stops[rightIndex - 1]; const right = stops[rightIndex];
-  if (right.position === left.position) return right.color;
-  const amount = (position - left.position) / (right.position - left.position);
-  const channels = [1, 3, 5].map(offset => {
-    const from = Number.parseInt(left.color.slice(offset, offset + 2), 16);
-    const to = Number.parseInt(right.color.slice(offset, offset + 2), 16);
-    return Math.round(from + (to - from) * amount).toString(16).padStart(2, '0');
-  });
-  return `#${channels.join('')}`;
-}
-
-function clippedGradientStops(stops, sourceStart, sourceEnd, targetStart, targetEnd) {
-  const span = sourceEnd - sourceStart;
-  if (!(span > 1e-10) || !(targetEnd > targetStart)) fail('invalid-gradient', 'SVG gradient endpoints have no visible span.', 'gradient');
-  const start = (targetStart - sourceStart) / span;
-  const end = (targetEnd - sourceStart) / span;
-  const result = [{ color: gradientColorAt(stops, start), position: 0 }];
-  for (const stop of stops) {
-    if (stop.position <= start + 1e-9 || stop.position >= end - 1e-9) continue;
-    result.push({ color: stop.color, position: (stop.position - start) / (end - start) });
-  }
-  result.push({ color: gradientColorAt(stops, end), position: 1 });
-  if (result.length > MAX_GRADIENT_STOPS) fail('unsupported-gradient', 'The mapped SVG gradient needs too many stops for an editable fill.', 'gradient');
-  return result;
-}
-
 function applyGradientPoint(total, point, outputX, outputY) {
   const mapped = mapPoint(total, point);
   if (!Number.isFinite(mapped.x) || !Number.isFinite(mapped.y) || Math.abs(mapped.x) > MAX_COORDINATE || Math.abs(mapped.y) > MAX_COORDINATE) {
@@ -1572,43 +1544,50 @@ function resolveGradient(gradient, sourceBounds, matrix, outputBounds) {
     : [1, 0, 0, 1, 0, 0];
   const total = matrixMultiply(matrix, matrixMultiply(box, gradient.transform));
   let angle = 0;
-  let stops = gradient.stops;
+  const stops = gradient.stops;
+  const localPoint = point => applyGradientPoint(total, point, outputBounds.x, outputBounds.y);
+  let sourceHandles;
   if (gradient.type === 'linear') {
-    const start = applyGradientPoint(total, { x: gradient.x1, y: gradient.y1 }, outputBounds.x, outputBounds.y);
-    const end = applyGradientPoint(total, { x: gradient.x2, y: gradient.y2 }, outputBounds.x, outputBounds.y);
-    const dx = end.x - start.x; const dy = end.y - start.y;
-    if (Math.hypot(dx, dy) < 1e-8) fail('invalid-gradient', 'SVG linear gradients need distinct endpoints.', 'linearGradient');
-    angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
-    const radians = angle * Math.PI / 180;
-    const halfLength = Math.abs(Math.cos(radians)) * outputBounds.width / 2 + Math.abs(Math.sin(radians)) * outputBounds.height / 2;
-    const center = { x: outputBounds.width / 2, y: outputBounds.height / 2 };
-    const centerProjection = center.x * Math.cos(radians) + center.y * Math.sin(radians);
-    const startProjection = start.x * Math.cos(radians) + start.y * Math.sin(radians);
-    const endProjection = end.x * Math.cos(radians) + end.y * Math.sin(radians);
-    stops = clippedGradientStops(gradient.stops, startProjection, endProjection, centerProjection - halfLength, centerProjection + halfLength);
+    const sourceDx = gradient.x2 - gradient.x1;
+    const sourceDy = gradient.y2 - gradient.y1;
+    if (Math.hypot(sourceDx, sourceDy) < 1e-12) fail('invalid-gradient', 'SVG linear gradients need distinct endpoints.', 'linearGradient');
+    // A third point retains the complete affine gradient coordinate frame.
+    // SVG only exposes its x-axis endpoints, but gradientTransform may skew
+    // the orthogonal color bands; the mapped perpendicular basis captures it.
+    sourceHandles = [
+      { x: gradient.x1, y: gradient.y1 },
+      { x: gradient.x2, y: gradient.y2 },
+      { x: gradient.x1 - sourceDy, y: gradient.y1 + sourceDx }
+    ];
+    const localHandles = sourceHandles.map(localPoint);
+    const [start, end] = localHandles;
+    const localDx = end.x - start.x; const localDy = end.y - start.y;
+    angle = (Math.atan2(localDy, localDx) * 180 / Math.PI + 360) % 360;
+    sourceHandles = localHandles;
   } else {
-    const scale = matrixScale(total);
-    if (scale == null) fail('unsupported-gradient', 'The editor cannot preserve elliptical or skewed SVG radial gradients.', 'radialGradient');
-    const center = applyGradientPoint(total, { x: gradient.cx, y: gradient.cy }, outputBounds.x, outputBounds.y);
-    const radius = gradient.r * scale;
-    const targetRadius = Math.hypot(outputBounds.width, outputBounds.height) / 2;
-    const tolerance = Math.max(1, outputBounds.width, outputBounds.height) * 1e-6;
-    if (Math.hypot(center.x - outputBounds.width / 2, center.y - outputBounds.height / 2) > tolerance || radius <= 0) {
-      fail('unsupported-gradient', 'The editor supports only centered SVG radial gradients.', 'radialGradient');
-    }
-    const visibleGradientEnd = targetRadius / radius;
-    if (visibleGradientEnd >= 1) stops = gradient.stops.map(stop => ({ ...stop, position: stop.position / visibleGradientEnd }));
-    else {
-      stops = gradient.stops.filter(stop => stop.position < visibleGradientEnd)
-        .map(stop => ({ ...stop, position: stop.position / visibleGradientEnd }));
-      const edgeColor = gradientColorAt(gradient.stops, visibleGradientEnd);
-      if (!stops.length) stops.push({ color: edgeColor, position: 0 });
-      if (stops.at(-1)?.position === 1) stops[stops.length - 1].color = edgeColor;
-      else stops.push({ color: edgeColor, position: 1 });
-    }
-    if (stops.length > MAX_GRADIENT_STOPS) fail('unsupported-gradient', 'The mapped SVG radial gradient needs too many stops for an editable fill.', 'radialGradient');
+    sourceHandles = [
+      { x: gradient.cx, y: gradient.cy },
+      { x: gradient.cx + gradient.r, y: gradient.cy },
+      { x: gradient.cx, y: gradient.cy + gradient.r }
+    ];
+    sourceHandles = sourceHandles.map(localPoint);
   }
-  return { type: gradient.type, angle, stops, alpha: gradient.alpha };
+  const handles = sourceHandles.map(local => {
+    const normalized = { x: local.x / outputBounds.width, y: local.y / outputBounds.height };
+    if (![normalized.x, normalized.y].every(Number.isFinite)
+      || Math.abs(normalized.x) > MAX_GRADIENT_HANDLE_COORDINATE
+      || Math.abs(normalized.y) > MAX_GRADIENT_HANDLE_COORDINATE) {
+      fail('coordinate-out-of-range', 'Transformed SVG gradient geometry exceeds the supported coordinate range.', 'gradient');
+    }
+    return normalized;
+  });
+  if (!isValidGradientBasis(handles)) {
+    const message = gradient.type === 'linear'
+      ? 'SVG linear gradient transforms must preserve a two-dimensional gradient coordinate frame.'
+      : 'SVG radial gradient transforms must preserve a two-dimensional radius.';
+    fail('unsupported-gradient', message, gradient.type === 'linear' ? 'linearGradient' : 'radialGradient');
+  }
+  return { type: gradient.type, angle, stops, alpha: gradient.alpha, geometry: { handles } };
 }
 
 function makePathNode(subpath, style, matrix, prefix, name) {
@@ -1672,7 +1651,8 @@ function createPaintLayers(base, style, strokeWidth, prefix, serial, name, { fil
         angle: style.fillGradient.angle,
         stops: style.fillGradient.stops.map((stop, index) => ({
           id: `${prefix}-${serial}-gradient-stop-${index}`, color: stop.color, position: stop.position
-        }))
+        })),
+        ...(style.fillGradient.geometry ? { geometry: structuredClone(style.fillGradient.geometry) } : {})
       };
     }
   };

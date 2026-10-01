@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const sourceRef = 'v12.2.0-alpha.5';
 const sourceCommit = 'f341b59a6ecb223b6899345120739abe345494f6';
 // Keep these aligned with the upstream rust-toolchain.toml and CI env pins at
 // sourceCommit so local WASM generation does not silently drift by PATH.
@@ -79,14 +80,14 @@ try {
   const manifest = {
     package: 'pillow-rs',
     version,
-    sourceRef: 'main',
+    sourceRef,
     sourceCommit,
     sourcePatch: { path: patchRelativePath, sha256: sha256(patchBytes) },
     buildToolchain: { rust: expectedRustVersion, wasmPack: expectedWasmPackVersion, wasmOpt: false },
     files: fileHashes,
     integrityAlgorithm: 'sha512 over each sorted filename, NUL, file bytes, NUL',
     integrity: `sha512-${integrity.digest('base64')}`,
-    artifactSource: 'Release-profile WASM compiled from the pinned upstream main commit with the local JPEG/WebP quality patch and fixed build toolchain.',
+    artifactSource: `Release-profile WASM compiled from the pinned upstream ${sourceRef} tag with the local JPEG/WebP quality patch and fixed build toolchain.`,
   };
   await writeFile(resolve(root, 'wasm/runtime.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 } finally {

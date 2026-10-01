@@ -379,6 +379,30 @@ test('encodes editor radial gradients with PDF radial shadings and accepts opaqu
   assertValidXref(pdf);
 });
 
+test('preserves affine linear and elliptical radial gradient geometry in PDF shadings', () => {
+  const cases = [
+    {
+      type: 'linearGradient',
+      attributes: 'x1="0" y1="0" x2="1" y2="0"',
+      coords: '/ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0]',
+      matrix: '20 4 -3 8 30 10',
+    },
+    {
+      type: 'radialGradient',
+      attributes: 'cx="0" cy="0" r="1"',
+      coords: '/ShadingType 3 /ColorSpace /DeviceRGB /Coords [0 0 0 0 0 1]',
+      matrix: '20 4 -3 8 30 10',
+    },
+  ];
+  for (const { type, attributes, coords, matrix } of cases) {
+    const svg = `<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><${type} id="g" gradientUnits="userSpaceOnUse" ${attributes} gradientTransform="matrix(${matrix})"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/></${type}></defs><rect width="10" height="10" fill="url(#g)"/></svg>`;
+    const text = pdfText(createVectorPdf(svg));
+    assert.match(text, new RegExp(coords.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(text, new RegExp(`\\nW\\nn\\nq\\n${matrix.replaceAll(' ', '\\s+')} cm\\n/Sh1 sh\\nQ\\nQ`),
+      'the gradient matrix is applied after clipping and scoped to the shading paint');
+  }
+});
+
 test('fails closed with specific errors for unsupported rendered SVG features', () => {
   const textSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><text x="0" y="0">Hi</text></svg>';
   const gradientSvg = '<svg width="10px" height="10px" viewBox="0 0 10 10"><defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="10" y2="10"><stop offset="0" stop-color="#000000"/><stop offset="1" stop-color="#ffffff"/></linearGradient></defs><rect width="10" height="10" fill="url(#g)"/></svg>';
@@ -404,9 +428,11 @@ test('fails closed with specific errors for unsupported rendered SVG features', 
     'fully transparent image layers do not require an export codec');
   assert.throws(() => createVectorPdf(gradientSvg.replace('gradientUnits="userSpaceOnUse"', 'gradientUnits="objectBoundingBox"')),
     error => error instanceof PdfVectorExportError && /object-bounding-box gradients/.test(error.message));
-  assert.throws(() => createVectorPdf(gradientSvg.replace('gradientUnits="userSpaceOnUse"',
-    'gradientUnits="userSpaceOnUse" gradientTransform="matrix(1 0 0 1 2 3)"')),
-  error => error instanceof PdfVectorExportError && /gradientTransform/.test(error.message));
+  for (const transform of ['translate(2 3)', 'matrix(1 2 2 4 0 0)', 'matrix(1 0 0 1 Infinity 0)']) {
+    assert.throws(() => createVectorPdf(gradientSvg.replace('gradientUnits="userSpaceOnUse"',
+      `gradientUnits="userSpaceOnUse" gradientTransform="${transform}"`)),
+    error => error instanceof PdfVectorExportError && /gradientTransform/.test(error.message));
+  }
   assert.throws(() => createVectorPdf(gradientSvg.replace('<linearGradient id="g"', '<linearGradient id="g" spreadMethod="reflect"')),
     error => error instanceof PdfVectorExportError && /reflect gradient spread/.test(error.message));
   assert.throws(() => createVectorPdf(gradientSvg.replace('stop-color="#000000"', 'stop-color="#000000" stop-opacity="0.5"')),

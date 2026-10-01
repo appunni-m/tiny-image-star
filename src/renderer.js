@@ -6,7 +6,7 @@ import { buildLayerEffectFilter, layerEffectPadding } from './layer-effects.js';
 import { createNoisePixelGrid, noiseSeedForLayer } from './noise-effect.js';
 import { createTextureEdgeAlphas, MAX_TEXTURE_MASK_PIXELS, textureSeedForLayer } from './texture-effect.js';
 import { firstBackdropEffect, glassEffectOverscan, glassVisibleForNode, MAX_GLASS_AXIS, MAX_GLASS_PIXELS, refractGlassBackdrop } from './glass-effect.js';
-import { createGradientPaint, fillStackForNode } from './fills.js';
+import { createGradientPaint, fillStackForNode, resolveGradientGeometry } from './fills.js';
 import { canvasBlendOperation } from './layer-blend.js';
 import { applyStrokeStyle } from './stroke-style.js';
 import { strokeStackForNode } from './strokes.js';
@@ -2044,6 +2044,38 @@ export class SceneRenderer {
           ctx.fillStyle = selectedVertexId === vertex.id ? BLUE : '#ffffff';
           ctx.beginPath(); ctx.rect(anchor.x - size * .6, anchor.y - size * .6, size * 1.2, size * 1.2); ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#ffffff';
+        }
+      }
+    }
+    const gradientTarget = state.gradientGeometryTarget;
+    if (!state.presenting && !state.imageCropMode && state.tool === 'select'
+      && gradientTarget && selectedIds.length === 1 && selectedIds[0] === gradientTarget.nodeId) {
+      const entry = selected.find(item => item.node.id === gradientTarget.nodeId);
+      const node = entry?.node;
+      const ancestors = entry?.ancestors || [];
+      let gradient = null;
+      if (node && !node.locked && !ancestors.some(parent => parent.locked)) {
+        if (gradientTarget.strokeId) {
+          gradient = node.strokes?.find(stroke => stroke.id === gradientTarget.strokeId)?.gradient || null;
+        } else if (gradientTarget.fillId) {
+          const fill = node.fills?.find(item => item.id === gradientTarget.fillId);
+          gradient = fill?.gradient || (!node.fills && gradientTarget.fillId === `legacy-fill:${node.id}` ? node.fillGradient : null);
+        } else gradient = node.fillGradient || null;
+      }
+      const geometry = gradient && resolveGradientGeometry(gradient, { width: node.width, height: node.height });
+      if (geometry) {
+        const points = geometry.handles.map(point => nodeLocalToPage(node, point, ancestors));
+        const lineColors = ['#00a4ff', '#ab69ff'];
+        for (let index = 1; index < points.length; index += 1) {
+          ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[index].x, points[index].y);
+          ctx.strokeStyle = lineColors[index - 1]; ctx.lineWidth = 1.5 / zoom; ctx.setLineDash([5 / zoom, 4 / zoom]); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        for (const [index, point] of points.entries()) {
+          const radius = (index === 0 ? 7 : 6) / zoom;
+          ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+          ctx.fillStyle = index === 0 ? '#ffffff' : lineColors[index - 1];
+          ctx.strokeStyle = '#17202b'; ctx.lineWidth = 1.5 / zoom; ctx.fill(); ctx.stroke();
         }
       }
     }

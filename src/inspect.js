@@ -275,7 +275,10 @@ function cssForEntry(document, entry) {
   } else {
     const fill = getNodeColor(document, node, 'fill');
     const background = cssColor(fill, node.fillOpacity ?? 1);
-    const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1);
+    const gradientBackground = gradientFillToCSS(node.fillGradient, node.fillOpacity ?? 1, {
+      width: geometry.width,
+      height: geometry.height
+    });
     if (node.imageFill && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push('/* Local image fill source and adjustments are retained in layer JSON. */');
     else if (gradientBackground && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background: ${gradientBackground};`);
     else if (background && node.type !== 'line' && (node.type !== 'path' || hasFillablePathContour(node))) declarations.push(`background-color: ${background};`);

@@ -199,6 +199,16 @@ function gradientCoordinate(value, label) {
   return finite(value, label);
 }
 
+function parseGradientTransform(value) {
+  if (value == null || value === '') return null;
+  const match = /^matrix\(\s*([-+\d.eE]+)[,\s]+([-+\d.eE]+)[,\s]+([-+\d.eE]+)[,\s]+([-+\d.eE]+)[,\s]+([-+\d.eE]+)[,\s]+([-+\d.eE]+)\s*\)$/.exec(value);
+  if (!match) fail('gradientTransform', 'only a finite, invertible SVG matrix(a b c d e f) is supported');
+  const matrix = match.slice(1).map((component, index) => finite(component, `gradient transform component ${index + 1}`));
+  const [a, b, c, d] = matrix;
+  if (a * d - b * c === 0) fail('singular gradientTransform', 'the affine gradient basis must be invertible');
+  return matrix;
+}
+
 function parseGradient(definition) {
   const linear = definition.name === 'linearGradient';
   assertAttributes(definition, new Set([
@@ -208,9 +218,10 @@ function parseGradient(definition) {
   if (definition.attributes.gradientUnits !== 'userSpaceOnUse') {
     fail('object-bounding-box gradients', 'Tiny Image Star exports userSpaceOnUse gradient coordinates');
   }
-  if (definition.attributes.gradientTransform) {
-    fail('gradientTransform', 'the editor currently emits gradients in the layer coordinate system; group transforms are supported');
-  }
+  // Preserve the editor's affine gradient basis. PDF's shading coordinates
+  // remain in this canonical space and the matrix is applied when the
+  // shading is painted, inside the shape's already-established clip.
+  const transform = parseGradientTransform(definition.attributes.gradientTransform);
   const spreadMethod = definition.attributes.spreadMethod || 'pad';
   if (spreadMethod !== 'pad') fail(`${spreadMethod} gradient spread`, 'only SVG pad extension is supported');
   const coordinates = linear
@@ -259,7 +270,7 @@ function parseGradient(definition) {
     if (right.position < 1) bounds.push(right.position);
   }
   if (last.position < 1) segments.push({ c0: last.components, c1: last.components });
-  return { type: linear ? 'linear' : 'radial', coordinates, segments, bounds };
+  return { type: linear ? 'linear' : 'radial', coordinates, segments, bounds, transform };
 }
 
 function scanDefinitions(svgRoot) {
@@ -497,7 +508,12 @@ function paintPath(node, path, inheritedOpacity, { stateNames, gradients, shadin
     operators.push('q', path, fillRule === 'evenodd' ? 'W*' : 'W', 'n');
     const state = alphaState(fillOpacity, 1, stateNames);
     if (state) operators.push(state);
-    operators.push(`/${shading} sh`, 'Q');
+    if (fillGradient.gradient.transform) {
+      operators.push('q', `${fillGradient.gradient.transform.map(pdfNumber).join(' ')} cm`, `/${shading} sh`, 'Q');
+    } else {
+      operators.push(`/${shading} sh`);
+    }
+    operators.push('Q');
   } else if (fill) {
     operators.push(fill);
     const state = alphaState(fillOpacity, 1, stateNames);

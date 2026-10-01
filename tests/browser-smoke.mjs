@@ -2297,6 +2297,28 @@ try {
   const gradientLeft = [...effectContext.getImageData(12, 18, 1, 1).data];
   const gradientRight = [...effectContext.getImageData(44, 18, 1, 1).data];
   assert(gradientLeft[0] > gradientLeft[2] && gradientRight[2] > gradientRight[0], `linear gradient should interpolate across the filled shape (${gradientLeft.join(',')} / ${gradientRight.join(',')})`);
+  gradientNode.fillGradient.geometry = { handles: [
+    { x: .2, y: .2 }, { x: .8, y: .2 }, { x: .2, y: .8 }
+  ] };
+  effectRenderer.getState = () => ({
+    document: gradientDocument, assets: new Map(), previews: new Map(), zoom: 1,
+    outlineMode: false, presenting: false, tool: 'select', selectedIds: [gradientNode.id],
+    gradientGeometryTarget: { nodeId: gradientNode.id }
+  });
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawSelection(effectContext, [gradientNode], [gradientNode.id], 0, 0);
+  const gradientEndHandle = [...effectContext.getImageData(40, 12, 1, 1).data];
+  assert(gradientEndHandle[2] > 200 && gradientEndHandle[1] > 100 && gradientEndHandle[0] < 80,
+    `active gradient geometry should draw a visible cyan endpoint handle (${gradientEndHandle.join(',')})`);
+  gradientNode.fillGradient.geometry = { handles: [
+    { x: .5, y: .1 }, { x: .5, y: .9 }, { x: -.5, y: .1 }
+  ] };
+  effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);
+  effectRenderer.drawNode(effectContext, gradientNode, 0, 0, new Map());
+  const verticalGradientTop = [...effectContext.getImageData(28, 12, 1, 1).data];
+  const verticalGradientBottom = [...effectContext.getImageData(28, 24, 1, 1).data];
+  assert(verticalGradientTop[0] > verticalGradientTop[2] && verticalGradientBottom[2] > verticalGradientBottom[0],
+    `affine gradient handles should rotate the color axis on the canvas (${verticalGradientTop.join(',')} / ${verticalGradientBottom.join(',')})`);
   gradientNode.fillGradient = createGradientFill('radial', '#ff0000');
   gradientNode.fillGradient.stops[1].color = '#0000ff';
   effectContext.clearRect(0, 0, effectCanvas.width, effectCanvas.height);

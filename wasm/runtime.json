@@ -1,7 +1,7 @@
 {
   "package": "pillow-rs",
   "version": "12.2.0-alpha.5",
-  "sourceRef": "main",
+  "sourceRef": "v12.2.0-alpha.5",
   "sourceCommit": "f341b59a6ecb223b6899345120739abe345494f6",
   "sourcePatch": {
     "path": "patches/pillow-rs/encode-quality.patch",
@@ -19,5 +19,5 @@
   },
   "integrityAlgorithm": "sha512 over each sorted filename, NUL, file bytes, NUL",
   "integrity": "sha512-nNiX9B/AVXYO4NmCmFBaNZSFFfykvHy6v21R4le76uimQbnrj1D8gFnlya0+POOJWGQXTUOScQC34fOxg9j9Yw==",
-  "artifactSource": "Release-profile WASM compiled from the pinned upstream main commit with the local JPEG/WebP quality patch and fixed build toolchain."
+  "artifactSource": "Release-profile WASM compiled from the pinned upstream v12.2.0-alpha.5 tag with the local JPEG/WebP quality patch and fixed build toolchain."
 }

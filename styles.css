@@ -418,6 +418,56 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .image-output-field input[type="range"] { width: 100%; min-width: 0; accent-color: var(--blue); }
 .image-output-field output { min-width: 3.4em; text-align: right; }
 .gradient-stops { display: grid; gap: 6px; margin: 8px 0; }
+.gradient-editor { display: grid; gap: 7px; margin: 8px 0; }
+.gradient-geometry-controls { display: grid; gap: 6px; margin: 7px 0; }
+.gradient-geometry-toggle { min-height: 34px; text-align: center; }
+.gradient-geometry-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.gradient-geometry-fields[hidden] { display: none; }
+.gradient-geometry-point { min-width: 0; display: grid; gap: 6px; padding: 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); }
+.gradient-geometry-point > strong { overflow: hidden; color: var(--ink); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.gradient-geometry-point > label { min-width: 0; display: grid; gap: 3px; color: var(--muted); font-size: 9px; }
+.gradient-geometry-point input { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--ink); font: inherit; font-size: 11px; }
+.gradient-geometry-point input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.gradient-geometry-point input[aria-invalid="true"] { border-color: #d94b45; box-shadow: 0 0 0 1px #d94b4540; }
+.gradient-stop-rail { padding: 0 1px; }
+.gradient-stop-track {
+  position: relative;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: var(--panel);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.gradient-stop-track::before {
+  position: absolute;
+  inset: 5px 4px;
+  border-radius: 3px;
+  background: var(--gradient-preview);
+  content: "";
+  pointer-events: none;
+}
+.gradient-stop-handle {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  width: 18px;
+  height: 24px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #fff;
+  border-radius: 5px;
+  outline: 1px solid #4c4c4c;
+  background: var(--gradient-stop-color);
+  box-shadow: 0 1px 3px #0004;
+  cursor: ew-resize;
+  transform: translate(-50%, -50%);
+  touch-action: none;
+}
+.gradient-stop-handle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.gradient-stop-handle:disabled { cursor: not-allowed; }
 .gradient-stop-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 30px; align-items: end; gap: 6px; }
 .gradient-stop-row label { min-width: 0; display: grid; gap: 3px; color: #888; font-size: 9px; }
 .gradient-stop-row input[type=color] { width: 100%; min-width: 0; height: 29px; padding: 2px; border: 1px solid #dedede; border-radius: 5px; background: #fff; }
@@ -636,6 +686,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .context-menu .recipe-option::before { content: '✦'; color: #8a5ce0; }
 .context-menu .recipe-option.is-empty { color: #999; cursor: default; }
 .bulk-bar { z-index: 12; position: fixed; left: 50%; bottom: 82px; transform: translateX(-50%); width: min(850px, calc(100vw - 32px)); min-height: 66px; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(135px, .8fr) minmax(210px, 1fr) auto; align-items: center; gap: 19px; padding: 10px 13px; border: 1px solid #dedede; border-radius: 10px; background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+.bulk-bar:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .bulk-bar[hidden] { display: none; }
 .recipe-recovery-dialog { width: min(450px, calc(100vw - 28px)); }
 .recipe-recovery-content { padding: 22px; }
@@ -807,7 +858,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layer-select-mode { min-width: 52px; min-height: 40px; padding: 0 8px; font-size: 11px; }
   .add-fill { height: auto; min-height: 40px; font-size: 12px; }
   .vector-point-actions .add-fill { min-height: 44px; }
-  .recipe-picker { min-height: 40px; font-size: 12px; }
+  .recipe-picker { box-sizing: border-box; min-height: 44px; font-size: 16px; }
   .recipe-save-button, .recipe-apply-button { min-height: 44px; font-size: 12px; }
   .property-section .primary-button.recipe-apply-button { height: auto; min-height: 44px; }
   .component-library-list { max-height: min(35dvh, 280px); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
@@ -1122,7 +1173,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .canvas-status { max-width: 42vw; }
   .select-field, .layer-search-wrap input, .property-field input, .size-limit-field input,
   .color-value, .fill-opacity, .text-field, .comment-compose textarea,
-  .export-suffix input, .layout-guide-field input, .layout-guide-field select,
+  .export-suffix input, .layout-guide-field input, .layout-guide-field select, .gradient-geometry-point input,
   .layout-guide-heading select, .gradient-stop-row input[type=number] { font-size: 16px; }
   .text-format-size-label input { font-size: 16px; }
   .design-library-content { padding: 16px; }
@@ -1139,8 +1190,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 @media (max-width: 820px) {
   .multi-selection-property-grid .property-field { min-height: 40px; height: 40px; }
   .multi-selection-property-grid .property-field input { min-height: 38px; font-size: 16px; }
-  .image-transform-controls .property-field { height: 40px; }
-  .image-transform-controls .property-field input { min-height: 38px; font-size: 16px; }
+  .image-transform-controls .property-field { height: auto; min-height: 44px; }
+  .image-transform-controls .property-field input { box-sizing: border-box; height: 44px; min-height: 44px; font-size: 16px; }
   .image-transform-controls .property-inline .add-fill { width: auto; min-width: 0; min-height: 44px; flex: 1 1 0; text-align: center; }
   .image-transform-controls > .add-fill { min-height: 44px; text-align: center; }
   .variable-mode-add { min-height: 40px; padding-inline: 9px; font-size: 11px; }
@@ -1168,6 +1219,17 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
   .left-panel, .right-panel, .layers-list, .inspector-content { overscroll-behavior: contain; }
   .layer-row { min-height: 44px; }
+  .inspector-content :where(button, input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .inspector-content .color-swatch {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    flex-basis: 44px;
+  }
   .layer-chevron, .layer-icon { height: 44px; }
   .layer-reorder-handle { width: 32px; height: 44px; flex-basis: 32px; touch-action: none; }
   .layer-row .layer-order-control, .layer-row .layer-visibility {
@@ -1287,6 +1349,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .layer-row.is-selected { color: #a8dcff; background: #23394b; box-shadow: inset 0 0 0 1px rgba(56,168,255,.22); }
   :root[data-theme="dark"] .layer-select-mode,
   :root[data-theme="dark"] .layer-search-wrap input,
+  :root[data-theme="dark"] .stroke-field input,
+  :root[data-theme="dark"] .stroke-field select,
   :root[data-theme="dark"] .select-field,
   :root[data-theme="dark"] .color-value,
   :root[data-theme="dark"] .fill-opacity,
@@ -1315,6 +1379,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     border-color: #454953;
     background-color: #30333a;
   }
+  :root[data-theme="dark"] .stroke-field { color: #a6acb6; }
+  :root[data-theme="dark"] .export-setting-actions .tiny-icon-button,
+  :root[data-theme="dark"] .layout-guide-visibility,
+  :root[data-theme="dark"] .layout-guide-remove {
+    color: #e0e4eb;
+    border-color: #454953;
+    background-color: #30333a;
+  }
   :root[data-theme="dark"] .layer-search-wrap input,
   :root[data-theme="dark"] .variable-value,
   :root[data-theme="dark"] .text-field,
@@ -1327,6 +1399,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .component-property-definition,
   :root[data-theme="dark"] .typography-style-row,
   :root[data-theme="dark"] .layer-effect-card,
+  :root[data-theme="dark"] .gradient-geometry-point,
   :root[data-theme="dark"] .export-setting-row,
   :root[data-theme="dark"] .layout-guide-card,
   :root[data-theme="dark"] .inspect-layer-card,
@@ -1349,6 +1422,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .color-value,
   :root[data-theme="dark"] .fill-opacity,
   :root[data-theme="dark"] .gradient-stop-row input[type=number],
+  :root[data-theme="dark"] .gradient-geometry-point input,
   :root[data-theme="dark"] .text-format-size-label input,
   :root[data-theme="dark"] .text-format-line-height-label input,
   :root[data-theme="dark"] .text-format-family-label input,
@@ -1380,6 +1454,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .comment-thread-row:hover,
   :root[data-theme="dark"] .export-button:hover,
   :root[data-theme="dark"] .secondary-button:hover,
+  :root[data-theme="dark"] .layout-guide-adds button:hover,
   :root[data-theme="dark"] .comment-text-button:hover,
   :root[data-theme="dark"] .bar-action:hover { background-color: #373b44; }
   :root[data-theme="dark"] .empty-layer-icon,
@@ -1772,6 +1847,30 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .inspector-content .gradient-stop-row { grid-template-columns: minmax(0, 1fr) minmax(64px, .8fr) 44px; }
   .inspector-content .gradient-stop-row input[type="color"],
   .inspector-content .gradient-stop-row input[type="number"] { min-height: 44px; height: 44px; font-size: 16px; }
+  .inspector-content .gradient-geometry-fields { gap: 4px; }
+  .inspector-content .gradient-geometry-point { gap: 5px; padding: 6px; }
+  .inspector-content .gradient-geometry-point input { min-height: 44px; height: 44px; font-size: 16px; }
+  .inspector-content .gradient-stop-track { height: 44px; }
+  .inspector-content .gradient-stop-handle {
+    width: 44px;
+    height: 44px;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    box-shadow: none;
+  }
+  .inspector-content .gradient-stop-handle::after {
+    display: block;
+    width: 16px;
+    height: 20px;
+    border: 1px solid #fff;
+    border-radius: 5px;
+    outline: 1px solid #4c4c4c;
+    background: var(--gradient-stop-color);
+    box-shadow: 0 1px 3px #0004;
+    content: "";
+  }
+  .inspector-content .gradient-stop-handle:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; }
   .inspector-content .gradient-stop-row .tiny-icon-button,
   .inspector-content .property-section .tiny-icon-button { box-sizing: border-box; width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .inspector-content .layer-effect-heading { min-height: 44px; }
@@ -1875,6 +1974,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .fill-type-row,
   :root[data-theme="dark"] .image-fill-source,
   :root[data-theme="dark"] .gradient-stop-row label,
+  :root[data-theme="dark"] .gradient-geometry-point > label,
   :root[data-theme="dark"] .property-field label,
   :root[data-theme="dark"] .size-limit-field span,
   :root[data-theme="dark"] .property-separator,

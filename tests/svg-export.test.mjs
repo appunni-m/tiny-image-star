@@ -2,9 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
-import { moveFillLayer } from '../src/fills.js';
+import { isValidGradientFill, moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
+import { importSvgToLayers } from '../src/svg-import.js';
+
+function findGradientLayer(nodes) {
+  for (const node of nodes || []) {
+    if (node.fillGradient) return node;
+    const nested = findGradientLayer(node.children);
+    if (nested) return nested;
+  }
+  return null;
+}
 
 test('page SVG omits slice overlays from artwork bounds and standalone slices require raster export', () => {
   const artwork = createNode('rectangle', { x: 10, y: 20, width: 80, height: 40, fill: '#abcdef', stroke: null, strokeWidth: 0 });
@@ -415,6 +425,75 @@ test('exports user-space gradient fills, layer effects, and CSS blend modes as e
   assert.match(effectSvg, /<filter id="tis-effect-0" filterUnits="userSpaceOnUse" x="-14" y="-11" width="128" height="72"><feDropShadow in="SourceGraphic" dx="5" dy="-2" stdDeviation="3" flood-color="#112233" flood-opacity="0\.25" result="tis-effect-0-result-0"\/><\/filter>/);
   assert.match(effectSvg, /<g opacity="1" filter="url\(#tis-effect-0\)" style="mix-blend-mode:multiply" data-tiny-image-star-type="rectangle" data-tiny-image-star-node-id="shadow-layer">/);
   assert.equal(effectSvg, exportNodeToSvg(effected), 'generated paint and effect IDs remain stable across exports');
+});
+
+test('exports explicit gradient geometry through standard SVG affine gradient transforms', () => {
+  const linear = createNode('rectangle', {
+    width: 100, height: 50,
+    fillGradient: {
+      type: 'linear', angle: 0,
+      stops: [{ id: 'linear-a', color: '#000000', position: 0 }, { id: 'linear-b', color: '#ffffff', position: 1 }],
+      geometry: { handles: [{ x: .1, y: .2 }, { x: .8, y: .7 }, { x: -.2, y: .9 }] }
+    }
+  });
+  const linearSvg = exportNodeToSvg(linear);
+  assert.match(linearSvg, /<linearGradient id="tis-gradient-0" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1" y2="0" gradientTransform="matrix\(70 25 -30 35 10 10\)">/);
+
+  const radial = createNode('ellipse', {
+    width: 100, height: 50,
+    fillGradient: {
+      type: 'radial', angle: 0,
+      stops: [{ id: 'radial-a', color: '#000000', position: 0 }, { id: 'radial-b', color: '#ffffff', position: 1 }],
+      geometry: { handles: [{ x: .5, y: .5 }, { x: .9, y: .5 }, { x: .3, y: 1.1 }] }
+    }
+  });
+  const radialSvg = exportNodeToSvg(radial);
+  assert.match(radialSvg, /<radialGradient id="tis-gradient-0" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="1" gradientTransform="matrix\(40 0 -20 30 50 25\)">/);
+
+  const unsupportedGeometry = createNode('rectangle', {
+    width: 100, height: 50,
+    fillGradient: {
+      type: 'radial', angle: 0,
+      stops: [{ id: 'bad-a', color: '#000000', position: 0 }, { id: 'bad-b', color: '#ffffff', position: 1 }],
+      geometry: { handles: [{ x: .5, y: .5 }, { x: .75, y: .5 }, { x: .5, y: .75 }], customGeometry: true }
+    }
+  });
+  assert.throws(() => exportNodeToSvg(unsupportedGeometry), /exactly three finite object-space gradient handles/);
+});
+
+test('near-parallel but well-conditioned gradients survive editable SVG round-trip', () => {
+  const node = createNode('rectangle', {
+    width: 100, height: 100,
+    fillGradient: {
+      type: 'linear', angle: 0,
+      stops: [{ id: 'near-a', color: '#000000', position: 0 }, { id: 'near-b', color: '#ffffff', position: 1 }],
+      geometry: { handles: [{ x: 0, y: 0 }, { x: .5, y: .5 }, { x: .5, y: .5 + 1e-14 }] }
+    }
+  });
+  const svg = exportNodeToSvg(node);
+  assert.match(svg, /gradientTransform="matrix\(50 50 50 50\.000000000001 0 0\)"/,
+    'gradient serialization retains affine precision needed to keep its basis nonsingular');
+  const imported = findGradientLayer(importSvgToLayers(svg).nodes);
+  assert.ok(imported, 'round-trip imports an editable gradient');
+  assert.equal(isValidGradientFill(imported.fillGradient), true);
+  assert.ok(Math.abs(imported.fillGradient.geometry.handles[2].y - imported.fillGradient.geometry.handles[1].y) > 3.5e-15);
+});
+
+test('horizontal and vertical explicit gradients use one-pixel empty-axis geometry in SVG', () => {
+  for (const { width, height, gradient } of [
+    { width: 100, height: 0, gradient: { type: 'linear', angle: 0, stops: [
+      { id: 'horizontal-a', color: '#000000', position: 0 }, { id: 'horizontal-b', color: '#ffffff', position: 1 }
+    ], geometry: { handles: [{ x: .25, y: .5 }, { x: .75, y: .5 }, { x: .25, y: 1.5 }] } } },
+    { width: 0, height: 100, gradient: { type: 'radial', angle: 0, stops: [
+      { id: 'vertical-a', color: '#000000', position: 0 }, { id: 'vertical-b', color: '#ffffff', position: 1 }
+    ], geometry: { handles: [{ x: .5, y: .25 }, { x: 1.5, y: .25 }, { x: .5, y: .75 }] } } }
+  ]) {
+    const node = createNode('rectangle', { width, height, fillGradient: gradient });
+    const svg = exportNodeToSvg(node);
+    const imported = findGradientLayer(importSvgToLayers(svg).nodes);
+    assert.ok(imported, `${width}x${height} SVG imports its gradient`);
+    assert.equal(isValidGradientFill(imported.fillGradient), true);
+  }
 });
 
 test('exports inner shadows as editable SVG alpha-mask filter primitives', () => {

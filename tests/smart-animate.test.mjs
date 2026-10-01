@@ -392,6 +392,155 @@ test('smart animation interpolates compatible gradient angles, stop positions, a
   assert.equal(interpolateSmartFrame(wrappedFrom, wrappedTo, .5).fillGradient.angle, 315, 'wrapped angles stay normalized in the 0–360 range');
 });
 
+test('smart animation interpolates normalized gradient geometry handles and stops', () => {
+  const fromGradient = {
+    type: 'linear', angle: 350,
+    geometry: { handles: [
+      { id: 'from-start', x: .1, y: .2 },
+      { id: 'from-axis', x: .3, y: .4 },
+      { id: 'from-end', x: .1, y: .6 }
+    ] },
+    stops: [
+      { id: 'from-stop-a', position: 0, color: '#000000' },
+      { id: 'from-stop-b', position: .5, color: '#ff0000' }
+    ]
+  };
+  const toGradient = {
+    type: 'linear', angle: 10,
+    geometry: { handles: [
+      { id: 'to-start', x: .5, y: .6 },
+      { id: 'to-axis', x: .7, y: .8 },
+      { id: 'to-end', x: .5, y: 1 }
+    ] },
+    stops: [
+      { id: 'to-stop-a', position: .2, color: '#ffffff' },
+      { id: 'to-stop-b', position: 1, color: '#0000ff' }
+    ]
+  };
+  const from = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Direct gradient', fillGradient: fromGradient }),
+    createNode('rectangle', { name: 'Stack gradient', fills: [
+      { id: 'gradient', type: 'linear', visible: true, opacity: 1, gradient: fromGradient }
+    ] })
+  ] });
+  const to = createNode('frame', { children: [
+    createNode('rectangle', { name: 'Direct gradient', fillGradient: toGradient }),
+    createNode('rectangle', { name: 'Stack gradient', fills: [
+      { id: 'gradient', type: 'linear', visible: true, opacity: 1, gradient: toGradient }
+    ] })
+  ] });
+  const originalFrom = structuredClone(from);
+  const originalTo = structuredClone(to);
+
+  const middle = interpolateSmartFrame(from, to, .5);
+  const direct = middle.children[0].fillGradient;
+  const stacked = middle.children[1].fills[0].gradient;
+  const expectedGeometry = { handles: [
+    { id: 'to-start', x: .3, y: .4 },
+    { id: 'to-axis', x: .5, y: .6 },
+    { id: 'to-end', x: .3, y: .8 }
+  ] };
+  assert.deepEqual(direct.geometry.handles.map(handle => handle.id), expectedGeometry.handles.map(handle => handle.id));
+  direct.geometry.handles.forEach((handle, index) => {
+    assert.ok(Math.abs(handle.x - expectedGeometry.handles[index].x) < 1e-12);
+    assert.ok(Math.abs(handle.y - expectedGeometry.handles[index].y) < 1e-12);
+  });
+  assert.deepEqual(stacked.geometry, direct.geometry);
+  assert.deepEqual(direct.stops.map(({ position, color }) => [position, color]), [
+    [.1, '#808080'], [.75, '#800080']
+  ]);
+  assert.deepEqual(stacked.stops, direct.stops, 'modern paint stacks use the same interpolation');
+  assert.equal(direct.angle, 0, 'the existing wrapped-angle interpolation remains intact');
+  assert.deepEqual(interpolateSmartFrame(from, to, 0).children[0].fillGradient, fromGradient);
+  assert.deepEqual(interpolateSmartFrame(from, to, 1).children[0].fillGradient, toGradient);
+  assert.deepEqual(from, originalFrom, 'interpolation leaves the source handles and stops unchanged');
+  assert.deepEqual(to, originalTo, 'interpolation leaves the destination handles and stops unchanged');
+});
+
+test('smart animation midpoint-snaps gradient geometry through singular and near-singular bases', () => {
+  const gradient = (endY, color, angle) => ({
+    type: 'linear', angle,
+    geometry: { handles: [
+      { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: endY }
+    ] },
+    stops: [
+      { id: 'start', position: 0, color },
+      { id: 'end', position: 1, color: '#ffffff' }
+    ]
+  });
+  const fromGradient = gradient(1, '#000000', 10);
+  const toGradient = gradient(-1, '#ff0000', 20);
+  const makeFrame = value => createNode('frame', { children: [
+    createNode('rectangle', { name: 'Direct', fillGradient: value }),
+    createNode('rectangle', { name: 'Stack', fills: [
+      { id: 'gradient', type: 'linear', visible: true, opacity: 1, gradient: value }
+    ] })
+  ] });
+  const from = makeFrame(fromGradient);
+  const to = makeFrame(toGradient);
+  const sample = progress => {
+    const nodes = interpolateSmartFrame(from, to, progress).children;
+    return [nodes[0].fillGradient, nodes[1].fills[0].gradient];
+  };
+  const assertGeometry = (gradients, expected, label) => {
+    for (const current of gradients) {
+      assert.deepEqual(current.geometry, expected.geometry, `${label}: geometry stays on a stable endpoint basis`);
+    }
+  };
+  const assertAxisY = (gradients, expected, label) => {
+    for (const current of gradients) {
+      assert.equal(current.geometry.handles[2].y, expected, `${label}: both direct and stacked gradients use the expected interpolated axis`);
+    }
+  };
+
+  assertAxisY(sample(.25), .5, 'well-conditioned progress interpolates normally');
+  assertGeometry(sample(.499999999), fromGradient, 'near-singular progress before halfway snaps back to source');
+  const middle = sample(.5);
+  assertGeometry(middle, toGradient, 'the singular midpoint selects the destination geometry');
+  assertGeometry(sample(.500000001), toGradient, 'near-singular progress after halfway snaps to destination');
+  assertAxisY(sample(.75), -.5, 'well-conditioned progress after halfway interpolates normally');
+  assert.equal(middle[0].stops[0].color, '#800000', 'stop colors remain continuous through the geometry fallback');
+  assert.equal(middle[0].angle, 15, 'angle interpolation remains continuous through the geometry fallback');
+  assert.deepEqual(from.children[0].fillGradient, fromGradient, 'the source gradient is not mutated');
+  assert.deepEqual(to.children[0].fillGradient, toGradient, 'the destination gradient is not mutated');
+});
+
+test('smart animation keeps mixed or malformed gradient geometry on the midpoint snapshot path', () => {
+  const legacy = {
+    type: 'linear', angle: 0,
+    stops: [
+      { id: 'legacy-a', position: 0, color: '#000000' },
+      { id: 'legacy-b', position: 1, color: '#ffffff' }
+    ]
+  };
+  const geometry = {
+    ...legacy,
+    geometry: { handles: [{ x: .1, y: .2 }, { x: .4, y: .5 }, { x: .8, y: .9 }] }
+  };
+  const malformed = {
+    ...geometry,
+    geometry: { handles: [{ x: .1, y: .2 }, { x: .4, y: .5 }] }
+  };
+  const frameFor = gradient => createNode('frame', { children: [
+    createNode('rectangle', { name: 'Direct', fillGradient: gradient }),
+    createNode('rectangle', { name: 'Stack', fills: [
+      { id: 'gradient', type: 'linear', visible: true, opacity: 1, gradient }
+    ] })
+  ] });
+  const assertSnaps = (from, to, source, destination, label) => {
+    const before = interpolateSmartFrame(from, to, .25).children;
+    const after = interpolateSmartFrame(from, to, .75).children;
+    assert.deepEqual(before[0].fillGradient, source, `${label}: direct gradient stays at source before midpoint`);
+    assert.deepEqual(before[1].fills[0].gradient, source, `${label}: stack gradient stays at source before midpoint`);
+    assert.deepEqual(after[0].fillGradient, destination, `${label}: direct gradient switches at midpoint`);
+    assert.deepEqual(after[1].fills[0].gradient, destination, `${label}: stack gradient switches at midpoint`);
+  };
+
+  assertSnaps(frameFor(geometry), frameFor(legacy), geometry, legacy, 'geometry to legacy');
+  assertSnaps(frameFor(legacy), frameFor(geometry), legacy, geometry, 'legacy to geometry');
+  assertSnaps(frameFor(malformed), frameFor(geometry), malformed, geometry, 'invalid handle topology');
+});
+
 test('smart animation interpolates compatible modern fill stacks on frames and layers without mutating endpoint snapshots', () => {
   const fromFills = [
     { id: 'solid-before', type: 'solid', visible: true, opacity: .2, color: '#000000' },

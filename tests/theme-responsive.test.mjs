@@ -64,6 +64,9 @@ test('dark theme keeps mobile scroll affordance and selected layer controls on d
   assert.match(stylesheet, /@media \(max-width: 820px\) \{[\s\S]*?:root\[data-theme="dark"\] \.bottom-toolbar::after\s*\{[^}]*linear-gradient\([^}]*rgba\(39,42,49/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.left-panel,[\s\S]*?:root\[data-theme="dark"\] \.right-panel\s*\{[^}]*background:\s*var\(--panel\)/);
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.layer-row\.is-selected \.layer-order-control:not\(:disabled\)[\s\S]*background:\s*#303b47/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.stroke-field input,[\s\S]*?background-color:\s*#30333a/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.export-setting-actions \.tiny-icon-button,[\s\S]*?background-color:\s*#30333a/);
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.layout-guide-adds button:hover[\s\S]*background-color:\s*#373b44/);
 });
 
 test('image adjustment sliders have accessible names and locked layers reject edits', () => {
@@ -97,6 +100,18 @@ test('independent corner controls keep readable labels and phone-sized touch tar
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)');
   assert.match(coarsePhone, /\.corner-radius-controls \.property-field\s*\{[^}]*height:\s*44px[^}]*min-height:\s*44px/);
   assert.match(coarsePhone, /\.corner-radius-controls \.property-field input\s*\{[^}]*min-height:\s*42px[^}]*font-size:\s*16px/);
+});
+
+test('gradient geometry controls stay hidden until enabled and fit the mobile inspector', () => {
+  assert.match(stylesheet, /\.gradient-geometry-fields\[hidden\]\s*\{\s*display:\s*none\s*;?\s*\}/,
+    'the explicit display grid must not override the HTML hidden state');
+  assert.match(stylesheet, /:root\[data-theme="dark"\] \.gradient-geometry-point input[\s\S]*background-color:\s*#30333a/,
+    'gradient coordinates should use dark-theme input surfaces');
+  const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
+  assert.match(coarsePhone, /\.inspector-content \.gradient-geometry-point input\s*\{[^}]*min-height:\s*44px[^}]*font-size:\s*16px/,
+    'coordinate inputs should remain comfortable and avoid mobile auto-zoom');
+  assert.match(main, /function gradientGeometryHandleAt\(event\)[\s\S]*?event\.pointerType === 'touch' \? 24 : 12/,
+    'canvas gradient handles should have enlarged touch hit areas');
 });
 
 test('coarse-pointer inspector actions retain their 44px target size', () => {
