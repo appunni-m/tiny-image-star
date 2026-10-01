@@ -6,7 +6,7 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 
 const DB_NAME = 'figma-local-documents';
 const COMPONENT_LIBRARY_DB_NAME = 'tiny-image-star-component-libraries';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const COMPONENT_LIBRARY_DB_VERSION = 1;
 export const MAX_LOCAL_DOCUMENT_VERSIONS = 30;
 export const MAX_LOCAL_PACKAGE_BYTES = 128 * 1024 * 1024;
@@ -23,6 +23,7 @@ export const LEGACY_RECIPE_BATCH_RECOVERY_GRACE_MS = 30 * 60_000;
 const RECIPE_BATCH_STATUSES = new Set(['running', 'paused', 'cancelled', 'complete']);
 const ASSET_METADATA_MIGRATION_ID = 'legacy-assets-v1-migrated';
 const FONT_METADATA_MIGRATION_ID = 'font-metadata-v1-migrated';
+const WORKSPACE_HANDLE_SETTING_ID = 'active-workspace-directory-handle';
 const dbPromises = new Map();
 let assetMetadataMigrationPromise = null;
 let fontMetadataMigrationPromise = null;
@@ -52,7 +53,7 @@ export class RecipeBatchRecoveryLeaseError extends Error {
   }
 }
 
-function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery'], version = DB_VERSION) {
+function openDatabase(name = DB_NAME, storeNames = ['documents', 'assets', 'assetMetadata', 'assetMetadataState', 'fontAssets', 'fontMetadata', 'fontMetadataState', 'versions', 'recipeBatchRecovery', 'workspaceSettings'], version = DB_VERSION) {
   if (dbPromises.has(name)) return dbPromises.get(name);
   let resolveOpen;
   let rejectOpen;
@@ -399,6 +400,36 @@ export async function saveDocument(document, options = {}) {
   await done;
   if (conflict) throw conflict;
   return savedRevision;
+}
+
+/** Persist a user-selected directory handle locally so later launches can recheck its permission. */
+export async function saveWorkspaceDirectoryHandle(handle) {
+  if (!handle || handle.kind !== 'directory' || typeof handle.getDirectoryHandle !== 'function'
+    || typeof handle.queryPermission !== 'function') {
+    throw new TypeError('A supported writable workspace folder handle is required.');
+  }
+  const db = await openDatabase();
+  const tx = db.transaction('workspaceSettings', 'readwrite');
+  tx.objectStore('workspaceSettings').put({ id: WORKSPACE_HANDLE_SETTING_ID, handle, savedAt: Date.now() });
+  await transactionDone(tx);
+  return true;
+}
+
+/** Load the saved folder handle; callers must recheck its read/write permission before use. */
+export async function loadWorkspaceDirectoryHandle() {
+  const db = await openDatabase();
+  const record = await requestResult(db.transaction('workspaceSettings').objectStore('workspaceSettings').get(WORKSPACE_HANDLE_SETTING_ID));
+  const handle = record?.handle;
+  return handle?.kind === 'directory' && typeof handle.getDirectoryHandle === 'function'
+    && typeof handle.queryPermission === 'function' ? handle : null;
+}
+
+/** Forget the local folder reference without deleting any workspace files. */
+export async function deleteWorkspaceDirectoryHandle() {
+  const db = await openDatabase();
+  const tx = db.transaction('workspaceSettings', 'readwrite');
+  tx.objectStore('workspaceSettings').delete(WORKSPACE_HANDLE_SETTING_ID);
+  await transactionDone(tx);
 }
 
 function validRecipeBatchId(value) {

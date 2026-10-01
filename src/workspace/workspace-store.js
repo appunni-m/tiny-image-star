@@ -239,6 +239,43 @@ export async function openWorkspace(directoryHandle) {
   return makeWorkspace(directoryHandle, manifest, metadataDirectory, designsDirectory, transactionsDirectory);
 }
 
+/**
+ * List design folders with a valid Tiny Image Star creation marker. Call `openDesign`
+ * for each returned ID before using it; this is an index of candidates, not integrity
+ * validation of their commit chains.
+ */
+export async function listWorkspaceDesignIds(workspace) {
+  if (!workspace?.workspaceId || typeof workspace.designsDirectory?.entries !== 'function') {
+    throw new WorkspaceStoreError('DESIGN_LIST_UNSUPPORTED', 'This browser cannot list the selected workspace designs.');
+  }
+  const result = [];
+  try {
+    for await (const [name, handle] of workspace.designsDirectory.entries()) {
+      if (handle.kind !== 'directory' || typeof name !== 'string' || !ID_PATTERN.test(name) || name === '.' || name === '..') continue;
+      let markerHandle;
+      try { markerHandle = await handle.getFileHandle('CREATE.json', { create: false }); }
+      catch (error) { if (isNotFound(error)) continue; throw error; }
+      const file = await markerHandle.getFile();
+      if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > 16 * 1024) continue;
+      let marker;
+      try { marker = JSON.parse(await file.text()); } catch { continue; }
+      if (!marker || typeof marker !== 'object' || Array.isArray(marker)
+        || Object.keys(marker).length !== 5
+        || marker.formatVersion !== 1 || marker.designId !== name
+        || !Number.isSafeInteger(marker.createdAt) || marker.createdAt < 0
+        || !/^[a-f0-9]{64}$/.test(marker.initialCommitHash)
+        || !Array.isArray(marker.pageIds) || marker.pageIds.length < 1 || marker.pageIds.length > 10_000
+        || new Set(marker.pageIds).size !== marker.pageIds.length
+        || marker.pageIds.some(id => typeof id !== 'string' || !ID_PATTERN.test(id))) continue;
+      result.push(name);
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceStoreError) throw error;
+    throw new WorkspaceStoreError('DESIGN_LIST_FAILED', 'Could not list design folders from the selected workspace.', error);
+  }
+  return Object.freeze(result.sort());
+}
+
 /** Select and initialize in one call for use directly within a user gesture. */
 export async function pickAndCreateWorkspace(options = {}) {
   const { picker, ...workspaceOptions } = options;

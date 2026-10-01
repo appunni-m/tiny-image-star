@@ -141,10 +141,6 @@ function assertSessionWindow(issuedAt, expiresAt, now) {
   }
 }
 
-function copyInvite(invite) {
-  return JSON.parse(canonicalJson(invite));
-}
-
 function stripSignature(envelope) {
   assertExactKeys(envelope, ['payload', 'signature'], 'signed capsule');
   if (typeof envelope.signature !== 'string' || !BASE64URL_PATTERN.test(envelope.signature)) throw new TypeError('Invalid capsule signature.');
@@ -253,8 +249,7 @@ export async function createOfferCapsule({ invite, identityPrivateKey, sdp, issu
     nonce: randomToken(provider, 32),
     issuedAt,
     expiresAt: issuedAt + ttlMs,
-    sdp,
-    invite: copyInvite(invite)
+    sdp
   };
   const signature = await sign(provider, identityPrivateKey, payload);
   const publicKey = await importPublicKey(provider, invite.identityPublicKey);
@@ -268,11 +263,11 @@ export async function verifyOfferCapsule(token, { expectedInvite, now = Date.now
   const provider = cryptoApi(crypto);
   assertStableInvite(expectedInvite);
   const { envelope, payload } = decodeCapsule(token);
-  assertEnvelope(payload, 'offer', ['v', 'kind', 'designId', 'shareId', 'sessionId', 'nonce', 'issuedAt', 'expiresAt', 'sdp', 'invite']);
+  assertEnvelope(payload, 'offer', ['v', 'kind', 'designId', 'shareId', 'sessionId', 'nonce', 'issuedAt', 'expiresAt', 'sdp']);
   assertSessionWindow(payload.issuedAt, payload.expiresAt, now);
-  assertStableInvite(payload.invite);
-  if (payload.designId !== expectedInvite.designId || payload.shareId !== expectedInvite.shareId
-    || canonicalJson(payload.invite) !== canonicalJson(expectedInvite)) throw new Error('Offer does not match this design invitation.');
+  if (payload.designId !== expectedInvite.designId || payload.shareId !== expectedInvite.shareId) {
+    throw new Error('Offer does not match this design invitation.');
+  }
   const publicKey = await importPublicKey(provider, expectedInvite.identityPublicKey);
   if (!await verify(provider, publicKey, payload, envelope.signature)) throw new Error('Offer signature is invalid.');
   return payload;

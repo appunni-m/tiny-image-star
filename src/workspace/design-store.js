@@ -8,6 +8,10 @@ export const MAX_DESIGN_HISTORY_BYTES = 512 * 1024 * 1024;
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HASH = /^[a-f0-9]{64}$/;
+const ASSET_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const ASSET_HASH = /^[a-f0-9]{64}$/;
+const MAX_IMAGE_ASSET_BYTES = 64 * 1024 * 1024;
+const MAX_ASSET_METADATA_BYTES = 4 * 1024;
 const encoder = new TextEncoder();
 
 function fail(code, message, cause) { throw new WorkspaceStoreError(code, message, cause); }
@@ -166,6 +170,15 @@ async function listCommitFiles(directory) {
   return files;
 }
 
+async function assertHistoryCapacity(commitsDirectory, record) {
+  const files = await listCommitFiles(commitsDirectory);
+  const currentBytes = files.reduce((total, file) => total + file.size, 0);
+  const nextBytes = encoder.encode(stableJson(record)).byteLength;
+  if (files.length + 1 > MAX_DESIGN_COMMITS || currentBytes + nextBytes > MAX_DESIGN_HISTORY_BYTES) {
+    fail('DESIGN_HISTORY_LIMIT', 'The next commit would exceed the design history recovery limit.');
+  }
+}
+
 async function scanCommits(commitsDirectory, designId, crypto) {
   const byHash = new Map();
   for (const { name } of await listCommitFiles(commitsDirectory)) {
@@ -224,6 +237,143 @@ async function openDesignDirectories(workspace, designId, { create = false } = {
   return { designDirectory, metadata, commits, pages };
 }
 
+function collectImageAssetIds(document) {
+  const result = new Set();
+  const visit = value => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { for (const child of value) visit(child); return; }
+    for (const [key, child] of Object.entries(value)) {
+      if ((key === 'assetId' || /imageAssetId$/i.test(key)) && typeof child === 'string' && child) result.add(child);
+      visit(child);
+    }
+  };
+  visit(document);
+  return result;
+}
+
+function collectFontSpecs(document) {
+  const result = new Map();
+  const visited = new WeakSet();
+  let visitedCount = 0;
+  const normalizeFamily = value => value.trim().replace(/^(["'])(.*)\1$/u, '$2').trim()
+    .replace(/\\(["'\\])/gu, '$1').replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
+  const parseFamilyStack = value => {
+    const parts = [];
+    let current = '';
+    let quote = '';
+    let escaped = false;
+    for (const character of value) {
+      if (escaped) { current += character; escaped = false; continue; }
+      if (character === '\\' && quote) { current += character; escaped = true; continue; }
+      if ((character === '"' || character === "'") && (!quote || quote === character)) {
+        quote = quote ? '' : character;
+        current += character;
+      } else if (character === ',' && !quote) {
+        const family = normalizeFamily(current);
+        if (family) parts.push(family);
+        current = '';
+      } else current += character;
+    }
+    const finalFamily = normalizeFamily(current);
+    if (finalFamily) parts.push(finalFamily);
+    return parts;
+  };
+  const visit = (value, inherited, depth) => {
+    if (!value || typeof value !== 'object') return;
+    if (depth > 128 || ++visitedCount > 1_000_000) fail('REFERENCE_SCAN_LIMIT', 'The design has too many nested records to scan safely.');
+    if (visited.has(value)) return;
+    visited.add(value);
+    const font = { ...inherited };
+    if (typeof value.fontFamily === 'string' && value.fontFamily.trim()) font.family = value.fontFamily;
+    if (Object.hasOwn(value, 'fontWeight') && value.fontWeight != null) {
+      const weight = typeof value.fontWeight === 'string' && /^\d+$/u.test(value.fontWeight) ? Number(value.fontWeight) : value.fontWeight;
+      if (Number.isInteger(weight) && weight >= 1 && weight <= 1000) font.weight = weight;
+    }
+    if (Object.hasOwn(value, 'fontStyle') && value.fontStyle != null) font.style = value.fontStyle === 'italic' ? 'italic' : 'normal';
+    if (font.family && (typeof value.fontFamily === 'string' || Object.hasOwn(value, 'fontWeight') || Object.hasOwn(value, 'fontStyle'))) {
+      for (const family of parseFamilyStack(font.family)) {
+        const spec = { family, weight: font.weight ?? 400, style: font.style ?? 'normal' };
+        result.set(`${spec.family}\u0000${spec.weight}\u0000${spec.style}`, spec);
+      }
+    }
+    for (const child of Object.values(value)) visit(child, font, depth + 1);
+  };
+  visit(document, { weight: 400, style: 'normal' }, 0);
+  return [...result.values()].sort((left, right) => left.family.localeCompare(right.family)
+    || left.weight - right.weight || left.style.localeCompare(right.style));
+}
+
+/** Return image IDs and font faces referenced by one validated design snapshot. */
+export function collectDesignAssetRequirements(document) {
+  const validated = parseDocument(document);
+  return Object.freeze({
+    imageAssetIds: Object.freeze([...collectImageAssetIds(validated)].sort()),
+    fontSpecs: Object.freeze(collectFontSpecs(validated).map(spec => Object.freeze(spec)))
+  });
+}
+
+async function writePageRevisions(dirs, commit) {
+  for (const page of commit.document.pages) {
+    const pageId = assertId(page.id, 'page ID');
+    const directory = await dirs.pages.getDirectoryHandle(pageId, { create: true });
+    const revisions = await directory.getDirectoryHandle('revisions', { create: true });
+    const record = { formatVersion: DESIGN_STORE_FORMAT_VERSION, designId: commit.designId,
+      pageId, commitHash: commit.hash, page };
+    await writeImmutableJson(revisions, `${commit.hash}.json`, record, MAX_DESIGN_SNAPSHOT_BYTES + 16_384);
+  }
+}
+
+async function verifyPageRevisions(dirs, commit) {
+  await writePageRevisions(dirs, commit);
+  for (const page of commit.document.pages) {
+    const revisions = await (await dirs.pages.getDirectoryHandle(page.id, { create: false })).getDirectoryHandle('revisions', { create: false });
+    const stored = await readJson(revisions, `${commit.hash}.json`, MAX_DESIGN_SNAPSHOT_BYTES + 16_384, null, 'PAGE_SNAPSHOT_INVALID');
+    if (!stored || stored.formatVersion !== DESIGN_STORE_FORMAT_VERSION || stored.designId !== commit.designId
+      || stored.pageId !== page.id || stored.commitHash !== commit.hash || stableJson(stored.page) !== stableJson(page)) {
+      fail('PAGE_SNAPSHOT_INVALID', `The materialized page ${page.id} does not match its committed design snapshot.`);
+    }
+  }
+}
+
+async function assertReferencedAssetsPresent(designDirectory, designId, document, crypto) {
+  const assetIds = collectImageAssetIds(document);
+  if (!assetIds.size) return;
+  let assets;
+  try { assets = await designDirectory.getDirectoryHandle('assets', { create: false }); }
+  catch (error) { fail('ASSET_MISSING', 'The design references image assets that are not saved in its folder.', error); }
+  let metadataDirectory;
+  let blobsDirectory;
+  try {
+    [metadataDirectory, blobsDirectory] = await Promise.all([
+      assets.getDirectoryHandle('metadata', { create: false }), assets.getDirectoryHandle('blobs', { create: false })
+    ]);
+  } catch (error) { fail('ASSET_MISSING', 'The design references image assets that are not saved in its folder.', error); }
+  for (const assetId of assetIds) {
+    if (!ASSET_ID.test(assetId) || assetId === '.' || assetId === '..') fail('ASSET_ID_INVALID', 'A design contains an image asset ID that cannot be stored safely.');
+    const metadata = await readJson(metadataDirectory, `${assetId}.json`, MAX_ASSET_METADATA_BYTES, null, 'ASSET_METADATA_INVALID');
+    if (!metadata || Object.keys(metadata).length !== 7 || metadata.formatVersion !== 1 || metadata.designId !== designId
+      || metadata.assetId !== assetId || !ASSET_HASH.test(metadata.contentHash)
+      || !Number.isSafeInteger(metadata.byteLength) || metadata.byteLength < 1 || metadata.byteLength > MAX_IMAGE_ASSET_BYTES
+      || typeof metadata.mimeType !== 'string' || !/^image\/[a-z0-9][a-z0-9.+-]{0,63}$/i.test(metadata.mimeType)
+      || !Number.isSafeInteger(metadata.createdAt) || metadata.createdAt < 0) {
+      fail('ASSET_METADATA_INVALID', `Image asset ${assetId} has invalid metadata.`);
+    }
+    let blob;
+    try { blob = await blobsDirectory.getFileHandle(metadata.contentHash, { create: false }); }
+    catch (error) { fail('ASSET_MISSING', `Image asset ${assetId} is missing its source bytes.`, error); }
+    let file;
+    try { file = await blob.getFile(); }
+    catch (error) { fail('ASSET_READ_FAILED', `Image asset ${assetId} cannot be reopened.`, error); }
+    if (!Number.isSafeInteger(file.size) || file.size !== metadata.byteLength) fail('ASSET_CORRUPT', `Image asset ${assetId} does not match its saved byte length.`);
+    let bytes;
+    try { bytes = new Uint8Array(await file.arrayBuffer()); }
+    catch (error) { fail('ASSET_READ_FAILED', `Image asset ${assetId} cannot be read for integrity verification.`, error); }
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const contentHash = [...digest].map(value => value.toString(16).padStart(2, '0')).join('');
+    if (contentHash !== metadata.contentHash) fail('ASSET_CORRUPT', `Image asset ${assetId} failed its content hash check.`);
+  }
+}
+
 /** Creates a design using its existing safe document/page IDs and one durable initial snapshot. */
 export async function createDesign(workspace, sourceDocument, { crypto = globalThis.crypto, locks = globalThis.navigator?.locks, now = Date.now() } = {}) {
   assertWorkspace(workspace, locks);
@@ -277,6 +427,7 @@ export async function createDesign(workspace, sourceDocument, { crypto = globalT
     await writeImmutableJson(dirs.commits, recordName, initialCommit.record, MAX_DESIGN_SNAPSHOT_BYTES + 16_384);
     const verified = await readCommit(dirs.commits, initialCommit.hash, designId, crypto);
     if (verified.document.id !== designId) fail('COMMIT_VERIFY_FAILED', 'The initial snapshot did not validate after reopening.');
+    await verifyPageRevisions(dirs, verified);
     const head = { formatVersion: DESIGN_STORE_FORMAT_VERSION, designId, sequence: 1, commitHash: initialCommit.hash };
     await writeHead(dirs.metadata, head);
     return Object.freeze({ designId, pageIds: Object.freeze([...pageIds]), document: verified.document, head: Object.freeze(head) });
@@ -310,8 +461,6 @@ async function recoverHead(dirs, designId, identity, crypto, pending = null) {
   const tip = await scanCommits(dirs.commits, designId, crypto);
   if (!tip) fail('COMMIT_MISSING', 'The design has no durable snapshot.');
   const tipRecord = await readCommit(dirs.commits, tip.hash, designId, crypto);
-  if (!identity.pageIds.every(id => tipRecord.document.pages.some(page => page.id === id))
-    || tipRecord.document.pages.length !== identity.pageIds.length) fail('SNAPSHOT_INVALID', 'The latest snapshot does not match the design page manifest.');
   if (pending) {
     if (!pending || pending.formatVersion !== DESIGN_STORE_FORMAT_VERSION || pending.designId !== designId
       || !pending.baseHead || !HASH.test(pending.baseHead.commitHash) || !Number.isSafeInteger(pending.baseHead.sequence)
@@ -330,6 +479,7 @@ async function recoverHead(dirs, designId, identity, crypto, pending = null) {
     if (tip.hash === pending.commitHash) await clearPending(dirs.metadata);
     else if (tip.hash === pending.baseHead.commitHash) await clearPending(dirs.metadata);
   }
+  await verifyPageRevisions(dirs, tipRecord);
   return { tip, document: tipRecord.document, head };
 }
 
@@ -343,13 +493,35 @@ export async function openDesign(workspace, designId, { crypto = globalThis.cryp
       || !Number.isSafeInteger(identity.createdAt) || !Array.isArray(identity.pageIds) || !identity.pageIds.length
       || identity.pageIds.length > 10_000 || new Set(identity.pageIds).size !== identity.pageIds.length
       || identity.pageIds.some(id => !ID.test(id))) fail('DESIGN_INVALID', 'The design identity is invalid.');
-    for (const pageId of identity.pageIds) {
-      try { await dirs.pages.getDirectoryHandle(pageId, { create: false }); }
-      catch (error) { fail('PAGE_MISSING', `Page ${pageId} is missing.`, error); }
-    }
     const recovered = await recoverHead(dirs, designId, identity, crypto, await readPending(dirs.metadata));
-    return Object.freeze({ designId, pageIds: Object.freeze([...identity.pageIds]), document: recovered.document,
+    return Object.freeze({ designId, pageIds: Object.freeze(recovered.document.pages.map(page => page.id)), document: recovered.document,
       head: Object.freeze(recovered.head) });
+  });
+}
+
+/** Return all image IDs retained by any verified snapshot, for safe manual asset collection. */
+export async function listDesignAssetReferences(workspace, designId, { crypto = globalThis.crypto, locks = globalThis.navigator?.locks } = {}) {
+  assertWorkspace(workspace, locks);
+  const safeDesignId = assertId(designId, 'design ID');
+  return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${safeDesignId}`, { mode: 'exclusive' }, async () => {
+    const dirs = await openDesignDirectories(workspace, safeDesignId);
+    const identity = await readJson(dirs.metadata, 'design.json', 16 * 1024, 'DESIGN_MISSING', 'DESIGN_INVALID');
+    if (identity?.formatVersion !== DESIGN_STORE_FORMAT_VERSION || identity.designId !== safeDesignId
+      || !Number.isSafeInteger(identity.createdAt) || !Array.isArray(identity.pageIds) || !identity.pageIds.length
+      || identity.pageIds.length > 10_000 || new Set(identity.pageIds).size !== identity.pageIds.length
+      || identity.pageIds.some(id => !ID.test(id))) fail('DESIGN_INVALID', 'The design identity is invalid.');
+    const recovered = await recoverHead(dirs, safeDesignId, identity, crypto, await readPending(dirs.metadata));
+    const references = new Set();
+    const fontSpecs = new Map();
+    for (const { name } of await listCommitFiles(dirs.commits)) {
+      const hash = name.slice(0, -5);
+      const record = await readCommit(dirs.commits, hash, safeDesignId, crypto);
+      for (const assetId of collectImageAssetIds(record.document)) references.add(assetId);
+      for (const spec of collectFontSpecs(record.document)) fontSpecs.set(`${spec.family}\u0000${spec.weight}\u0000${spec.style}`, spec);
+    }
+    return Object.freeze({ head: Object.freeze(recovered.head), assetIds: Object.freeze([...references].sort()),
+      fontSpecs: Object.freeze([...fontSpecs.values()].sort((left, right) => left.family.localeCompare(right.family)
+        || left.weight - right.weight || left.style.localeCompare(right.style))) });
   });
 }
 
@@ -365,8 +537,14 @@ export async function commitDesign(workspace, designId, document, { expectedHead
   return locks.request(`tiny-image-star-design:${workspace.workspaceId}:${designId}`, { mode: 'exclusive' }, async () => {
     const dirs = await openDesignDirectories(workspace, designId);
     const identity = await readJson(dirs.metadata, 'design.json', 16 * 1024, 'DESIGN_MISSING', 'DESIGN_INVALID');
-    if (!identity.pageIds.includes(pageId) || identity.pageIds.length !== candidate.pages.length
-      || identity.pageIds.some(id => !candidate.pages.some(page => page.id === id))) fail('SNAPSHOT_INVALID', 'The proposed snapshot changes the design page identity.');
+    if (!Array.isArray(identity.pageIds) || !identity.pageIds.length || identity.pageIds.length > 10_000
+      || new Set(identity.pageIds).size !== identity.pageIds.length || identity.pageIds.some(id => !ID.test(id))) {
+      fail('DESIGN_INVALID', 'The design creation page manifest is invalid.');
+    }
+    const candidatePageIds = candidate.pages.map(page => assertId(page.id, 'page ID'));
+    if (!candidatePageIds.length || candidatePageIds.length > 10_000 || new Set(candidatePageIds).size !== candidatePageIds.length) {
+      fail('SNAPSHOT_INVALID', 'The proposed snapshot contains invalid or duplicate pages.');
+    }
     const pending = await readPending(dirs.metadata);
     let current;
     if (pending) {
@@ -383,12 +561,17 @@ export async function commitDesign(workspace, designId, document, { expectedHead
     if (current.tip.hash !== expectedHead.commitHash || current.tip.sequence !== expectedHead.sequence) {
       fail('HEAD_CONFLICT', 'The design changed since this edit began.', { currentHead: current.head });
     }
+    await assertReferencedAssetsPresent(dirs.designDirectory, designId, candidate, crypto);
     const record = await makeCommit(designId, current.tip.hash, current.tip.sequence + 1, pageId, candidate, crypto);
+    // Keep the existing recoverable chain within the same limits enforced during recovery.
+    // This check runs before PENDING, commit, page revision, or HEAD writes.
+    await assertHistoryCapacity(dirs.commits, record.record);
     await writePending(dirs.metadata, { formatVersion: DESIGN_STORE_FORMAT_VERSION, designId,
       baseHead: current.head, sequence: current.tip.sequence + 1, commitHash: record.hash });
     await writeImmutableJson(dirs.commits, `${record.hash}.json`, record.record, MAX_DESIGN_SNAPSHOT_BYTES + 16_384);
     const verified = await readCommit(dirs.commits, record.hash, designId, crypto);
     if (serializeDocument(verified.document) !== serializeDocument(candidate)) fail('COMMIT_VERIFY_FAILED', 'The saved snapshot differs from the proposed design.');
+    await verifyPageRevisions(dirs, verified);
     const nextHead = { formatVersion: DESIGN_STORE_FORMAT_VERSION, designId, sequence: current.tip.sequence + 1, commitHash: record.hash };
     await writeHead(dirs.metadata, nextHead);
     try { await clearPending(dirs.metadata); } catch { /* The durable HEAD is authoritative; reopen will reconcile the marker. */ }

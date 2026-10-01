@@ -69,12 +69,22 @@ test('canvas tool buttons expose the active tool at startup and when it changes'
     'keyboard navigation should reveal offscreen tools in the horizontally scrollable phone toolbar');
 });
 
-test('mobile main menu keeps the local design share action reachable', () => {
+test('compact phones keep direct Share reachable and preserve the main-menu route', () => {
   const openMenu = main.match(/function openFileMenu\([\s\S]*?\n\}/)?.[0] || '';
   assert.match(openMenu, /label: 'Share local design…', action: shareDesignFile/);
   assert.match(openMenu, /label: 'Save local copy…'.*action: exportDesign/u);
-  assert.match(stylesheet, /\.file-menu-button, \.mode-switcher, \.quiet-button, \.avatar-button, \.save-state \{ display: none; \}/,
-    'the direct Share button is hidden on phones, so the menu route must remain available');
+  const directShareRules = [...stylesheet.matchAll(/#share-button\s*\{([^}]*)\}/g)].map(([, declarations]) => declarations);
+  assert.ok(directShareRules.some(declarations => /\bdisplay\s*:\s*flex\b/u.test(declarations)),
+    'a phone-specific rule must keep the direct Share button visible');
+  assert.ok(directShareRules.every(declarations => !/\bdisplay\s*:\s*none\b/u.test(declarations)),
+    'later phone rules must not hide the direct Share button');
+  const hierarchyStart = stylesheet.indexOf('/* Phone workspace hierarchy:');
+  assert.notEqual(hierarchyStart, -1, 'expected the compact phone header layout');
+  const phoneRules = ruleBlock(stylesheet.slice(hierarchyStart), '@media (max-width: 820px) {');
+  assert.match(phoneRules, /\.topbar #share-button\s*\{[^}]*display:\s*flex[^}]*min-width:\s*48px[^}]*min-height:\s*40px/,
+    'the direct Share control should keep a finger-sized target in the compact header');
+  assert.match(main, /#main-menu-button'\)\.addEventListener\('click', event => openFileMenu\(/,
+    'the phone main-menu control must open the menu containing the share action');
 });
 
 test('bulk controls keep interactions outside the live region and announce milestones only', () => {

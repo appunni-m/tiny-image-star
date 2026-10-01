@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
+import { createDocument } from '../src/model.js';
+import { createDesign } from '../src/workspace/design-store.js';
 import {
   createWorkspace,
+  listWorkspaceDesignIds,
   openWorkspace,
   pickWorkspaceDirectory,
   requestWorkspacePermission,
@@ -75,6 +78,7 @@ class MemoryDirectoryHandle {
     if (existing.kind === 'directory' && existing.children.size && !recursive) throw new Error('Directory is not empty.');
     this.children.delete(name);
   }
+  async *entries() { yield* this.children.entries(); }
 }
 
 class MemoryLockManager {
@@ -163,6 +167,19 @@ test('design lookup rejects traversal and malformed IDs before touching the fold
   const beforeUnsafePageLookups = workspace.designsDirectory.requestedNames.length;
   await assert.rejects(workspace.getPageDirectoryHandle('design-1', '../escape'), error => error.code === 'INVALID_ID');
   assert.equal(workspace.designsDirectory.requestedNames.length, beforeUnsafePageLookups);
+});
+
+test('workspace design listing includes only folders with a valid creation marker', async () => {
+  const root = new MemoryDirectoryHandle();
+  const workspace = await createWorkspace(root, { crypto: webcrypto, now: 31, locks });
+  assert.deepEqual(await listWorkspaceDesignIds(workspace), []);
+  const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks, now: 32 });
+  await workspace.designsDirectory.getDirectoryHandle('stray', { create: true });
+  const incomplete = await workspace.designsDirectory.getDirectoryHandle('incomplete', { create: true });
+  await incomplete.getFileHandle('CREATE.json', { create: true }).then(async handle => {
+    const writable = await handle.createWritable(); await writable.write('{broken'); await writable.close();
+  });
+  assert.deepEqual(await listWorkspaceDesignIds(workspace), [created.designId]);
 });
 
 test('an incomplete workspace is reported without silently recreating missing folders', async () => {

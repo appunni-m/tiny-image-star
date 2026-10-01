@@ -3,7 +3,8 @@ import test from 'node:test';
 import { webcrypto } from 'node:crypto';
 import { createDocument } from '../src/model.js';
 import { createWorkspace } from '../src/workspace/workspace-store.js';
-import { commitDesign, createDesign, openDesign } from '../src/workspace/design-store.js';
+import { commitDesign, createDesign, openDesign, MAX_DESIGN_COMMITS, MAX_DESIGN_HISTORY_BYTES,
+  MAX_DESIGN_SNAPSHOT_BYTES } from '../src/workspace/design-store.js';
 
 function notFound() { const error = new Error('Not found'); error.name = 'NotFoundError'; return error; }
 class FileHandle {
@@ -210,7 +211,7 @@ test('unsafe caller IDs are rejected rather than normalized into another path', 
   await assert.rejects(createDesign(workspace, badPage, { crypto: webcrypto, locks }), error => error.code === 'INVALID_ID');
 });
 
-test('appending checks only the verified HEAD/current commit instead of rescanning the whole history', async () => {
+test('appending checks history file metadata without reading prior commit contents', async () => {
   const { workspace, root } = await fixture();
   const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
   const design = await workspace.getDesignDirectoryHandle(created.designId);
@@ -223,8 +224,8 @@ test('appending checks only the verified HEAD/current commit instead of rescanni
   const second = await commitDesign(workspace, created.designId, setName(cloneDoc(first.document), 'two'), {
     expectedHead: first.head, pageId: created.pageIds[0], crypto: webcrypto, locks
   });
-  assert.equal(root.directoryScans || 0, scansAfterFirst);
-  assert.ok(scansAfterFirst >= scansBefore);
+  assert.equal(scansAfterFirst, scansBefore + 1);
+  assert.equal(root.directoryScans || 0, scansAfterFirst + 1);
   assert.equal(second.head.sequence, 3);
   assert.ok(commits.children.size >= 3);
 });
@@ -241,6 +242,63 @@ test('aggregate history byte limit is checked before recovery reads commit conte
     handle.contents = '{}';
   }
   await assert.rejects(openDesign(workspace, created.designId, { crypto: webcrypto, locks }), error => error.code === 'RECOVERY_LIMIT');
+});
+
+test('commit preflight rejects a history that would exceed the aggregate byte limit before writes', async () => {
+  const { workspace } = await fixture();
+  const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  const design = await workspace.getDesignDirectoryHandle(created.designId);
+  const metadata = await design.getDirectoryHandle('.tiny-image-star');
+  const commits = await metadata.getDirectoryHandle('commits');
+  const head = (await metadata.getFileHandle('HEAD.json')).contents;
+  const existingCommit = await commits.getFileHandle(`${created.head.commitHash}.json`);
+  const placeholders = [];
+  for (let index = 0; index < 31; index += 1) {
+    const name = `${(index + 10_000).toString(16).padStart(64, '0')}.json`;
+    const placeholder = await commits.getFileHandle(name, { create: true });
+    placeholder.reportedSize = MAX_DESIGN_SNAPSHOT_BYTES;
+    placeholders.push(name);
+  }
+  existingCommit.reportedSize = MAX_DESIGN_HISTORY_BYTES - placeholders.length * MAX_DESIGN_SNAPSHOT_BYTES;
+
+  await assert.rejects(commitDesign(workspace, created.designId, setName(cloneDoc(created.document), 'too large'), {
+    expectedHead: created.head, pageId: created.pageIds[0], crypto: webcrypto, locks
+  }), error => error.code === 'DESIGN_HISTORY_LIMIT');
+
+  assert.equal((await metadata.getFileHandle('HEAD.json')).contents, head);
+  assert.equal(metadata.children.has('PENDING.json'), false);
+  assert.equal(commits.children.size, placeholders.length + 1);
+  for (const name of placeholders) await commits.removeEntry(name);
+  existingCommit.reportedSize = undefined;
+  const reopened = await openDesign(workspace, created.designId, { crypto: webcrypto, locks });
+  assert.deepEqual(reopened.head, created.head);
+});
+
+test('commit preflight rejects the commit-count boundary before writes and leaves HEAD openable', async () => {
+  const { workspace } = await fixture();
+  const created = await createDesign(workspace, createDocument(), { crypto: webcrypto, locks });
+  const design = await workspace.getDesignDirectoryHandle(created.designId);
+  const metadata = await design.getDirectoryHandle('.tiny-image-star');
+  const commits = await metadata.getDirectoryHandle('commits');
+  const head = (await metadata.getFileHandle('HEAD.json')).contents;
+  const placeholders = [];
+  for (let index = 0; index < MAX_DESIGN_COMMITS - 1; index += 1) {
+    const name = `${(index + 1).toString(16).padStart(64, '0')}.json`;
+    if (name === `${created.head.commitHash}.json`) continue;
+    await commits.getFileHandle(name, { create: true });
+    placeholders.push(name);
+  }
+
+  await assert.rejects(commitDesign(workspace, created.designId, setName(cloneDoc(created.document), 'too many'), {
+    expectedHead: created.head, pageId: created.pageIds[0], crypto: webcrypto, locks
+  }), error => error.code === 'DESIGN_HISTORY_LIMIT');
+
+  assert.equal((await metadata.getFileHandle('HEAD.json')).contents, head);
+  assert.equal(metadata.children.has('PENDING.json'), false);
+  assert.equal(commits.children.size, MAX_DESIGN_COMMITS);
+  for (const name of placeholders) await commits.removeEntry(name);
+  const reopened = await openDesign(workspace, created.designId, { crypto: webcrypto, locks });
+  assert.deepEqual(reopened.head, created.head);
 });
 
 test('interrupted initial creation with its ownership marker can be retried safely', async () => {

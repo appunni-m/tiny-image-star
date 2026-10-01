@@ -20,6 +20,7 @@
         </div>
         <div class="document-title-wrap">
           <input id="document-name" class="document-name" aria-label="File name" value="Untitled" maxlength="120" />
+          <span class="storage-mode-chip" id="storage-mode-chip" aria-live="polite">Browser</span>
           <div class="save-state" id="save-state"><span class="save-dot"></span><span>Saved locally</span></div>
         </div>
         <div class="topbar-trailing">
@@ -70,7 +71,7 @@
             </div>
             <div class="asset-hint">Images are processed on this device with WebAssembly.</div>
           </section>
-          <div class="sidebar-footer"><span class="device-icon">◉</span><span>Stored on this device</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
+          <div class="sidebar-footer"><span class="device-icon" aria-hidden="true">◉</span><span id="storage-mode-label" aria-live="polite">Browser storage</span><button id="local-info" class="tiny-icon-button" aria-label="Local storage information" title="Local-only file">ⓘ</button></div>
         </aside>
 
         <main class="canvas-region" id="canvas-region" aria-label="Design canvas">
@@ -224,6 +225,47 @@
           <p class="modal-copy">Open a saved design or make a separate copy. Your files and images stay in this browser.</p>
           <div class="design-library-list" id="design-library-list" aria-live="polite"></div>
           <div class="dialog-actions"><button class="secondary-button" id="design-library-export" type="button">Save current design as file…</button><button class="primary-button" id="design-library-new" type="button">＋ New design</button></div>
+        </section>
+      </dialog>
+
+      <dialog class="modal live-collaboration-dialog" id="live-collaboration-dialog" aria-labelledby="live-collaboration-title">
+        <section class="live-collaboration-content">
+          <div class="modal-title-row">
+            <div><span class="modal-eyebrow">LOCAL · PEER TO PEER</span><h2 id="live-collaboration-title">Share live design</h2></div>
+            <button class="icon-button" id="live-collaboration-close" type="button" aria-label="Close live collaboration">×</button>
+          </div>
+          <p class="modal-copy" id="live-collaboration-copy">Your folder stays on your device. Session setup is shared out of band; Tiny Image Star has no signaling server.</p>
+          <section id="live-host-panel" hidden>
+            <p class="live-collaboration-note">Send both the design invitation and this short-lived session offer to your guest. Anyone with them can propose edits; you remain the only person who can save canonical changes.</p>
+            <label class="field-label" for="live-invite-value">Stable design invitation</label>
+            <textarea class="text-field live-capsule-field" id="live-invite-value" readonly spellcheck="false" aria-label="Stable design invitation link"></textarea>
+            <button class="secondary-button live-copy-button" type="button" data-copy-field="live-invite-value">Copy invitation</button>
+            <label class="field-label" for="live-offer-value">One-time session offer</label>
+            <textarea class="text-field live-capsule-field" id="live-offer-value" readonly spellcheck="false" aria-label="One-time WebRTC offer"></textarea>
+            <button class="secondary-button live-copy-button" type="button" data-copy-field="live-offer-value">Copy offer</button>
+            <button class="secondary-button live-copy-button" id="live-share-capsules" type="button" hidden>Share invitation and offer…</button>
+            <label class="field-label" for="live-answer-value">Guest answer</label>
+            <textarea class="text-field live-capsule-field" id="live-answer-value" spellcheck="false" autocomplete="off" placeholder="Paste the guest’s answer here"></textarea>
+            <div class="live-inline-controls"><label class="live-stun-option"><input id="live-stun-opt-in" type="checkbox" /><span>Try Google STUN for internet connections (Google can observe network metadata)</span></label><button class="primary-button" id="live-start-host" type="button">Create session offer</button><button class="primary-button" id="live-accept-answer" type="button" hidden>Connect guest</button></div>
+            <p class="live-status" id="live-host-status" role="status" aria-live="polite">Preparing a direct connection…</p>
+            <p class="live-status" id="live-transfer-status" role="status" aria-live="polite"></p>
+            <div class="dialog-actions"><button class="secondary-button" id="live-stop-host" type="button">Stop sharing and revoke link</button></div>
+          </section>
+          <section id="live-guest-panel" hidden>
+            <p class="live-collaboration-note">Paste the invitation and current offer from the design owner. You need a writable folder because edits are kept as a local copy and become a local fork if the connection ends.</p>
+            <label class="field-label" for="live-join-invite">Design invitation or link</label>
+            <textarea class="text-field live-capsule-field" id="live-join-invite" spellcheck="false" autocomplete="off" placeholder="Paste a tiny-image-star invitation link or tisd1… capsule"></textarea>
+            <label class="field-label" for="live-join-offer">One-time session offer</label>
+            <textarea class="text-field live-capsule-field" id="live-join-offer" spellcheck="false" autocomplete="off" placeholder="Paste the owner’s tisc1… offer capsule"></textarea>
+            <label class="live-stun-option"><input id="live-guest-stun-opt-in" type="checkbox" /><span>Try Google STUN for internet connections (Google can observe network metadata)</span></label>
+            <button class="primary-button live-join-button" id="live-join-session" type="button">Join live design</button>
+            <label class="field-label" for="live-guest-answer">Your one-time answer</label>
+            <textarea class="text-field live-capsule-field" id="live-guest-answer" readonly spellcheck="false" aria-label="Guest answer capsule"></textarea>
+            <button class="secondary-button live-copy-button" id="live-copy-answer" type="button" data-copy-field="live-guest-answer" hidden>Copy answer</button>
+            <p class="live-status" id="live-guest-status" role="status" aria-live="polite"></p>
+            <p class="live-status" id="live-guest-transfer-status" role="status" aria-live="polite"></p>
+            <div class="dialog-actions"><button class="secondary-button" id="live-retry-fork" type="button" hidden>Retry saving local fork</button><button class="secondary-button" id="live-stop-guest" type="button" hidden>Leave live session</button></div>
+          </section>
         </section>
       </dialog>
 

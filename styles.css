@@ -47,6 +47,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .document-name { width: 100%; max-width: 220px; padding: 3px 8px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: center; font-size: 12px; font-weight: 550; }
 .document-name:hover, .document-name:focus { border-color: #ddd; background: #fff; outline: 0; }
 .save-state { display: flex; align-items: center; gap: 5px; color: #888; font-size: 10px; white-space: nowrap; }
+.storage-mode-chip { display: none; }
 .save-dot { width: 6px; height: 6px; border-radius: 50%; background: #19a974; }
 .save-state.is-saving .save-dot { background: #f2a139; animation: pulse 1s infinite; }
 .save-state.is-error .save-dot { background: #e5484d; }
@@ -764,6 +765,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .design-file-actions button[data-action="open"] { border-color: var(--primary-action-border); background: var(--primary-action-bg); color: #fff; }
 .design-file-actions button[data-action="delete"] { color: #a13e43; }
 .design-library-content > .dialog-actions { position: sticky; bottom: -22px; margin: 16px -22px -22px; padding: 12px 22px max(12px, env(safe-area-inset-bottom)); border-top: 1px solid #eceef1; background: rgba(255,255,255,.97); }
+.live-collaboration-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px - env(safe-area-inset-top)); overflow: auto; }
+.live-collaboration-content { padding: 22px; }
+.live-collaboration-content .modal-copy { margin-bottom: 12px; }
+.live-collaboration-note { margin: 0 0 16px; color: #666b75; font-size: 12px; line-height: 1.55; }
+.live-capsule-field { display: block; width: 100%; min-height: 66px; margin: 6px 0 8px; resize: vertical; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.live-copy-button { min-height: 38px; margin: 0 0 14px; }
+.live-inline-controls { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 12px; }
+.live-stun-option { display: flex; align-items: flex-start; gap: 9px; color: #676b74; font-size: 11px; line-height: 1.45; }
+.live-stun-option input { flex: 0 0 auto; margin: 2px 0 0; accent-color: #7564f6; }
+.live-status { min-height: 1.3em; margin: 10px 0 0; color: #60646e; font-size: 12px; line-height: 1.4; }
+.live-join-button { min-height: 44px; width: 100%; margin: 12px 0 18px; }
+.live-collaboration-content .dialog-actions { justify-content: flex-start; flex-wrap: wrap; }
 .modal-title-row { display: flex; align-items: flex-start; justify-content: space-between; }
 .modal-eyebrow { color: #888; font-size: 9px; font-weight: 650; letter-spacing: .12em; }
 .modal h2 { margin: 5px 0 0; font-size: 18px; font-weight: 600; }
@@ -842,10 +855,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .topbar { height: 45px; padding: 0 7px; gap: 3px; }
   .topbar-leading, .topbar-trailing { flex: 0 0 auto; gap: 2px; }
   .topbar-divider, .file-menu-button, .mode-switcher, .quiet-button, .avatar-button, .save-state { display: none; }
-  .document-title-wrap { flex: 1 1 auto; }
+  .document-title-wrap { flex: 1 1 auto; flex-direction: row; gap: 3px; }
   .present-button { width: 32px; padding: 0; justify-content: center; font-size: 12px; }
   .present-button span { display: none; }
   .document-name { max-width: 180px; }
+  .storage-mode-chip { display: inline-flex; align-items: center; max-width: 52px; overflow: hidden; padding: 3px 5px; border: 1px solid var(--border); border-radius: 10px; color: #727782; font-size: 8px; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-panel-toggle { display: inline-grid; }
   .workspace { position: relative; display: block; }
   .canvas-region { position: absolute; inset: 0; }
@@ -1188,6 +1202,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .layout-guide-heading select, .gradient-stop-row input[type=number] { font-size: 16px; }
   .text-format-size-label input { font-size: 16px; }
   .design-library-content { padding: 16px; }
+  .live-collaboration-content { padding: 16px; }
+  .live-collaboration-content button { min-height: 44px; }
   .version-history-content { padding: 16px; }
   .version-save-controls { grid-template-columns: 1fr; }
   .version-save-controls .primary-button { width: 100%; min-height: 44px; }
@@ -1542,6 +1558,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   :root[data-theme="dark"] .modal,
   :root[data-theme="dark"] .design-library-content,
   :root[data-theme="dark"] .component-slot-dialog form { color: #e6e9ef; border-color: #444852; background: #272a31; }
+  :root[data-theme="dark"] .live-collaboration-note,
+  :root[data-theme="dark"] .live-status,
+  :root[data-theme="dark"] .live-stun-option { color: #b4bac4; }
   :root[data-theme="dark"] .recipe-recovery-card { border-color: #454953; background: #30333a; }
   :root[data-theme="dark"] .recipe-recovery-card strong { color: #e6e9ef; }
   :root[data-theme="dark"] .recipe-recovery-card span { color: #b4bac4; }
@@ -1578,12 +1597,12 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   }
   .topbar #share-button {
     display: flex;
-    min-width: 54px;
+    min-width: 48px;
     min-height: 40px;
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    padding-inline: 8px;
+    padding-inline: 6px;
   }
   .document-title-wrap { min-width: 0; padding-inline: 3px; }
   .document-name { max-width: min(42vw, 180px); }

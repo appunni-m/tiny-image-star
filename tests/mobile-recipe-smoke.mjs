@@ -134,10 +134,14 @@ try {
   tap(app, app.querySelector('#main-menu-button'));
   const newDesign = [...app.querySelectorAll('#context-menu button')].find(button => button.textContent.includes('New design'));
   assert(newDesign, 'the mobile main menu should offer a fresh local design.');
-  assert(app.defaultView.getComputedStyle(app.querySelector('#share-button')).display === 'none',
-    'the compact phone top bar hides the direct Share button.');
+  const shareButton = app.querySelector('#share-button');
+  const shareBox = shareButton.getBoundingClientRect();
+  assert(app.defaultView.getComputedStyle(shareButton).display !== 'none' && shareBox.width >= 44 && shareBox.height >= 40,
+    'the compact phone top bar keeps a directly reachable Share button.');
+  assert(shareBox.left >= 0 && shareBox.right <= 390,
+    'the direct Share button should fit inside the phone viewport.');
   assert([...app.querySelectorAll('#context-menu [role="menuitem"]')].some(button => button.textContent.includes('Share local design')),
-    'the mobile main menu should make local design sharing available when the direct button is hidden.');
+    'the mobile main menu should retain a second route to local design sharing.');
   tap(app, newDesign);
   await waitFor(() => app.querySelector('#toast-region')?.textContent.includes('New local design created.'), 'new local design switch');
   await waitFor(() => app.querySelectorAll('.layer-row[data-layer-id]').length === 0, 'fresh design');

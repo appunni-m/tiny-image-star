@@ -70,6 +70,9 @@ test('stable design invitation round-trips and signs a live offer and matching a
     issuedAt: baseTime,
     crypto
   });
+  const offerPayload = JSON.parse(Buffer.from(offer.token.slice('tisc1.'.length).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')).payload;
+  assert.equal(Object.hasOwn(offerPayload, 'invite'), false, 'offers must not carry a persistent bearer capability');
+  assert.equal(JSON.stringify(offerPayload).includes(owner.invite.capabilityPrivateKey.d), false);
   const verifiedOffer = await verifyOfferCapsule(offer.token, { expectedInvite: guestInvite, now: baseTime + 1, crypto });
   assert.equal(verifiedOffer.sessionId, offer.session.sessionId);
   assert.equal(verifiedOffer.kind, 'offer');

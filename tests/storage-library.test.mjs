@@ -15,7 +15,10 @@ import {
 
 function createIndexedDbMock({ legacyAssets = [], legacyFonts = [] } = {}) {
   const stores = new Map();
-  const clone = value => structuredClone(value);
+  const clone = value => {
+    if (value?.handle?.kind === 'directory' && typeof value.handle.getDirectoryHandle === 'function') return { ...value };
+    return structuredClone(value);
+  };
   const observations = { cursorRecordsRead: 0, fontCursorRecordsRead: 0, fontBinaryGets: [], fontBinaryGetAllCalls: 0, assetBinaryGets: [], assetKeyChecks: [], openVersion: null };
   const database = {
     objectStoreNames: { contains: name => stores.has(name) },
@@ -187,6 +190,23 @@ test('a versionchange closes the cached connection and lets the next operation r
 
   assert.equal(await loadLatestDocument(), null);
   assert.equal(opens, 2, 'future operations should create a new connection');
+});
+
+test('selected workspace handles persist locally and are returned for a fresh permission check', async () => {
+  const indexedDb = createIndexedDbMock();
+  globalThis.indexedDB = indexedDb;
+  const storage = await import('../src/storage.js?workspace-directory-handle-test');
+  const handle = { kind: 'directory', name: 'Local workspace', queryPermission() {}, getDirectoryHandle() {} };
+
+  assert.equal(await storage.loadWorkspaceDirectoryHandle(), null);
+  assert.equal(await storage.saveWorkspaceDirectoryHandle(handle), true);
+  assert.equal(await storage.loadWorkspaceDirectoryHandle(), handle);
+  assert.equal(indexedDb.observations.openVersion, 7);
+  assert.equal(indexedDb.inspect('workspaceSettings', 'active-workspace-directory-handle').handle, handle);
+  await assert.rejects(storage.saveWorkspaceDirectoryHandle({ kind: 'file' }), /supported writable workspace folder handle/i);
+
+  await storage.deleteWorkspaceDirectoryHandle();
+  assert.equal(await storage.loadWorkspaceDirectoryHandle(), null);
 });
 
 test('local library lists, retrieves, renames, duplicates, and deletes documents by stable ID', async () => {
@@ -458,7 +478,7 @@ test('font catalog migration stays metadata-only, writes cannot replace faces, a
 
   const catalog = await storage.listFontAssets();
   assert.deepEqual(catalog.map(font => [font.id, font.byteLength]), [['old-display', 12], ['old-other', 12]]);
-  assert.equal(indexedDb.observations.openVersion, 6, 'the local version history and recipe recovery stores use a forward-only database upgrade');
+  assert.equal(indexedDb.observations.openVersion, 7, 'the local version history, recipe recovery, and selected workspace stores use a forward-only database upgrade');
   assert.equal(indexedDb.observations.fontCursorRecordsRead, 2, 'existing font metadata is backfilled one record at a time');
   assert.equal(indexedDb.observations.fontBinaryGetAllCalls, 0, 'font catalogs never materialize all installed binaries');
   assert.deepEqual(indexedDb.observations.fontBinaryGets, [], 'the migration cursor avoids point reads and duplicate copies');
@@ -743,7 +763,7 @@ test('image metadata is persisted atomically and can be read without source byte
   assert.equal(Object.hasOwn(metadata, 'bytes'), false, 'catalog reads never return source image bytes');
   assert.deepEqual(new Uint8Array((await storage.loadImageAsset('photo-7')).bytes), bytes);
   assert.equal(await storage.loadImageAssetMetadata('missing'), null);
-  assert.equal(indexedDb.observations.openVersion, 6, 'opening the store upgrades the legacy database schema for local fonts, metadata, versions, and recipe recovery');
+  assert.equal(indexedDb.observations.openVersion, 7, 'opening the store upgrades the legacy schema for local fonts, metadata, versions, recipe recovery, and workspace handles');
 });
 
 test('small image-library PNG and JPEG thumbnails share compact metadata without reading source bytes', async () => {
@@ -769,7 +789,7 @@ test('small image-library PNG and JPEG thumbnails share compact metadata without
   assert.deepEqual(await storage.loadImageAssetThumbnail('thumb-jpeg'), jpeg);
   assert.deepEqual(indexedDb.observations.assetBinaryGets, [], 'thumbnail save and load only check the source key; they never retrieve source bytes');
   assert.deepEqual(indexedDb.observations.assetKeyChecks, ['thumb-png', 'thumb-jpeg', 'thumb-png', 'thumb-jpeg']);
-  assert.equal(indexedDb.observations.openVersion, 6, 'thumbnail persistence reuses assetMetadata without a schema upgrade');
+  assert.equal(indexedDb.observations.openVersion, 7, 'thumbnail persistence reuses assetMetadata and the workspace-settings upgrade');
 
   const detached = await storage.loadImageAssetThumbnail('thumb-png');
   detached[0] = 0;

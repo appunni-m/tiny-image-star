@@ -25,7 +25,12 @@ import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimen
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
-import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, unpackLocalPackage } from './storage.js';
+import { buildLocalPackageBlob, claimRecipeBatchRecovery, deleteFontAsset, deleteImageAsset, deleteRecipeBatchRecovery, deleteStoredDocument, DocumentSaveConflictError, duplicateStoredDocument, importLocalPackage, listComponentLibraries, listDocumentVersions, listFontAssets, listSavedDocuments, loadComponentLibrary, loadDocumentById, loadDocumentRecordById, loadDocumentVersion, loadFontAsset, loadImageAsset, loadImageAssetMetadata, loadImageAssetThumbnail, loadLatestDocument, loadLatestValidDocument, loadRecipeBatchRecovery, loadWorkspaceDirectoryHandle, localPackageFilename, MAX_LOCAL_PACKAGE_BYTES, publishStoredComponent, RecipeBatchRecoveryLeaseError, renameStoredDocument, saveComponentLibrary, saveDocument, saveDocumentVersion, saveFontAsset, saveImageAssetBytes, saveImageAssetThumbnail, saveRecipeBatchRecovery, saveWorkspaceDirectoryHandle, unpackLocalPackage } from './storage.js';
+import { collectReferencedAssets, migrateIndexedDbToWorkspace } from './workspace/migration.js';
+import { commitDesign as commitWorkspaceDesign, createDesign as createWorkspaceDesign, openDesign as openWorkspaceDesign } from './workspace/design-store.js';
+import { deleteImageAsset as deleteWorkspaceImageAsset, readImageAsset as readWorkspaceImageAsset, saveImageAsset as saveWorkspaceImageAsset } from './workspace/asset-store.js';
+import { deleteWorkspaceFontAsset, listWorkspaceFontAssets, readWorkspaceFontAsset, saveWorkspaceFontAsset } from './workspace/font-store.js';
+import { createWorkspace, listWorkspaceDesignIds, openWorkspace, pickWorkspaceDirectory, requestWorkspacePermission, WorkspaceStoreError } from './workspace/workspace-store.js';
 import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapLocalFontAssets, MAX_LOCAL_FONT_BYTES, unloadLocalFontFace, validateLocalFontAsset } from './font-assets.js';
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
@@ -82,6 +87,8 @@ import { addImageLibraryEntries, addImageLibraryEntry, MAX_IMAGE_LIBRARY_ENTRIES
 import { scopeImageAssetReferences } from './image-asset-restoration.js';
 import { mountImageLibraryView } from './image-library-view.js';
 import { createImageLibraryThumbnailBlob } from './image-library-thumbnail.js';
+import { createHostSessionController, createGuestSessionController } from './collaboration/session-controller.js';
+import { decodeStableDesignInvite } from './collaboration/session-capsules.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -103,6 +110,9 @@ const state = {
   componentSetSelectedVariants: new Map(),
   bulk: null, pendingRecipeRecovery: null, textNodeId: null, textSelection: null, spaceDown: false, ready: false, layerSearch: '', showLayoutGuides: true, showRulers: false, selectedRulerGuideId: null, outlineMode: false,
   statusTimer: null, saveTimer: null, saveChain: Promise.resolve(), saveRevision: 0, documentStorageRevision: null,
+  workspace: null, workspaceHandle: null, workspaceHead: null, workspacePermissionNeeded: false,
+  workspaceVerifiedImageIds: new Map(), workspaceVerifiedFontIds: new Map(),
+  liveCollaboration: null, liveReplicaHead: null, liveReplicaDesignId: null,
   documentSaveConflict: null, versionSaveLabel: 'Autosaved version', documentTransitioning: false, pendingImageImports: 0, lastLayerSelection: null,
   documentGeneration: 0,
   imageExportAbortController: null,
@@ -383,14 +393,14 @@ function renderLocalFontAssets() {
 }
 
 async function refreshLocalFontAssets({ showFailureToast = false } = {}) {
-  const records = await listFontAssets();
+  const records = await listActiveFontAssets();
   for (const face of state.fontFaces.values()) unloadLocalFontFace(face);
   state.fontFaces.clear();
   state.fontAssets = new Map(records.map(font => [font.id, font]));
   if (typeof FontFace === 'function' && document.fonts?.add) {
     // Keep binary reads and browser font parsing bounded when a device has a large local font catalog.
     const results = await mapLocalFontAssets(records, async font => {
-      const saved = await loadFontAsset(font.id);
+      const saved = await loadActiveFontAsset(font.id);
       if (!saved) return { id: font.id, error: true };
       try { return { id: font.id, face: await loadLocalFontFace(saved) }; }
       catch { return { id: font.id, error: true }; }
@@ -465,7 +475,7 @@ async function savePendingLocalFont() {
   const matching = [...state.fontAssets.values()].find(font => font.family.toLocaleLowerCase() === family.toLocaleLowerCase()
     && font.weight === weight && font.style === style);
   if (matching) {
-    const existing = await loadFontAsset(matching.id);
+    const existing = await loadActiveFontAsset(matching.id);
     if (existing?.bytes.length === candidate.bytes.length && existing.bytes.every((byte, index) => byte === candidate.bytes[index])) {
       $('#font-import-dialog').close('duplicate');
       showToast(`${family} ${weight} ${style} is already installed.`);
@@ -474,9 +484,18 @@ async function savePendingLocalFont() {
     throw new TypeError(`A different ${weight} ${style} face for “${family}” is already installed. Choose another family name.`);
   }
   const face = await loadLocalFontFace(candidate, { register: false });
-  await saveFontAsset(candidate);
+  if (state.workspace) {
+    const snapshot = JSON.parse(serializeDocument(state.document));
+    await enqueueWorkspaceSnapshot(snapshot);
+    await saveWorkspaceFontAsset(state.workspace, snapshot.id, candidate);
+    workspaceIdCache(state.workspaceVerifiedFontIds, snapshot.id).add(candidate.id);
+  } else await saveFontAsset(candidate);
   try { document.fonts.add(face); }
-  catch (error) { await deleteFontAsset(candidate.id); throw error; }
+  catch (error) {
+    if (state.workspace) await deleteWorkspaceFontAsset(state.workspace, state.document.id, candidate.id);
+    else await deleteFontAsset(candidate.id);
+    throw error;
+  }
   state.fontAssets.set(candidate.id, { id: candidate.id, name: candidate.name, type: candidate.type, family: candidate.family, weight: candidate.weight, style: candidate.style });
   state.fontFaces.set(candidate.id, face);
   renderLocalFontAssets();
@@ -491,7 +510,10 @@ async function removeLocalFont(id) {
   if (!font) return;
   const remove = globalThis.confirm?.(`Remove ${font.family} ${font.weight} ${font.style} from this browser? Designs using this face will use a fallback font. Local design packages already exported keep their copy.`);
   if (remove === false) return;
-  await deleteFontAsset(id);
+  if (state.workspace) {
+    await deleteWorkspaceFontAsset(state.workspace, state.document.id, id);
+    workspaceIdCache(state.workspaceVerifiedFontIds, state.document.id).delete(id);
+  } else await deleteFontAsset(id);
   unloadLocalFontFace(state.fontFaces.get(id));
   state.fontFaces.delete(id);
   state.fontAssets.delete(id);
@@ -559,23 +581,342 @@ function orderedRootSelectedEntries() {
   return selectedEntries().filter(entry => selected.has(entry.node.id)).sort((left, right) => (order.get(left.node.id) ?? 0) - (order.get(right.node.id) ?? 0));
 }
 function hasClipboardLayers() { return Boolean(state.clipboard?.schema && state.clipboard.items?.length); }
+function storageDestinationName() {
+  const name = state.workspaceHandle?.name || state.workspace?.directoryHandle?.name;
+  return name ? `folder “${name}”` : 'the browser';
+}
+function syncStorageModeLabel() {
+  const folderMode = Boolean(state.workspace);
+  const pendingFolder = Boolean(state.workspacePermissionNeeded && state.workspaceHandle);
+  const mode = folderMode ? 'folder' : 'browser';
+  const label = folderMode
+    ? `Folder workspace · ${state.workspaceHandle?.name || 'selected folder'}`
+    : pendingFolder ? `Folder access needed · ${state.workspaceHandle.name || 'saved folder'}` : 'Browser storage';
+  const chip = $('#storage-mode-chip');
+  if (chip) {
+    chip.textContent = folderMode ? 'Folder' : pendingFolder ? 'Reconnect' : 'Browser';
+    chip.title = folderMode ? `Saving to ${label}` : pendingFolder ? `${label}. Reconnect before editing.` : 'Saving in this browser profile';
+    chip.setAttribute('aria-label', chip.title);
+    chip.dataset.mode = pendingFolder ? 'reconnect' : mode;
+  }
+  const footer = $('#storage-mode-label');
+  if (footer) footer.textContent = label;
+}
+function savingStatusText() { return 'Saving locally…'; }
+function savedStatusText() { return 'Saved locally'; }
+function failedStatusText() { return state.workspace ? 'Folder save failed' : 'Browser save failed'; }
 function setSaveState(kind, text) {
   const element = $('#save-state');
   element.classList.toggle('is-saving', kind === 'saving');
   element.classList.toggle('is-error', kind === 'error');
   element.lastElementChild.textContent = text;
 }
+
+function workspaceNotFound(error, code) {
+  return error instanceof WorkspaceStoreError && error.code === code;
+}
+
+function workspaceSeedDocument(documentData) {
+  const seed = createDocument();
+  seed.id = documentData.id;
+  seed.name = documentData.name;
+  seed.pages = documentData.pages.map((page, index) => ({
+    id: page.id,
+    name: page.name || `Page ${index + 1}`,
+    children: [],
+    guides: []
+  }));
+  seed.activePageId = seed.pages.some(page => page.id === documentData.activePageId)
+    ? documentData.activePageId : seed.pages[0].id;
+  return seed;
+}
+
+function imageAssetName(documentData, assetId) {
+  const libraryEntry = (documentData?.imageLibrary || []).find(entry => entry.assetId === assetId);
+  if (libraryEntry?.name) return libraryEntry.name;
+  for (const reference of imageAssetReferencesAcrossPages(documentData)) {
+    if (reference.assetId === assetId && reference.name) return reference.name;
+  }
+  return assetId;
+}
+
+function workspaceIdCache(cache, designId) {
+  let ids = cache.get(designId);
+  if (!ids) { ids = new Set(); cache.set(designId, ids); }
+  return ids;
+}
+
+async function ensureWorkspaceSnapshotAssets(documentData) {
+  const workspace = state.workspace;
+  if (!workspace) return;
+  const references = collectReferencedAssets(documentData);
+  const imageIds = workspaceIdCache(state.workspaceVerifiedImageIds, documentData.id);
+  for (const assetId of references.imageAssetIds) {
+    if (imageIds.has(assetId)) continue;
+    try {
+      await readWorkspaceImageAsset(workspace, documentData.id, assetId);
+      imageIds.add(assetId);
+      continue;
+    } catch (error) {
+      if (!workspaceNotFound(error, 'ASSET_NOT_FOUND')) throw error;
+    }
+    const source = await loadImageAsset(assetId);
+    if (!source?.bytes) throw new Error(`Image source “${imageAssetName(documentData, assetId)}” is missing from this device and the selected folder.`);
+    await saveWorkspaceImageAsset(workspace, documentData.id, assetId, source.bytes, { mimeType: source.type });
+    imageIds.add(assetId);
+  }
+
+  const fontIds = workspaceIdCache(state.workspaceVerifiedFontIds, documentData.id);
+  const referencedFontSpecs = references.fontSpecs;
+  if (!referencedFontSpecs.length) return;
+  const fontCatalog = await listFontAssets();
+  const usedFonts = fontCatalog.filter(font => referencedFontSpecs.some(spec =>
+    spec.family.toLocaleLowerCase() === font.family.toLocaleLowerCase()
+      && spec.weight === font.weight && spec.style === font.style));
+  for (const font of usedFonts) {
+    if (fontIds.has(font.id)) continue;
+    try {
+      await readWorkspaceFontAsset(workspace, documentData.id, font.id);
+      fontIds.add(font.id);
+      continue;
+    } catch (error) {
+      if (!workspaceNotFound(error, 'FONT_NOT_FOUND')) throw error;
+    }
+    const source = await loadFontAsset(font.id);
+    if (!source?.bytes) throw new Error(`Local font “${font.family}” is missing from this device and the selected folder.`);
+    await saveWorkspaceFontAsset(workspace, documentData.id, source);
+    fontIds.add(font.id);
+  }
+}
+
+async function persistWorkspaceSnapshot(snapshot) {
+  const workspace = state.workspace;
+  if (!workspace) throw new Error('No folder workspace is active.');
+  let opened;
+  try { opened = await openWorkspaceDesign(workspace, snapshot.id); }
+  catch (error) {
+    if (!workspaceNotFound(error, 'DESIGN_NOT_FOUND')) throw error;
+    await createWorkspaceDesign(workspace, workspaceSeedDocument(snapshot));
+    opened = await openWorkspaceDesign(workspace, snapshot.id);
+  }
+  await ensureWorkspaceSnapshotAssets(snapshot);
+  const current = JSON.stringify(opened.document);
+  const candidate = JSON.stringify(snapshot);
+  if (current === candidate) {
+    if (state.document.id === snapshot.id) state.workspaceHead = opened.head;
+    return opened;
+  }
+  const pageId = snapshot.activePageId && snapshot.pages.some(page => page.id === snapshot.activePageId)
+    ? snapshot.activePageId : snapshot.pages[0]?.id;
+  if (!pageId) throw new Error('A workspace design must contain at least one page.');
+  const expectedHead = state.document.id === snapshot.id && state.workspaceHead
+    ? state.workspaceHead : opened.head;
+  const committed = await commitWorkspaceDesign(workspace, snapshot.id, snapshot, { expectedHead, pageId });
+  if (committed.acknowledged !== true) throw new Error('The folder workspace did not confirm a durable design save.');
+  if (state.document.id === snapshot.id) state.workspaceHead = committed.head;
+  return committed;
+}
+
+function enqueueWorkspaceSnapshot(snapshot) {
+  const next = state.saveChain.catch(() => {}).then(() => persistWorkspaceSnapshot(snapshot));
+  state.saveChain = next.catch(() => {});
+  return next;
+}
+
+async function loadActiveImageAssetMetadata(assetId, documentData = state.document) {
+  const catalog = await loadImageAssetMetadata(assetId);
+  if (!state.workspace) return catalog;
+  if (catalog) return catalog;
+  const saved = await readWorkspaceImageAsset(state.workspace, documentData.id, assetId);
+  const dimensions = inspectRasterDimensions(saved.bytes);
+  return {
+    id: assetId,
+    name: imageAssetName(documentData, assetId),
+    type: saved.metadata.mimeType,
+    byteLength: saved.metadata.byteLength,
+    dimensions: dimensions ? { width: dimensions.width, height: dimensions.height, pixels: dimensions.pixels,
+      ...(Number.isInteger(dimensions.orientation) && dimensions.orientation !== 1 ? { orientation: dimensions.orientation } : {}) } : null
+  };
+}
+
+async function loadActiveImageAsset(assetId) {
+  if (!state.workspace) return loadImageAsset(assetId);
+  const saved = await readWorkspaceImageAsset(state.workspace, state.document.id, assetId);
+  const catalog = await loadImageAssetMetadata(assetId);
+  return {
+    id: assetId,
+    name: catalog?.name || imageAssetName(state.document, assetId),
+    type: saved.metadata.mimeType,
+    bytes: saved.bytes
+  };
+}
+
+async function persistActiveImageAsset(assetId, name, mimeType, bytes) {
+  if (!state.workspace) return saveImageAssetBytes(assetId, name, mimeType, bytes);
+  const snapshot = JSON.parse(serializeDocument(state.document));
+  await enqueueWorkspaceSnapshot(snapshot);
+  const result = await saveWorkspaceImageAsset(state.workspace, snapshot.id, assetId, bytes, { mimeType });
+  workspaceIdCache(state.workspaceVerifiedImageIds, snapshot.id).add(assetId);
+  return result;
+}
+
+async function listActiveFontAssets() {
+  if (!state.workspace) return listFontAssets();
+  return (await listWorkspaceFontAssets(state.workspace, state.document.id)).map(({ metadata, bytes }) => ({
+    id: metadata.id, name: metadata.name, type: metadata.type, family: metadata.family,
+    weight: metadata.weight, style: metadata.style, byteLength: bytes.byteLength
+  }));
+}
+
+async function loadActiveFontAsset(fontId) {
+  if (!state.workspace) return loadFontAsset(fontId);
+  const saved = await readWorkspaceFontAsset(state.workspace, state.document.id, fontId);
+  return validateLocalFontAsset({ ...saved.metadata, bytes: saved.bytes });
+}
+
+async function initializeWorkspaceForHandle(handle, { migrate = true } = {}) {
+  let workspace;
+  try { workspace = await openWorkspace(handle); }
+  catch (error) {
+    if (!workspaceNotFound(error, 'MANIFEST_MISSING')) throw error;
+    workspace = await createWorkspace(handle);
+  }
+  if (migrate) {
+    const result = await migrateIndexedDbToWorkspace(workspace, {
+      onProgress: progress => {
+        if (progress?.status === 'running') setSaveState('saving', `Migrating · ${progress.designIndex + 1}/${progress.designCount}`);
+      }
+    });
+    if (result.status !== 'complete') {
+      const first = result.errors[0];
+      throw new Error(first
+        ? `Folder migration paused at ${first.designId}: ${first.message}. The folder was not activated; choose it again to resume safely.`
+        : 'Folder migration is incomplete. The folder was not activated; choose it again to resume safely.');
+    }
+  }
+  const designIds = await listWorkspaceDesignIds(workspace);
+  const designId = designIds.includes(state.document.id) ? state.document.id : designIds[0];
+  if (!designId) throw new Error('The selected folder has no completed designs. Save a design before reconnecting this workspace.');
+  const opened = await openWorkspaceDesign(workspace, designId);
+  await saveWorkspaceDirectoryHandle(handle);
+  return { workspace, opened };
+}
+
+async function activateWorkspace(handle, { migrate = true, reconnect = false } = {}) {
+  if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before changing storage.');
+  if (state.pendingImageImports || isImageRecipeBatchActive(state.bulk)) throw new Error('Finish the current image import or recipe batch before changing storage.');
+  if (migrate && !state.workspacePermissionNeeded && !(await persistCurrentDocumentNow())) {
+    throw new Error('The current design could not be saved before folder migration.');
+  }
+  state.documentTransitioning = true;
+  $('.workspace').inert = true;
+  setSaveState('saving', migrate ? 'Preparing folder workspace…' : 'Reconnecting folder…');
+  try {
+    const { workspace, opened } = await initializeWorkspaceForHandle(handle, { migrate });
+    const previousDocument = state.document;
+    state.imageExportAbortController?.abort();
+    releaseImageRuntimeForDocumentSwitch();
+    state.workspace = workspace;
+    state.workspaceHandle = handle;
+    state.workspaceHead = opened.head;
+    state.workspacePermissionNeeded = false;
+    $('#document-name').readOnly = false;
+    state.document = opened.document;
+    state.pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
+    state.workspaceVerifiedImageIds.clear();
+    state.workspaceVerifiedFontIds.clear();
+    const assetIds = collectReferencedAssets(opened.document).imageAssetIds;
+    state.workspaceVerifiedImageIds.set(opened.document.id, new Set(assetIds));
+    try {
+      const fonts = await listWorkspaceFontAssets(workspace, opened.document.id);
+      state.workspaceVerifiedFontIds.set(opened.document.id, new Set(fonts.map(font => font.metadata.id)));
+    } catch (error) {
+      if (!workspaceNotFound(error, 'FONT_NOT_FOUND')) throw error;
+    }
+    state.documentSaveConflict = null;
+    state.versionSaveLabel = reconnect ? 'Reopened folder workspace' : 'Moved to folder workspace';
+    state.documentStorageRevision = (await loadDocumentRecordById(opened.document.id))?.revision ?? null;
+    syncStorageModeLabel();
+    renderUI();
+    await refreshLocalFontAssets({ showFailureToast: true });
+    await restoreImageAssets(++state.documentGeneration);
+    if (previousDocument !== state.document) history.undoStack.length = history.redoStack.length = 0;
+    setSaveState('saved', savedStatusText());
+    showToast(reconnect ? 'Folder workspace reconnected. Your design is open from that folder.' : 'Folder workspace ready. Designs save to the selected folder.');
+    return true;
+  } catch (error) {
+    setSaveState('error', failedStatusText());
+    throw error;
+  } finally {
+    state.documentTransitioning = false;
+    $('.workspace').inert = Boolean(state.workspacePermissionNeeded || state.pendingRecipeRecovery);
+  }
+}
+
+async function chooseWorkspaceFolder() {
+  try {
+    // Keep the native picker call in the menu action's user activation.
+    const pickerResult = pickWorkspaceDirectory();
+    const handle = await pickerResult;
+    const existingPermission = await handle.queryPermission({ mode: 'readwrite' });
+    if (existingPermission !== 'granted') {
+      const requestedPermission = await requestWorkspacePermission(handle);
+      if (requestedPermission !== 'granted') throw new Error('Folder access was not granted. Choose the folder again and allow read and write access.');
+    }
+    let sameAsSaved = false;
+    try { sameAsSaved = Boolean(state.workspaceHandle && await state.workspaceHandle.isSameEntry?.(handle)); }
+    catch { sameAsSaved = false; }
+    if (sameAsSaved && state.workspace) {
+      state.workspaceHandle = handle;
+      await saveWorkspaceDirectoryHandle(handle);
+      syncStorageModeLabel();
+      showToast('This folder workspace is already active.');
+      return;
+    }
+    if (sameAsSaved && state.workspacePermissionNeeded) {
+      await activateWorkspace(handle, { migrate: false, reconnect: true });
+      return;
+    }
+    await activateWorkspace(handle, { migrate: true });
+  } catch (error) {
+    if (error?.name !== 'AbortError') showToast(error.message || 'Could not open the selected folder workspace.');
+  }
+}
+
+async function reconnectWorkspaceFolder() {
+  try {
+    const handle = state.workspaceHandle || await loadWorkspaceDirectoryHandle();
+    if (!handle) throw new Error('Choose a folder workspace first.');
+    const permission = await requestWorkspacePermission(handle);
+    if (permission !== 'granted') throw new Error('Folder access was not granted. Choose the folder again and allow read and write access.');
+    await activateWorkspace(handle, { migrate: false, reconnect: true });
+  } catch (error) { showToast(error.message || 'Could not reconnect the folder workspace.'); }
+}
+
 function enqueueDocumentSave(snapshot, versionName = 'Autosaved version', recordVersion = true) {
   const next = state.saveChain.catch(() => {}).then(async () => {
     const conflict = state.documentSaveConflict;
     const persistedSnapshot = conflict
       ? { ...snapshot, id: conflict.recoveryId, name: conflict.recoveryName }
       : snapshot;
-    const savedRevision = conflict
-      ? await saveDocument(persistedSnapshot)
-      : await saveDocument(persistedSnapshot, { expectedRevision: state.documentStorageRevision });
-    if (conflict) conflict.saved = true;
-    else state.documentStorageRevision = savedRevision;
+    let savedRevision = null;
+    if (state.workspace) {
+      await persistWorkspaceSnapshot(persistedSnapshot);
+      try {
+        savedRevision = await saveDocument(persistedSnapshot, { expectedRevision: state.documentStorageRevision });
+        state.documentStorageRevision = savedRevision;
+      } catch (error) {
+        // IndexedDB is only a library/index mirror after folder mode is active.
+        // The workspace commit has already been verified and remains authoritative.
+        console.warn('The folder save succeeded, but its optional browser library mirror could not be updated.', error);
+      }
+    } else {
+      savedRevision = conflict
+        ? await saveDocument(persistedSnapshot)
+        : await saveDocument(persistedSnapshot, { expectedRevision: state.documentStorageRevision });
+      if (conflict) conflict.saved = true;
+      else state.documentStorageRevision = savedRevision;
+    }
     let versionError = null;
     if (recordVersion) {
       try { await saveDocumentVersion(persistedSnapshot, { name: versionName }); }
@@ -611,7 +952,7 @@ async function preserveDocumentSaveConflict(snapshot, error) {
 }
 function setDocumentEditingBlocked(blocked) {
   $('.topbar').inert = blocked;
-  $('.workspace').inert = blocked;
+  $('.workspace').inert = blocked || state.workspacePermissionNeeded;
 }
 function queueSave({ refreshLayerTree = true } = {}) {
   if (!state.ready) return;
@@ -626,7 +967,7 @@ function queueSave({ refreshLayerTree = true } = {}) {
     saveOwner.savePending = true;
     saveOwner.saveError = null;
   }
-  setSaveState('saving', 'Saving locally…');
+  setSaveState('saving', savingStatusText());
   if (state.documentTransitioning) {
     if (saveOwner && state.bulk === saveOwner) saveOwner.savePending = false;
     return;
@@ -639,8 +980,26 @@ function queueSave({ refreshLayerTree = true } = {}) {
       reconcileImageAssetRuntime();
       const snapshot = JSON.parse(serializeDocument(state.document));
       const { versionError, recoveryCopy } = await enqueueDocumentSave(snapshot, state.versionSaveLabel, !isImageRecipeBatchActive(state.bulk));
+      let awaitingHost = false;
+      const live = state.liveCollaboration;
+      if (live?.role === 'guest' && live.replicaReady && live.controller
+        && ['connected', 'pending'].includes(live.controller.state)) {
+        const proposalSnapshot = JSON.parse(JSON.stringify(snapshot));
+        proposalSnapshot.id = live.hostDesignId;
+        if (proposalSnapshot.settings) delete proposalSnapshot.settings.collaborationSource;
+        try {
+          live.controller.proposeSnapshot(proposalSnapshot);
+          awaitingHost = true;
+        } catch (error) {
+          // The local folder checkpoint is already durable. Freeze the old
+          // session and let fork recovery preserve this copy if its pending
+          // operation budget or protocol state has been reached.
+          showToast(`Your local copy is saved. Live edits stopped safely: ${error.message || 'the pending edit limit was reached'}.`, 7000);
+          live.controller.close();
+        }
+      }
       if (revision === state.saveRevision) {
-        setSaveState(recoveryCopy ? 'error' : 'saved', recoveryCopy ? 'Conflict · copy saved' : versionError ? 'Saved · history unavailable' : 'Saved locally');
+        setSaveState(recoveryCopy ? 'error' : awaitingHost ? 'saving' : 'saved', recoveryCopy ? 'Conflict · copy saved' : awaitingHost ? 'Waiting for owner save' : versionError ? `Saved · ${storageDestinationName()} · history unavailable` : savedStatusText());
         if (saveOwner && state.bulk === saveOwner) {
           saveOwner.savePending = false;
           saveOwner.saveError = recoveryCopy ? 'This tab is saving edits as a separate recovery copy because another tab saved a newer revision.' : null;
@@ -660,8 +1019,8 @@ function queueSave({ refreshLayerTree = true } = {}) {
             showToast(`The newer saved design was preserved, but this tab could not save its recovery copy: ${recoveryError.message || 'local storage failed'}. Export a local copy before closing.`, 8000);
           }
       } else {
-        setSaveState('error', 'Could not save');
-        showToast(error.message || 'Could not save this design locally.');
+        setSaveState('error', failedStatusText());
+        showToast(error.message || `Could not save this design to ${storageDestinationName()}.`);
       }
         if (saveOwner && state.bulk === saveOwner) {
           saveOwner.savePending = false;
@@ -6327,7 +6686,7 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       const width = bitmap.width; const height = bitmap.height;
       bitmapUrl = URL.createObjectURL(file);
       assetWriteAttempted = true;
-      await saveImageAssetBytes(assetId, fileName, file.type, sourceBytes);
+      await persistActiveImageAsset(assetId, fileName, file.type, sourceBytes);
       if (generation !== state.documentGeneration) { bitmap.close?.(); bitmap = null; URL.revokeObjectURL(bitmapUrl); bitmapUrl = null; imageMemoryBudget.releaseReservation(assetReservation); assetReservation = null; continue; }
       imageMemoryBudget.commit(assetReservation, assetMemoryKey(assetId), { bytes: assetBytes, kind: 'asset' });
       assetReservation = null;
@@ -6367,8 +6726,10 @@ async function importImageFiles(files, point = null, { place = true, input = $('
       else showToast(`${fileName}: ${error.message || 'Could not load image.'}`);
     } finally {
       if (assetWriteAttempted && !placed && !retainedInLibrary && assetId) {
-        try { await deleteImageAsset(assetId); }
-        catch (error) { showToast(`${fileName}: the failed import could not be removed from local storage (${error.message || 'storage error'}).`); }
+        try {
+          if (state.workspace) await deleteWorkspaceImageAsset(state.workspace, state.document.id, assetId);
+          else await deleteImageAsset(assetId);
+        } catch (error) { showToast(`${fileName}: the failed import could not be removed from local storage (${error.message || 'storage error'}).`); }
       }
       if (pillowFallbackUsed && !placed && !retainedInLibrary && assetId) imageEngine.dispose(assetId);
     }
@@ -6423,7 +6784,7 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
           });
         continue;
       }
-      const metadata = await loadImageAssetMetadata(assetId);
+      const metadata = await loadActiveImageAssetMetadata(assetId);
       if (generation !== state.documentGeneration) return;
       if (!metadata) { state.imageStatus.set(previewKey, 'Original image missing'); continue; }
       const sourceDimensions = metadata.dimensions;
@@ -6440,7 +6801,7 @@ async function restoreImageAssets(generation = state.documentGeneration, { asset
       if (!reservations.assetReservation) throw retainedImageLimitMessage();
       reservations.decodeReservation = imageMemoryBudget.reserve(estimateBitmapBytes(sourceDimensions.width, sourceDimensions.height), { kind: 'decode-transient' });
       if (!reservations.decodeReservation) throw retainedImageLimitMessage();
-      const saved = await loadImageAsset(assetId);
+      const saved = await loadActiveImageAsset(assetId);
       if (generation !== state.documentGeneration) { releaseImageMemoryReservations(imageMemoryBudget, reservations); return; }
       if (!saved) { releaseImageMemoryReservations(imageMemoryBudget, reservations); state.imageStatus.set(previewKey, 'Original image missing'); continue; }
       const sourceBytes = saved.bytes instanceof Uint8Array ? saved.bytes : new Uint8Array(saved.bytes);
@@ -7687,6 +8048,10 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     ...(commentAnchor ? [{ label: 'Add comment here', action: () => beginCommentAt(commentAnchor) }, { separator: true }] : []),
     { label: 'Your designs…', action: openDesignLibrary },
     { label: 'Version history…', action: openVersionHistory },
+    { label: state.workspace ? `Folder workspace · ${state.workspaceHandle?.name || 'active'}` : 'Choose folder workspace…', action: chooseWorkspaceFolder },
+    ...(state.workspaceHandle && !state.workspace ? [{ label: 'Reconnect folder workspace…', action: reconnectWorkspaceFolder }] : []),
+    { label: 'Share live…', action: () => dispatchWorkspaceCollaborationIntent('tiny-image-star:share-live') },
+    { label: 'Join live session…', action: () => dispatchWorkspaceCollaborationIntent('tiny-image-star:join-live') },
     { label: 'New design', shortcut: '⌘N', action: newDesign },
     { label: 'Open local design…', action: () => $('#open-file-input').click() },
     { label: 'Import SVG as editable layers…', action: () => $('#svg-input').click() },
@@ -7717,6 +8082,401 @@ function openFileMenu(x, y, commentAnchor = null, returnFocusElement = null) {
     { label: 'Undo', shortcut: '⌘Z', action: undo, disabled: !history.canUndo || isImageRecipeBatchActive(state.bulk) },
     { label: 'Redo', shortcut: '⌘⇧Z', action: redo, disabled: !history.canRedo || isImageRecipeBatchActive(state.bulk) }
   ], x, y, returnFocusElement, 'File actions');
+}
+function dispatchWorkspaceCollaborationIntent(eventName) {
+  const event = new CustomEvent(eventName, {
+    cancelable: true,
+    detail: Object.freeze({
+      document: JSON.parse(serializeDocument(state.document)),
+      workspace: state.workspace,
+      workspaceHandle: state.workspaceHandle,
+      head: state.workspaceHead,
+      storageMode: state.workspace ? 'workspace' : 'browser'
+    })
+  });
+  window.dispatchEvent(event);
+  if (!event.defaultPrevented) showToast('Live collaboration controls are not connected yet.');
+}
+
+function liveDialog() { return $('#live-collaboration-dialog'); }
+function liveStatus(role, message) {
+  const target = role === 'host' ? $('#live-host-status') : $('#live-guest-status');
+  if (target) target.textContent = message || '';
+}
+function liveTerminal(status) {
+  return ['closed', 'revoked', 'failed', 'timeout', 'disconnected', 'overloaded', 'rejected', 'diverged', 'fork-saved', 'fork-unsaved', 'disconnected-before-snapshot'].includes(status);
+}
+function liveIceServers(role) {
+  const checked = role === 'host' ? $('#live-stun-opt-in').checked : $('#live-guest-stun-opt-in').checked;
+  return checked ? [{ urls: 'stun:stun.l.google.com:19302' }] : [];
+}
+function setLiveEditorBlocked(blocked) {
+  const shouldBlock = Boolean(blocked || state.pendingRecipeRecovery || state.workspacePermissionNeeded);
+  $('.topbar').inert = shouldBlock;
+  $('.workspace').inert = shouldBlock;
+}
+function openLiveDialog(role) {
+  const dialog = liveDialog();
+  $('#live-host-panel').hidden = role !== 'host';
+  $('#live-guest-panel').hidden = role !== 'guest';
+  $('#live-collaboration-title').textContent = role === 'host' ? 'Share live design' : 'Join live design';
+  dialog.showModal();
+}
+async function prepareLiveWorkspace() {
+  if (state.workspace) return true;
+  await chooseWorkspaceFolder();
+  if (!state.workspace) throw new Error('Choose a writable folder workspace before starting live collaboration.');
+  return true;
+}
+function invitationFromText(value) {
+  const text = String(value || '').trim();
+  if (!text) throw new Error('Paste the design invitation first.');
+  if (/^https?:\/\//i.test(text)) {
+    let url;
+    try { url = new URL(text); } catch { throw new Error('The invitation link is invalid.'); }
+    if (!url.hash) throw new Error('This link has no design invitation fragment.');
+    return decodeStableDesignInvite(url.hash);
+  }
+  return decodeStableDesignInvite(text);
+}
+async function copyLiveField(fieldId) {
+  const field = $(`#${fieldId}`);
+  if (!field?.value) { showToast('There is nothing to copy yet.'); return; }
+  try {
+    await navigator.clipboard.writeText(field.value);
+    showToast('Copied. Send this capsule through a channel you trust.');
+  } catch {
+    field.focus(); field.select();
+    showToast('The text is selected. Copy it using your device’s copy command.');
+  }
+}
+async function shareLiveCapsules() {
+  const text = `Tiny Image Star live design\n\nInvitation:\n${$('#live-invite-value').value}\n\nOne-time session offer (expires soon):\n${$('#live-offer-value').value}`;
+  if (typeof navigator.share === 'function') {
+    try { await navigator.share({ title: 'Tiny Image Star live design', text }); return; }
+    catch (error) { if (error?.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(text); showToast('Invitation and offer copied. Send them through a channel you trust.'); }
+  catch { $('#live-invite-value').focus(); $('#live-invite-value').select(); showToast('Share is unavailable. Copy the invitation and offer separately.'); }
+}
+
+async function startLiveHost() {
+  const current = state.liveCollaboration;
+  if (current?.role === 'host' && !liveTerminal(current.status)) { openLiveDialog('host'); return; }
+  try {
+    await prepareLiveWorkspace();
+    if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before sharing it.');
+    const session = { role: 'host', status: 'preparing', controller: null, designId: state.document.id };
+    state.liveCollaboration = session;
+    liveStatus('host', 'Preparing the design and signed session offer…');
+    $('#live-start-host').disabled = true;
+    setLiveEditorBlocked(true);
+    const controller = await createHostSessionController({
+      workspace: state.workspace,
+      designId: state.document.id,
+      iceServers: liveIceServers('host'),
+      onState: status => {
+        session.status = status;
+        const copy = {
+          'preparing': 'Preparing the session…', 'waiting-answer': 'Offer ready. Send the invitation and offer to your guest.',
+          'verifying-answer': 'Verifying the guest’s answer…', 'connecting': 'Connecting directly to the guest…',
+          'waiting-guest': 'Connection open. Waiting for the guest to finish joining…',
+          'connected': 'Guest connected. Your folder is the canonical saved copy.',
+          'sending-assets': 'Sending required images and fonts over the encrypted peer connection…',
+          'revoked': 'Sharing stopped and the invitation was revoked.', 'closed': 'Live session closed.',
+          'failed': 'The live session failed. Check the capsules and try again.', 'timeout': 'The live session timed out.',
+          'overloaded': 'The peer sent too many messages. The session was closed safely.',
+          'rejected': 'The guest session was rejected.', 'diverged': 'The guest diverged from the saved head; sharing stopped.'
+        };
+        liveStatus('host', copy[status] || `Live session: ${status}.`);
+        if (liveTerminal(status)) setLiveEditorBlocked(false);
+      },
+      onSnapshot: (snapshot, head) => {
+        const next = parseDocument(snapshot);
+        if (next.id !== session.designId) return;
+        state.document = next;
+        state.workspaceHead = head;
+        state.workspaceVerifiedImageIds.set(next.id, new Set(collectReferencedAssets(next).imageAssetIds));
+        state.documentGeneration += 1;
+        renderUI();
+        void refreshLocalFontAssets().then(() => restoreImageAssets(state.documentGeneration)).then(() => renderer?.invalidate())
+          .catch(error => showToast(error.message || 'The host could not refresh a newly shared asset.'));
+      },
+      approveIncomingAsset: async asset => globalThis.confirm?.(`Allow the guest to add this ${asset.assetKind} to “${state.document.name}”?\n\n${asset.assetId} · ${Math.ceil(asset.byteLength / 1024)} KB${asset.fontMetadata ? `\n${asset.fontMetadata.family} ${asset.fontMetadata.weight} ${asset.fontMetadata.style}` : ''}\n\nThe bytes will be written only into this design’s selected workspace folder.`) === true,
+      onAssetTransfer: result => {
+        const detail = result.phase === 'received'
+          ? `Guest assets saved · ${result.count} item${result.count === 1 ? '' : 's'} · ${Math.ceil(result.totalBytes / (1024 * 1024))} MiB`
+          : `Sent ${result.assetKind || 'asset'} · ${Math.ceil(result.byteLength / 1024)} KB`;
+        $('#live-transfer-status').textContent = detail;
+      }
+    });
+    session.controller = controller;
+    $('#live-start-host').hidden = true;
+    $('#live-accept-answer').hidden = false;
+    const link = new URL(location.href);
+    link.hash = controller.invitation;
+    $('#live-invite-value').value = link.toString();
+    $('#live-offer-value').value = controller.offerCapsule;
+    $('#live-share-capsules').hidden = false;
+    $('#live-stop-host').hidden = false;
+    liveStatus('host', 'Offer ready. Send both items to your guest; the offer expires after a few minutes.');
+  } catch (error) {
+    if (state.liveCollaboration?.role === 'host') state.liveCollaboration = null;
+    setLiveEditorBlocked(false);
+    liveStatus('host', error.message || 'Could not prepare this live session.');
+    showToast(error.message || 'Could not prepare this live session.');
+  } finally { $('#live-start-host').disabled = false; }
+}
+
+async function ensureLiveReplicaDesign(session) {
+  if (session.localHead) return session.localHead;
+  if (session.createPromise) return session.createPromise;
+  session.createPromise = (async () => {
+    if (!state.workspace) throw new Error('A writable folder workspace is required for the local shared-design copy.');
+    const seed = createDocument();
+    seed.id = session.localDesignId;
+    seed.name = 'Incoming shared design';
+    await createWorkspaceDesign(state.workspace, seed);
+    const opened = await openWorkspaceDesign(state.workspace, session.localDesignId);
+    session.localHead = opened.head;
+    state.workspaceVerifiedImageIds.set(session.localDesignId, new Set());
+    state.workspaceVerifiedFontIds.set(session.localDesignId, new Set());
+    return session.localHead;
+  })().catch(error => { session.createPromise = null; throw error; });
+  return session.createPromise;
+}
+
+async function persistLiveReplicaSnapshot(session, snapshot) {
+  await ensureLiveReplicaDesign(session);
+  const localSnapshot = JSON.parse(JSON.stringify(snapshot));
+  localSnapshot.id = session.localDesignId;
+  const saved = await enqueueWorkspaceSnapshot(localSnapshot);
+  session.localHead = saved.head;
+  state.liveReplicaHead = saved.head;
+  state.workspaceHead = saved.head;
+  return saved;
+}
+
+async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null) {
+  if (session.replicaReady) {
+    session.hostRevision = session.controller?.revision ?? session.hostRevision;
+    const head = hostHead || session.hostHead;
+    if (head?.commitHash && state.document.settings) {
+      session.hostHead = { sequence: head.sequence, commitHash: head.commitHash };
+      state.document.settings.collaborationSource = {
+        designId: session.hostDesignId,
+        sessionId: session.sessionId,
+        sequence: head.sequence,
+        commitHash: head.commitHash,
+        pendingOperationIds: session.controller?.fork?.pendingOperations?.map(operation => operation.opId) || []
+      };
+      const local = JSON.parse(serializeDocument(state.document));
+      void persistLiveReplicaSnapshot(session, local).catch(error => {
+        liveStatus('guest', `The accepted host revision could not be recorded in your folder: ${error.message || 'storage error'}`);
+        setLiveEditorBlocked(true);
+        void session.controller?.close?.();
+      });
+    }
+    const fork = session.controller?.fork;
+    liveStatus('guest', fork?.status === 'fork-unsaved'
+      ? `Connection ended; local fork could not be saved: ${fork.saveError || 'storage failed'}. Retry the save before continuing.`
+      : 'Connected. Edits are saved to your local folder and sent to the owner for durable approval.');
+    return;
+  }
+  await ensureLiveReplicaDesign(session);
+  const localSnapshot = JSON.parse(JSON.stringify(hostSnapshot));
+  localSnapshot.id = session.localDesignId;
+  localSnapshot.settings ||= { unit: 'px', grid: 8, snap: true };
+  if (hostHead?.commitHash) {
+    session.hostHead = { sequence: hostHead.sequence, commitHash: hostHead.commitHash };
+    localSnapshot.settings.collaborationSource = {
+      designId: session.hostDesignId,
+      sessionId: session.sessionId,
+      sequence: hostHead.sequence,
+      commitHash: hostHead.commitHash,
+      pendingOperationIds: []
+    };
+  }
+  await persistLiveReplicaSnapshot(session, localSnapshot);
+  state.imageExportAbortController?.abort();
+  releaseImageRuntimeForDocumentSwitch();
+  state.document = parseDocument(localSnapshot);
+  state.workspaceHead = session.localHead;
+  state.liveReplicaHead = session.localHead;
+  state.documentStorageRevision = (await loadDocumentRecordById(localSnapshot.id))?.revision ?? null;
+  state.documentSaveConflict = null;
+  state.pendingRecipeRecovery = await recipeRecoveryForDocument(localSnapshot.id);
+  state.selectedIds = [];
+  history.undoStack.length = history.redoStack.length = 0;
+  session.replicaReady = true;
+  renderUI();
+  await refreshLocalFontAssets({ showFailureToast: true });
+  await restoreImageAssets(++state.documentGeneration);
+  setLiveEditorBlocked(false);
+  if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
+  setSaveState('saved', 'Local shared copy saved');
+  liveStatus('guest', 'Connected. Edits are saved to your local folder and sent to the owner for durable approval.');
+  $('#live-stop-guest').hidden = false;
+  renderer?.invalidate();
+}
+
+async function startLiveGuest() {
+  const existing = state.liveCollaboration;
+  if (existing?.role === 'guest' && !liveTerminal(existing.status)) { openLiveDialog('guest'); return; }
+  let session = null;
+  try {
+    const invite = invitationFromText($('#live-join-invite').value);
+    const offerCapsule = $('#live-join-offer').value.trim();
+    if (!offerCapsule) throw new Error('Paste the owner’s one-time offer first.');
+    await prepareLiveWorkspace();
+    if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before joining a live session.');
+    const localSeed = createDocument();
+    session = {
+      role: 'guest', status: 'preparing-answer', controller: null, hostDesignId: invite.designId,
+      localDesignId: localSeed.id, localHead: null, replicaReady: false, hostRevision: null,
+      createPromise: null, sessionId: null, hostHead: null
+    };
+    state.liveCollaboration = session;
+    state.liveReplicaDesignId = session.localDesignId;
+    state.liveReplicaHead = null;
+    setLiveEditorBlocked(true);
+    liveStatus('guest', 'Verifying the signed offer and creating a private peer connection…');
+    const controller = await createGuestSessionController({
+      expectedInvite: invite,
+      offerCapsule,
+      iceServers: liveIceServers('guest'),
+      onState: status => {
+        session.status = status;
+        const copy = {
+          'preparing-answer': 'Preparing your answer capsule…', 'answer-ready': 'Answer ready. Send it to the owner through the same trusted channel.',
+          'authenticating': 'Answer sent. Authenticating the owner and receiving the current design…',
+          'connected': 'Connected. Your local copy is saved in the chosen folder.',
+          'pending': 'Your local copy is safe; the owner is saving this edit…',
+          'fork-saved': 'The owner is unavailable or the session diverged. Your work is saved as a local fork.',
+          'fork-unsaved': 'The connection ended, but the local fork needs a storage retry.',
+          'disconnected-before-snapshot': 'The connection ended before the design arrived. No edits were made.',
+          'failed': 'The live session failed before it could finish connecting.', 'closed': 'Live session closed.'
+        };
+        liveStatus('guest', copy[status] || `Live session: ${status}.`);
+        $('#live-retry-fork').hidden = status !== 'fork-unsaved';
+        if (status === 'fork-unsaved') setLiveEditorBlocked(true);
+        else if (session.replicaReady && ['connected', 'pending', 'fork-saved'].includes(status)) setLiveEditorBlocked(status === 'pending');
+        else if (liveTerminal(status)) setLiveEditorBlocked(false);
+        if (session.replicaReady && status === 'connected') setSaveState('saved', 'Owner saved changes');
+      },
+      onSnapshot: (snapshot, revision, hostHead) => {
+        session.hostRevision = revision;
+        session.hostHead = hostHead || session.hostHead;
+        void installLiveReplicaSnapshot(session, snapshot, hostHead).catch(error => {
+          liveStatus('guest', `Could not save the shared design to this folder: ${error.message || 'storage error'}`);
+          showToast(error.message || 'Could not save the shared design to this folder.');
+          void controller.close();
+        });
+      },
+      onAsset: async asset => {
+        try {
+          await ensureLiveReplicaDesign(session);
+          if (asset.assetKind === 'image') {
+            await saveWorkspaceImageAsset(state.workspace, session.localDesignId, asset.assetId, asset.bytes, { mimeType: asset.mimeType });
+            workspaceIdCache(state.workspaceVerifiedImageIds, session.localDesignId).add(asset.assetId);
+          } else {
+            if (!asset.fontMetadata) throw new Error('The owner sent a font without its required metadata.');
+            const candidate = validateLocalFontAsset({
+              id: asset.assetId, name: asset.fontMetadata.name, type: asset.mimeType,
+              family: asset.fontMetadata.family, weight: asset.fontMetadata.weight,
+              style: asset.fontMetadata.style, bytes: asset.bytes
+            });
+            await saveWorkspaceFontAsset(state.workspace, session.localDesignId, candidate);
+            workspaceIdCache(state.workspaceVerifiedFontIds, session.localDesignId).add(asset.assetId);
+          }
+        } finally { asset.bytes.fill(0); }
+      },
+      approveIncomingAsset: async asset => globalThis.confirm?.(`Accept this ${asset.assetKind} from the design owner?\n\n${asset.assetId} · ${Math.ceil(asset.byteLength / 1024)} KB${asset.fontMetadata ? `\n${asset.fontMetadata.family} ${asset.fontMetadata.weight} ${asset.fontMetadata.style}` : ''}\n\nIt will be stored in your selected workspace folder.`) === true,
+      persistFork: async fork => {
+        // Edits are already checkpointed locally before each proposal. Persist the
+        // latest canvas snapshot again at disconnect so a quota/permission error
+        // remains visible and can be retried from the live-session panel.
+        await state.saveChain.catch(() => {});
+        if (!session.replicaReady) return false;
+        const snapshot = JSON.parse(serializeDocument(state.document));
+        snapshot.id = session.localDesignId;
+        snapshot.name = `${snapshot.name || 'Shared design'} (local fork)`;
+        const saved = await persistLiveReplicaSnapshot(session, snapshot);
+        session.forkPayload = fork;
+        session.localHead = saved.head;
+        return true;
+      },
+      onFork: result => {
+        session.status = result.status;
+        $('#live-retry-fork').hidden = result.status !== 'fork-unsaved';
+        $('#live-stop-guest').hidden = result.status === 'fork-saved';
+        if (result.status === 'fork-saved') {
+          state.document.name = `${state.document.name.replace(/ \(local fork\)$/u, '')} (local fork)`;
+          setLiveEditorBlocked(false);
+          setSaveState('saved', 'Local fork saved');
+          renderUI();
+          showToast('The live session ended. Your design and pending edits are saved in your folder as a local fork.', 6000);
+        } else if (result.status === 'fork-unsaved') {
+          setLiveEditorBlocked(true);
+          showToast(`Your local fork could not be saved: ${result.saveError || 'storage unavailable'}. Retry the save before editing.`, 8000);
+        } else if (result.status === 'disconnected-before-snapshot') {
+          setLiveEditorBlocked(false);
+        }
+      },
+      onAssetTransfer: result => {
+        const field = $('#live-guest-transfer-status');
+        field.textContent = result.phase === 'received'
+          ? `Received ${result.count} item${result.count === 1 ? '' : 's'} · ${Math.ceil(result.totalBytes / (1024 * 1024))} MiB`
+          : `Sent ${result.assetKind || 'asset'} · ${Math.ceil(result.byteLength / 1024)} KB`;
+      }
+    });
+    session.controller = controller;
+    session.sessionId = controller.sessionId;
+    $('#live-guest-answer').value = controller.answerCapsule;
+    $('#live-copy-answer').hidden = false;
+    $('#live-stop-guest').hidden = false;
+    liveStatus('guest', 'Answer ready. Send it to the owner; the session offer expires after a few minutes.');
+    controller.ready.then(() => liveStatus('guest', 'Connected to the owner. Verifying the snapshot and saving a local copy…'))
+      .catch(error => liveStatus('guest', error.message || 'Could not connect to the owner.'));
+  } catch (error) {
+    if (session && !session.controller) state.liveCollaboration = null;
+    if (!session?.replicaReady) setLiveEditorBlocked(false);
+    liveStatus('guest', error.message || 'Could not join the live session.');
+    showToast(error.message || 'Could not join the live session.');
+  }
+}
+
+async function stopLiveHost() {
+  const session = state.liveCollaboration;
+  if (session?.role !== 'host' || !session.controller) return;
+  $('#live-stop-host').disabled = true;
+  try {
+    await session.controller.revoke();
+    session.status = 'revoked';
+    liveStatus('host', 'Sharing stopped and the stable invitation was revoked.');
+    setLiveEditorBlocked(false);
+    $('#live-collaboration-dialog').close('revoked');
+  } catch (error) { liveStatus('host', error.message || 'Could not revoke this invitation.'); }
+  finally { $('#live-stop-host').disabled = false; }
+}
+
+async function stopLiveGuest() {
+  const session = state.liveCollaboration;
+  if (session?.role !== 'guest' || !session.controller) return;
+  $('#live-stop-guest').disabled = true;
+  try { session.controller.close(); }
+  catch (error) { liveStatus('guest', error.message || 'Could not leave the live session.'); }
+  finally { $('#live-stop-guest').disabled = false; }
+}
+
+function startJoinFromStableLink() {
+  const hash = location.hash;
+  if (!hash.startsWith('#tisd1.')) return false;
+  $('#live-join-invite').value = `${location.origin}${location.pathname}${location.search}${hash}`;
+  history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+  openLiveDialog('guest');
+  liveStatus('guest', 'Invitation loaded. Paste the owner’s fresh session offer to continue.');
+  return true;
 }
 function toggleLayoutGuides() { state.showLayoutGuides = !state.showLayoutGuides; renderer.invalidate(); }
 function toggleOutlineMode() {
@@ -8912,18 +9672,18 @@ async function buildLocalDesignPackageSnapshot() {
   for (const reference of imageAssetReferencesAcrossPages(design)) {
     if (seenAssets.has(reference.assetId)) continue;
     seenAssets.add(reference.assetId);
-    const metadata = await loadImageAssetMetadata(reference.assetId);
+    const metadata = await loadActiveImageAssetMetadata(reference.assetId, design);
     if (!metadata) throw new Error(`The local image “${reference.name || reference.assetId}” is missing or damaged. Restore it before sharing this design.`);
     assetReferences.push({ reference, metadata });
   }
   for (const entry of design.imageLibrary || []) {
     if (seenAssets.has(entry.assetId)) continue;
     seenAssets.add(entry.assetId);
-    const metadata = await loadImageAssetMetadata(entry.assetId);
+    const metadata = await loadActiveImageAssetMetadata(entry.assetId, design);
     if (!metadata) throw new Error(`The library image “${entry.name || entry.assetId}” is missing or damaged. Reimport it before sharing this design.`);
     assetReferences.push({ reference: { assetId: entry.assetId, name: entry.name }, metadata });
   }
-  const fontReferences = (await listFontAssets()).filter(font => documentUsesFontFamily(design, font.family));
+  const fontReferences = (await listActiveFontAssets()).filter(font => documentUsesFontFamily(design, font.family));
   const assetManifestBytes = new TextEncoder().encode(JSON.stringify(assetReferences.map(({ metadata }) => ({
     id: metadata.id, name: metadata.name, type: metadata.type, length: metadata.byteLength
   })))).byteLength;
@@ -8953,7 +9713,7 @@ async function buildLocalDesignPackageSnapshot() {
   // metadata, and Blob parts avoid a second giant concatenated byte buffer.
   const assets = [];
   for (const { reference, metadata } of assetReferences) {
-    const saved = await loadImageAsset(reference.assetId);
+    const saved = await loadActiveImageAsset(reference.assetId);
     if (!saved || saved.bytes?.byteLength !== metadata.byteLength) {
       throw new Error(`The local image “${reference.name || reference.assetId}” is missing or damaged. Restore it before sharing this design.`);
     }
@@ -8961,7 +9721,7 @@ async function buildLocalDesignPackageSnapshot() {
   }
   const fonts = [];
   for (const font of fontReferences) {
-    const saved = await loadFontAsset(font.id);
+    const saved = await loadActiveFontAsset(font.id);
     if (!saved || saved.bytes.byteLength !== font.byteLength) throw new Error(`The local font “${font.family}” is missing or damaged. Reinstall it before sharing this design.`);
     fonts.push(saved);
   }
@@ -9103,7 +9863,7 @@ async function persistCurrentDocumentNow() {
   }
   clearTimeout(state.saveTimer);
   state.saveTimer = null;
-  setSaveState('saving', 'Saving locally…');
+  setSaveState('saving', savingStatusText());
   try {
     while (true) {
       const revision = state.saveRevision;
@@ -9112,7 +9872,7 @@ async function persistCurrentDocumentNow() {
       if (revision === state.saveRevision) {
         clearTimeout(state.saveTimer);
         state.saveTimer = null;
-        setSaveState(recoveryCopy ? 'error' : 'saved', recoveryCopy ? 'Conflict · copy saved' : versionError ? 'Saved · history unavailable' : 'Saved locally');
+        setSaveState(recoveryCopy ? 'error' : 'saved', recoveryCopy ? 'Conflict · copy saved' : versionError ? `Saved · ${storageDestinationName()} · history unavailable` : savedStatusText());
         if (saveOwner && state.bulk === saveOwner) {
           saveOwner.savePending = false;
           saveOwner.saveError = recoveryCopy ? 'This tab is saving edits as a separate recovery copy because another tab saved a newer revision.' : null;
@@ -9144,8 +9904,8 @@ async function persistCurrentDocumentNow() {
         showToast(`The newer saved design was preserved, but this tab could not save its recovery copy: ${recoveryError.message || 'local storage failed'}. Export a local copy before closing.`, 8000);
       }
     } else {
-      setSaveState('error', 'Could not save');
-      showToast(error.message || 'Could not save this design before switching files.');
+      setSaveState('error', failedStatusText());
+      showToast(error.message || `Could not save this design to ${storageDestinationName()} before switching files.`);
     }
     if (saveOwner && state.bulk === saveOwner) {
       saveOwner.savePending = false;
@@ -9174,6 +9934,7 @@ function releaseImageRuntimeForDocumentSwitch() {
 }
 
 async function switchToDocument(nextDocument, { saveCurrent = true, message = 'Local design opened on this device.', beforeSwitch = null, versionLabel = 'Opened design', expectedStorageRevision = undefined } = {}) {
+  if (state.workspacePermissionNeeded) { showToast('Reconnect the saved folder workspace before opening or creating designs.'); return false; }
   if (state.localPackageBuilding) { showToast('Wait for the local design package to finish before switching designs.'); return false; }
   if (isImageRecipeBatchActive(state.bulk)) {
     showToast('Finish or stop the active image recipe before switching designs.');
@@ -9183,6 +9944,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
   if (state.interaction) { showToast('Finish the current canvas action before switching designs.'); return false; }
   if (state.pendingImageImports) { showToast('Wait for the current image import to finish before switching designs.'); return false; }
   const currentDocumentId = state.document.id;
+  let nextWorkspaceHead = null;
   state.imageExportAbortController?.abort();
   state.documentTransitioning = true;
   setDocumentEditingBlocked(true);
@@ -9193,6 +9955,17 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
       return false;
     }
     if (beforeSwitch) await beforeSwitch(nextDocument);
+    if (state.workspace) {
+      let opened;
+      try { opened = await openWorkspaceDesign(state.workspace, nextDocument.id); }
+      catch (error) {
+        if (!workspaceNotFound(error, 'DESIGN_NOT_FOUND')) throw error;
+        await persistWorkspaceSnapshot(JSON.parse(serializeDocument(nextDocument)));
+        opened = await openWorkspaceDesign(state.workspace, nextDocument.id);
+      }
+      nextDocument = opened.document;
+      nextWorkspaceHead = opened.head;
+    }
     try { await ensureImageLibraryCompatibility(nextDocument); }
     catch (error) { console.warn('Could not add legacy image sources to the reusable image library.', error); }
     const nextStoredRecord = await loadDocumentRecordById(nextDocument.id);
@@ -9211,6 +9984,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.appearanceClipboard = null;
     releaseImageRuntimeForDocumentSwitch();
     state.document = nextDocument;
+    state.workspaceHead = nextWorkspaceHead;
     state.documentStorageRevision = nextStorageRevision;
     state.documentSaveConflict = null;
     state.componentSetSelectedVariants.clear();
@@ -9230,6 +10004,7 @@ async function switchToDocument(nextDocument, { saveCurrent = true, message = 'L
     state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
     history.undoStack.length = 0; history.redoStack.length = 0;
     renderBulkBar(); renderUI();
+    if (state.workspace) await refreshLocalFontAssets({ showFailureToast: true });
     await restoreImageAssets(generation);
     renderRecipeRecoveryPrompt();
     showToast(message);
@@ -9249,9 +10024,25 @@ async function renderDesignLibrary() {
   list.setAttribute('aria-busy', 'true');
   list.replaceChildren();
   try {
-    const documents = await listSavedDocuments();
+    const indexedDocuments = await listSavedDocuments();
+    let documents = indexedDocuments;
+    if (state.workspace) {
+      const indexedById = new Map(indexedDocuments.map(item => [item.id, item]));
+      const folderDocuments = [];
+      for (const id of await listWorkspaceDesignIds(state.workspace)) {
+        const opened = await openWorkspaceDesign(state.workspace, id);
+        const indexed = indexedById.get(id);
+        folderDocuments.push({
+          id,
+          name: opened.document.name || indexed?.name || 'Untitled',
+          savedAt: indexed?.savedAt || null,
+          revision: indexed?.revision ?? null
+        });
+      }
+      documents = folderDocuments;
+    }
     if (!documents.length) {
-      list.innerHTML = '<div class="design-library-empty">Your local designs will appear here as you work. They are stored in this browser profile.</div>';
+      list.innerHTML = `<div class="design-library-empty">Your local designs will appear here as you work. They are stored in ${state.workspace ? 'the selected folder' : 'this browser profile'}.</div>`;
       return;
     }
     list.innerHTML = documents.map(item => {
@@ -9260,7 +10051,8 @@ async function renderDesignLibrary() {
       if (item.savedAt) {
         try { date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(item.savedAt)); } catch { /* Keep the local fallback label. */ }
       }
-      return `<article class="design-file-row${current ? ' is-current' : ''}"><div class="design-file-details"><span class="design-file-name">${escapeHtml(item.name)}${current ? ' · Current' : ''}</span><span class="design-file-date">${escapeHtml(date)} · This device</span></div><div class="design-file-actions"><button type="button" data-design-action="open" data-design-id="${escapeHtml(item.id)}"${current ? ' disabled aria-current="true"' : ''}>${current ? 'Open' : 'Open'}</button><button type="button" data-design-action="rename" data-design-id="${escapeHtml(item.id)}">Rename</button><button type="button" data-design-action="duplicate" data-design-id="${escapeHtml(item.id)}">Duplicate</button><button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}">Delete</button></div></article>`;
+      const deleteDisabled = state.workspace ? ' disabled title="Folder design deletion is not yet supported"' : '';
+      return `<article class="design-file-row${current ? ' is-current' : ''}"><div class="design-file-details"><span class="design-file-name">${escapeHtml(item.name)}${current ? ' · Current' : ''}</span><span class="design-file-date">${escapeHtml(date)} · ${state.workspace ? 'Folder workspace' : 'This device'}</span></div><div class="design-file-actions"><button type="button" data-design-action="open" data-design-id="${escapeHtml(item.id)}"${current ? ' disabled aria-current="true"' : ''}>Open</button><button type="button" data-design-action="rename" data-design-id="${escapeHtml(item.id)}">Rename</button><button type="button" data-design-action="duplicate" data-design-id="${escapeHtml(item.id)}">Duplicate</button><button type="button" data-design-action="delete" data-design-id="${escapeHtml(item.id)}"${deleteDisabled}>Delete</button></div></article>`;
     }).join('');
   } finally {
     list.setAttribute('aria-busy', 'false');
@@ -9288,23 +10080,50 @@ async function handleDesignLibraryAction(action, id) {
   try {
     if (action === 'open') {
       const saved = await loadDocumentRecordById(id);
-      if (!saved?.document) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
-      const opened = await switchToDocument(parseDocument(saved.document), { expectedStorageRevision: saved.revision });
+      let documentToOpen = null;
+      if (state.workspace) documentToOpen = (await openWorkspaceDesign(state.workspace, id)).document;
+      else if (saved?.document) documentToOpen = parseDocument(saved.document);
+      if (!documentToOpen) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
+      const opened = await switchToDocument(documentToOpen, { expectedStorageRevision: saved?.revision ?? null });
       if (opened) { $('#design-library-dialog').close(); await renderDesignLibrary(); }
       return;
     }
     if (action === 'rename') {
-      const saved = await loadDocumentById(id);
-      if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
-      const name = prompt('Rename local design', saved.name || 'Untitled');
+      // Keep the record/document boundary consistent with the open action below:
+      // loadDocumentById returns the document itself, while this flow also needs
+      // the record metadata for a reliable fallback name.
+      const saved = await loadDocumentRecordById(id);
+      let sourceDocument = null;
+      if (state.workspace) sourceDocument = (await openWorkspaceDesign(state.workspace, id)).document;
+      else if (saved) sourceDocument = parseDocument(saved.document);
+      if (!sourceDocument) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
+      const name = prompt('Rename local design', sourceDocument.name || saved?.name || 'Untitled');
       if (name == null) return;
       const nextName = String(name).trim();
       if (!nextName || nextName.length > 120) { showToast('A design name must contain 1–120 characters.'); return; }
       const isCurrent = id === state.document.id;
-      if (!(await renameStoredDocument(id, nextName, isCurrent ? { expectedRevision: state.documentStorageRevision } : {}))) {
+      if (state.workspace && isCurrent) {
+        state.document.name = nextName;
+        renderUI();
+        if (!(await persistCurrentDocumentNow())) throw new Error('The folder workspace did not save the renamed design.');
+      } else if (state.workspace) {
+        const renamed = parseDocument(sourceDocument);
+        renamed.name = nextName;
+        const currentFolder = await openWorkspaceDesign(state.workspace, id);
+        const result = await commitWorkspaceDesign(state.workspace, id, renamed, {
+          expectedHead: currentFolder.head,
+          pageId: renamed.activePageId || renamed.pages[0].id
+        });
+        if (result.acknowledged !== true) throw new Error('The folder workspace did not confirm the rename.');
+        try {
+          const indexed = await loadDocumentRecordById(id);
+          await saveDocument(renamed, { expectedRevision: indexed?.revision ?? null });
+        } catch (error) {
+          console.warn('The folder rename succeeded, but its optional browser library mirror could not be updated.', error);
+        }
+      } else if (!(await renameStoredDocument(id, nextName, isCurrent ? { expectedRevision: state.documentStorageRevision } : {}))) {
         showToast('That saved design is no longer available.'); return;
-      }
-      if (isCurrent) {
+      } else if (isCurrent) {
         state.documentStorageRevision = (state.documentStorageRevision ?? 0) + 1;
         state.document.name = nextName;
         renderUI(); await persistCurrentDocumentNow();
@@ -9313,14 +10132,54 @@ async function handleDesignLibraryAction(action, id) {
       return;
     }
     if (action === 'duplicate') {
-      if (id === state.document.id && !(await persistCurrentDocumentNow())) return;
-      const duplicate = await duplicateStoredDocument(id);
-      if (!duplicate) { showToast('That saved design is no longer available.'); return; }
+      if (state.workspace) {
+        const source = (await openWorkspaceDesign(state.workspace, id)).document;
+        const duplicate = parseDocument(source);
+        duplicate.id = createId('file');
+        duplicate.name = `${String(source.name || 'Untitled').slice(0, 114)} copy`;
+        let created = false;
+        try {
+          // Initialize a valid but empty revision first. The fully populated snapshot
+          // is published only after every referenced asset has been copied and verified.
+          const initial = await createWorkspaceDesign(state.workspace, workspaceSeedDocument(duplicate));
+          created = true;
+          const requirements = collectReferencedAssets(duplicate);
+          for (const assetId of requirements.imageAssetIds) {
+            const sourceAsset = await readWorkspaceImageAsset(state.workspace, id, assetId);
+            await saveWorkspaceImageAsset(state.workspace, duplicate.id, assetId, sourceAsset.bytes, { mimeType: sourceAsset.metadata.mimeType });
+          }
+          const sourceFonts = await listWorkspaceFontAssets(state.workspace, id);
+          const usedFonts = sourceFonts.filter(font => requirements.fontSpecs.some(spec =>
+            spec.family.toLocaleLowerCase() === font.metadata.family.toLocaleLowerCase()
+              && spec.weight === font.metadata.weight && spec.style === font.metadata.style));
+          for (const font of usedFonts) await saveWorkspaceFontAsset(state.workspace, duplicate.id, font);
+          const committed = await commitWorkspaceDesign(state.workspace, duplicate.id, duplicate, {
+            expectedHead: initial.head,
+            pageId: duplicate.activePageId || duplicate.pages[0].id
+          });
+          if (committed.acknowledged !== true) throw new Error('The folder workspace did not confirm the duplicate.');
+          state.workspaceVerifiedImageIds.set(duplicate.id, new Set(requirements.imageAssetIds));
+          state.workspaceVerifiedFontIds.set(duplicate.id, new Set(usedFonts.map(font => font.metadata.id)));
+          try { await saveDocument(duplicate, { expectedRevision: null }); }
+          catch (error) { console.warn('The folder duplicate succeeded, but its optional browser library mirror could not be updated.', error); }
+        } catch (error) {
+          if (created) {
+            try { await state.workspace.designsDirectory.removeEntry(duplicate.id, { recursive: true }); }
+            catch (cleanupError) { console.warn('Could not clean up the incomplete folder duplicate.', cleanupError); }
+          }
+          throw error;
+        }
+      } else {
+        if (id === state.document.id && !(await persistCurrentDocumentNow())) return;
+        const duplicate = await duplicateStoredDocument(id);
+        if (!duplicate) { showToast('That saved design is no longer available.'); return; }
+      }
       await renderDesignLibrary();
       showToast(`“${duplicate.name}” was added to your local designs.`);
       return;
     }
     if (action === 'delete') {
+      if (state.workspace) { showToast('Deleting workspace designs is unavailable until folder revision cleanup is implemented.'); return; }
       if (isImageRecipeBatchActive(state.bulk)) { showToast('Finish or stop the active image recipe before deleting a design.'); return; }
       const saved = await loadDocumentById(id);
       if (!saved) { showToast('That saved design is no longer available.'); await renderDesignLibrary(); return; }
@@ -9444,7 +10303,7 @@ async function ensureImageLibraryCompatibility(documentData) {
   const pending = [...references.values()].slice(0, MAX_IMAGE_LIBRARY_ENTRIES - existing.size);
   for (let offset = 0; offset < pending.length; offset += 8) {
     const batch = pending.slice(offset, offset + 8);
-    const metadata = await Promise.all(batch.map(reference => loadImageAssetMetadata(reference.assetId).catch(() => null)));
+    const metadata = await Promise.all(batch.map(reference => loadActiveImageAssetMetadata(reference.assetId, documentData).catch(() => null)));
     for (let index = 0; index < batch.length; index += 1) {
       const entry = migrateImageLibraryEntry(batch[index], metadata[index]);
       if (entry) additions.push(entry);
@@ -11190,6 +12049,90 @@ function initEvents() {
   $$('.sidebar-tabs, .inspector-tabs').forEach(installHorizontalTabListKeyboard);
   for (const button of $$('.tool-button')) button.innerHTML = `${icon(button.querySelector('[data-icon]')?.dataset.icon || 'cursor', 18)}<kbd>${button.querySelector('kbd')?.textContent || ''}</kbd>`;
   installDesignToolToolbarKeyboard();
+  window.addEventListener('tiny-image-star:share-live', event => {
+    event.preventDefault();
+    void (async () => {
+      try { await prepareLiveWorkspace(); }
+      catch (error) { showToast(error.message || 'Choose a writable folder before sharing.'); return; }
+      if (state.liveCollaboration?.role === 'host' && !liveTerminal(state.liveCollaboration.status)) openLiveDialog('host');
+      else {
+        $('#live-start-host').hidden = false;
+        $('#live-start-host').disabled = false;
+        $('#live-accept-answer').hidden = true;
+        $('#live-stop-host').hidden = true;
+        $('#live-answer-value').value = '';
+        $('#live-invite-value').value = '';
+        $('#live-offer-value').value = '';
+        $('#live-share-capsules').hidden = true;
+        $('#live-transfer-status').textContent = '';
+        liveStatus('host', 'Create an offer, then send both capsules to your guest using a trusted channel.');
+        openLiveDialog('host');
+      }
+    })();
+  });
+  window.addEventListener('tiny-image-star:join-live', event => {
+    event.preventDefault();
+    if (state.liveCollaboration?.role === 'guest' && !liveTerminal(state.liveCollaboration.status)) openLiveDialog('guest');
+    else {
+      $('#live-guest-answer').value = '';
+      $('#live-copy-answer').hidden = true;
+      $('#live-retry-fork').hidden = true;
+      $('#live-stop-guest').hidden = true;
+      $('#live-guest-transfer-status').textContent = '';
+      startJoinFromStableLink();
+      if (!liveDialog().open) openLiveDialog('guest');
+    }
+  });
+  $('#live-start-host').addEventListener('click', () => { void startLiveHost(); });
+  $('#live-share-capsules').addEventListener('click', () => { void shareLiveCapsules(); });
+  $('#live-accept-answer').addEventListener('click', async () => {
+    const controller = state.liveCollaboration?.role === 'host' ? state.liveCollaboration.controller : null;
+    if (!controller) { showToast('Create a session offer first.'); return; }
+    const answer = $('#live-answer-value').value.trim();
+    if (!answer) { liveStatus('host', 'Paste the guest’s answer capsule first.'); $('#live-answer-value').focus(); return; }
+    $('#live-accept-answer').disabled = true;
+    liveStatus('host', 'Verifying and applying the one-time guest answer…');
+    try { await controller.acceptAnswer(answer); }
+    catch (error) { liveStatus('host', error.message || 'Could not connect this guest.'); showToast(error.message || 'Could not connect this guest.'); }
+    finally { $('#live-accept-answer').disabled = false; }
+  });
+  $('#live-join-session').addEventListener('click', () => { void startLiveGuest(); });
+  $('#live-stop-host').addEventListener('click', () => { void stopLiveHost(); });
+  $('#live-stop-guest').addEventListener('click', () => { void stopLiveGuest(); });
+  $('#live-retry-fork').addEventListener('click', async () => {
+    const session = state.liveCollaboration;
+    if (session?.role !== 'guest' || !session.controller) return;
+    $('#live-retry-fork').disabled = true;
+    try { await session.controller.retryForkSave(); }
+    catch (error) { liveStatus('guest', error.message || 'The local fork save still needs attention.'); }
+    finally { $('#live-retry-fork').disabled = false; }
+  });
+  $('#live-collaboration-dialog').addEventListener('click', event => {
+    const copy = event.target.closest('[data-copy-field]');
+    if (copy) { void copyLiveField(copy.dataset.copyField); return; }
+  });
+  const liveDialogElement = $('#live-collaboration-dialog');
+  $('#live-collaboration-close').addEventListener('click', () => {
+    const session = state.liveCollaboration;
+    if (session?.role === 'host' && !liveTerminal(session.status)) {
+      showToast('Stop sharing and revoke the invitation before returning to editing.');
+      return;
+    }
+    if (session?.role === 'guest' && !liveTerminal(session.status)) {
+      showToast('Leave the live session first so Tiny Image Star can save your local fork.');
+      return;
+    }
+    liveDialogElement.close();
+  });
+  liveDialogElement.addEventListener('cancel', event => {
+    const session = state.liveCollaboration;
+    if ((session?.role === 'host' || session?.role === 'guest') && !liveTerminal(session.status)) {
+      event.preventDefault();
+      showToast(session.role === 'host'
+        ? 'Stop sharing and revoke the invitation before returning to editing.'
+        : 'Leave the live session first so Tiny Image Star can save your local fork.');
+    }
+  });
   document.addEventListener('pointerdown', event => {
     if (!state.interaction || canvas.contains(event.target)) return;
     // A canvas gesture owns the document until it ends. If the user starts a
@@ -12024,6 +12967,7 @@ function initEvents() {
 
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
+  if (state.workspacePermissionNeeded && event.key !== 'Escape') return;
   const contextMenu = $('#context-menu');
   if (event.key.toLowerCase() === 'escape' && state.prototypeSourceId && !document.querySelector('dialog[open]')) {
     if (!contextMenu.hidden) closeMenu();
@@ -12161,6 +13105,51 @@ function onKeyUp(event) {
   if (event.code === 'Space') { state.spaceDown = false; canvas.classList.remove('is-panning'); }
 }
 
+async function restoreSavedWorkspaceOnBoot() {
+  let handle;
+  try { handle = await loadWorkspaceDirectoryHandle(); }
+  catch (error) {
+    console.warn('Could not read the saved folder workspace reference.', error);
+    return false;
+  }
+  if (!handle) return false;
+  state.workspaceHandle = handle;
+  let permission = 'prompt';
+  try { permission = await handle.queryPermission({ mode: 'readwrite' }); }
+  catch (error) { console.warn('Could not check folder workspace permission.', error); }
+  if (permission !== 'granted') {
+    state.workspacePermissionNeeded = true;
+    syncStorageModeLabel();
+    return false;
+  }
+  try {
+    const workspace = await openWorkspace(handle);
+    const designIds = await listWorkspaceDesignIds(workspace);
+    const designId = designIds.includes(state.document.id) ? state.document.id : designIds[0];
+    if (!designId) throw new Error('The selected folder workspace has no completed designs to open.');
+    const opened = await openWorkspaceDesign(workspace, designId);
+    state.workspace = workspace;
+    state.workspaceHead = opened.head;
+    state.document = opened.document;
+    state.pendingRecipeRecovery = await recipeRecoveryForDocument(opened.document.id);
+    state.documentStorageRevision = (await loadDocumentRecordById(opened.document.id))?.revision ?? null;
+    state.workspaceVerifiedImageIds.set(opened.document.id, new Set(collectReferencedAssets(opened.document).imageAssetIds));
+    const fonts = await listWorkspaceFontAssets(workspace, opened.document.id).catch(error => {
+      if (workspaceNotFound(error, 'FONT_NOT_FOUND')) return [];
+      throw error;
+    });
+    state.workspaceVerifiedFontIds.set(opened.document.id, new Set(fonts.map(font => font.metadata.id)));
+    syncStorageModeLabel();
+    return true;
+  } catch (error) {
+    console.warn('Could not reopen the saved folder workspace.', error);
+    state.workspacePermissionNeeded = true;
+    syncStorageModeLabel();
+    showToast('The saved folder workspace could not be reopened. Reconnect it from the File menu before editing.');
+    return false;
+  }
+}
+
 async function boot() {
   let restoreReadSucceeded = false;
   let restoredSavedDocument = false;
@@ -12172,8 +13161,6 @@ async function boot() {
       state.document = restoration.document;
       state.documentStorageRevision = restoration.revision;
       restoredSavedDocument = true;
-      try { migratedImageLibrary = await ensureImageLibraryCompatibility(state.document); }
-      catch (error) { console.warn('Could not migrate legacy image sources into the local image library.', error); }
       state.pendingRecipeRecovery = await recipeRecoveryForDocument(state.document.id);
     }
     if (restoration.invalidRecords.length) {
@@ -12183,21 +13170,35 @@ async function boot() {
         : 'Saved designs could not be opened. Started a new design; damaged files remain in Your designs for manual repair.', 8000);
     }
   } catch (error) { console.warn('Could not restore local design', error); showToast('A saved design could not be restored. A new file is ready.'); }
+  const reopenedFolder = await restoreSavedWorkspaceOnBoot();
+  if (!state.workspace && !state.workspacePermissionNeeded) {
+    try { migratedImageLibrary = await ensureImageLibraryCompatibility(state.document); }
+    catch (error) { console.warn('Could not migrate legacy image sources into the reusable image library.', error); }
+  }
   try { await refreshLocalFontAssets({ showFailureToast: true }); }
   catch (error) { console.warn('Could not restore local fonts', error); }
   renderer = new SceneRenderer(canvas, () => state, drawRulerScales);
   state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2;
   initEvents(); renderUI(); state.ready = true;
   if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
+  else if (state.workspacePermissionNeeded) {
+    $('.workspace').inert = true;
+    $('#document-name').readOnly = true;
+  }
   try { await restoreImageAssets(); } catch (error) { showToast(error.message); }
   renderRecipeRecoveryPrompt();
-  if (restoreReadSucceeded) {
+  if (state.workspacePermissionNeeded) {
+    setSaveState('error', 'Reconnect folder to edit');
+  } else if (reopenedFolder) {
+    setSaveState('saved', savedStatusText());
+  } else if (restoreReadSucceeded) {
     if (restoredSavedDocument && migratedImageLibrary) await persistCurrentDocumentNow();
-    else if (restoredSavedDocument) setSaveState('saved', 'Saved locally');
+    else if (restoredSavedDocument) setSaveState('saved', savedStatusText());
     else await persistCurrentDocumentNow();
   } else if (!await loadLatestDocument().catch(() => null)) await persistCurrentDocumentNow();
-  else setSaveState('saved', 'Saved locally');
+  else setSaveState('saved', savedStatusText());
   document.documentElement.dataset.appReady = 'true';
+  if (location.hash.startsWith('#tisd1.')) startJoinFromStableLink();
   void refreshLocalComponentLibraries().catch(error => console.warn('Could not load local component libraries', error));
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', () => { syncMobilePanelAccessibility(); renderer.invalidate(); });

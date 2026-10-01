@@ -55,13 +55,19 @@ async function reloadEditorAtViewport(width, height, label) {
   }, label, 30000);
 }
 async function waitForSaveCycle(app, label) {
-  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saving locally'), `${label} save start`);
+  // Saving is debounced and the browser/folder workspace status can complete
+  // before the smoke test observes the transient state. Wait past that
+  // debounce, then assert the durable status using either supported backend's
+  // current copy.
+  await new Promise(resolve => setTimeout(resolve, 280));
   await waitFor(() => {
     const state = app.querySelector('#save-state')?.textContent || '';
-    return state.includes('Saved locally') || state.includes('Could not save');
+    return state.startsWith('Saved locally') || state.startsWith('Saved ·')
+      || state.includes('Waiting for owner save') || state.includes('Could not save')
+      || state.includes('save failed') || state.includes('Conflict · copy unavailable');
   }, `${label} save completion`);
   const saveState = app.querySelector('#save-state')?.textContent || '';
-  if (saveState.includes('Could not save')) {
+  if (saveState.includes('Could not save') || saveState.includes('save failed') || saveState.includes('Conflict · copy unavailable')) {
     const detail = app.querySelector('#toast-region')?.textContent?.trim();
     throw new Error(`${label} failed to persist${detail ? `: ${detail}` : '.'}`);
   }
