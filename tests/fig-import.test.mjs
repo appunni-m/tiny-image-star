@@ -5,7 +5,7 @@ import test from 'node:test';
 import { zipSync } from 'fflate';
 import { convertFigDocument, importFigBytes } from '../src/fig-import.js';
 import { parseDocument, serializeDocument } from '../src/model.js';
-import { nodeLocalToPageTransform } from '../src/transform-geometry.js';
+import { multiplyAffine, nodeLocalToPageTransform, nodeToParentTransform, transformPoint } from '../src/transform-geometry.js';
 import { FIG_IMPORT_LIMITS, preflightFigArchive } from '../src/fig-import-preflight.js';
 import { applyAutoLayout } from '../src/layout-engine.js';
 
@@ -87,6 +87,165 @@ test('imports pinned .fig sample files from two parser format versions as editab
   assert.equal(frame.children[0].type, 'group');
   assert.ok(frame.children[0].children.length >= 2);
   assert.ok(frame.children[0].children.every(child => child.type === 'path' && child.fills?.length));
+});
+
+test('imports consecutive Figma alpha-mask stacks as editable, scoped mask groups', () => {
+  const pageGuid = { sessionID: 11, localID: 1 };
+  const frameGuid = { sessionID: 11, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, name: 'Board' }),
+      node('RECTANGLE', 3, frameGuid, 'a', { name: 'Unmasked backdrop' }),
+      node('ELLIPSE', 4, frameGuid, 'b', { name: 'Portrait mask', isMask: true }),
+      node('RECTANGLE', 5, frameGuid, 'c', { name: 'Portrait photo' }),
+      node('RECTANGLE', 6, frameGuid, 'd', { name: 'Portrait tint' }),
+      node('RECTANGLE', 7, frameGuid, 'e', { name: 'Card mask', isMask: true }),
+      node('RECTANGLE', 8, frameGuid, 'f', { name: 'Card image' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'mask-stacks.fig' });
+  const board = imported.document.pages[0].children[0];
+  const [backdrop, portraitMask, cardMask] = board.children;
+
+  assert.equal(backdrop.name, 'Unmasked backdrop');
+  assert.deepEqual([portraitMask.mask, portraitMask.children.map(child => child.name)], [true, ['Portrait mask', 'Portrait photo', 'Portrait tint']]);
+  assert.equal(portraitMask.maskSourceId, portraitMask.children[0].id);
+  assert.deepEqual([cardMask.mask, cardMask.children.map(child => child.name)], [true, ['Card mask', 'Card image']]);
+  assert.equal(cardMask.maskSourceId, cardMask.children[0].id);
+  assert.equal(imported.report.importedNodes, 9,
+    'the editable layer count includes the two local mask-group wrappers');
+  assert.equal(imported.report.unsupportedTypes.MASK, undefined, 'supported default alpha masks should not be reported as unsupported');
+
+  const restored = parseDocument(serializeDocument(imported.document));
+  const [restoredBackdrop, restoredPortrait, restoredCard] = restored.pages[0].children[0].children;
+  assert.equal(restoredBackdrop.name, 'Unmasked backdrop');
+  assert.equal(restoredPortrait.maskSourceId, restoredPortrait.children[0].id);
+  assert.equal(restoredCard.maskSourceId, restoredCard.children[0].id);
+});
+
+test('mask-stack wrapping preserves rotated and affine child placement', () => {
+  const pageGuid = { sessionID: 12, localID: 1 };
+  const frameGuid = { sessionID: 12, localID: 2 };
+  const maskTransform = { m00: 1.2, m01: 0.35, m02: 17, m10: -0.15, m11: 0.9, m12: 23 };
+  const contentAngle = 31 * Math.PI / 180;
+  const contentTransform = {
+    m00: Math.cos(contentAngle), m01: -Math.sin(contentAngle), m02: 48,
+    m10: Math.sin(contentAngle), m11: Math.cos(contentAngle), m12: 36
+  };
+  const makeParsed = isMask => ({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, name: 'Board' }),
+      node('ELLIPSE', 3, frameGuid, 'a', { name: 'Mask', isMask, transform: maskTransform }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'Photo', transform: contentTransform })
+    ],
+    message: { blobs: [] }, images: new Map()
+  });
+  const before = convertFigDocument(makeParsed(false)).document.pages[0].children[0].children;
+  const afterBoard = convertFigDocument(makeParsed(true)).document.pages[0].children[0];
+  const group = afterBoard.children[0];
+  assert.equal(group.mask, true);
+  const groupTranslation = { a: 1, b: 0, c: 0, d: 1, e: group.x, f: group.y };
+
+  for (const name of ['Mask', 'Photo']) {
+    const original = before.find(child => child.name === name);
+    const imported = group.children.find(child => child.name === name);
+    const importedToParent = multiplyAffine(groupTranslation, nodeToParentTransform(imported));
+    const originalToParent = nodeToParentTransform(original);
+    for (const point of [{ x: 0, y: 0 }, { x: original.width, y: 0 }, { x: original.width, y: original.height }, { x: 0, y: original.height }]) {
+      const expected = transformPoint(originalToParent, point);
+      const actual = transformPoint(importedToParent, point);
+      assert.ok(Math.abs(actual.x - expected.x) < 1e-8 && Math.abs(actual.y - expected.y) < 1e-8,
+        `${name} corner should keep the same parent-space position after wrapping`);
+    }
+  }
+});
+
+test('only active local alpha masks are grouped; unsupported modes and auto-layout stacks stay editable with warnings', () => {
+  const pageGuid = { sessionID: 13, localID: 1 };
+  const frameGuid = { sessionID: 13, localID: 2 };
+  const parsedForMask = (maskProperties, frameProperties = {}) => ({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, ...frameProperties }),
+      node('RECTANGLE', 3, frameGuid, 'a', { name: 'Mask', ...maskProperties }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'Content' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  });
+
+  for (const maskType of ['VECTOR', 'LUMINANCE']) {
+    const imported = convertFigDocument(parsedForMask({ isMask: true, maskType }));
+    const children = imported.document.pages[0].children[0].children;
+    assert.deepEqual(children.map(child => child.name), ['Mask', 'Content']);
+    assert.ok(imported.report.warnings.some(warning => warning.type === 'MASK' && warning.detail.includes(maskType)));
+  }
+
+  const dormantMode = convertFigDocument(parsedForMask({ isMask: false, maskType: 'VECTOR' }));
+  assert.equal(dormantMode.report.unsupportedTypes.MASK, undefined,
+    'maskType alone does not activate masking in Figma');
+  assert.deepEqual(dormantMode.document.pages[0].children[0].children.map(child => child.name), ['Mask', 'Content']);
+
+  const outline = convertFigDocument(parsedForMask({ isMask: true, isMaskOutline: true }));
+  assert.ok(outline.report.warnings.some(warning => warning.type === 'MASK' && warning.detail.includes('VECTOR')),
+    'the deprecated outline flag must not be mistaken for an alpha mask');
+
+  const autoLayout = convertFigDocument(parsedForMask({ isMask: true }, { stackMode: 'HORIZONTAL' }));
+  assert.deepEqual(autoLayout.document.pages[0].children[0].children.map(child => child.name), ['Mask', 'Content']);
+  assert.ok(autoLayout.report.warnings.some(warning => warning.type === 'MASK' && warning.detail.includes('auto-layout')));
+});
+
+test('a nested mask stack only captures siblings in its own Figma parent', () => {
+  const pageGuid = { sessionID: 14, localID: 1 };
+  const groupGuid = { sessionID: 14, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('GROUP', 2, pageGuid, 'a', { guid: groupGuid, name: 'Nested group' }),
+      node('ELLIPSE', 3, groupGuid, 'a', { name: 'Nested mask', isMask: true }),
+      node('RECTANGLE', 4, groupGuid, 'b', { name: 'Nested content' }),
+      node('RECTANGLE', 5, pageGuid, 'b', { name: 'Outside sibling' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed);
+  const [nested, outside] = imported.document.pages[0].children;
+
+  assert.equal(nested.name, 'Nested group');
+  assert.equal(nested.children[0].mask, true);
+  assert.deepEqual(nested.children[0].children.map(child => child.name), ['Nested mask', 'Nested content']);
+  assert.equal(outside.name, 'Outside sibling');
+  assert.equal(outside.mask, undefined);
+});
+
+test('an omitted mask source still terminates the preceding mask stack', () => {
+  const pageGuid = { sessionID: 15, localID: 1 };
+  const frameGuid = { sessionID: 15, localID: 2 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, 'a', { guid: frameGuid, name: 'Board' }),
+      node('ELLIPSE', 3, frameGuid, 'a', { name: 'First mask', isMask: true }),
+      node('RECTANGLE', 4, frameGuid, 'b', { name: 'First content' }),
+      node('UNSUPPORTED_MASK_SOURCE', 5, frameGuid, 'c', { name: 'Omitted mask', isMask: true }),
+      node('RECTANGLE', 6, frameGuid, 'd', { name: 'Unmasked after omission' })
+    ],
+    message: { blobs: [] }, images: new Map()
+  };
+  const imported = convertFigDocument(parsed);
+  const [group, remaining] = imported.document.pages[0].children[0].children;
+
+  assert.equal(group.mask, true);
+  assert.deepEqual(group.children.map(child => child.name), ['First mask', 'First content']);
+  assert.equal(remaining.name, 'Unmasked after omission');
+  assert.ok(imported.report.warnings.some(warning => warning.name === 'Omitted mask' && warning.type === 'MASK'));
 });
 
 test('preserves imported scale, shear, and reflection in the node affine transform', () => {

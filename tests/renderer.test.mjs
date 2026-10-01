@@ -183,6 +183,43 @@ test('image and container layers contribute their alpha when used as mask source
   }
 });
 
+test('shape alpha masks honor paint opacity and leave unpainted geometry transparent', () => {
+  const document = createDocument();
+  const painted = createNode('rectangle', {
+    opacity: 0.6,
+    fills: [{ id: 'paint', type: 'solid', visible: true, opacity: 0.25, color: '#ff0000' }],
+    strokes: []
+  });
+  const empty = createNode('rectangle', { fill: 'transparent', fills: [], stroke: null, strokeWidth: 0 });
+  addNode(document, painted);
+  addNode(document, empty);
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+
+  const recordDraws = node => {
+    const calls = [];
+    const target = { globalAlpha: 1, globalCompositeOperation: 'source-over' };
+    const stack = [];
+    const context = new Proxy(target, {
+      get(current, property) {
+        if (property in current) return current[property];
+        if (property === 'save') return () => stack.push({ ...current });
+        if (property === 'restore') return () => Object.assign(current, stack.pop() || {});
+        return (...args) => calls.push({ method: property, args, alpha: current.globalAlpha, fillStyle: current.fillStyle });
+      },
+      set(current, property, value) { current[property] = value; return true; }
+    });
+    renderer.drawNode(context, node, 0, 0, new Map(), false, true);
+    return calls;
+  };
+
+  const paintedFill = recordDraws(painted).find(call => call.method === 'fill');
+  assert.equal(paintedFill?.alpha, 0.15, 'node opacity and fill opacity both shape mask alpha');
+  assert.equal(paintedFill?.fillStyle, 'rgba(255, 0, 0, 1)', 'mask compositing uses the source paint alpha');
+  assert.equal(recordDraws(empty).some(call => call.method === 'fill'), false,
+    'a shape with no visible fill or stroke contributes no mask alpha');
+});
+
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {
   const created = [];
   class RecordingCanvas {

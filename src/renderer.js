@@ -1013,25 +1013,6 @@ export class SceneRenderer {
         ctx.rect(x, y, width, height);
     }
 
-    if (maskMode) {
-      ctx.globalAlpha *= node.fillOpacity ?? 1;
-      ctx.fillStyle = '#fff';
-      if (node.type === 'network') {
-        for (const face of node.faces || []) {
-          ctx.save();
-          ctx.globalAlpha *= face.fillOpacity ?? 1;
-          ctx.beginPath();
-          if (traceVectorNetworkFace(ctx, node, face, x, y)) ctx.fill();
-          ctx.restore();
-        }
-        ctx.restore();
-        return;
-      }
-      if (node.type !== 'line' && (node.type !== 'path' || pathHasClosedContour(node))) fillCurrentPath(ctx, node);
-      ctx.restore();
-      return;
-    }
-
     if (node.type === 'image') {
       const asset = assets.get(node.assetId);
       const cropOverlay = cropEditing ? state.imageCropOverlay : null;
@@ -1807,7 +1788,7 @@ export class SceneRenderer {
       // Boolean source geometry is scaled into the current group bounds above.
       // Paint the completed mask and group fills back in the unscaled surface box.
       mask.setTransform(pixelScaleX, 0, 0, pixelScaleY, 0, 0);
-      if (!maskMode && Array.isArray(node.fills)) {
+      if (Array.isArray(node.fills)) {
         const createSurface = () => typeof OffscreenCanvas === 'function'
           ? new OffscreenCanvas(width, height)
           : Object.assign(document.createElement('canvas'), { width, height });
@@ -1850,15 +1831,20 @@ export class SceneRenderer {
       } else {
         mask.save();
         mask.globalCompositeOperation = 'source-in';
-        const liveSource = !maskMode && node.__smartAnimateLiveImageFill && node.imageFill ? assets.get(node.imageFill.assetId)?.bitmap : null;
-        const fillImage = liveSource || (!maskMode && node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null);
+        const liveSource = node.__smartAnimateLiveImageFill && node.imageFill ? assets.get(node.imageFill.assetId)?.bitmap : null;
+        const fillImage = liveSource || (node.imageFill ? imageForNode(node, assets, state, node.imageFill.assetId) : null);
         if (fillImage) {
           if (liveSource) drawImageWithTransforms(mask, liveSource, 0, 0, node.width, node.height, node.imageFill.fit, node.imageFill.transforms);
           else drawFittedImage(mask, fillImage, 0, 0, node.width, node.height, node.imageFill.fit);
         }
         else {
-          mask.fillStyle = !maskMode && node.fillGradient ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height) || fill : fill;
-          mask.fillRect(0, 0, node.width, node.height);
+          const resolvedFill = node.fillGradient
+            ? createGradientPaint(mask, node.fillGradient, 0, 0, node.width, node.height)
+            : node.fill;
+          if (resolvedFill && resolvedFill !== 'transparent') {
+            mask.fillStyle = resolvedFill;
+            mask.fillRect(0, 0, node.width, node.height);
+          }
         }
         mask.restore();
       }

@@ -3,6 +3,7 @@ import { createComponentSet, createDocument, createId, createNode, MAX_DOCUMENT_
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { createImageFill } from './image-fills.js';
 import { createAutoLayout } from './layout-engine.js';
+import { nodeToParentTransform, transformPoint } from './transform-geometry.js';
 import {
   MAX_BACKGROUND_BLURS_PER_LAYER, MAX_DROP_SHADOWS_PER_LAYER,
   MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER
@@ -1070,7 +1071,6 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
   const constraints = mapConstraints(source, context.report);
   if (constraints) overrides.constraints = constraints;
-  if (source.isMask || source.maskType) warn(context.report, 'unsupported', 'MASK', name, 'Figma mask layers do not map to the local mask-group model and were imported as ordinary layers.');
   if (source.type === 'RECTANGLE' || source.type === 'ROUNDED_RECTANGLE') {
     const radii = source.rectangleCornerRadii;
     if (Array.isArray(radii) && radii.length === 4 && radii.every(Number.isFinite)) {
@@ -1279,6 +1279,102 @@ function buildChildrenMap(parsed) {
   return map;
 }
 
+const localAlphaMaskSourceTypes = new Set([
+  'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text', 'image', 'group', 'frame', 'section'
+]);
+
+function localAlphaMaskSource(node) {
+  if (!node || !localAlphaMaskSourceTypes.has(node.type)) return false;
+  if (node.type === 'path') {
+    return [{ points: node.points, closed: node.closed }, ...(node.subpaths || [])]
+      .some(contour => contour.closed === true && Array.isArray(contour.points) && contour.points.length >= 2);
+  }
+  if (node.type === 'network') return (node.faces || []).length > 0;
+  return true;
+}
+
+function maskModeOf(source) {
+  if (source.maskType == null) return source.isMaskOutline === true ? 'VECTOR' : 'ALPHA';
+  return typeof source.maskType === 'string' ? source.maskType.toUpperCase() : null;
+}
+
+function boundsForMaskStack(nodes) {
+  let left = Infinity; let top = Infinity; let right = -Infinity; let bottom = -Infinity;
+  let pointCount = 0;
+  for (const node of nodes) {
+    const transform = nodeToParentTransform(node);
+    for (const point of [
+      { x: 0, y: 0 }, { x: node.width, y: 0 },
+      { x: node.width, y: node.height }, { x: 0, y: node.height }
+    ]) {
+      const transformed = transformPoint(transform, point);
+      left = Math.min(left, transformed.x); top = Math.min(top, transformed.y);
+      right = Math.max(right, transformed.x); bottom = Math.max(bottom, transformed.y);
+      pointCount += 1;
+    }
+  }
+  if (!pointCount || ![left, top, right, bottom].every(Number.isFinite) || Math.abs(left) > 1_000_000_000
+    || Math.abs(top) > 1_000_000_000 || right - left > 1_000_000_000 || bottom - top > 1_000_000_000) return null;
+  return { left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+}
+
+function keepUnmasked(entries, start, end) {
+  return entries.slice(start, end).map(entry => entry.node).filter(Boolean);
+}
+
+/** Convert safe sibling alpha-mask stacks into the editor's live, editable mask-group model. */
+function convertSiblingMaskStacks(entries, parentSource, context) {
+  const converted = [];
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index];
+    if (entry.source?.isMask !== true) {
+      if (entry.node) converted.push(entry.node);
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < entries.length && entries[end].source?.isMask !== true) end += 1;
+    const stack = entries.slice(index, end);
+    const mode = maskModeOf(entry.source);
+    const name = safeName(entry.source?.name, 'Mask');
+    let reason = null;
+    if (mode !== 'ALPHA') reason = `The ${mode || 'unknown'} mask mode is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.`;
+    else if (!entry.node) reason = 'The mask source could not be converted, so the remaining layers were kept editable and unmasked.';
+    else if (!localAlphaMaskSource(entry.node)) reason = 'This mask source type is not supported by the local alpha-mask renderer; these layers were kept editable and unmasked.';
+    else if (!stack.slice(1).some(item => item.node)) reason = 'This mask has no converted following siblings to mask, so it was kept as an ordinary editable layer.';
+    else if (supportsStackAutoLayout(parentSource)) reason = 'Grouping this mask stack would change its parent auto-layout flow; the layers were kept editable and unmasked.';
+
+    if (reason) {
+      warn(context.report, 'unsupported', 'MASK', name, reason);
+      converted.push(...keepUnmasked(entries, index, end));
+      index = end;
+      continue;
+    }
+
+    const nodes = stack.map(item => item.node).filter(Boolean);
+    const bounds = boundsForMaskStack(nodes);
+    if (!bounds) {
+      warn(context.report, 'unsupported', 'MASK', name, 'The mask stack has unsafe transformed bounds; its editable layers were left ungrouped.');
+      converted.push(...nodes);
+      index = end;
+      continue;
+    }
+    for (const node of nodes) {
+      node.x -= bounds.left;
+      node.y -= bounds.top;
+    }
+    converted.push(createNode('group', {
+      name: safeName(`${name} mask`, 'Mask group'),
+      x: bounds.left, y: bounds.top, width: bounds.width, height: bounds.height,
+      mask: true, maskSourceId: entry.node.id, children: nodes
+    }));
+    context.report.importedNodes += 1;
+    index = end;
+  }
+  return converted;
+}
+
 function recursivelyConvert(node, childrenMap, context, pageId, depth = 0, parentSource = null) {
   const name = safeName(node.name, node.type || 'Imported layer');
   if (depth >= MAX_DOCUMENT_TREE_DEPTH) {
@@ -1304,9 +1400,11 @@ function recursivelyConvert(node, childrenMap, context, pageId, depth = 0, paren
     for (const child of children) {
       if (child.phase === 'REMOVED' || child.type === 'CANVAS' || child.type === 'DOCUMENT') continue;
       const next = recursivelyConvert(child, childrenMap, context, pageId, depth + 1, node);
-      if (next) converted.push(next);
+      // Keep null conversions in this list so an omitted `isMask` node still
+      // establishes the boundary where the preceding mask stack stops.
+      converted.push({ source: child, node: next });
     }
-    return createLayer(node, converted, context, pageId, depth, parentSource);
+    return createLayer(node, convertSiblingMaskStacks(converted, node, context), context, pageId, depth, parentSource);
   } finally {
     context.traversalActive.delete(node);
   }
