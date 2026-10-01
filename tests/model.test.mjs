@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, createComponent, createComponentInstance, createDocument, createImageRecipe, createNode, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, parseDocument, removeNode, serializeDocument, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createNode, createVariable, createVariableCollection, duplicateNode, findNode, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -9,6 +9,82 @@ test('new file has an active page and a valid empty layer tree', () => {
   assert.equal(document.pages.length, 1);
   assert.equal(document.pages[0].id, document.activePageId);
   assert.equal(validateDocument(document), true);
+});
+
+test('slice export regions stay top-level, positive-size, unrotated, and survive round-trip', () => {
+  const document = createDocument();
+  const slice = createNode('slice', { name: 'Social crop', x: -20, y: 14, width: 320, height: 180 });
+  slice.exportSettings = [{ id: 'slice-export', format: 'webp', scale: 2, suffix: '@2x', quality: 82, padding: 6 }];
+  addNode(document, slice);
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(findNode(reopened, slice.id).node.exportSettings, slice.exportSettings);
+  assert.equal(validateDocument(reopened), true);
+
+  const rotated = structuredClone(reopened);
+  findNode(rotated, slice.id).node.rotation = 1;
+  assert.throws(() => validateDocument(rotated), /positive-size, unrotated, top-level export regions/);
+  const withChildren = structuredClone(reopened);
+  findNode(withChildren, slice.id).node.children.push(createNode('rectangle'));
+  assert.throws(() => validateDocument(withChildren), /without children or components/);
+  const zeroSized = structuredClone(reopened);
+  findNode(zeroSized, slice.id).node.width = 0;
+  assert.throws(() => validateDocument(zeroSized), /positive-size, unrotated, top-level export regions/);
+  const badPadding = structuredClone(reopened);
+  findNode(badPadding, slice.id).node.exportSettings[0].padding = 1.5;
+  assert.throws(() => validateDocument(badPadding), /Invalid export settings/);
+
+  const frame = createNode('frame');
+  addNode(document, frame);
+  assert.throws(() => addNode(document, createNode('slice'), { parentId: frame.id }), /top-level export regions/);
+  const collection = createVariableCollection(document, 'Slice geometry');
+  const variable = createVariable(document, collection.id, 'Slice X', 'number', 24);
+  assert.equal(canBindVariable(document, slice.id, variable.id, 'x'), false);
+  assert.equal(bindVariable(document, slice.id, variable.id, 'x'), false);
+  const boundGeometry = structuredClone(reopened);
+  findNode(boundGeometry, slice.id).node.variableBindings = { x: variable.id };
+  boundGeometry.variableCollections = structuredClone(document.variableCollections);
+  boundGeometry.variables = structuredClone(document.variables);
+  assert.throws(() => validateDocument(boundGeometry), /Invalid x variable binding/);
+});
+
+test('slice regions stay outside component source and slot trees through model APIs', () => {
+  const document = createDocument();
+  const frame = createNode('frame');
+  const slice = createNode('slice');
+  addNode(document, frame);
+  addNode(document, slice);
+  assert.throws(() => moveNode(document, slice.id, { parentId: frame.id }), /top-level export regions/);
+  assert.equal(findNode(document, slice.id).parent, null);
+  assert.throws(() => updateNode(document, slice.id, node => { node.rotation = 24; return {}; }), /top-level export regions/);
+  assert.equal(findNode(document, slice.id).node.rotation, 0, 'a rejected in-place patch restores the valid slice');
+  assert.throws(() => createComponent(document, slice.id), /Slices cannot be used as component sources/);
+  assert.equal(document.components.length, 0);
+  assert.throws(() => addNode(document, createNode('group', { children: [createNode('slice')] })), /top-level export regions/);
+  assert.throws(() => updateNode(document, frame.id, { children: [createNode('slice')] }), /top-level export regions/);
+
+  const componentDocument = createDocument();
+  const master = createNode('frame');
+  const slotSource = createNode('group');
+  addNode(componentDocument, master);
+  addNode(componentDocument, slotSource, { parentId: master.id });
+  const component = createComponent(componentDocument, master.id);
+  const slot = createComponentProperty(componentDocument, component.id, {
+    name: 'Content', type: 'SLOT', targetNodeId: slotSource.id
+  });
+  const instance = createComponentInstance(componentDocument, component.id);
+  const slotContentSlice = createNode('slice');
+  addNode(componentDocument, slotContentSlice);
+  assert.throws(() => setComponentSlotContent(componentDocument, instance.id, slot.id, [slotContentSlice]), /slice cannot be inserted as component slot content/);
+  assert.equal(findNode(componentDocument, slotContentSlice.id).parent, null,
+    'a rejected slot write leaves the original top-level slice untouched');
+  assert.throws(() => updateNode(componentDocument, slotSource.id, { children: [createNode('slice')] }), /top-level export regions/);
+
+  // Guard the property-creation API too when it receives an already-corrupt
+  // source tree, such as a document mutated outside the normal model methods.
+  slotSource.children.push(createNode('slice'));
+  assert.throws(() => createComponentProperty(componentDocument, component.id, {
+    name: 'Invalid source', type: 'SLOT', targetNodeId: slotSource.id
+  }), /slot source cannot contain slices/);
 });
 
 test('auto-layout absolute positioning round-trips and is limited to direct layout children', () => {

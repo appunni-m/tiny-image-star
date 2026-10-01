@@ -447,6 +447,7 @@ function validateMaskGroup(node, document) {
 function validateTree(nodes, document, assets, imagePreviews = null, ignoredNodeIds = new Set()) {
   for (const node of nodes || []) {
     if (!node || typeof node !== 'object') throw new TypeError('SVG export received an invalid layer.');
+    if (node.type === 'slice') continue;
     if (ignoredNodeIds.has(node.id)) continue;
     if (!isNodeVisible(document, node)) continue;
     const maskSource = node.mask ? validateMaskGroup(node, document) : null;
@@ -1150,6 +1151,7 @@ function booleanMaskDefinition(node, id, document, measureText) {
 function renderTree(nodes, document, context, includePosition = true, measureText) {
   let markup = '';
   for (const sourceNode of nodes || []) {
+    if (sourceNode?.type === 'slice') continue;
     if (!isNodeVisible(document, sourceNode)) continue;
     const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
     const index = context.nextIndex++;
@@ -1259,6 +1261,7 @@ function getBounds(nodes, { document = emptyDocument, includePosition = true, me
   };
   const visit = (list, parentMatrix, isRoot, clipBounds = null) => {
     for (const sourceNode of list || []) {
+      if (sourceNode?.type === 'slice') continue;
       if (!isNodeVisible(document, sourceNode)) continue;
       const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
       const matrix = multiply(parentMatrix, nodeMatrix(node, { includePosition: !isRoot || includePosition }));
@@ -1394,6 +1397,7 @@ function svgDocument(markup, defs, bounds, { width, height } = {}) {
  */
 export function exportNodeToSvg(node, { document = null, assets = null, imagePreviews = null, width, height, measureText } = {}) {
   if (!node || typeof node !== 'object') throw new TypeError('SVG export requires a layer.');
+  if (node.type === 'slice') throw new SvgExportError('raster slice exports', node);
   document ||= emptyDocument;
   validateTree([node], document, assets, imagePreviews);
   const bounds = getBounds([node], { document, includePosition: false, measureText });

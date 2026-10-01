@@ -6,6 +6,16 @@ import { moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
 import { exportNodeToSvg, exportPageToSvg, SvgExportError } from '../src/svg-export.js';
 
+test('page SVG omits slice overlays from artwork bounds and standalone slices require raster export', () => {
+  const artwork = createNode('rectangle', { x: 10, y: 20, width: 80, height: 40, fill: '#abcdef', stroke: null, strokeWidth: 0 });
+  const slice = createNode('slice', { name: 'UI-only crop overlay', x: -500, y: -500, width: 300, height: 300 });
+  const svg = exportPageToSvg({ id: 'page-with-slice', children: [artwork, slice] });
+  assert.match(svg, /viewBox="10 20 80 40"/);
+  assert.match(svg, /#abcdef/);
+  assert.doesNotMatch(svg, /UI-only crop overlay|data-tiny-image-star-type="slice"/);
+  assert.throws(() => exportNodeToSvg(slice), error => error instanceof SvgExportError && /raster slice exports/.test(error.message));
+});
+
 test('exports editable nested geometry, text styling, rotation, opacity, and clipping deterministically', () => {
   const title = createNode('text', {
     name: 'Greeting & title', x: 16, y: 20, width: 180, height: 54, rotation: -4,

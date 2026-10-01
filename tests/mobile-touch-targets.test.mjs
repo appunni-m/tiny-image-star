@@ -68,6 +68,11 @@ test('coarse-pointer inspector and repeated edit actions meet the 44px target', 
   assert.match(coarsePhone, /\.gradient-stop-row input\[type="color"\], \.gradient-stop-row input\[type="number"\]\s*\{[^}]*min-height:\s*44px[^}]*height:\s*44px/);
 });
 
+test('slice padding has a 44px touch target on narrow phone layouts', () => {
+  const mobilePhone = mediaBlock('(max-width: 820px)', 0);
+  assert.match(mobilePhone, /\.export-suffix input\[data-export-field="padding"\]\s*\{[^}]*min-height:\s*44px[^}]*height:\s*44px/);
+});
+
 test('common inspector geometry, fill, opacity, effect, and range controls are finger-friendly', () => {
   const coarsePhone = mediaBlock('(max-width: 820px) and (pointer: coarse)', 1);
   assert.match(coarsePhone, /\.inspector-content \.property-field\s*\{[^}]*height:\s*44px[^}]*min-height:\s*44px/);

@@ -45,7 +45,7 @@ assert.doesNotMatch(index, /(?:src|href)="\/(?!\/)/, 'the deployed page must not
 assertBalancedCssBlocks(await readFile(resolve(root, 'styles.css'), 'utf8'));
 
 for (const path of [
-  'styles.css', 'src/main.js', 'src/design-token-interop.js', 'src/image-fills.js', 'src/image-output.js', 'src/layer-blend.js', 'src/layout-guides.js', 'src/inspect.js', 'src/smart-animate.js', 'src/image-worker.js', 'src/pdf-vector-export.js', 'src/tab-list-keyboard.js', 'src/variable-stroke-geometry.js', 'src/vector-anchor-selection.js', 'wasm/pillow_rs_js.js',
+  'styles.css', 'src/main.js', 'src/design-token-interop.js', 'src/image-fills.js', 'src/image-output.js', 'src/layer-blend.js', 'src/layout-guides.js', 'src/inspect.js', 'src/smart-animate.js', 'src/image-worker.js', 'src/pdf-vector-export.js', 'src/tab-list-keyboard.js', 'src/variable-stroke-geometry.js', 'src/vector-anchor-selection.js', 'src/slice-export-plan.js', 'wasm/pillow_rs_js.js',
   'wasm/pillow_rs_js_bg.wasm', 'wasm/runtime.json', 'wasm/PILLOW_RS_LICENSE.txt'
 ]) await access(resolve(root, path));
 

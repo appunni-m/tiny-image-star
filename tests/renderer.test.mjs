@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, textVerticalOffset, wrapText } from '../src/renderer.js';
+import { deepestContainerAtPagePoint, drawCropPreview, drawCropSourceImage, drawTextDecoration, drawTextRuns, drawTrackedText, hitTestPage, measureTrackedText, SceneRenderer, selectionGroupHandles, selectionOverlayGeometry, sliceSelectionHandles, textVerticalOffset, wrapText } from '../src/renderer.js';
 import { addNode, addVariableMode, bindVariable, createDocument, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { nodeLocalToPage } from '../src/transform-geometry.js';
 
@@ -40,6 +40,17 @@ test('group transform handles follow non-zero selection bounds while keeping rot
   const point = selectionGroupHandles({ x: 10, y: 20, width: 0, height: 0 });
   assert.deepEqual(point.resize, {});
   assert.deepEqual(point.rotate, { x: 10, y: -4 });
+});
+
+test('single slice selection exposes eight axis-aligned resize handles and no rotation handle', () => {
+  const handles = sliceSelectionHandles({ type: 'slice', x: 12, y: 24, width: 80, height: 60, rotation: 0 });
+  assert.deepEqual(handles, { resize: {
+    nw: { x: 12, y: 24 }, n: { x: 52, y: 24 }, ne: { x: 92, y: 24 },
+    e: { x: 92, y: 54 }, se: { x: 92, y: 84 }, s: { x: 52, y: 84 },
+    sw: { x: 12, y: 84 }, w: { x: 12, y: 54 }
+  } });
+  assert.equal(sliceSelectionHandles({ type: 'rectangle', x: 0, y: 0, width: 10, height: 10 }), null);
+  assert.equal(sliceSelectionHandles({ type: 'slice', x: 0, y: 0, width: 0, height: 10 }), null);
 });
 
 test('inner-shadow raster composition clips a shifted blurred mask back to the source alpha', () => {

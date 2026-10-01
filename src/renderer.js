@@ -185,6 +185,13 @@ export function selectionGroupHandles(bounds, { rotateOffset = 24 } = {}) {
   };
 }
 
+/** Return axis-aligned resize handles for a slice; slices intentionally have no rotation handle. */
+export function sliceSelectionHandles(slice) {
+  if (slice?.type !== 'slice' || ![slice.x, slice.y, slice.width, slice.height].every(Number.isFinite)
+    || slice.width <= 0 || slice.height <= 0) return null;
+  return { resize: selectionGroupHandles({ x: slice.x, y: slice.y, width: slice.width, height: slice.height }, { rotateOffset: 0 }).resize };
+}
+
 function rgba(hex, alpha = 1) {
   if (!hex || hex === 'transparent') return `rgba(0,0,0,0)`;
   const value = hex.replace('#', '');
@@ -704,7 +711,7 @@ export class SceneRenderer {
     context.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) {
       this.drawNode(context, node, 0, 0, state.assets, false, false, {
-        outlineMode: false, showLayoutGuides: false, showEmptyFrameHint: false, showImageLoadingPlaceholder: false
+        outlineMode: false, showLayoutGuides: false, showEmptyFrameHint: false, showImageLoadingPlaceholder: false, includeSlices: false
       });
     }
     return sampleColorAt(context.getImageData(point.x, point.y, 1, 1), 0, 0);
@@ -778,7 +785,32 @@ export class SceneRenderer {
     const state = this.getState();
     const document = state.document;
     if (!getNodePropertyValue(document, node, 'visible')) return;
-    node = { ...node, ...getNodeGeometry(document, node) };
+    if (node.type === 'slice' && (state.presenting || renderOptions.includeSlices === false)) return;
+    node = { ...node, ...getNodeGeometry(document, node), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
+    if (node.type === 'slice') {
+      const x = parentX + node.x; const y = parentY + node.y;
+      const width = node.width; const height = node.height;
+      const cx = x + width / 2; const cy = y + height / 2;
+      const inverseZoom = 1 / Math.max(.08, state.zoom || 1);
+      ctx.save();
+      if (node.rotation) { ctx.translate(cx, cy); ctx.rotate(node.rotation * Math.PI / 180); ctx.translate(-cx, -cy); }
+      if (!(renderOptions.outlineMode ?? state.outlineMode)) {
+        ctx.fillStyle = 'rgba(13,153,255,.055)';
+        ctx.fillRect(x, y, width, height);
+      }
+      ctx.setLineDash([6 * inverseZoom, 4 * inverseZoom]);
+      ctx.strokeStyle = BLUE;
+      ctx.lineWidth = inverseZoom;
+      ctx.strokeRect(x, y, width, height);
+      ctx.setLineDash([]);
+      ctx.fillStyle = BLUE;
+      ctx.font = `600 ${11 * inverseZoom}px Inter, Arial, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(node.name || 'Slice', x, y - 4 * inverseZoom);
+      ctx.restore();
+      return;
+    }
     const effects = (node.effects || []).filter(effect => effect.visible);
     const outline = !state.presenting && (renderOptions.outlineMode ?? state.outlineMode);
     const blendMode = node.blendMode || 'normal';
@@ -1208,6 +1240,19 @@ export class SceneRenderer {
     const logicalWidth = right - left;
     const logicalHeight = bottom - top;
     if (![left, top, logicalWidth, logicalHeight].every(Number.isFinite) || logicalWidth < 1 || logicalHeight < 1) { drawOwnContent(); return; }
+    const cachedOverlay = renderOptions.backdropOverlays?.get(node.id);
+    if (cachedOverlay) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.filter = 'none';
+      ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+      ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
+      ctx.drawImage(cachedOverlay.canvas, left + cachedOverlay.offsetX, top + cachedOverlay.offsetY,
+        cachedOverlay.width, cachedOverlay.height);
+      ctx.restore();
+      drawOwnContent();
+      return;
+    }
     const rasterScale = Math.min(1, 2 / displayScale,
       Math.sqrt(MAX_GLASS_PIXELS / (logicalWidth * logicalHeight)),
       MAX_GLASS_AXIS / logicalWidth, MAX_GLASS_AXIS / logicalHeight);
@@ -1284,6 +1329,9 @@ export class SceneRenderer {
     backdropContext.globalCompositeOperation = 'destination-in';
     backdropContext.drawImage(shapeMask, 0, 0);
     backdropContext.restore();
+    renderOptions.captureBackdropOverlay?.(node.id, backdrop, {
+      left, top, logicalWidth, logicalHeight, pixelWidth, pixelHeight, rasterScale
+    });
 
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1331,6 +1379,19 @@ export class SceneRenderer {
     const logicalWidth = right - left;
     const logicalHeight = bottom - top;
     if (![left, top, logicalWidth, logicalHeight].every(Number.isFinite) || logicalWidth < 1 || logicalHeight < 1) { drawOwnContent(); return; }
+    const cachedOverlay = renderOptions.backdropOverlays?.get(node.id);
+    if (cachedOverlay) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.filter = 'none';
+      ctx.globalAlpha *= getNodePropertyValue(this.getState().document, node, 'opacity') ?? 1;
+      ctx.globalCompositeOperation = canvasBlendOperation(node.blendMode || 'normal');
+      ctx.drawImage(cachedOverlay.canvas, left + cachedOverlay.offsetX, top + cachedOverlay.offsetY,
+        cachedOverlay.width, cachedOverlay.height);
+      ctx.restore();
+      drawOwnContent();
+      return;
+    }
     const rasterScale = Math.min(1, 2 / displayScale,
       Math.sqrt(MAX_BACKGROUND_BLUR_PIXELS / (logicalWidth * logicalHeight)),
       MAX_BACKGROUND_BLUR_AXIS / logicalWidth, MAX_BACKGROUND_BLUR_AXIS / logicalHeight);
@@ -1379,6 +1440,9 @@ export class SceneRenderer {
     resultContext.globalCompositeOperation = 'destination-in';
     resultContext.drawImage(backdrop, 0, 0);
     resultContext.restore();
+    renderOptions.captureBackdropOverlay?.(node.id, result, {
+      left, top, logicalWidth, logicalHeight, pixelWidth, pixelHeight, rasterScale
+    });
 
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1445,7 +1509,10 @@ export class SceneRenderer {
     const cx = x + width / 2; const cy = y + height / 2;
     const radius = node.cornerRadii || getNodePropertyValue(state.document, node, 'radius') || 0;
     ctx.beginPath();
-    if (node.type === 'boolean' || (node.type === 'group' && node.mask)) {
+    if (node.type === 'slice') {
+      ctx.rect(x, y, width, height);
+      ctx.setLineDash([4 / (state.zoom || 1), 3 / (state.zoom || 1)]);
+    } else if (node.type === 'boolean' || (node.type === 'group' && node.mask)) {
       ctx.rect(x, y, width, height);
       ctx.setLineDash(node.type === 'boolean' ? [3 / (state.zoom || 1), 2 / (state.zoom || 1)] : []);
     } else {
@@ -1869,7 +1936,7 @@ export class SceneRenderer {
     const collect = (list, ancestors = []) => {
       for (const node of list) {
         const geometry = getNodeGeometry(state.document, node);
-        const resolvedNode = { ...node, ...geometry };
+        const resolvedNode = { ...node, ...geometry, ...(node.type === 'slice' ? { rotation: 0 } : {}) };
         if (selectedIds.includes(node.id)) selected.push({ node: resolvedNode, ancestors });
         collect(node.children || [], [...ancestors, resolvedNode]);
       }
@@ -1885,7 +1952,8 @@ export class SceneRenderer {
     ctx.save();
     ctx.strokeStyle = BLUE; ctx.fillStyle = '#ffffff'; ctx.lineWidth = 1 / (state.zoom || 1);
     for (const entry of selected) {
-      const { corners } = selectionOverlayGeometry(entry.node, entry.ancestors, { zoom, rotateOffset: 0 });
+      const selectionNode = entry.node.type === 'slice' ? { ...entry.node, rotation: 0 } : entry.node;
+      const { corners } = selectionOverlayGeometry(selectionNode, entry.ancestors, { zoom, rotateOffset: 0 });
       ctx.beginPath();
       ctx.moveTo(corners[0].x, corners[0].y);
       for (let index = 1; index < corners.length; index += 1) ctx.lineTo(corners[index].x, corners[index].y);
@@ -1895,7 +1963,7 @@ export class SceneRenderer {
     const selectedIdsSet = new Set(selectedIds);
     const roots = selected.filter(entry => !entry.ancestors.some(parent => selectedIdsSet.has(parent.id)));
     const groupTransformAllowed = roots.length > 1 && roots.every(({ node, ancestors }) =>
-      !node.locked && !ancestors.some(parent => parent.locked)
+      node.type !== 'slice' && !node.locked && !ancestors.some(parent => parent.locked)
       && !(ancestors.at(-1)?.autoLayout && node.layoutPositioning !== 'absolute')
       && !['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property]));
     const cropTargetId = state.imageCropMode ? state.imageCropOverlay?.nodeId : null;
@@ -1912,7 +1980,15 @@ export class SceneRenderer {
         ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
       }
       ctx.beginPath(); ctx.arc(handles.rotate.x, handles.rotate.y, size * .65, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    } else if (roots.length === 1 && roots[0].node.id !== cropTargetId) {
+    } else if (roots.length === 1 && roots[0].node.type === 'slice' && roots[0].node.id !== cropTargetId) {
+      const { node } = roots[0];
+      const sourceNode = findNode(state.document, node.id)?.node;
+      const hasBoundGeometry = ['x', 'y', 'width', 'height', 'rotation'].some(property => sourceNode?.variableBindings?.[property]);
+      const handles = !node.locked && !hasBoundGeometry ? sliceSelectionHandles({ ...node, rotation: 0 }) : null;
+      for (const point of Object.values(handles?.resize || {})) {
+        ctx.beginPath(); ctx.rect(point.x - size / 2, point.y - size / 2, size, size); ctx.fill(); ctx.stroke();
+      }
+    } else if (roots.length === 1 && roots[0].node.type !== 'slice' && roots[0].node.id !== cropTargetId) {
       const { node, ancestors } = roots[0];
       const overlay = selectionOverlayGeometry(node, ancestors, { zoom });
       const resizePoints = Object.values(overlay.handles.resize);

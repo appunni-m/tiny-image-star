@@ -17,6 +17,18 @@ test('ellipse hit testing follows its painted curve instead of its bounding corn
   assert.equal(hitTestPage(document.pages[0], { x: 60, y: 50 }, null, document)?.id, ellipse.id);
 });
 
+test('slice hit testing selects the export border without stealing underlying canvas artwork', () => {
+  const document = createDocument();
+  const artwork = createNode('rectangle', { x: 0, y: 0, width: 100, height: 80, fill: '#ff0000', stroke: null, strokeWidth: 0 });
+  const slice = createNode('slice', { x: 10, y: 10, width: 60, height: 50 });
+  addNode(document, artwork);
+  addNode(document, slice);
+  assert.equal(hitTestPage(document.pages[0], { x: 40, y: 35 }, null, document)?.id, artwork.id,
+    'the slice interior must leave the underlying artwork directly selectable');
+  assert.equal(hitTestPage(document.pages[0], { x: 10.5, y: 30 }, null, document)?.id, slice.id,
+    'the slice border should select the export region');
+});
+
 test('polygon and star hit testing rejects unpainted corners', () => {
   for (const type of ['polygon', 'star']) {
     const document = createDocument();

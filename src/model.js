@@ -58,6 +58,7 @@ function defaultVariableValue(type) {
 }
 
 function canBindVariableToNode(node, property) {
+  if (node?.type === 'slice' && ['x', 'y', 'width', 'height', 'rotation'].includes(property)) return false;
   const spec = variableBindingSpecs[property];
   return Boolean(spec && (!spec.nodeTypes || spec.nodeTypes.includes(node?.type))
     && (!property.startsWith('autoLayout.') || node?.autoLayout));
@@ -182,6 +183,7 @@ export function createDocument() {
 const defaults = {
   frame: { name: 'Frame', width: 390, height: 844, fill: '#ffffff', clip: true, overflowBehavior: 'none' },
   section: { name: 'Section', width: 480, height: 320, fill: '#e6e6e6', clip: false },
+  slice: { name: 'Slice', width: 100, height: 100, fill: 'transparent', stroke: null, strokeWidth: 0, clip: false },
   group: { name: 'Group', width: 120, height: 80, fill: 'transparent', clip: false, mask: false },
   boolean: { name: 'Boolean group', width: 120, height: 80, fill: '#d9d9d9', operation: 'union', clip: false },
   rectangle: { name: 'Rectangle', width: 120, height: 80, fill: '#d9d9d9', radius: 0 },
@@ -503,6 +505,30 @@ export function walkNodes(nodes, visitor, parent = null, depth = 0, parents = []
   }
 }
 
+function treeContainsSlice(root) {
+  const pending = Array.isArray(root) ? [...root] : [root];
+  const visited = new Set();
+  while (pending.length) {
+    const node = pending.pop();
+    if (!node || typeof node !== 'object' || visited.has(node)) continue;
+    visited.add(node);
+    if (node.type === 'slice') return true;
+    if (Array.isArray(node.children)) pending.push(...node.children);
+  }
+  return false;
+}
+
+function assertSliceTreePlacement(node, parent = null) {
+  if (!treeContainsSlice(node)) return;
+  const childrenAreEmpty = node?.children == null
+    || (Array.isArray(node.children) && node.children.length === 0);
+  const isStandaloneSlice = node?.type === 'slice' && !parent
+    && node.width > 0 && node.height > 0 && node.rotation === 0 && childrenAreEmpty;
+  if (!isStandaloneSlice || node.isComponent || node.isInstance || node.mask) {
+    throw new Error('Slices must be positive-size, unrotated, top-level export regions without children or components.');
+  }
+}
+
 export function findNode(document, nodeId, pageId = document.activePageId) {
   const page = document.pages.find(item => item.id === pageId);
   if (!page) return null;
@@ -569,6 +595,7 @@ export function addNode(document, node, { parentId = null, pageId = document.act
   const parentEntry = parentId ? findNode(document, parentId, pageId) : null;
   const parent = parentEntry?.node || null;
   if (parentId && !parent) throw new Error('The target parent layer no longer exists.');
+  assertSliceTreePlacement(node, parent);
   if (parent && !['frame', 'section', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
   const slotContext = componentSlotMutationContext(document, parentEntry);
   requireOverriddenSlotForMutation(slotContext, 'add layers to');
@@ -621,7 +648,16 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
 export function updateNode(document, nodeId, patch, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return false;
-  const changes = typeof patch === 'function' ? patch(entry.node) : patch;
+  const inPlaceSnapshot = typeof patch === 'function' ? clone(entry.node) : null;
+  let changes;
+  try {
+    changes = typeof patch === 'function' ? patch(entry.node) : patch;
+    const patchObject = changes && typeof changes === 'object' && !Array.isArray(changes) ? changes : {};
+    assertSliceTreePlacement({ ...entry.node, ...patchObject }, entry.parent);
+  } catch (error) {
+    if (inPlaceSnapshot) Object.assign(entry.node, inPlaceSnapshot);
+    throw error;
+  }
   let slotContext = null;
   if (changes && Object.hasOwn(changes, 'children')) {
     slotContext = componentSlotMutationContext(document, entry);
@@ -658,6 +694,7 @@ export function absoluteBounds(document, nodeId, pageId = document.activePageId)
 export function duplicateNode(document, nodeId, pageId = document.activePageId) {
   const entry = findNode(document, nodeId, pageId);
   if (!entry) return null;
+  assertSliceTreePlacement(entry.node, entry.parent);
   const slotContext = componentSlotMutationContext(document, entry);
   requireOverriddenSlotForMutation(slotContext, 'duplicate');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot duplicate a component slot target from its instance.');
@@ -695,6 +732,7 @@ export function moveNode(document, nodeId, { parentId = null, index, pageId = do
   const parentEntry = parentId ? findNode(document, parentId, pageId) : null;
   const parent = parentEntry?.node || null;
   if (parentId && !parent) throw new Error('The target parent layer no longer exists.');
+  assertSliceTreePlacement(entry.node, parent);
   if (parent && !['frame', 'section', 'group', 'boolean'].includes(parent.type)) throw new Error('This layer cannot contain other layers.');
   let parentInsideNode = false;
   walkNodes([entry.node], ({ node }) => { if (node.id === parentId) parentInsideNode = true; });
@@ -749,7 +787,7 @@ function visualBounds(node) {
 export function canGroupLayers(document, nodeIds, pageId = document.activePageId) {
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
-  if (entries.some(entry => !entry || entry.node.locked) || !slotAwareSiblingMutation(document, entries).allowed) return false;
+  if (entries.some(entry => !entry || entry.node.locked || entry.node.type === 'slice') || !slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   if (parent?.locked || parent?.type === 'boolean') return false;
   if (!entries.every(entry => entry.parent === parent)) return false;
@@ -942,7 +980,7 @@ function isMaskSource(node) {
 export function canCreateMaskGroup(document, nodeIds, pageId = document.activePageId) {
   if (!Array.isArray(nodeIds) || nodeIds.length < 2 || new Set(nodeIds).size !== nodeIds.length) return false;
   const entries = nodeIds.map(id => findNode(document, id, pageId));
-  if (entries.some(entry => !entry || entry.node.locked)) return false;
+  if (entries.some(entry => !entry || entry.node.locked || entry.node.type === 'slice')) return false;
   if (!slotAwareSiblingMutation(document, entries).allowed) return false;
   const parent = entries[0].parent;
   if (!entries.every(entry => entry.parent === parent)) return false;
@@ -1744,7 +1782,7 @@ function componentSlotValueIsValidForInstance(document, instance, component, pro
   if (children.some(child => inheritedIds.has(child.componentSourceId))) return false;
   let safe = true;
   walkNodes(children, ({ node }) => {
-    if (node.isComponent || (node.isInstance && !canSwapComponentTo(document, component.id, node.componentId))) safe = false;
+    if (node.type === 'slice' || node.isComponent || (node.isInstance && !canSwapComponentTo(document, component.id, node.componentId))) safe = false;
   });
   return safe;
 }
@@ -1756,6 +1794,7 @@ export function createComponentProperty(document, componentId, { id = null, name
   const propertyName = String(name || '').trim();
   if (!component || !target || !propertyName || propertyName.length > 80 || !componentPropertyTypes.has(type)) throw new Error('Choose a component, property name, supported type, and target layer.');
   if (type === 'SLOT' && !isComponentSlotTarget(target, component)) throw new Error('A slot must target a nested frame, group, or section inside the component.');
+  if (type === 'SLOT' && treeContainsSlice(target.children || [])) throw new Error('A component slot source cannot contain slices.');
   component.componentProperties ||= [];
   if (component.componentProperties.length >= 100) throw new Error('A component can have at most 100 component properties.');
   if (component.componentProperties.some(property => property.name.toLocaleLowerCase() === propertyName.toLocaleLowerCase())) throw new Error('Component property names must be unique.');
@@ -1935,6 +1974,7 @@ function cloneSlotContentTrees(document, nodes) {
     if (!node || typeof node !== 'object' || Array.isArray(node) || sourceObjects.has(node)) throw new TypeError('Slot content must be a tree of layer objects.');
     sourceObjects.add(node);
     if (typeof node.id !== 'string' || !node.id || sourceIds.has(node.id)) throw new TypeError('Slot content layers need unique IDs.');
+    if (node.type === 'slice') throw new TypeError('A slice cannot be inserted as component slot content.');
     if (node.isComponent) throw new TypeError('A main component cannot be inserted as slot content; create an instance first.');
     if (node.children != null && !Array.isArray(node.children)) throw new TypeError('Slot content children must be a list.');
     sourceIds.add(node.id);
@@ -2052,6 +2092,7 @@ export function createComponent(document, nodeId, name = null, pageId = document
   const entry = findNode(document, nodeId, pageId);
   if (!entry) throw new Error('Select a layer to create a component.');
   if (entry.node.isInstance || entry.parents.some(parent => parent.isInstance)) throw new Error('Detach an instance before creating a new component.');
+  if (treeContainsSlice(entry.node)) throw new Error('Slices cannot be used as component sources.');
   if (entry.node.isComponent) return (document.components || []).find(component => component.id === entry.node.componentId) || null;
   const component = { id: createId('component'), name: String(name || entry.node.name).trim() || entry.node.name, pageId, rootNodeId: entry.node.id };
   entry.node.isComponent = true;
@@ -2411,6 +2452,7 @@ export function createComponentInstance(document, componentId, { pageId = docume
   const component = document.components?.find(item => item.id === componentId);
   const master = component && findNodeAcrossPages(document, component.rootNodeId);
   if (!component || !master || !master.node.isComponent) throw new Error('The main component no longer exists.');
+  if (treeContainsSlice(master.node)) throw new Error('A component containing a slice cannot be instantiated.');
   const targetPage = document.pages.find(page => page.id === pageId);
   if (!targetPage) throw new Error('The target page no longer exists.');
   const instance = clone(master.node);
@@ -2776,6 +2818,10 @@ export function validateDocument(document) {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
+      if (node.type === 'slice' && (parent || node.width <= 0 || node.height <= 0 || node.rotation !== 0
+        || node.children?.length || node.isComponent || node.isInstance || node.mask)) {
+        throw new TypeError(`Slices are positive-size, unrotated, top-level export regions without children or components (${node.name || node.id}).`);
+      }
       if (Object.hasOwn(node, 'strokes') && !isValidStrokeStack(node.strokes, node)) throw new TypeError(`Invalid stroke stack on layer ${node.name || node.id}.`);
       if ((node.strokeWidth != null && (!Number.isFinite(node.strokeWidth) || node.strokeWidth < 0 || node.strokeWidth > 100_000))
         || (node.strokeOpacity != null && (!Number.isFinite(node.strokeOpacity) || node.strokeOpacity < 0 || node.strokeOpacity > 1))
@@ -2845,7 +2891,8 @@ export function validateDocument(document) {
           if (!setting || typeof setting.id !== 'string' || !setting.id || settingIds.has(setting.id)
             || !exportFormats.has(setting.format) || ![0.5, 0.75, 1, 1.5, 2, 3, 4].includes(setting.scale)
             || typeof setting.suffix !== 'string' || setting.suffix.length > 24
-            || !Number.isInteger(setting.quality) || setting.quality < 1 || setting.quality > 100) return true;
+            || !Number.isInteger(setting.quality) || setting.quality < 1 || setting.quality > 100
+            || (setting.padding != null && (node.type !== 'slice' || !Number.isInteger(setting.padding) || setting.padding < 0 || setting.padding > 10_000))) return true;
           settingIds.add(setting.id); return false;
         })) throw new TypeError(`Invalid export settings on layer ${node.name || node.id}.`);
       }

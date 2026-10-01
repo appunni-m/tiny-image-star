@@ -876,6 +876,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .text-format-color-label input { width: 40px; min-width: 40px; height: 40px; flex: 0 0 40px; }
   .text-format-done { min-width: 52px; padding: 0 5px; font-size: 11px; }
   .export-setting-row .select-field, .export-suffix input { height: 38px; font-size: 12px; }
+  .export-suffix input[data-export-field="padding"] { box-sizing: border-box; min-height: 44px; height: 44px; }
   .export-setting-actions .secondary-button, .export-setting-actions .tiny-icon-button { min-height: 40px; height: 40px; }
   .export-setting-actions .tiny-icon-button { width: 40px; }
   .export-setting-actions > span { font-size: 10px; }

@@ -299,6 +299,14 @@ function inVisibleStroke(node, point, tolerance, document) {
 /** Hit-test a layer's painted geometry in its own local coordinate system. */
 export function hitTestVisibleGeometry(node, localPoint, { tolerance = 4, document = null } = {}) {
   if (!node || !Number.isFinite(localPoint?.x) || !Number.isFinite(localPoint?.y)) return false;
+  if (node.type === 'slice') {
+    // Keep the artwork underneath a slice directly selectable. Select the
+    // region from its border or its Layers row instead of swallowing every
+    // pointer hit inside the crop rectangle.
+    const inside = localPoint.x >= 0 && localPoint.y >= 0 && localPoint.x <= node.width && localPoint.y <= node.height;
+    if (!inside) return false;
+    return Math.min(localPoint.x, localPoint.y, node.width - localPoint.x, node.height - localPoint.y) <= Math.max(0, tolerance);
+  }
   if (['image', 'text'].includes(node.type)) {
     return localPoint.x >= 0 && localPoint.y >= 0 && localPoint.x <= node.width && localPoint.y <= node.height;
   }

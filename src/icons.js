@@ -3,6 +3,7 @@ const paths = {
   lasso: '<path d="M19.4 12.3c0 4.5-3.1 7.7-7.4 7.7s-7.4-3.2-7.4-7.7S7.7 4 12 4s7.4 3.2 7.4 7.7Z"/><path d="M12 20v1.2a1.8 1.8 0 0 0 3.6 0V20"/>',
   frame: '<rect x="3.5" y="4" width="17" height="16" rx="1.5"/><path d="M7 7h4v4H7z"/>',
   section: '<path d="M4 6.5h16M4 17.5h16"/><path d="M6 7v10m12-10v10"/>',
+  slice: '<rect x="4" y="5" width="16" height="14" rx="1" stroke-dasharray="3 2"/><path d="M4 9h16"/>',
   rectangle: '<rect x="4" y="5" width="16" height="14" rx="1.5"/>',
   ellipse: '<circle cx="12" cy="12" r="8"/>',
   line: '<path d="m5 19 14-14"/>',
@@ -23,6 +24,7 @@ const paths = {
   layerEllipse: '<circle cx="12" cy="12" r="7.5"/>',
   layerVector: '<path d="M5 18 9 6l10 4-8 8H5Z"/><circle cx="5" cy="18" r="1"/><circle cx="9" cy="6" r="1"/><circle cx="19" cy="10" r="1"/>',
   layerSection: '<path d="M4 6h16M4 18h16M6 7v10m12-10v10"/>',
+  layerSlice: '<rect x="4" y="5" width="16" height="14" rx="1" stroke-dasharray="3 2"/>',
   lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   menu: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'

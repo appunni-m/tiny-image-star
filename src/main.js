@@ -15,10 +15,10 @@ import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallba
 import { addFillLayer, detachPrimaryFillBinding, ensureFillStack, fillStackForNode, isFillStackSupported, moveFillLayer, removeFillLayer, syncLegacyFillFields, updateFillLayer } from './fills.js';
 import { addStroke, createStroke, detachPrimaryStrokeBinding, ensureStrokeStack, MAX_STROKES_PER_NODE, moveStroke, removeStroke, strokeStackForNode, syncLegacyStrokeFields, updateStroke } from './strokes.js';
 import { layerBlendModes, layerBlendModeLabels } from './layer-blend.js';
-import { glassVectorExportBlockReason } from './glass-effect.js';
+import { firstBackdropEffect, glassEffectOverscan, glassVectorExportBlockReason, glassVisibleForNode } from './glass-effect.js';
 import { MAX_DROP_SHADOWS_PER_LAYER, MAX_GLASS_EFFECTS_PER_LAYER, MAX_INNER_SHADOWS_PER_LAYER, MAX_NOISE_EFFECTS_PER_LAYER, MAX_TEXTURE_EFFECTS_PER_LAYER, moveLayerEffect } from './layer-effects.js';
 import { History } from './history.js';
-import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, worldToScreen } from './renderer.js';
+import { deepestContainerAtPagePoint, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
@@ -51,6 +51,7 @@ import { createLayerClipboard, pasteLayerClipboard } from './layer-clipboard.js'
 import { canMoveLayerOneVisualRow, installLayerReorder, layerOrderShortcutDirection, moveLayerOneVisualRow } from './layer-order.js';
 import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
+import { isValidSliceDimensionInput, MAX_SLICE_EXPORT_PIXELS, planSliceRasterExport, planSliceRenderSurface, sliceExportContentSignature, sliceRasterBoundsIntersect, sliceRenderBleedPixels } from './slice-export-plan.js';
 import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
 import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect, shortestAngleDelta } from './transform-geometry.js';
 import { shapeCreationGeometry } from './shape-creation-geometry.js';
@@ -703,7 +704,7 @@ function renderLayers() {
       const siblings = nodes;
       const lockedInChain = node.locked || lockedParent;
       const upNeighbor = siblings[index + 1]; const downNeighbor = siblings[index - 1];
-      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
+      const iconName = node.type === 'frame' || node.type === 'group' ? 'layerFrame' : node.type === 'text' ? 'layerText' : node.type === 'image' ? 'layerImage' : node.type === 'ellipse' ? 'layerEllipse' : node.type === 'section' ? 'layerSection' : node.type === 'slice' ? 'layerSlice' : node.type === 'path' || node.type === 'network' || node.type === 'boolean' ? 'layerVector' : 'rectangleSmall';
       const chevron = node.children?.length
         ? `<button type="button" class="layer-chevron" data-action="layer-toggle" tabindex="-1" aria-label="${effectivelyCollapsed ? 'Expand' : 'Collapse'} ${escapeHtml(node.name)}" aria-expanded="${!effectivelyCollapsed}">${effectivelyCollapsed ? '›' : '⌄'}</button>`
         : '<span class="layer-chevron-placeholder" aria-hidden="true"></span>';
@@ -877,6 +878,13 @@ function transformSection(node) {
     : '';
   const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width, 1, null, null, node.locked || hugAxes.includes('width'), 'Width')}${numberField('H', 'height', geometry.height, 1, null, null, node.locked || hugAxes.includes('height'), 'Height')}${numberField('↻', 'rotation', geometry.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${hugNote}${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
   return section('Position', body);
+}
+function slicePositionSection(node) {
+  const geometry = resolvedGeometry(node);
+  return section('Slice bounds', `<div class="property-grid">${numberField('X', 'x', geometry.x, 1, null, null, node.locked)}${numberField('Y', 'y', geometry.y, 1, null, null, node.locked)}${numberField('W', 'width', geometry.width, 1, 1, 100_000, node.locked, 'Width')}${numberField('H', 'height', geometry.height, 1, 1, 100_000, node.locked, 'Height')}</div><div class="image-properties-note">The dashed region exports the artwork underneath it. Slice outlines stay out of image, SVG, PDF, and prototype output.</div>`);
+}
+function sliceExportGeometry(node) {
+  return { ...node, ...resolvedGeometry(node), rotation: 0 };
 }
 function blendingSection(node) {
   const selected = node.blendMode || 'normal';
@@ -1072,22 +1080,36 @@ function exportSettingsSection(node) {
   const settings = node.exportSettings || [];
   const formats = [['png', 'PNG'], ['jpeg', 'JPG'], ['webp', 'WebP']];
   const scales = [0.5, 0.75, 1, 1.5, 2, 3, 4];
+  const slicePage = node.type === 'slice' ? activePage() : null;
+  const sliceBackdropWorldBleed = slicePage ? sliceExportBackdropWorldBleed(slicePage, node) : 0;
   const rows = settings.map(setting => {
     const options = formats.map(([value, label]) => `<option value="${value}"${setting.format === value ? ' selected' : ''}>${label}</option>`).join('');
     const scaleOptions = scales.map(value => `<option value="${value}"${setting.scale === value ? ' selected' : ''}>${value}×</option>`).join('');
-    const size = exportDimensions(node.id, setting.scale);
+    let size;
+    let sizeError = '';
+    try {
+      if (node.type === 'slice') {
+        const plan = planSliceRasterExport(sliceExportGeometry(node), { scale: setting.scale, padding: setting.padding ?? 0 });
+        planSliceRenderSurface(plan, sliceRenderBleedPixels(sliceBackdropWorldBleed, setting.scale));
+        size = plan.outputSize;
+      } else size = exportDimensions(node.id, setting.scale);
+    } catch (error) {
+      sizeError = error.message || 'Outside the local export budget.';
+      size = null;
+    }
     const quality = setting.format === 'png' ? '' : `<label class="export-quality"><span>Quality</span><input type="range" min="1" max="100" step="1" value="${setting.quality}" data-export-field="quality" data-export-id="${escapeHtml(setting.id)}" aria-label="Export quality"/><output aria-live="polite">${setting.quality}%</output></label>`;
-    return `<div class="export-setting-row" data-export-row="${escapeHtml(setting.id)}"><div class="export-setting-controls"><label><span>Format</span><select class="select-field" data-export-field="format" data-export-id="${escapeHtml(setting.id)}" aria-label="Export format">${options}</select></label><label><span>Scale</span><select class="select-field" data-export-field="scale" data-export-id="${escapeHtml(setting.id)}" aria-label="Export scale">${scaleOptions}</select></label></div><label class="export-suffix"><span>Suffix</span><input type="text" maxlength="24" value="${escapeHtml(setting.suffix)}" placeholder="@2x" data-export-field="suffix" data-export-id="${escapeHtml(setting.id)}" aria-label="Export suffix"/></label>${quality}<div class="export-setting-actions"><span>${size.width} × ${size.height} px</span><button class="secondary-button" type="button" data-action="export-setting" data-export-id="${escapeHtml(setting.id)}">Export</button><button class="tiny-icon-button" type="button" data-action="remove-export-setting" data-export-id="${escapeHtml(setting.id)}" aria-label="Remove export setting">×</button></div></div>`;
+    const padding = node.type === 'slice' ? `<label class="export-suffix"><span>Padding · px</span><input type="number" min="0" max="10000" step="1" value="${setting.padding ?? 0}" data-export-field="padding" data-export-id="${escapeHtml(setting.id)}" aria-label="Slice export padding in pixels"/></label>` : '';
+    return `<div class="export-setting-row" data-export-row="${escapeHtml(setting.id)}"><div class="export-setting-controls"><label><span>Format</span><select class="select-field" data-export-field="format" data-export-id="${escapeHtml(setting.id)}" aria-label="Export format">${options}</select></label><label><span>Scale</span><select class="select-field" data-export-field="scale" data-export-id="${escapeHtml(setting.id)}" aria-label="Export scale">${scaleOptions}</select></label></div><label class="export-suffix"><span>Suffix</span><input type="text" maxlength="24" value="${escapeHtml(setting.suffix)}" placeholder="@2x" data-export-field="suffix" data-export-id="${escapeHtml(setting.id)}" aria-label="Export suffix"/></label>${padding}${quality}<div class="export-setting-actions"><span>${size ? `${size.width} × ${size.height} px` : escapeHtml(sizeError)}</span><button class="secondary-button" type="button" data-action="export-setting" data-export-id="${escapeHtml(setting.id)}"${size ? '' : ' disabled'}>Export</button><button class="tiny-icon-button" type="button" data-action="remove-export-setting" data-export-id="${escapeHtml(setting.id)}" aria-label="Remove export setting">×</button></div></div>`;
   }).join('');
-  const message = settings.length ? '' : '<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this layer.</div>';
-  const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : '<button class="add-fill" type="button" data-action="add-export-setting">＋ Add export setting</button>';
+  const message = settings.length ? '' : `<div class="image-properties-note">Add one or more PNG, JPG, or WebP sizes for this ${node.type === 'slice' ? 'slice' : 'layer'}.</div>`;
+  const add = settings.length >= 8 ? '<div class="image-properties-note">This layer has reached the 8-setting limit.</div>' : `<button class="add-fill" type="button" data-action="add-export-setting">＋ Add ${node.type === 'slice' ? 'slice export' : 'export setting'}</button>`;
   const rasterPdf = node.type === 'frame'
     ? '<button class="add-fill" type="button" data-action="export-raster-pdf">Download 1× raster PDF</button><div class="image-properties-note">This local PDF is a flattened 1× export. Use vector PDF for supported shapes or editable SVG for full vector artwork.</div>'
     : '';
   const vectorPdf = node.type === 'frame'
     ? '<button class="add-fill" type="button" data-action="export-vector-pdf">Download vector PDF</button><div class="image-properties-note">Keeps supported shapes and paths editable, embeds untouched PNG/JPEG images as image objects, and renders edited images to local PNG previews. Text, unsupported image formats, filters, masks, blend modes, and unsupported effects need raster PDF.</div>'
     : '';
-  const svgExport = '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
+  const svgExport = node.type === 'slice' ? '' : '<button class="add-fill" type="button" data-action="export-svg">Download editable SVG</button><div class="image-properties-note">SVG is the editable vector export. It preserves vector shapes and text, embeds local raster images, and includes gradients, shadows, blur, blend modes, masks, and Boolean union, subtract, intersect, and exclude. Crop, quarter-turn rotation, and flips stay editable; edited images use their local PNG previews. Vector networks become ordinary SVG paths, so graph editing controls are not retained. Non-normal Boolean operand blending and unsupported gradient placements are not included.</div>';
   return section('Export', `${rows}${message}${add}${rasterPdf}${vectorPdf}${svgExport}`);
 }
 const autoLayoutBindingProperties = [
@@ -1474,7 +1496,9 @@ function clearPrototypeConnectPrompt() {
 }
 
 function clearPrototypeConnectPromptIfSourceMissing() {
-  if (!state.prototypeSourceId || findNode(state.document, state.prototypeSourceId)) return false;
+  if (!state.prototypeSourceId) return false;
+  const source = findNode(state.document, state.prototypeSourceId)?.node;
+  if (source && source.type !== 'slice') return false;
   clearPrototypeConnectPrompt();
   return true;
 }
@@ -1490,6 +1514,10 @@ function cancelPrototypeConnection() {
 function prototypeInspector() {
   const node = selectedNodes()[0] || null;
   const nodeInteractions = node?.interactions || [];
+  if (node?.type === 'slice') {
+    const legacyInteractions = nodeInteractions.map(interaction => `<div class="prototype-interaction-row"><span class="prototype-interaction-copy"><strong>Unavailable slice interaction</strong><small>Slices are export regions and cannot trigger prototype actions.</small></span><button class="tiny-icon-button" type="button" data-action="remove-prototype-interaction" data-interaction-id="${escapeHtml(interaction.id)}" aria-label="Remove unavailable slice interaction" title="Remove unavailable slice interaction">×</button></div>`).join('');
+    return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype</div><p class="prototype-hint">Slices define export regions. Select a frame or artwork layer to add prototype interactions.</p>${legacyInteractions}</section></div>`;
+  }
   const editingInteraction = nodeInteractions.find(interaction => interaction.id === state.prototypeEditingInteractionId) || null;
   if (state.prototypeEditingInteractionId && !editingInteraction) {
     state.prototypeEditingInteractionId = null;
@@ -1752,13 +1780,14 @@ function renderInspector() {
     return;
   }
   if (entries.length > 1) {
+    const containsSlice = entries.some(entry => entry.node.type === 'slice');
     const imageCount = entries.filter(entry => entry.node.type === 'image').length;
     const activeImageBatchSelected = entries.some(entry => entry.node.type === 'image' && isActiveImageRecipeTarget(entry.node.id));
     const alignments = [['left', 'Left'], ['center-x', 'Center X'], ['right', 'Right'], ['distribute-horizontal', 'H space'], ['top', 'Top'], ['center-y', 'Center Y'], ['bottom', 'Bottom'], ['distribute-vertical', 'V space']];
     const controls = alignments.map(([mode, label]) => `<button class="multi-align-button" type="button" data-action="align-selection" data-align-mode="${mode}" aria-label="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}" title="${label === 'H space' ? 'Distribute horizontally' : label === 'V space' ? 'Distribute vertically' : `Align ${label.toLowerCase()}`}"${canAlignLayers(state.document, state.selectedIds, mode) ? '' : ' disabled'}>${label}</button>`).join('');
     const transformEntries = transformEntriesForSelection();
     const bounds = selectionBounds(transformEntries);
-    const canTransform = canTransformSelectionTogether(transformEntries);
+    const canTransform = !containsSlice && canTransformSelectionTogether(transformEntries);
     const movementBlock = selectionInspectorMovementBlock(transformEntries);
     const isLocked = transformEntries.some(({ node, ancestors }) => node.locked || ancestors.some(parent => parent.locked));
     const commonValue = values => values.every(value => Math.abs(value - values[0]) < 1e-6) ? values[0] : null;
@@ -1779,9 +1808,9 @@ function renderInspector() {
             : hugWidth || hugHeight
               ? `Position and size use page-space visual bounds. Auto layout Hug controls ${[hugWidth && 'width', hugHeight && 'height'].filter(Boolean).join(' and ')}; edit its sizing mode first.`
               : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
-    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked, mixed: opacity == null })}`;
+    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${transformNote}</div>`)}`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>`)}`;
     if (activeImageBatchSelected) {
       const note = document.createElement('div');
       note.className = 'image-properties-note image-batch-edit-lock';
@@ -1792,6 +1821,10 @@ function renderInspector() {
     return;
   }
   const node = entries[0].node;
+  if (node.type === 'slice') {
+    content.innerHTML = `${slicePositionSection(node)}${exportSettingsSection(node)}`;
+    return;
+  }
   let body = componentSection(node) + transformSection(node) + blendingSection(node);
   if (node.type === 'image' && isActiveImageRecipeTarget(node.id)) {
     body = `<div class="image-properties-note image-batch-edit-lock">This image is in the active recipe batch. Manual edits remain available, and newer edits replace stale batch previews.</div>${body}`;
@@ -2747,12 +2780,13 @@ function commentPinAt(world) {
 function resizeHandleAt(event) {
   const entries = transformEntriesForSelection();
   if (!entries.length) return null;
+  if (entries.length > 1 && entries.some(({ node }) => node.type === 'slice')) return null;
   const hitRadius = event.pointerType === 'touch' ? 22 : 8;
-  const nearestHandle = handles => nearestScreenHandle(
+  const nearestHandle = (handles, { includeRotate = true } = {}) => nearestScreenHandle(
     { x: event.clientX, y: event.clientY },
     [
       ...Object.entries(handles.resize).map(([name, position]) => ({ kind: 'resize', name, point: worldToScreen(position, canvas, state) })),
-      { kind: 'rotate', point: worldToScreen(handles.rotate, canvas, state) }
+      ...(includeRotate && handles.rotate ? [{ kind: 'rotate', point: worldToScreen(handles.rotate, canvas, state) }] : [])
     ],
     hitRadius
   );
@@ -2768,6 +2802,15 @@ function resizeHandleAt(event) {
   const { entry, node: geometry, ancestors } = entries[0];
   const node = entry.node;
   if (geometry.locked || ancestors.some(parent => parent.locked)) return null;
+  if (node.type === 'slice') {
+    if (['x', 'y', 'width', 'height', 'rotation'].some(property => node.variableBindings?.[property])) return null;
+    const sliceGeometry = { ...geometry, rotation: 0 };
+    const handles = sliceSelectionHandles(sliceGeometry);
+    const hit = handles ? nearestHandle(handles, { includeRotate: false }) : null;
+    return hit?.kind === 'resize'
+      ? { kind: 'resize', name: hit.name, node, entry, geometry: sliceGeometry, ancestors }
+      : null;
+  }
   const handles = getTransformHandles(geometry, ancestors, { rotateOffset: 24 / Math.max(.08, state.zoom) });
   const hit = nearestHandle(handles);
   if (!hit) return null;
@@ -3107,7 +3150,7 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
   if (clearPrototypeConnectPromptIfSourceMissing()) {
     renderInspector();
-    showToast('The prototype source was removed. Select a layer to start a new connection.');
+    showToast('The prototype source is unavailable. Select a supported layer to start a new connection.');
     event.preventDefault(); return;
   }
   if (state.prototypeSourceId) {
@@ -3223,7 +3266,7 @@ function onCanvasPointerDown(event) {
   }
   if (state.tool === 'image') { $('#image-input').click(); return; }
   if (state.tool === 'text') { createTextAt(world); return; }
-  const typeByTool = { frame: 'frame', section: 'section', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', star: 'star' };
+  const typeByTool = { frame: 'frame', section: 'section', slice: 'slice', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', star: 'star' };
   const type = typeByTool[state.tool];
   if (!type) return;
   const node = createNode(type, { x: world.x, y: world.y, width: 1, height: 1 });
@@ -3704,7 +3747,7 @@ function onCanvasPointerUp(event) {
     }
     checkpoint(`Create ${node.type}`);
     const center = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
-    const parent = node.type === 'section' ? null : deepestContainerAt(center);
+    const parent = ['section', 'slice'].includes(node.type) ? null : deepestContainerAt(center);
     localizeToParent(node, center.x, center.y, parent, { anchor: 'center' });
     setSelection([node.id]); queueSave(); renderer.invalidate(); return;
   }
@@ -5068,6 +5111,17 @@ function updateInspectorInput(event) {
   const input = event.target.closest('[data-prop]');
   const selected = selectedNodes();
   if (!input || !selected.length) return;
+  if (selected.length === 1 && selected[0].type === 'slice' && ['width', 'height'].includes(input.dataset.prop)) {
+    if (!isValidSliceDimensionInput(input.value)) {
+      if (event.type === 'change') {
+        const hadPendingEdit = state.controlEdit;
+        state.controlEdit = false;
+        renderInspector();
+        if (hadPendingEdit) queueSave();
+      }
+      return;
+    }
+  }
   if (selected.length > 1 && selected.some(node => node.type === 'image' && isActiveImageRecipeTarget(node.id))) return;
   const prop = input.dataset.prop;
   if (prop.startsWith('adjustments.') && selected.some(node => node.type === 'image' && node.locked)) return;
@@ -6227,7 +6281,7 @@ function applyStyleToSelection(styleId) {
   const style = state.document.colorStyles?.find(item => item.id === styleId);
   if (!style || !state.selectedIds.length) { showToast('Select a compatible layer to apply this style.'); return; }
   const compatible = selectedNodes().filter(node => style.kind === 'text' ? node.type === 'text'
-    : !['text', 'image', 'line', 'path'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0));
+    : !['text', 'image', 'line', 'path', 'slice'].includes(node.type) && (node.type !== 'network' || (node.faces || []).length > 0));
   if (!compatible.length) { showToast(style.kind === 'text' ? 'Select a text layer to apply this style.' : 'Select a shape or frame to apply this style.'); return; }
   checkpoint(`Apply ${style.name}`);
   for (const node of compatible) {
@@ -6338,6 +6392,7 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
   if (variableId && !state.document.variables?.some(variable => variable.id === variableId && variable.type === 'color')) { showToast('This color variable no longer exists.'); return; }
   const nodes = selectedNodes();
   const changes = nodes.map(node => {
+    if (node.type === 'slice') return null;
     const kind = requestedKind || (node.type === 'text' ? 'text' : node.type === 'line' || (node.type === 'path' && !hasClosedPathContour(node)) || (node.type === 'network' && !node.faces?.length) ? 'stroke' : 'fill');
     const compatible = kind === 'text' ? node.type === 'text'
       : kind === 'fill' ? !['text', 'image', 'line'].includes(node.type) && (node.type !== 'path' || hasClosedPathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0)
@@ -6357,7 +6412,7 @@ function applyColorVariableToSelection(variableId, requestedKind = null) {
 function applyVariablePropertyToSelection(property, variableId) {
   if (!state.selectedIds.length) { showToast('Select a layer before binding a variable.'); return; }
   const nodes = selectedNodes();
-  const compatible = nodes.filter(node => canBindVariable(state.document, node.id, variableId || null, property));
+  const compatible = nodes.filter(node => node.type !== 'slice' && canBindVariable(state.document, node.id, variableId || null, property));
   if (!compatible.length) { renderUI(); showToast('That variable type is not compatible with the selected layer property.'); return; }
   checkpoint(variableId ? `Bind ${property} variable` : `Unbind ${property} variable`);
   for (const node of compatible) {
@@ -6573,7 +6628,8 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   }
   if (linkedInstance) items.splice(0, 0, { label: 'Detach component instance', action: () => detachInstance(linkedInstance.id) }, { separator: true });
   else if (node?.isComponent) items.splice(0, 0, { label: 'Create component instance', action: () => createInstanceAt(node.componentId) }, { separator: true });
-  else if (node) items.splice(0, 0, { label: 'Create component', action: () => makeComponent(node.id) }, { separator: true });
+  else if (node && node.type !== 'slice') items.splice(0, 0, { label: 'Create component', action: () => makeComponent(node.id) }, { separator: true });
+  if (node?.type === 'slice') items.splice(0, 0, { label: 'Export slice', action: () => exportSliceById(nodeId) }, { separator: true });
   if (node?.type === 'image') {
     items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
   }
@@ -6588,7 +6644,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   }
   const compatibleStyles = (state.document.colorStyles || []).filter(style => style.kind === 'text'
     ? selectedNodes().some(item => item.type === 'text')
-    : selectedNodes().some(item => !['text', 'image', 'line', 'path'].includes(item.type) && (item.type !== 'network' || (item.faces || []).length > 0)));
+    : selectedNodes().some(item => !['text', 'image', 'line', 'path', 'slice'].includes(item.type) && (item.type !== 'network' || (item.faces || []).length > 0)));
   if (compatibleStyles.length) items.push({ separator: true }, { label: 'Apply color style', labelOnly: true }, ...compatibleStyles.map(style => ({ label: style.name, action: () => applyStyleToSelection(style.id) })));
   const textTargets = selectedNodes().filter(item => item.type === 'text');
   const typographyStyles = state.document.typographyStyles || [];
@@ -6904,7 +6960,7 @@ function componentSlotCandidateEntries(instanceId, pageId = state.document.activ
   const rows = [];
   walkNodes(page.children || [], entry => {
     const { node, parents } = entry;
-    if (excludedIds.has(node.id) || containingMainComponent.has(node.id) || parents.some(parent => parent.id === instanceId)) return;
+    if (node.type === 'slice' || excludedIds.has(node.id) || containingMainComponent.has(node.id) || parents.some(parent => parent.id === instanceId)) return;
     rows.push(entry);
   });
   return rows;
@@ -7113,6 +7169,7 @@ function detachLocalComponentInstance(instanceId) {
 function makeComponent(nodeId = selectedNodes()[0]?.id) {
   const node = nodeId ? findNode(state.document, nodeId)?.node : null;
   if (!node) { showToast('Select a layer to create a component.'); return; }
+  if (node.type === 'slice') { showToast('Slices are export regions and cannot become components.'); return; }
   if (componentInstanceRoot(node.id)) { showToast('Detach this instance before creating a component.'); return; }
   if (node.isComponent) { showToast('This layer is already a main component.'); return; }
   const name = prompt('Component name', node.name);
@@ -8306,22 +8363,113 @@ function orderedRootSelection() {
   return rootSelectedIds().sort((left, right) => (index.get(left) ?? 0) - (index.get(right) ?? 0));
 }
 
-async function refreshImagesForExport(nodeIds) {
+function hasDynamicFrameConstraints(node) {
+  const horizontal = node?.constraints?.horizontal || 'left';
+  const vertical = node?.constraints?.vertical || 'top';
+  // The model stores left/top defaults on every node; only other modes can
+  // shift or resize content when an ancestor frame changes size.
+  return horizontal !== 'left' || vertical !== 'top';
+}
+
+function sliceExportImageDependencyNeeded(node, crop) {
+  if (!crop) return true;
+  const entry = findNode(state.document, node.id);
+  if (!entry) return false;
+  const chain = [...entry.parents, node];
+  for (const candidate of chain) {
+    if (getNodePropertyValue(state.document, candidate, 'visible') === false) return false;
+    const opacity = getNodePropertyValue(state.document, candidate, 'opacity');
+    if (Number.isFinite(opacity) && opacity <= 0) return false;
+  }
+  // Bounds from the stored tree are not sufficient when a variable, layout,
+  // constraint, or effect can move/extend the rendered pixels. Keep those
+  // sources in the refresh set; only cull clear, effect-free off-crop images.
+  const unresolvedGeometry = chain.some(candidate =>
+    ['x', 'y', 'width', 'height', 'rotation'].some(property => candidate.variableBindings?.[property])
+      || Boolean(candidate.autoLayout)
+      || hasDynamicFrameConstraints(candidate));
+  const effectsCanBleed = chain.some(candidate => candidate.effectStyleId
+    || (candidate.effects || []).some(effect => effect.visible !== false
+      && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
+  if (unresolvedGeometry || effectsCanBleed) return true;
+  const bounds = exportBoundsForNode(node.id);
+  return !bounds || sliceRasterBoundsIntersect(crop, bounds);
+}
+
+function sliceExportNodeMayAffectCrop(nodeId, crop) {
+  const entry = findNode(state.document, nodeId);
+  if (!entry) return false;
+  const chain = [...entry.parents, entry.node];
+  const unresolvedGeometry = chain.some(candidate =>
+    ['x', 'y', 'width', 'height', 'rotation'].some(property => candidate.variableBindings?.[property])
+      || Boolean(candidate.autoLayout)
+      || hasDynamicFrameConstraints(candidate));
+  const effectsCanExtendBounds = chain.some(candidate => candidate.effectStyleId
+    || (candidate.effects || []).some(effect => effect.visible !== false
+      && ['drop-shadow', 'layer-blur'].includes(effect.type)
+      && (!Number.isFinite(effect.opacity) || effect.opacity > 0)));
+  if (unresolvedGeometry || effectsCanExtendBounds) return true;
+  const bounds = exportBoundsForNode(nodeId);
+  return !bounds || sliceRasterBoundsIntersect(crop, bounds);
+}
+
+function sliceExportRootMayAffectCrop(rootId, crop) {
+  const root = findNode(state.document, rootId)?.node;
+  if (!root) return false;
+  let mayAffect = false;
+  walkNodes([root], ({ node }) => {
+    if (!mayAffect && sliceExportNodeMayAffectCrop(node.id, crop)) mayAffect = true;
+  });
+  return mayAffect;
+}
+
+function sliceExportBackdropWorldBleed(page, crop, { onBackdropNode = null } = {}) {
+  let maximumWorldBleed = 0;
+  for (const root of page.children || []) {
+    if (root.type === 'slice') continue;
+    walkNodes([root], ({ node }) => {
+      const effect = firstBackdropEffect(node.effects);
+      if (!effect || (effect.type === 'background-blur' && !(effect.radius > 0))
+        || (effect.type === 'glass' && !glassVisibleForNode(node))) return;
+      const entry = findNode(state.document, node.id);
+      if (!entry) return;
+      const chain = [...entry.parents, node];
+      if (chain.some(candidate => getNodePropertyValue(state.document, candidate, 'visible') === false
+        || (Number.isFinite(getNodePropertyValue(state.document, candidate, 'opacity'))
+          && getNodePropertyValue(state.document, candidate, 'opacity') <= 0))) return;
+      const uncertainBounds = chain.some(candidate =>
+        ['x', 'y', 'width', 'height', 'rotation'].some(property => candidate.variableBindings?.[property])
+          || Boolean(candidate.autoLayout)
+          || hasDynamicFrameConstraints(candidate));
+      const bounds = exportBoundsForNode(node.id);
+      if (!uncertainBounds && bounds && !sliceRasterBoundsIntersect(crop, bounds)) return;
+      onBackdropNode?.(node);
+      const worldBleed = effect.type === 'background-blur'
+        ? effect.radius * 3
+        : glassEffectOverscan(effect);
+      maximumWorldBleed = Math.max(maximumWorldBleed, worldBleed);
+    });
+  }
+  return maximumWorldBleed;
+}
+
+async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
   const images = new Map();
   for (const id of nodeIds) {
     const node = findNode(state.document, id)?.node;
     if (node) walkNodes([node], ({ node: child }) => {
-      if (child.type === 'image' && child.assetId) {
+      if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, previewKey });
       }
       if (Array.isArray(child.fills)) {
         for (const fill of child.fills) {
-          if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId) continue;
+          if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0 || !fill.imageFill?.assetId
+            || !sliceExportImageDependencyNeeded(child, crop)) continue;
           const previewKey = imagePreviewKey(child.id, fill.id);
           images.set(previewKey, { node: child, fillId: fill.id, previewKey, assetId: fill.imageFill.assetId, adjustments: fill.imageFill.adjustments, transforms: fill.imageFill.transforms });
         }
-      } else if (child.imageFill?.assetId) {
+      } else if (child.imageFill?.assetId && sliceExportImageDependencyNeeded(child, crop)) {
         const previewKey = imagePreviewKey(child.id);
         images.set(previewKey, { node: child, previewKey, assetId: child.imageFill.assetId, adjustments: child.imageFill.adjustments, transforms: child.imageFill.transforms });
       }
@@ -8354,26 +8502,146 @@ async function renderExportBlob(ids, setting, baseName, { signal, assertCurrent 
   const checkCurrent = () => { abortIfExportCanceled(signal); assertCurrent(); };
   checkCurrent();
   if (!ids.length) throw new Error('Select a layer to export.');
-  const boundsList = ids.map(exportBoundsForNode).filter(Boolean);
-  if (!boundsList.length) throw new Error('The selected layer is no longer available.');
-  const left = Math.min(...boundsList.map(item => item.x)); const top = Math.min(...boundsList.map(item => item.y));
-  const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
+  const selected = ids.map(id => findNode(state.document, id)?.node).filter(Boolean);
+  if (selected.length !== ids.length) throw new Error('The selected layer is no longer available.');
+  const slice = ids.length === 1 && selected[0]?.type === 'slice' ? selected[0] : null;
+  if (!slice && selected.some(node => node.type === 'slice')) throw new Error('Export a slice by itself so its crop and export settings stay unambiguous.');
   const scale = Number(setting.scale) || 1;
-  const width = Math.max(1, Math.ceil((right - left) * scale)); const height = Math.max(1, Math.ceil((bottom - top) * scale));
-  if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
-  if (refreshImages) await refreshImagesForExport(ids);
+  let left; let top; let width; let height; let renderIds = ids; let slicePlan = null; let sliceSurfacePlan = null;
+  let sliceBackdropNodeIds = new Set();
+  if (slice) {
+    const page = activePage();
+    if (!page || !page.children.some(root => root.id === slice.id)) throw new Error('Slices must be top-level layers on the active page.');
+    const documentSnapshot = state.document;
+    const generationSnapshot = state.documentGeneration;
+    const pageIdSnapshot = state.document.activePageId;
+    const pageSnapshot = page;
+    const saveRevision = state.saveRevision;
+    const sliceSignature = JSON.stringify(slice);
+    const artworkSignature = sliceExportContentSignature(page.children);
+    const callerAssertCurrent = assertCurrent;
+    assertCurrent = () => {
+      callerAssertCurrent();
+      const current = findNode(state.document, slice.id)?.node;
+      if (state.document !== documentSnapshot || state.documentGeneration !== generationSnapshot
+        || state.documentTransitioning || state.document.activePageId !== pageIdSnapshot
+        || activePage() !== pageSnapshot || state.saveRevision !== saveRevision
+        || current !== slice || JSON.stringify(current) !== sliceSignature
+        || sliceExportContentSignature(pageSnapshot.children) !== artworkSignature) {
+        throw new Error('The design or slice changed before export finished. Try again.');
+      }
+    };
+    slicePlan = planSliceRasterExport(sliceExportGeometry(slice), { scale, padding: setting.padding ?? 0 });
+    ({ width, height } = slicePlan.outputSize);
+    ({ x: left, y: top } = slicePlan.sourceCrop);
+    const backdropWorldBleed = sliceExportBackdropWorldBleed(page, slicePlan.sourceCrop, {
+      onBackdropNode: node => sliceBackdropNodeIds.add(node.id)
+    });
+    const bleed = sliceRenderBleedPixels(backdropWorldBleed, scale);
+    sliceSurfacePlan = planSliceRenderSurface(slicePlan, bleed);
+    renderIds = page.children.map(root => root.id);
+  } else {
+    const boundsList = ids.map(exportBoundsForNode).filter(Boolean);
+    if (!boundsList.length) throw new Error('The selected layer is no longer available.');
+    left = Math.min(...boundsList.map(item => item.x)); top = Math.min(...boundsList.map(item => item.y));
+    const right = Math.max(...boundsList.map(item => item.x + item.width)); const bottom = Math.max(...boundsList.map(item => item.y + item.height));
+    width = Math.max(1, Math.ceil((right - left) * scale)); height = Math.max(1, Math.ceil((bottom - top) * scale));
+    if (width > 16_384 || height > 16_384 || width * height > 16_000_000) throw new Error(`This export would be ${width} × ${height} px. Choose a smaller scale to stay within the local memory limit.`);
+  }
+  checkCurrent();
+  if (refreshImages) await refreshImagesForExport(renderIds, slicePlan ? { crop: slicePlan.sourceCrop } : {});
   checkCurrent();
   await document.fonts?.ready;
   checkCurrent();
   const output = document.createElement('canvas'); output.width = width; output.height = height;
-  const context = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
-  if (!context) throw new Error('This browser could not create an export surface.');
-  context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high';
-  if (setting.format === 'jpeg') { context.fillStyle = '#fff'; context.fillRect(0, 0, width, height); }
-  context.scale(scale, scale); context.translate(-left, -top);
-  for (const id of ids) {
-    const tree = exportRenderTree(id);
-    if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, { showLayoutGuides: false, outlineMode: false });
+  const outputContext = output.getContext('2d', { alpha: setting.format !== 'jpeg' });
+  if (!outputContext) throw new Error('This browser could not create an export surface.');
+  outputContext.imageSmoothingEnabled = true; outputContext.imageSmoothingQuality = 'high';
+  if (setting.format === 'jpeg') { outputContext.fillStyle = '#fff'; outputContext.fillRect(0, 0, width, height); }
+  const backdropSampler = slicePlan && sliceSurfacePlan.bleed > 0 ? document.createElement('canvas') : null;
+  if (backdropSampler) {
+    backdropSampler.width = sliceSurfacePlan.width;
+    backdropSampler.height = sliceSurfacePlan.height;
+  }
+  const samplerContext = backdropSampler?.getContext('2d', { alpha: true }) || null;
+  if (backdropSampler && !samplerContext) throw new Error('This browser could not create a backdrop export surface.');
+  const baseRenderOptions = { showLayoutGuides: false, outlineMode: false, includeSlices: false };
+  const drawExportScene = (context, renderOptions = baseRenderOptions, sceneIds = renderIds) => {
+    for (const id of sceneIds) {
+      const tree = exportRenderTree(id);
+      if (tree) renderer.drawNode(context, tree, 0, 0, state.assets, false, false, renderOptions);
+    }
+  };
+  if (slicePlan) {
+    const { padding, sourceCrop } = slicePlan;
+    const croppedRenderIds = renderIds.filter(id => sliceExportRootMayAffectCrop(id, sourceCrop));
+    if (backdropSampler) {
+      samplerContext.imageSmoothingEnabled = true; samplerContext.imageSmoothingQuality = 'high';
+      samplerContext.setTransform(scale, 0, 0, scale,
+        sliceSurfacePlan.bleed + padding.left - sourceCrop.x * scale,
+        sliceSurfacePlan.bleed + padding.top - sourceCrop.y * scale);
+      samplerContext.beginPath();
+      samplerContext.rect(sourceCrop.x, sourceCrop.y, sourceCrop.width, sourceCrop.height);
+      samplerContext.clip();
+
+      const backdropOverlays = new Map();
+      let backdropOverlayPixels = 0;
+      const cropSamplerBounds = {
+        left: sliceSurfacePlan.bleed + padding.left,
+        top: sliceSurfacePlan.bleed + padding.top,
+        right: sliceSurfacePlan.bleed + padding.left + sourceCrop.width * scale,
+        bottom: sliceSurfacePlan.bleed + padding.top + sourceCrop.height * scale
+      };
+      const captureBackdropOverlay = (nodeId, overlay, geometry) => {
+        if (!sliceBackdropNodeIds.has(nodeId) || backdropOverlays.has(nodeId)) return;
+        const sourceLeft = Math.max(0, Math.floor((cropSamplerBounds.left - geometry.left) * geometry.rasterScale));
+        const sourceTop = Math.max(0, Math.floor((cropSamplerBounds.top - geometry.top) * geometry.rasterScale));
+        const sourceRight = Math.min(geometry.pixelWidth, Math.ceil((cropSamplerBounds.right - geometry.left) * geometry.rasterScale));
+        const sourceBottom = Math.min(geometry.pixelHeight, Math.ceil((cropSamplerBounds.bottom - geometry.top) * geometry.rasterScale));
+        if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return;
+        const snapshotWidth = sourceRight - sourceLeft;
+        const snapshotHeight = sourceBottom - sourceTop;
+        const snapshotPixels = snapshotWidth * snapshotHeight;
+        if (!Number.isSafeInteger(snapshotPixels) || backdropOverlayPixels + snapshotPixels > MAX_SLICE_EXPORT_PIXELS) {
+          throw new RangeError(`Backdrop effects for this slice exceed the ${MAX_SLICE_EXPORT_PIXELS.toLocaleString()}-pixel local memory limit. Reduce the slice area or hide some backdrop effects.`);
+        }
+        const snapshot = document.createElement('canvas');
+        snapshot.width = snapshotWidth;
+        snapshot.height = snapshotHeight;
+        const snapshotContext = snapshot.getContext('2d');
+        if (!snapshotContext) throw new Error('This browser could not capture a backdrop effect for slice export.');
+        snapshotContext.drawImage(overlay, sourceLeft, sourceTop, snapshotWidth, snapshotHeight, 0, 0, snapshotWidth, snapshotHeight);
+        backdropOverlays.set(nodeId, {
+          canvas: snapshot,
+          offsetX: sourceLeft * geometry.logicalWidth / geometry.pixelWidth,
+          offsetY: sourceTop * geometry.logicalHeight / geometry.pixelHeight,
+          width: snapshotWidth * geometry.logicalWidth / geometry.pixelWidth,
+          height: snapshotHeight * geometry.logicalHeight / geometry.pixelHeight
+        });
+        backdropOverlayPixels += snapshotPixels;
+      };
+      drawExportScene(samplerContext, { ...baseRenderOptions, captureBackdropOverlay }, croppedRenderIds);
+
+      outputContext.save();
+      outputContext.imageSmoothingEnabled = true; outputContext.imageSmoothingQuality = 'high';
+      outputContext.setTransform(scale, 0, 0, scale, padding.left - sourceCrop.x * scale, padding.top - sourceCrop.y * scale);
+      outputContext.beginPath();
+      outputContext.rect(sourceCrop.x, sourceCrop.y, sourceCrop.width, sourceCrop.height);
+      outputContext.clip();
+      drawExportScene(outputContext, { ...baseRenderOptions, backdropOverlays }, croppedRenderIds);
+      outputContext.restore();
+    } else {
+      outputContext.imageSmoothingEnabled = true; outputContext.imageSmoothingQuality = 'high';
+      outputContext.setTransform(scale, 0, 0, scale, padding.left - sourceCrop.x * scale, padding.top - sourceCrop.y * scale);
+      outputContext.beginPath();
+      outputContext.rect(sourceCrop.x, sourceCrop.y, sourceCrop.width, sourceCrop.height);
+      outputContext.clip();
+      drawExportScene(outputContext, baseRenderOptions, croppedRenderIds);
+    }
+  } else {
+    outputContext.imageSmoothingEnabled = true; outputContext.imageSmoothingQuality = 'high';
+    outputContext.scale(scale, scale); outputContext.translate(-left, -top);
+    drawExportScene(outputContext);
   }
   const mime = { png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' }[setting.format];
   const extension = { png: 'png', jpeg: 'jpg', webp: 'webp' }[setting.format];
@@ -8964,11 +9232,25 @@ async function exportSelectionPng() {
   }
   const names = selected.map(node => node.name).filter(Boolean);
   const single = ids.length === 1 ? findNode(state.document, ids[0])?.node : null;
-  const setting = single?.type === 'image'
-    ? { format: single.outputFormat ?? 'png', scale: 1, suffix: '', quality: single.outputQuality ?? 90 }
-    : { format: 'png', scale: 1, suffix: '', quality: 90 };
+  const setting = single?.type === 'slice'
+    ? single.exportSettings?.[0] || { format: 'png', scale: 1, suffix: '', quality: 90, padding: 0 }
+    : single?.type === 'image'
+      ? { format: single.outputFormat ?? 'png', scale: 1, suffix: '', quality: single.outputQuality ?? 90 }
+      : { format: 'png', scale: 1, suffix: '', quality: 90 };
   try { await renderAndDownload(ids, setting, names.length === 1 ? names[0] : `selection-${names.length}`); }
   catch (error) { showToast(error.message || 'Could not export this selection.'); }
+}
+
+async function exportSliceById(sliceId) {
+  const slice = findNode(state.document, sliceId)?.node;
+  if (slice?.type !== 'slice') { showToast('This slice is no longer available.'); return; }
+  const setting = slice.exportSettings?.[0] || { format: 'png', scale: 1, suffix: '', quality: 90, padding: 0 };
+  try {
+    const result = await renderAndDownload([sliceId], setting, slice.name);
+    showToast(`Downloaded ${result.filename} · ${result.width} × ${result.height} px.`);
+  } catch (error) {
+    showToast(error.message || 'Could not export this slice.');
+  }
 }
 
 async function exportImageSelectionArchive(ids, images) {
@@ -9088,7 +9370,11 @@ function updateExportSetting(input) {
   const setting = node?.exportSettings?.find(item => item.id === input.dataset.exportId);
   if (!node || !setting) return;
   const property = input.dataset.exportField;
-  const value = property === 'scale' || property === 'quality' ? Number(input.value) : input.value;
+  const value = ['scale', 'quality', 'padding'].includes(property) ? Number(input.value) : input.value;
+  if (property === 'padding' && (node.type !== 'slice' || !Number.isInteger(value) || value < 0 || value > 10_000)) {
+    renderInspector();
+    return;
+  }
   if (setting[property] === value) return;
   checkpoint('Update export setting');
   setting[property] = value;
@@ -9118,6 +9404,10 @@ async function copyInspectText(kind) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (node?.type === 'slice' && ['edit-prototype-interaction', 'prototype-connect', 'prototype-start', 'present'].includes(action)) {
+    showToast('Slices are export regions and cannot trigger prototype actions.');
+    return;
+  }
   if (action === 'add-stroke-gradient-stop' || action === 'remove-stroke-gradient-stop') {
     if (!node || node.locked) return;
     const stroke = ensureStrokeStack(node).find(item => item.id === details.strokeId);
@@ -9337,7 +9627,7 @@ function applyInspectorAction(action, details = {}) {
     if ((node.exportSettings || []).length >= 8) { showToast('A layer can have up to 8 export settings.'); return; }
     checkpoint('Add export setting');
     node.exportSettings ||= [];
-    node.exportSettings.push(createExportSetting());
+    node.exportSettings.push(createExportSetting(node.type === 'slice' ? { padding: 0 } : {}));
     renderInspector(); queueSave();
   } else if (action === 'remove-export-setting' && node) {
     const settings = node.exportSettings || [];
@@ -10628,7 +10918,7 @@ function onKeyDown(event) {
   if (key === 'escape') { closeMenu(); setSelection([]); return; }
   if (event.shiftKey && !mod && key === 's' && !event.altKey) { event.preventDefault(); setTool('section'); return; }
   if (event.shiftKey && mod && key === 'k' && !event.altKey) { event.preventDefault(); chooseImageFiles(); return; }
-  const tools = { v: 'select', h: 'hand', f: 'frame', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment', i: 'eyedropper', q: 'lasso' };
+  const tools = { v: 'select', h: 'hand', f: 'frame', s: 'slice', r: 'rectangle', o: 'ellipse', l: 'line', p: 'pen', t: 'text', c: 'comment', i: 'eyedropper', q: 'lasso' };
   if (tools[key] && !event.altKey) { setTool(tools[key]); return; }
   const delta = event.shiftKey ? 10 : 1;
   if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key) && selectedNodes().length) {

@@ -1,4 +1,4 @@
-import { addNode, createDocument, createGradientFill, createNode, findNode } from '../src/model.js';
+import { addNode, createDocument, createGradientFill, createLayerEffect, createNode, findNode } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import * as pillow from '../wasm/pillow_rs_js.js';
 import { decodeOriginal, renderImage } from '../src/image-processing.js';
@@ -120,6 +120,26 @@ try {
     name: 'Image-filled export', x: 220, y: 30, width: 40, height: 40, fill: '#ffffff',
     imageFill: createImageFill(imageAssetId, { fit: 'contain' })
   });
+  const sliceArtwork = createNode('rectangle', {
+    name: 'Slice artwork', x: 550, y: 390, width: 40, height: 30, fill: '#00cc44'
+  });
+  const pageSlice = createNode('slice', {
+    name: 'Page slice', x: 545, y: 385, width: 60, height: 45
+  });
+  const fractionalSliceBackdrop = createNode('rectangle', {
+    name: 'Fractional slice backdrop', x: 601, y: 451, width: 5, height: 5,
+    fill: '#ffffff', fillOpacity: 0.25, visible: false,
+    effects: [createLayerEffect('background-blur', { id: 'fractional-slice-backdrop-blur', radius: 2 })]
+  });
+  const fractionalSliceArtwork = createNode('rectangle', {
+    name: 'Fractional slice interior', x: 600.25, y: 450.25, width: 20.5, height: 20.5, fill: '#00cc44'
+  });
+  const outsideFractionalSliceArtwork = createNode('rectangle', {
+    name: 'Artwork outside fractional slice', x: 620.75, y: 470.75, width: 10, height: 10, fill: '#ff0000'
+  });
+  const fractionalSlice = createNode('slice', {
+    name: 'Fractional backdrop slice', x: 600.25, y: 450.25, width: 20.5, height: 20.5
+  });
   const vectorFrame = createNode('frame', { name: 'Vector art one', x: 320, y: 40, width: 120, height: 80, fill: '#ffffff' });
   const vectorGradient = createGradientFill('linear', '#ff3300');
   vectorGradient.stops[1].color = '#2244ff';
@@ -133,6 +153,9 @@ try {
   addNode(design, localImage, { parentId: group.id });
   addNode(design, batchJpeg); addNode(design, batchWebp);
   addNode(design, imageFilled);
+  addNode(design, sliceArtwork); addNode(design, pageSlice);
+  addNode(design, fractionalSliceArtwork); addNode(design, outsideFractionalSliceArtwork);
+  addNode(design, fractionalSliceBackdrop); addNode(design, fractionalSlice);
   const input = app.querySelector('#open-file-input'); const transfer = new DataTransfer();
   const imageAssets = [{ id: imageAssetId, name: 'local-photo.png', type: 'image/png', bytes: imageBytes }];
   transfer.items.add(new File([packageFile(design, imageAssets)], 'export-smoke.flocal', { type: 'application/octet-stream' }));
@@ -232,6 +255,7 @@ try {
   'Page SVG should preserve nested vector geometry, case-transformed text, and canvas word wrapping.');
   assert(pageSvg.includes('textLength=') && pageSvg.includes('stroke="#224466"'), 'Page SVG should preserve measured text widths and explicit underline geometry.');
   assert(pageSvg.includes('href="data:image/png;base64,') && pageSvg.includes('data-tiny-image-star-type="image"'), 'Page SVG should embed local image bytes without network references.');
+  assert(!pageSvg.includes(`data-tiny-image-star-node-id="${pageSlice.id}"`), 'Page SVG should omit slice overlays while retaining the artwork underneath.');
 
   click(app.querySelector(`[data-layer-id="${localImage.id}"]`));
   await waitFor(() => app.querySelector('#image-engine-status')?.textContent.includes('Updated · Pillow-RS WASM'), 'locally restored image preview');
@@ -423,7 +447,142 @@ try {
   const pagePdfText = new TextDecoder('latin1').decode(await downloads[13].blob.arrayBuffer());
   assert(pagePdfText.includes('/Type /Pages /Count 2') && !pagePdfText.includes('/Subtype /Image'),
     'Current-page PDF should contain one vector page for each visible top-level frame.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg', 'vector-pdf'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, selectedVectorPdf: true, vectorPdfPages: 2, rasterExportUnaffectedByOutlineView: true })}`;
+
+  click(app.querySelector(`[data-layer-id="${pageSlice.id}"]`));
+  assert(app.querySelector('[data-prop="fill"]') === null && app.querySelector('[data-action="export-svg"]') === null,
+    'A slice should expose crop/export controls without ordinary shape styling or SVG export.');
+  click(app.querySelector('[data-action="add-export-setting"]'));
+  let sliceRows = app.querySelectorAll('.export-setting-row');
+  assert(sliceRows.length === 1, 'The selected slice should add a dedicated raster export setting.');
+  const slicePngId = sliceRows[0].dataset.exportRow;
+  updateSetting(app, slicePngId, 'padding', '3');
+  sliceRows = app.querySelectorAll('.export-setting-row');
+  const slicePaddingInput = sliceRows[0]?.querySelector('[data-export-field="padding"]');
+  const slicePaddingBounds = slicePaddingInput?.getBoundingClientRect();
+  const slicePaddingHeight = slicePaddingInput && Number.parseFloat(view.getComputedStyle(slicePaddingInput).height);
+  assert(slicePaddingInput?.isConnected && slicePaddingHeight >= 38 && slicePaddingBounds.height >= 38,
+  'Slice padding controls should remain finger-sized on mobile after the inspector rerenders.');
+  const sliceCanvasCalls = [];
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    sliceCanvasCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  try {
+    click(app.querySelector(`[data-action="export-setting"][data-export-id="${slicePngId}"]`));
+    await waitFor(() => downloads.length === 15, 'padded slice PNG download');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const slicePng = downloads[14];
+  assert(slicePng.filename === 'Page slice.png' && slicePng.blob?.type === 'image/png',
+    'Slice PNG export should use the slice name and PNG format.');
+  bitmap = await view.createImageBitmap(slicePng.blob);
+  assert(bitmap.width === 66 && bitmap.height === 51,
+    `A 60 × 45 slice with 3 px padding should export at 66 × 51; got ${bitmap.width} × ${bitmap.height}.`);
+  const sliceCanvas = view.document.createElement('canvas'); sliceCanvas.width = bitmap.width; sliceCanvas.height = bitmap.height;
+  const sliceContext = sliceCanvas.getContext('2d', { willReadFrequently: true });
+  sliceContext.drawImage(bitmap, 0, 0); bitmap.close();
+  const transparentPadding = sliceContext.getImageData(1, 1, 1, 1).data;
+  const slicedArtworkPixel = sliceContext.getImageData(12, 12, 1, 1).data;
+  assert(transparentPadding[3] === 0, `PNG slice padding should stay transparent; got alpha ${transparentPadding[3]}.`);
+  assert(slicedArtworkPixel[1] > 150 && slicedArtworkPixel[0] < 80 && slicedArtworkPixel[3] > 240,
+    `Slice should include the page artwork beneath its region; got ${Array.from(slicedArtworkPixel).join(',')}.`);
+  assert(!sliceCanvasCalls.some(call => call.type === 'image/jpeg' || call.type === 'image/webp'),
+    'Slice PNG should pass through the local Pillow-RS encoder rather than Canvas JPEG/WebP codecs.');
+
+  click(app.querySelector('[data-action="add-export-setting"]'));
+  sliceRows = app.querySelectorAll('.export-setting-row');
+  const sliceWebpId = sliceRows[1].dataset.exportRow;
+  updateSetting(app, sliceWebpId, 'format', 'webp');
+  updateSetting(app, sliceWebpId, 'scale', '2');
+  updateSetting(app, sliceWebpId, 'quality', '82');
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    sliceCanvasCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  try {
+    click(app.querySelector(`[data-action="export-setting"][data-export-id="${sliceWebpId}"]`));
+    await waitFor(() => downloads.length === 16, 'scaled slice WebP download');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const sliceWebp = downloads[15];
+  assert(sliceWebp.filename === 'Page slice@2x.webp' && sliceWebp.blob?.type === 'image/webp',
+    'Scaled slice WebP should use the requested format, scale suffix, and MIME type.');
+  const webpBitmap = await view.createImageBitmap(sliceWebp.blob);
+  assert(webpBitmap.width === 120 && webpBitmap.height === 90,
+    `A 2× 60 × 45 slice should export at 120 × 90; got ${webpBitmap.width} × ${webpBitmap.height}.`);
+  webpBitmap.close();
+  const sliceWebpBytes = new Uint8Array(await sliceWebp.blob.arrayBuffer());
+  assert(new TextDecoder().decode(sliceWebpBytes.subarray(0, 4)) === 'RIFF'
+    && new TextDecoder().decode(sliceWebpBytes.subarray(8, 12)) === 'WEBP',
+  'Scaled slice WebP should contain an encoded WebP file from the local raster pipeline.');
+  assert(!sliceCanvasCalls.some(call => call.type === 'image/webp'),
+    'Slice WebP should use Pillow-RS encoding rather than the browser WebP codec.');
+
+  click(app.querySelector('[data-action="add-export-setting"]'));
+  sliceRows = app.querySelectorAll('.export-setting-row');
+  const sliceJpegId = sliceRows[2].dataset.exportRow;
+  updateSetting(app, sliceJpegId, 'format', 'jpeg');
+  updateSetting(app, sliceJpegId, 'padding', '2');
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    sliceCanvasCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  try {
+    click(app.querySelector(`[data-action="export-setting"][data-export-id="${sliceJpegId}"]`));
+    await waitFor(() => downloads.length === 17, 'padded slice JPEG download');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const sliceJpeg = downloads[16];
+  assert(sliceJpeg.filename === 'Page slice.jpg' && sliceJpeg.blob?.type === 'image/jpeg',
+    'Slice JPEG should use the .jpg extension and JPEG MIME type.');
+  bitmap = await view.createImageBitmap(sliceJpeg.blob);
+  assert(bitmap.width === 64 && bitmap.height === 49,
+    `A 60 × 45 slice with 2 px padding should export at 64 × 49; got ${bitmap.width} × ${bitmap.height}.`);
+  const jpegSliceCanvas = view.document.createElement('canvas'); jpegSliceCanvas.width = bitmap.width; jpegSliceCanvas.height = bitmap.height;
+  const jpegSliceContext = jpegSliceCanvas.getContext('2d', { willReadFrequently: true });
+  jpegSliceContext.drawImage(bitmap, 0, 0); bitmap.close();
+  const jpegPaddingPixel = jpegSliceContext.getImageData(1, 1, 1, 1).data;
+  assert(jpegPaddingPixel[0] > 220 && jpegPaddingPixel[1] > 220 && jpegPaddingPixel[2] > 220,
+    `JPEG slice padding should be white; got ${Array.from(jpegPaddingPixel).join(',')}.`);
+  assert(!sliceCanvasCalls.some(call => call.type === 'image/jpeg' || call.type === 'image/webp'),
+    'Slice raster formats should use Pillow-RS encoding rather than browser JPEG/WebP codecs.');
+
+  const backdropRow = app.querySelector(`[data-layer-id="${fractionalSliceBackdrop.id}"]`);
+  assert(backdropRow?.classList.contains('layer-hidden'), 'The fractional-slice blur fixture should stay hidden during page SVG export assertions.');
+  click(backdropRow.querySelector('[data-action="visibility"]'));
+  assert(!app.querySelector(`[data-layer-id="${fractionalSliceBackdrop.id}"]`)?.classList.contains('layer-hidden'),
+    'The fractional-slice blur fixture should be enabled before the raster slice export.');
+  click(app.querySelector(`[data-layer-id="${fractionalSlice.id}"]`));
+  click(app.querySelector('[data-action="add-export-setting"]'));
+  const fractionalSliceId = app.querySelector('.export-setting-row')?.dataset.exportRow;
+  assert(fractionalSliceId, 'The fractional slice should expose a raster export setting.');
+  canvasPrototype.toBlob = function (callback, type, quality) {
+    sliceCanvasCalls.push({ type, quality });
+    return originalToBlob.call(this, callback, type, quality);
+  };
+  try {
+    click(app.querySelector(`[data-action="export-setting"][data-export-id="${fractionalSliceId}"]`));
+    await waitFor(() => downloads.length === 18, 'fractional backdrop slice PNG download');
+  } finally {
+    canvasPrototype.toBlob = originalToBlob;
+  }
+  const fractionalSlicePng = downloads[17];
+  assert(fractionalSlicePng.filename === 'Fractional backdrop slice.png'
+    && fractionalSlicePng.blob?.type === 'image/png', 'Fractional backdrop slice should export as PNG.');
+  bitmap = await view.createImageBitmap(fractionalSlicePng.blob);
+  assert(bitmap.width === 21 && bitmap.height === 21,
+    `A 20.5 × 20.5 fractional slice should round up to 21 × 21; got ${bitmap.width} × ${bitmap.height}.`);
+  const fractionalSliceCanvas = view.document.createElement('canvas');
+  fractionalSliceCanvas.width = bitmap.width; fractionalSliceCanvas.height = bitmap.height;
+  const fractionalSliceContext = fractionalSliceCanvas.getContext('2d', { willReadFrequently: true });
+  fractionalSliceContext.drawImage(bitmap, 0, 0); bitmap.close();
+  const fractionalEdgePixel = fractionalSliceContext.getImageData(20, 20, 1, 1).data;
+  assert(fractionalEdgePixel[1] > 100 && fractionalEdgePixel[0] < 30 && fractionalEdgePixel[3] > 0,
+    `The fractional slice edge must retain only cropped green artwork, excluding red artwork just outside the crop; got ${Array.from(fractionalEdgePixel).join(',')}.`);
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', persistedSettings: true, formats: ['webp', 'jpeg', 'png', 'svg', 'vector-pdf'], nestedRotatedBounds: [60, 88], suffix: '@2x', quality: 84, mobileTouchTargets: true, ancestorFillExcluded: red === 0, jpegWhiteBackground: true, quickPngPreserved: true, selectedLayerSvg: true, pageSvg: true, svgTextParity: true, embeddedLocalImage: true, editedImagePreviewByteExact: true, sharedSourcePreviewIsolation: true, editedImageFillPreviewByteExact: true, imageFillImmediateExport: true, individualImageZip: true, perImageOutputFormatAndQuality: true, batchExportCancellation: true, processedPreviewInArchive: true, fullResolutionImageExport: true, fullResolutionQualityApplied: true, selectedVectorPdf: true, vectorPdfPages: 2, slicePngCropAndTransparentPadding: true, sliceWebpScaleAndQuality: true, sliceJpegWhitePadding: true, fractionalSliceBackdropEdgeClipped: true, rasterExportUnaffectedByOutlineView: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }
