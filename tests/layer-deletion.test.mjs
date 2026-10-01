@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from '../src/layer-deletion.js';
 import { hitTestPage } from '../src/renderer.js';
+
+const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
   const selectedIds = ['selected-a', 'selected-b'];
@@ -34,6 +37,20 @@ test('only an anchor belonging to the selected path intercepts the Delete key', 
     'layer multi-selection uses layer deletion, not one stale anchor');
   assert.equal(shouldDeleteSelectedVectorAnchor([], selectedAnchor), false);
   assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], null), false);
+});
+
+test('a canvas body hit exits vector-anchor editing before the next Delete key', () => {
+  const start = editorSource.indexOf('function onCanvasPointerDown(event) {');
+  const end = editorSource.indexOf('\nfunction updateDraftShapeGeometry', start);
+  assert.ok(start >= 0 && end > start, 'canvas pointer handling should have a bounded function body');
+  const handler = editorSource.slice(start, end);
+  const anchorHit = handler.indexOf('const vectorControl = vectorPathControlAt(world, event.pointerType);');
+  const layerHit = handler.indexOf('    if (hit) {', anchorHit);
+  const nextBranch = handler.indexOf('\n    const previousSelection', layerHit);
+  assert.ok(anchorHit >= 0 && layerHit > anchorHit && nextBranch > layerHit,
+    'anchor handles should be resolved before ordinary layer-body hits');
+  assert.match(handler.slice(layerHit, nextBranch), /clearVectorAnchorSelection\(\);[\s\S]*?if \(event\.shiftKey\)/,
+    'a normal layer-body hit should clear a stale anchor so Delete removes the layer');
 });
 
 test('layer deletion removes selections from a new valid document', () => {

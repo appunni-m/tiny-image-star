@@ -4431,6 +4431,14 @@ function onCanvasPointerDown(event) {
         ? hitTestPage(page, world, hitTester, state.document, null, state.zoom, { allowClippedNodeIds: state.selectedIds })
         : null);
     if (hit) {
+      // A normal layer-body hit leaves vector-point editing. Anchor handles
+      // return above, so a click on the path body must clear any stale anchor
+      // before Delete can act on the layer selection.
+      if (state.selectedVectorPoint || state.vectorPointSelectMode) {
+        clearVectorAnchorSelection();
+        renderInspector();
+        renderer.invalidate();
+      }
       if (event.shiftKey) {
         const ids = state.selectedIds.includes(hit.id) ? state.selectedIds.filter(id => id !== hit.id) : [...state.selectedIds, hit.id];
         setSelection(ids);
