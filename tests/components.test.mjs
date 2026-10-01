@@ -48,6 +48,33 @@ test('deleting an inherited instance layer survives component synchronization an
   assert.equal(validateDocument(reloaded), true);
 });
 
+test('deleting a layer inside a nested component instance survives nested and owner synchronization', () => {
+  const document = createDocument();
+  const innerMaster = createNode('frame', { name: 'Inner component' });
+  const innerChild = createNode('rectangle', { name: 'Nested badge' });
+  addNode(document, innerMaster);
+  addNode(document, innerChild, { parentId: innerMaster.id });
+  const innerComponent = createComponent(document, innerMaster.id, 'Inner component');
+
+  const outerMaster = createNode('frame', { name: 'Outer component' });
+  addNode(document, outerMaster);
+  createComponentInstance(document, innerComponent.id, { parentId: outerMaster.id });
+  const outerComponent = createComponent(document, outerMaster.id, 'Outer component');
+  const outerInstance = createComponentInstance(document, outerComponent.id);
+  const nestedInstance = outerInstance.children[0];
+  const nestedInstanceChild = nestedInstance.children[0];
+
+  assert.equal(removeNode(document, nestedInstanceChild.id)?.id, nestedInstanceChild.id);
+  assert.deepEqual(nestedInstance.children, []);
+  syncAllComponentInstances(document);
+  assert.deepEqual(outerInstance.children[0].children, [], 'the owner component refresh must keep the deletion override');
+
+  const reloaded = parseDocument(serializeDocument(document));
+  syncAllComponentInstances(reloaded);
+  assert.deepEqual(findNode(reloaded, outerInstance.id).node.children[0].children, [], 'reload and owner refresh must keep the nested child deleted');
+  assert.equal(validateDocument(reloaded), true);
+});
+
 test('component synchronization remaps internal prototype scroll targets to each instance', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Scrollable card', width: 300, height: 220 });

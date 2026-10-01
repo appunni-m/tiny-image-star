@@ -670,12 +670,18 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot remove a component slot target from its instance.');
   if (entry.parent && entry.parent !== slotContext?.target && entry.node.componentSourceId && entry.parent.componentSourceId) {
     const instanceRoot = [...entry.parents].reverse().find(parent => parent.isInstance);
-    const sourceParent = findNodeAcrossPages(document, entry.parent.componentSourceId)?.node;
-    if (instanceRoot && sourceParent?.children?.some(child => child.id === entry.node.componentSourceId)) {
+    // A nested component instance has two source identities: componentSourceId
+    // belongs to its containing component, while nestedComponentSourceId
+    // points to the source node inside the nested component. Deletion overrides
+    // must use the latter so that the nested component's own sync can match them.
+    const sourceParentId = entry.parent.nestedComponentSourceId || entry.parent.componentSourceId;
+    const sourceChildId = entry.node.nestedComponentSourceId || entry.node.componentSourceId;
+    const sourceParent = findNodeAcrossPages(document, sourceParentId)?.node;
+    if (instanceRoot && sourceParent?.children?.some(child => child.id === sourceChildId)) {
       instanceRoot.componentOverrides ||= {};
-      const overrides = instanceRoot.componentOverrides[entry.parent.componentSourceId] ||= {};
+      const overrides = instanceRoot.componentOverrides[sourceParentId] ||= {};
       const deletedChildren = new Set(overrides.__deletedChildren || []);
-      deletedChildren.add(entry.node.componentSourceId);
+      deletedChildren.add(sourceChildId);
       overrides.__deletedChildren = [...deletedChildren];
     }
   }
@@ -2809,9 +2815,14 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const rootY = instance?.y ?? master.y;
   const rootName = instance?.name ?? `${master.name} instance`;
   const componentOverrides = isRoot ? clone(instance?.componentOverrides || {}) : null;
+  const nestedComponentOverrides = !isRoot && master.isInstance
+    ? clone(instance?.componentOverrides || master.componentOverrides || {}) : null;
   const componentPropertyValues = instance?.componentPropertyValues && typeof instance.componentPropertyValues === 'object'
     ? clone(instance.componentPropertyValues) : clone(master.componentPropertyValues || {});
   const nodeOverrides = overrides?.[master.id];
+  const nestedComponentRootSourceId = instance?.nestedComponentSourceId
+    || master.nestedComponentSourceId || master.componentSourceId || master.id;
+  const nestedRootOverrides = nestedComponentOverrides?.[nestedComponentRootSourceId];
   const oldChildren = instance?.children || [];
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
@@ -2819,33 +2830,50 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const slotContentKey = componentSlotContentKey(ownerInstanceId, master.id);
   const hasSlotContent = slotContentsBySourceId.has(slotContentKey);
   const childOwnerInstanceId = master.isInstance && !isRoot ? (instance?.id || master.id) : ownerInstanceId;
+  const childOverrides = nestedComponentOverrides || overrides;
   let children = hasSlotContent ? slotContentsBySourceId.get(slotContentKey).slice() : (master.children || []).map((child, index) => {
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
-    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, overrides, false, slotContentsBySourceId, childOwnerInstanceId);
+    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, childOverrides, false, slotContentsBySourceId, childOwnerInstanceId);
   });
-  if (!hasSlotContent && Array.isArray(nodeOverrides?.__deletedChildren) && nodeOverrides.__deletedChildren.length) {
-    const deletedChildren = new Set(nodeOverrides.__deletedChildren);
-    children = children.filter(child => !deletedChildren.has(child.componentSourceId));
+  if (!hasSlotContent) {
+    const deletedChildren = new Set([
+      ...(nodeOverrides?.__deletedChildren || []),
+      ...(nestedRootOverrides?.__deletedChildren || [])
+    ]);
+    if (deletedChildren.size) {
+      children = children.filter(child => !deletedChildren.has(child.componentSourceId)
+        && !deletedChildren.has(child.nestedComponentSourceId));
+    }
   }
-  if (!hasSlotContent && Array.isArray(nodeOverrides?.__childOrder)) {
-    const masterOrder = new Map((master.children || []).map((child, index) => [child.id, index]));
-    const requestedOrder = new Map(nodeOverrides.__childOrder.map((id, index) => [id, index]));
+  const childOrderOverrides = nestedRootOverrides?.__childOrder || nodeOverrides?.__childOrder;
+  if (!hasSlotContent && Array.isArray(childOrderOverrides)) {
+    const masterOrder = new Map((master.children || []).map((child, index) => [
+      nestedRootOverrides ? (child.nestedComponentSourceId || child.id) : child.id,
+      index
+    ]));
+    const requestedOrder = new Map(childOrderOverrides.map((id, index) => [id, index]));
     children = children.map((child, index) => ({ child, index })).sort((a, b) => {
-      const rank = item => requestedOrder.has(item.child.componentSourceId)
-        ? requestedOrder.get(item.child.componentSourceId)
-        : nodeOverrides.__childOrder.length + (masterOrder.get(item.child.componentSourceId) ?? item.index);
+      const sourceId = item => nestedRootOverrides
+        ? (item.child.nestedComponentSourceId || item.child.componentSourceId)
+        : item.child.componentSourceId;
+      const rank = item => requestedOrder.has(sourceId(item))
+        ? requestedOrder.get(sourceId(item))
+        : childOrderOverrides.length + (masterOrder.get(sourceId(item)) ?? item.index);
       return rank(a) - rank(b) || a.index - b.index;
     }).map(item => item.child);
   }
   const target = Object.assign(instance || {}, copy, {
     id: stableId,
-    componentSourceId: master.id,
+    componentSourceId: isRoot && instance?.nestedComponentSourceId && instance.componentSourceId
+      && instance.componentSourceId !== instance.nestedComponentSourceId
+      ? instance.componentSourceId : master.id,
     children,
     x: isRoot ? rootX : copy.x,
     y: isRoot ? rootY : copy.y,
     name: isRoot ? rootName : copy.name
   });
-  const nestedSourceId = master.nestedComponentSourceId || master.componentSourceId;
+  const nestedSourceId = instance?.nestedComponentSourceId
+    || master.nestedComponentSourceId || master.componentSourceId;
   if (nestedSourceId) target.nestedComponentSourceId = nestedSourceId;
   else delete target.nestedComponentSourceId;
   if (target.type !== 'frame') delete target.overflowBehavior;
@@ -2861,6 +2889,7 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   } else if (copy.isInstance) {
     target.componentId = copy.componentId;
     target.isInstance = true;
+    target.componentOverrides = nestedComponentOverrides;
     delete target.isComponent;
   } else {
     delete target.componentId;
@@ -2873,6 +2902,11 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   else delete target.componentSourceKey;
   if (nodeOverrides && typeof nodeOverrides === 'object' && !Array.isArray(nodeOverrides)) {
     for (const [key, value] of Object.entries(nodeOverrides)) if (key !== '__childOrder' && key !== '__deletedChildren' && componentOverrideProperties.has(key)) target[key] = clone(value);
+  }
+  if (nestedRootOverrides && typeof nestedRootOverrides === 'object' && !Array.isArray(nestedRootOverrides)) {
+    for (const [key, value] of Object.entries(nestedRootOverrides)) {
+      if (key !== '__childOrder' && key !== '__deletedChildren' && componentOverrideProperties.has(key)) target[key] = clone(value);
+    }
   }
   return target;
 }

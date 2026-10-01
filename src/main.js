@@ -44,6 +44,7 @@ import { exportNodeToSvg, exportPageToSvg } from './svg-export.js';
 import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
+import { removeLayersAtomically } from './layer-deletion.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -8955,11 +8956,16 @@ function toggleOutlineMode() {
 
 function deleteSelected() {
   const ids = rootSelectedIds(); if (!ids.length) return;
-  checkpoint('Delete layers');
-  for (const id of ids) removeNode(state.document, id);
-  clearPrototypeConnectPromptIfSourceMissing();
-  reconcileImagePreviewRuntime();
-  state.selectedIds = []; clearVectorAnchorSelection(); renderUI(); queueSave();
+  try {
+    const result = removeLayersAtomically(state.document, ids, activePage().id);
+    checkpoint('Delete layers');
+    state.document = result.document;
+    clearPrototypeConnectPromptIfSourceMissing();
+    reconcileImagePreviewRuntime();
+    state.selectedIds = []; clearVectorAnchorSelection(); renderUI(); queueSave();
+  } catch (error) {
+    showToast(error.message || 'Could not delete the selected layers.');
+  }
 }
 function copySelected() {
   const entries = orderedRootSelectedEntries();
