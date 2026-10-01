@@ -53,6 +53,15 @@ test('a canvas body hit exits vector-anchor editing before the next Delete key',
     'a normal layer-body hit should clear a stale anchor so Delete removes the layer');
 });
 
+test('the design canvas retries empty-space picks against clipped overflow geometry', () => {
+  const start = editorSource.indexOf('function onCanvasPointerDown(event) {');
+  const end = editorSource.indexOf('\nfunction updateDraftShapeGeometry', start);
+  assert.ok(start >= 0 && end > start, 'canvas pointer handling should have a bounded function body');
+  const handler = editorSource.slice(start, end);
+  assert.match(handler, /const hit = hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom\)\s*\|\|\s*hitTestPage\(page, world, hitTester, state\.document, null, state\.zoom, \{ allowAnyClippedNodes: true \}\)/,
+    'a deselected overflow child should remain selectable when ordinary visible picking finds nothing');
+});
+
 test('layer deletion removes selections from a new valid document', () => {
   const document = createDocument();
   const first = createNode('rectangle', { name: 'First' });
@@ -68,7 +77,7 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.deepEqual(result.removedIds, [first.id, second.id]);
 });
 
-test('a re-picked overflow child can be deleted without removing its clipping frame', () => {
+test('a deselected overflow child can be picked and deleted without removing its clipping frame', () => {
   const document = createDocument();
   const frame = createNode('frame', { x: 20, y: 20, width: 100, height: 100, clip: true });
   const child = createNode('rectangle', { x: 120, y: 10, width: 40, height: 40, fill: '#ff0000', stroke: null, strokeWidth: 0 });
@@ -78,8 +87,8 @@ test('a re-picked overflow child can be deleted without removing its clipping fr
 
   assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document), null,
     'ordinary picking continues to respect the frame clip');
-  const picked = hitTestPage(document.pages[0], outsidePoint, null, document, null, 1, { allowClippedNodeIds: [child.id] });
-  assert.equal(picked?.id, child.id, 'an already-selected child remains reachable outside its clipping frame');
+  const picked = hitTestPage(document.pages[0], outsidePoint, null, document, null, 1, { allowAnyClippedNodes: true });
+  assert.equal(picked?.id, child.id, 'an overflow child remains reachable after its selection is cleared');
   const result = removeLayersAtomically(document, [picked.id]);
 
   assert.equal(findNode(result.document, child.id), null);

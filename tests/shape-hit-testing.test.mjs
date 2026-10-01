@@ -120,7 +120,7 @@ test('child hit testing follows the exact rounded clipping path of its frame', (
     'points beyond the rendered rounded viewport cannot hit the clipped child');
 });
 
-test('an already-selected child remains pickable beyond its clipping frame', () => {
+test('design editing can pick a deselected child beyond its clipping frame', () => {
   const document = createDocument();
   const frame = createNode('frame', { x: 20, y: 20, width: 100, height: 100, clip: true, fill: '#ffffff' });
   const child = createNode('rectangle', { x: 120, y: 10, width: 40, height: 40, fill: '#ff0000', stroke: null, strokeWidth: 0 });
@@ -131,9 +131,9 @@ test('an already-selected child remains pickable beyond its clipping frame', () 
   assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document), null,
     'ordinary picking must keep respecting the visible frame clip');
   assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document, null, 1, {
-    allowClippedNodeIds: [child.id]
+    allowAnyClippedNodes: true
   })?.id, child.id,
-  'the editor can re-pick the selected overflow child so the user can move it back');
+  'design editing can select the overflow child after a click-away cleared its previous selection');
 });
 
 test('hit testing follows the active frame mode for a bound corner radius', () => {

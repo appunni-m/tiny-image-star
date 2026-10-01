@@ -4461,10 +4461,12 @@ function onCanvasPointerDown(event) {
     }
     const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
     const page = activePage();
+    // Prefer content that is actually visible at this point. If the canvas is
+    // otherwise empty, design-mode selection can still reach clipped layer
+    // geometry so moved-out children stay editable after a click-away clears
+    // their selection. Presentation and export hit testing keep normal clips.
     const hit = hitTestPage(page, world, hitTester, state.document, null, state.zoom)
-      || (state.selectedIds.length
-        ? hitTestPage(page, world, hitTester, state.document, null, state.zoom, { allowClippedNodeIds: state.selectedIds })
-        : null);
+      || hitTestPage(page, world, hitTester, state.document, null, state.zoom, { allowAnyClippedNodes: true });
     if (hit) {
       // A normal layer-body hit leaves vector-point editing. Anchor handles
       // return above, so a click on the path body must clear any stale anchor

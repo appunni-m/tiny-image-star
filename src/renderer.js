@@ -2583,7 +2583,7 @@ export function deepestContainerAtPagePoint(nodes, point, document = null) {
   return result;
 }
 
-export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1, { allowClippedNodeIds = [] } = {}) {
+export function hitTestPage(page, point, containsBoolean = null, document = null, presentationScrollOffsets = null, zoom = 1, { allowClippedNodeIds = [], allowAnyClippedNodes = false } = {}) {
   const hits = [];
   const scrollState = { presentationScrollOffsets };
   const hitTolerance = 4 / Math.max(.08, Number.isFinite(zoom) ? zoom : 1);
@@ -2609,7 +2609,7 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
       if (document ? !getNodePropertyValue(document, node, 'visible') : !node.visible) continue;
       const insideAncestorClips = pointInsideAncestorClips(point, ancestors, document);
       const isClippedPickTarget = clippedPickIds.has(node.id);
-      if (!insideAncestorClips && !clippedPickPathIds.has(node.id)) continue;
+      if (!insideAncestorClips && !allowAnyClippedNodes && !clippedPickPathIds.has(node.id)) continue;
       const geometry = document ? getNodeGeometry(document, node) : node;
       let resolvedNode = document ? { ...node, ...geometry } : node;
       if (parentScrollOffset.x || parentScrollOffset.y) {
@@ -2634,7 +2634,7 @@ export function hitTestPage(page, point, containsBoolean = null, document = null
           contained = containsBoolean(booleanNode, point, center.x - geometry.width / 2, center.y - geometry.height / 2);
         }
       } else contained = hitTestVisibleGeometry(resolvedNode, localPoint, { tolerance: hitTolerance, document });
-      if (contained && (insideAncestorClips || isClippedPickTarget)) hits.push(resolvedNode);
+      if (contained && (insideAncestorClips || isClippedPickTarget || allowAnyClippedNodes)) hits.push(resolvedNode);
       if (node.type !== 'boolean') {
         const childScrollOffset = getPresentationScrollOffset(scrollState, resolvedNode);
         visit(node.children || [], [...ancestors, resolvedNode], childScrollOffset);
