@@ -145,3 +145,14 @@ test('mobile layer visibility controls keep a 40px target and expand to 44px on 
   assert.ok(selectedRowRequiredAt390 <= panelContentAt390,
     'four visible layer actions, drag handle, and capped indentation fit inside the 390px phone panel');
 });
+
+test('short mobile viewports use a full-height side inspector and keep the canvas scrim below the top bar', () => {
+  const shortMobile = mediaBlock('(max-width: 820px) and (max-height: 560px)');
+  assert.match(shortMobile, /\.right-panel\s*\{[^}]*top:\s*0[^}]*right:\s*0[^}]*bottom:\s*0[^}]*left:\s*auto/);
+  assert.match(shortMobile, /\.right-panel\s*\{[^}]*width:\s*min\(400px,\s*max\(280px,\s*54vw\)\)[^}]*height:\s*auto[^}]*max-height:\s*none/);
+  assert.match(shortMobile, /\.right-panel\.is-open\s*\{[^}]*transform:\s*translateX\(0\)/);
+  assert.match(shortMobile, /\.app-shell\.mobile-inspector-open\s*>\s*\.mobile-scrim\.is-visible\s*\{[^}]*top:\s*calc\(45px\s*\+\s*env\(safe-area-inset-top\)\)[^}]*bottom:\s*0/);
+  assert.match(shortMobile, /:root\[data-theme="dark"\][\s\S]*?\.mobile-scrim\.is-visible\s*\{[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*\.42\)/);
+  assert.match(stylesheet, /\.right-panel\s*\{[^}]*height:\s*min\(50dvh,\s*500px\)/,
+    'taller mobile viewports should retain the portrait bottom-sheet layout');
+});

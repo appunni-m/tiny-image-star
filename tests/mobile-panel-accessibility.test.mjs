@@ -52,18 +52,22 @@ test('phone properties use a bottom sheet and leave the live canvas preview visi
   const sync = source.match(/function syncMobilePanelAccessibility\(\) \{[\s\S]*?\n\}/)?.[0] || '';
   assert.match(sync, /const inspectorOpen = mobile && panels\[1\]\.panel\.classList\.contains\('is-open'\)/);
   assert.match(sync, /appShell\.classList\.toggle\('mobile-inspector-open', inspectorOpen\)/);
-  const panelStart = stylesheet.lastIndexOf('  .right-panel {');
+  const portraitStart = stylesheet.indexOf('/* Keep the edited artwork visible above the phone properties sheet. */');
+  const landscapeStart = stylesheet.indexOf('/* Landscape phones need the inspector', portraitStart);
+  assert.ok(portraitStart >= 0 && landscapeStart > portraitStart, 'portrait and short-landscape layouts should have separate rules');
+  const portraitSheet = stylesheet.slice(portraitStart, landscapeStart);
+  const panelStart = portraitSheet.indexOf('  .right-panel {');
   assert.ok(panelStart >= 0, 'the mobile inspector should have an explicit sheet layout');
-  const panelOpen = stylesheet.indexOf('  .right-panel.is-open { transform: translateY(0); }', panelStart);
+  const panelOpen = portraitSheet.indexOf('  .right-panel.is-open { transform: translateY(0); }', panelStart);
   assert.ok(panelOpen > panelStart, 'opening the inspector should slide the sheet up from the bottom');
-  const sheet = stylesheet.slice(panelStart, panelOpen);
+  const sheet = portraitSheet.slice(panelStart, panelOpen);
   assert.match(sheet, /top:\s*auto/);
   assert.match(sheet, /left:\s*0/);
   assert.match(sheet, /width:\s*100%/);
   assert.match(sheet, /height:\s*min\(50dvh,\s*500px\)/);
-  assert.match(stylesheet, /\.app-shell\.mobile-inspector-open > \.mobile-scrim\.is-visible\s*\{[^}]*bottom:\s*min\(50dvh,\s*500px\)/,
+  assert.match(portraitSheet, /\.app-shell\.mobile-inspector-open > \.mobile-scrim\.is-visible\s*\{[^}]*bottom:\s*min\(50dvh,\s*500px\)/,
     'the scrim must stop at the sheet edge so the edited canvas remains visible');
-  assert.match(stylesheet, /\.app-shell\.mobile-inspector-open > \.mobile-scrim\.is-visible\s*\{[^}]*backdrop-filter:\s*none/,
+  assert.match(portraitSheet, /\.app-shell\.mobile-inspector-open > \.mobile-scrim\.is-visible\s*\{[^}]*backdrop-filter:\s*none/,
     'the preview area must not be blurred while adjustment controls are open');
   assert.match(smoke, /canvas behind an open phone panel should be removed from keyboard and screen-reader navigation/,
     'the visible preview must remain non-interactive while the properties sheet is open');

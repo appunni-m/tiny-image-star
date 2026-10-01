@@ -1,5 +1,5 @@
 import { getBlobBytes, parseFigBinary, resolveVectorNodePaths, parseSVGPathData } from 'openfig-core';
-import { createDocument, createId, createNode, MAX_DOCUMENT_TREE_DEPTH, parseDocument } from './model.js';
+import { createComponentSet, createDocument, createId, createNode, MAX_DOCUMENT_TREE_DEPTH, parseDocument } from './model.js';
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { createImageFill } from './image-fills.js';
 import { createAutoLayout } from './layout-engine.js';
@@ -968,9 +968,6 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   if (source.blendMode && source.blendMode !== 'PASS_THROUGH' && source.blendMode !== 'NORMAL') {
     warn(context.report, 'flattened', 'BLEND_MODE', name, 'The layer blend mode was reset to normal.');
   }
-  if (source.type === 'COMPONENT' || source.type === 'COMPONENT_SET' || source.type === 'INSTANCE' || source.type === 'SYMBOL') {
-    warn(context.report, 'flattened', source.type, name, 'Component links and variant behavior were flattened into editable layers.');
-  }
   if (source.type === 'FRAME') {
     overrides.clip = typeof source.clipsContent === 'boolean'
       ? source.clipsContent
@@ -1019,8 +1016,165 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     return node;
   }
   const node = createNode(type, overrides);
+  const sourceId = idOf(source);
+  if (sourceId) {
+    context.convertedNodesBySourceId.set(sourceId, node);
+    context.sourcePagesBySourceId.set(sourceId, pageId);
+  }
   context.report.importedNodes += 1;
   return node;
+}
+
+const componentOverrideProperties = [
+  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
+  'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius',
+  'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit', 'letterSpacing',
+  'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId',
+  'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms',
+  'constraints', 'autoLayout', 'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes', 'variableBindings',
+  'effects', 'fillGradient', 'imageFill', 'blendMode', 'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross',
+  'layoutAlignSelf', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points',
+  'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings',
+  'outputFormat', 'outputQuality', 'layoutGuides'
+];
+
+function sourceComponentGuid(value) {
+  if (typeof value === 'string' && /^\d+:\d+$/u.test(value)) return value;
+  if (value && typeof value === 'object') return guidKey(value.guid || value);
+  return null;
+}
+
+function sameJsonValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function preserveFigComponents(document, parsed, childrenMap, context) {
+  const sourcesById = new Map(parsed.nodes.map(source => [idOf(source), source]).filter(([id]) => id));
+  const componentsBySourceId = new Map();
+  const modelBySourceId = context.convertedNodesBySourceId;
+  const importedNodesById = new Map();
+  const indexImportedNodes = nodes => nodes.forEach(node => {
+    importedNodesById.set(node.id, node);
+    indexImportedNodes(node.children || []);
+  });
+  document.pages.forEach(page => indexImportedNodes(page.children));
+  for (const [sourceId, node] of modelBySourceId) {
+    const attached = importedNodesById.get(node.id);
+    if (attached) modelBySourceId.set(sourceId, attached);
+  }
+
+  for (const source of parsed.nodes) {
+    if (!['COMPONENT', 'SYMBOL'].includes(source.type)) continue;
+    const sourceId = idOf(source);
+    const root = modelBySourceId.get(sourceId);
+    if (!root) {
+      warn(context.report, 'flattened', source.type, source.name, 'The source component layer could not be converted, so linked component behavior was not preserved.');
+      continue;
+    }
+    const id = createId('component');
+    root.isComponent = true;
+    root.componentId = id;
+    const component = { id, name: safeName(source.name, 'Imported component'), pageId: context.sourcePagesBySourceId.get(sourceId), rootNodeId: root.id };
+    document.components ||= [];
+    document.components.push(component);
+    componentsBySourceId.set(sourceId, component);
+  }
+
+  for (const source of parsed.nodes) {
+    if (source.type !== 'COMPONENT_SET') continue;
+    const setId = idOf(source);
+    const variants = (childrenMap.get(setId) || [])
+      .filter(child => ['COMPONENT', 'SYMBOL'].includes(child.type))
+      .map(child => componentsBySourceId.get(idOf(child)))
+      .filter(Boolean);
+    if (variants.length < 2) {
+      warn(context.report, 'flattened', 'COMPONENT_SET', source.name, 'This variant set did not contain at least two converted local component masters; its layers remain editable but unlinked as variants.');
+      continue;
+    }
+    try {
+      createComponentSet(document, variants.map(component => component.id), safeName(source.name, 'Imported variants'));
+    } catch (error) {
+      warn(context.report, 'flattened', 'COMPONENT_SET', source.name, `Variant metadata could not be represented safely: ${error.message}`);
+    }
+  }
+
+  for (const source of parsed.nodes) {
+    if (source.type !== 'INSTANCE') continue;
+    const sourceId = idOf(source);
+    const instance = modelBySourceId.get(sourceId);
+    const targetSourceId = sourceComponentGuid(source.componentId);
+    const component = targetSourceId ? componentsBySourceId.get(targetSourceId) : null;
+    const masterSource = targetSourceId ? sourcesById.get(targetSourceId) : null;
+    const master = targetSourceId ? modelBySourceId.get(targetSourceId) : null;
+    if (!instance || !component || !master || !masterSource) {
+      warn(context.report, 'flattened', 'INSTANCE', source.name,
+        source.componentKey && !targetSourceId
+          ? 'This instance refers to an external library component; the source library is not embedded in the file, so its visible layers were imported detached.'
+          : 'The local component reference could not be resolved to an imported component master; visible layers were imported detached.');
+      continue;
+    }
+    const nestedInstance = (root, isRoot = true) => {
+      if (!isRoot && root.type === 'INSTANCE') return true;
+      return (childrenMap.get(idOf(root)) || []).some(child => nestedInstance(child, false));
+    };
+    if (nestedInstance(masterSource) || nestedInstance(source)) {
+      warn(context.report, 'flattened', 'INSTANCE', source.name, 'Nested component instances are retained as editable layers, but their outer component link was left detached because nested source ownership cannot be mapped safely.');
+      continue;
+    }
+
+    const localPairsBySourceId = new Map([[targetSourceId, { master, instance }]]);
+    const visitedPairs = new Set();
+    const mapChildren = (masterSourceNode, instanceSourceNode) => {
+      const pairKey = `${idOf(masterSourceNode)}>${idOf(instanceSourceNode)}`;
+      if (visitedPairs.has(pairKey)) return false;
+      visitedPairs.add(pairKey);
+      const masterChildren = childrenMap.get(idOf(masterSourceNode)) || [];
+      const instanceChildren = childrenMap.get(idOf(instanceSourceNode)) || [];
+      if (masterChildren.length !== instanceChildren.length) return false;
+      const used = new Set();
+      for (const instanceChild of instanceChildren) {
+        const candidates = masterChildren.filter((masterChild, index) => !used.has(index)
+          && masterChild.type === instanceChild.type && String(masterChild.name || '') === String(instanceChild.name || ''));
+        if (candidates.length !== 1) return false;
+        const masterChild = candidates[0];
+        const childIndex = masterChildren.indexOf(masterChild);
+        used.add(childIndex);
+        const sourceChildId = idOf(masterChild);
+        const localMasterChild = modelBySourceId.get(sourceChildId);
+        const localInstanceChild = modelBySourceId.get(idOf(instanceChild));
+        if (!sourceChildId || !localMasterChild || !localInstanceChild) return false;
+        localPairsBySourceId.set(sourceChildId, { master: localMasterChild, instance: localInstanceChild });
+        if (!mapChildren(masterChild, instanceChild)) return false;
+      }
+      return true;
+    };
+    if (!mapChildren(masterSource, source)) {
+      warn(context.report, 'flattened', 'INSTANCE', source.name, 'Instance descendants could not be matched unambiguously to the component tree; visible layers remain editable, and this instance was left detached.');
+      continue;
+    }
+    instance.isInstance = true;
+    delete instance.isComponent;
+    instance.componentId = component.id;
+    instance.componentSourceId = master.id;
+    instance.componentNameIsInherited = true;
+    if (master.variantNodeKey) instance.componentSourceKey = master.variantNodeKey;
+    const overrides = {};
+    for (const [sourceNodeId, { master: masterNode, instance: instanceNode }] of localPairsBySourceId) {
+      if (sourceNodeId !== targetSourceId) instanceNode.componentSourceId = masterNode.id;
+      if (masterNode.variantNodeKey) instanceNode.componentSourceKey = masterNode.variantNodeKey;
+      const properties = {};
+      for (const property of componentOverrideProperties) {
+        const sourceHas = Object.hasOwn(masterNode, property);
+        const instanceHas = Object.hasOwn(instanceNode, property);
+        if (sourceHas !== instanceHas || (sourceHas && !sameJsonValue(masterNode[property], instanceNode[property]))) {
+          if (instanceHas) properties[property] = structuredClone(instanceNode[property]);
+        }
+      }
+      if (Object.keys(properties).length) overrides[masterNode.id] = properties;
+    }
+    instance.componentOverrides = overrides;
+    if (!Object.keys(overrides).length) delete instance.componentOverrides;
+  }
 }
 
 function buildChildrenMap(parsed) {
@@ -1091,6 +1245,8 @@ export function convertFigDocument(parsed, { fileName = 'Imported design.fig', f
     parsedImages: parsed.images instanceof Map ? parsed.images : new Map(),
     imageLibrary: new Map(),
     assetsById: new Map(),
+    convertedNodesBySourceId: new Map(),
+    sourcePagesBySourceId: new Map(),
     visited: new WeakSet(),
     traversalSeen: new WeakSet(),
     traversalActive: new WeakSet(),
@@ -1108,6 +1264,7 @@ export function convertFigDocument(parsed, { fileName = 'Imported design.fig', f
       .filter(Boolean);
     document.pages.push({ id: pageId, name: safeName(sourcePage.name, `Page ${index + 1}`), children, guides: [] });
   }
+  preserveFigComponents(document, parsed, childrenMap, context);
   for (const node of parsed.nodes) {
     if (context.traversalSeen.has(node) || node.phase === 'REMOVED'
       || node.type === 'DOCUMENT' || node.type === 'CANVAS') continue;

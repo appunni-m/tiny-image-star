@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nodeLocalToPage } from '../src/transform-geometry.js';
+import { nodeLocalToPage, nodeLocalToPageTransform } from '../src/transform-geometry.js';
 import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from '../src/group-transform.js';
 
 function close(actual, expected, epsilon = 1e-8) {
@@ -37,6 +37,42 @@ test('axis resize scales multiple layers and preserves the opposite AABB edge', 
   close(byId.get('b').width, 40 / 3);
   close(Math.min(...patches.map(patch => patch.x)), bounds.x);
   close(Math.max(...patches.map(patch => patch.x + patch.width)), 40);
+});
+
+test('group resize composes page scaling into imported affine scale, shear, and reflection', () => {
+  const node = {
+    id: 'transformed', x: 8, y: 12, width: 30, height: 18, rotation: 17,
+    affineTransform: { a: -1.2, b: 0.3, c: 0.45, d: 0.9 }
+  };
+  const ancestors = [{
+    id: 'affine-parent', x: 25, y: -4, width: 90, height: 60, rotation: -11,
+    affineTransform: { a: 1.1, b: 0.25, c: -0.2, d: 0.9 }
+  }];
+  const entries = [{ node, ancestors }];
+  const bounds = selectionBounds(entries);
+  const transform = nodeLocalToPageTransform(node, ancestors);
+  const sourceCorners = [
+    { x: 0, y: 0 }, { x: node.width, y: 0 },
+    { x: node.width, y: node.height }, { x: 0, y: node.height }
+  ].map(point => ({ x: transform.a * point.x + transform.c * point.y + transform.e, y: transform.b * point.x + transform.d * point.y + transform.f }));
+  const [patch] = resizeSelection(entries, bounds, 'e', {
+    x: bounds.x + bounds.width * 2, y: bounds.center.y
+  });
+  const resized = { ...node, ...patch };
+  const actualCorners = [
+    { x: 0, y: 0 }, { x: resized.width, y: 0 },
+    { x: resized.width, y: resized.height }, { x: 0, y: resized.height }
+  ].map(point => nodeLocalToPage(resized, point, ancestors));
+  for (let index = 0; index < sourceCorners.length; index += 1) {
+    close(actualCorners[index].x, bounds.x + (sourceCorners[index].x - bounds.x) * 2);
+    close(actualCorners[index].y, sourceCorners[index].y);
+  }
+  close(patch.width, node.width);
+  close(patch.height, node.height);
+  assert.ok(patch.affineTransform.a * patch.affineTransform.d - patch.affineTransform.b * patch.affineTransform.c < 0,
+    'the imported reflection remains reflected after resizing');
+  assert.ok(Math.abs(patch.affineTransform.b) > 1e-3 || Math.abs(patch.affineTransform.c) > 1e-3,
+    'the imported shear remains represented in the affine basis');
 });
 
 test('vertical line selections omit Shift aspect locking when their bounds have zero width', () => {

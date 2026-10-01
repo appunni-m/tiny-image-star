@@ -24,6 +24,64 @@ test('smart animation interpolates supported size, position, rotation, opacity, 
   assert.equal(to.children[0].x, 110, 'the destination frame remains unchanged');
 });
 
+test('smart animation interpolates imported affine scale and shear without changing authored endpoints', () => {
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Imported card' })] });
+  const to = createNode('frame', { children: [createNode('rectangle', {
+    name: 'Imported card', affineTransform: { a: 2, b: .2, c: .6, d: 1.4 }
+  })] });
+  const determinant = matrix => matrix.a * matrix.d - matrix.b * matrix.c;
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0];
+  const quarter = at(.25).affineTransform;
+  const middle = at(.5).affineTransform;
+  const threeQuarter = at(.75).affineTransform;
+
+  assert.equal(at(0).affineTransform, undefined, 'the source endpoint retains the missing-identity representation');
+  assert.deepEqual(at(1).affineTransform, to.children[0].affineTransform, 'the destination endpoint remains exact');
+  for (const matrix of [quarter, middle, threeQuarter]) {
+    assert.ok(Object.values(matrix).every(Number.isFinite));
+    assert.ok(determinant(matrix) > 1e-12, 'every intermediate transform remains invertible');
+  }
+  assert.notDeepEqual(quarter, middle, 'the matrix changes continuously through the transition');
+  assert.notDeepEqual(middle, threeQuarter, 'the matrix continues changing after halfway');
+  assert.equal(from.children[0].affineTransform, undefined, 'the source document is not mutated');
+});
+
+test('smart animation uses polar rotation and keeps reflected affine layers invertible', () => {
+  const makePair = (start, end) => {
+    const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', affineTransform: start })] });
+    const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', affineTransform: end })] });
+    return progress => interpolateSmartFrame(from, to, progress).children[0].affineTransform;
+  };
+  const determinant = matrix => matrix.a * matrix.d - matrix.b * matrix.c;
+  const halfTurn = makePair(
+    { a: 1, b: 0, c: 0, d: 1 },
+    { a: -1, b: 0, c: 0, d: -1 }
+  );
+  assert.ok(Math.abs(determinant(halfTurn(.5)) - 1) < 1e-9,
+    'a 180-degree matrix transition rotates through a valid quarter turn instead of collapsing to zero');
+
+  const reflectedScale = makePair(
+    { a: -1, b: 0, c: 0, d: 1 },
+    { a: -2, b: .2, c: .3, d: 1.5 }
+  );
+  for (const progress of [.1, .25, .5, .75, .9]) {
+    assert.ok(determinant(reflectedScale(progress)) < -1e-12,
+      `reflection orientation remains stable at progress ${progress}`);
+  }
+});
+
+test('smart animation snaps affine reflection changes at the midpoint instead of creating a singular matrix', () => {
+  const fromMatrix = { a: 1, b: 0, c: 0, d: 1 };
+  const toMatrix = { a: -1, b: 0, c: 0, d: 1 };
+  const from = createNode('frame', { children: [createNode('rectangle', { name: 'Card', affineTransform: fromMatrix })] });
+  const to = createNode('frame', { children: [createNode('rectangle', { name: 'Card', affineTransform: toMatrix })] });
+  const at = progress => interpolateSmartFrame(from, to, progress).children[0].affineTransform;
+
+  assert.deepEqual(at(.499), fromMatrix, 'the source reflection state remains before the midpoint');
+  assert.deepEqual(at(.5), toMatrix, 'the target reflection state switches at the midpoint');
+  assert.equal(at(1).a * at(1).d - at(1).b * at(1).c, -1);
+});
+
 test('smart animation interpolates independent corner radii continuously and preserves exact endpoints', () => {
   const fromRadii = { topLeft: 4, topRight: 8, bottomRight: 12, bottomLeft: 16 };
   const toRadii = { topLeft: 20, topRight: 40, bottomRight: 60, bottomLeft: 80 };

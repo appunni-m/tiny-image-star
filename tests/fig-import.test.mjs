@@ -173,6 +173,67 @@ test('retains affine transforms on imported component children through serializa
     - child.affineTransform.b * child.affineTransform.c < 0, true);
 });
 
+test('preserves resolvable local component instances, property overrides, and named variants from .fig trees', () => {
+  const page = { sessionID: 52, localID: 1 };
+  const set = { sessionID: 52, localID: 2 };
+  const small = { sessionID: 52, localID: 3 };
+  const large = { sessionID: 52, localID: 5 };
+  const instance = { sessionID: 52, localID: 7 };
+  const parsed = {
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('COMPONENT_SET', 2, page, 'a', { guid: set, name: 'Button' }),
+      node('COMPONENT', 3, set, 'a', { guid: small, name: 'Button/size=small' }),
+      node('RECTANGLE', 4, small, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
+      node('COMPONENT', 5, set, 'b', { guid: large, name: 'Button/size=large' }),
+      node('RECTANGLE', 6, large, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
+      node('INSTANCE', 7, page, 'b', { guid: instance, name: 'Primary button', componentId: small }),
+      node('RECTANGLE', 8, instance, 'a', { name: 'Background', fillPaints: [{ type: 'SOLID', color: { r: 0, g: 0, b: 1, a: 1 } }] })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const { document, report } = convertFigDocument(parsed, { fileName: 'components.fig' });
+  const componentsByName = new Map(document.components.map(component => [component.name, component]));
+  const variantSet = document.componentSets[0];
+  const importedInstance = document.pages[0].children.find(child => child.name === 'Primary button');
+  const master = document.pages[0].children[0].children[0];
+  const masterChild = master.children[0];
+  const instanceChild = importedInstance.children[0];
+
+  assert.equal(componentsByName.size, 2);
+  assert.equal(variantSet.name, 'Button');
+  assert.deepEqual(variantSet.properties, [{ name: 'size', values: ['small', 'large'] }]);
+  assert.equal(importedInstance.isInstance, true);
+  assert.equal(importedInstance.componentId, componentsByName.get('Button/size=small').id);
+  assert.equal(importedInstance.componentSourceId, master.id);
+  assert.equal(instanceChild.componentSourceId, masterChild.id);
+  assert.deepEqual(importedInstance.componentOverrides[masterChild.id].fills, instanceChild.fills,
+    'the imported effective fill remains a local editable instance override');
+  assert.equal(report.flattenedTypes.INSTANCE, undefined);
+  assert.equal(report.flattenedTypes.COMPONENT_SET, undefined);
+
+  const restored = parseDocument(serializeDocument(document));
+  assert.equal(restored.pages[0].children.find(child => child.name === 'Primary button').isInstance, true);
+  assert.equal(restored.componentSets[0].properties[0].name, 'size');
+});
+
+test('unresolvable external component references are kept visually editable and reported as detached', () => {
+  const page = { sessionID: 53, localID: 1 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: page, name: 'Page' }),
+      node('INSTANCE', 2, page, 'a', { guid: { sessionID: 53, localID: 2 }, name: 'Remote component', componentKey: 'remote-library-key' }),
+      node('RECTANGLE', 3, { sessionID: 53, localID: 2 }, 'a', { name: 'Visible child' })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const instance = imported.document.pages[0].children[0];
+  assert.equal(instance.isInstance, undefined);
+  assert.equal(instance.children[0].name, 'Visible child');
+  assert.equal(imported.report.flattenedTypes.INSTANCE, 1);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'INSTANCE').detail, /external library component/u);
+});
+
 test('preflight rejects truncated, corrupt, path-traversal, and over-budget archives before parser execution', async () => {
   const original = new Uint8Array(await readFile(circlePath));
   const canvas = preflightFigArchive(original).entries.get('canvas.fig');

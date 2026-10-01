@@ -1,7 +1,12 @@
 import {
   nodeLocalToPage,
+  nodeLocalToPageTransform,
+  parentLocalToPageTransform,
   pageToParentLocal,
-  resizeOrientedRect
+  invertAffine,
+  multiplyAffine,
+  resizeOrientedRect,
+  transformVector
 } from './transform-geometry.js';
 
 const HANDLE_NAMES = new Set(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']);
@@ -103,15 +108,16 @@ export function translateSelection(entries, delta) {
 }
 
 function localSizeScales(node, ancestors, scaleX, scaleY) {
-  const pageRotation = [...ancestors, node].reduce((total, item) => total + Number(item.rotation || 0), 0);
-  const radians = pageRotation * Math.PI / 180;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  // The page-space group scale can shear a rotated node. Keep its rotation and
-  // use the lengths of its transformed local axes as width/height scale factors.
+  const transform = nodeLocalToPageTransform(node, ancestors);
+  const localX = transformVector(transform, { x: 1, y: 0 });
+  const localY = transformVector(transform, { x: 0, y: 1 });
+  const scaledLength = vector => Math.hypot(scaleX * vector.x, scaleY * vector.y) / Math.hypot(vector.x, vector.y);
+  // Preserve the layer's authored affine matrix and rotation. Scale each
+  // local dimension by how its transformed page-space axis changes under the
+  // group AABB scale; this also accounts for imported scale, shear, and flips.
   return {
-    width: Math.hypot(scaleX * cosine, scaleY * sine),
-    height: Math.hypot(scaleX * sine, scaleY * cosine)
+    width: scaledLength(localX),
+    height: scaledLength(localY)
   };
 }
 
@@ -131,13 +137,46 @@ function buildResizePatches(entries, bounds, handle, scaleX, scaleY, correction,
       y: (affectsY ? anchor.y + (currentCenter.y - anchor.y) * scaleY : currentCenter.y) + correction.y
     };
     const sizeScale = localSizeScales(node, ancestors, scaleX, scaleY);
-    const width = Math.abs(sizeScale.width - 1) <= 1e-12
-      ? node.width : Math.max(minSize, node.width * sizeScale.width);
-    const height = Math.abs(sizeScale.height - 1) <= 1e-12
-      ? node.height : Math.max(minSize, node.height * sizeScale.height);
     const updatedAncestors = selectedAncestorPatches(ancestors, patches);
     const local = pageToParentLocal(targetCenter, updatedAncestors);
-    patches.set(node.id, { id: node.id, x: local.x - width / 2, y: local.y - height / 2, width, height });
+    if (node.affineTransform) {
+      // Imported affine layers can represent the page-space group scale
+      // exactly while retaining their original geometry. Conjugate the
+      // selection's page scale through the old and updated parent transforms,
+      // then append it to the authored affine basis. This keeps reflected
+      // nodes reflected and composes new shear instead of flattening it into
+      // width/height approximations.
+      const originalParents = parentLocalToPageTransform(ancestors);
+      const updatedParents = parentLocalToPageTransform(updatedAncestors);
+      const originalAffine = {
+        a: node.affineTransform.a, b: node.affineTransform.b,
+        c: node.affineTransform.c, d: node.affineTransform.d, e: 0, f: 0
+      };
+      const affineTransform = multiplyAffine(
+        invertAffine(updatedParents),
+        multiplyAffine(
+          { a: scaleX, b: 0, c: 0, d: scaleY, e: 0, f: 0 },
+          multiplyAffine(originalParents, originalAffine)
+        )
+      );
+      const width = node.width;
+      const height = node.height;
+      const center = centerOf(node);
+      patches.set(node.id, {
+        id: node.id,
+        x: local.x - affineTransform.a * center.x - affineTransform.c * center.y,
+        y: local.y - affineTransform.b * center.x - affineTransform.d * center.y,
+        width,
+        height,
+        affineTransform: { a: affineTransform.a, b: affineTransform.b, c: affineTransform.c, d: affineTransform.d }
+      });
+    } else {
+      const width = Math.abs(sizeScale.width - 1) <= 1e-12
+        ? node.width : Math.max(minSize, node.width * sizeScale.width);
+      const height = Math.abs(sizeScale.height - 1) <= 1e-12
+        ? node.height : Math.max(minSize, node.height * sizeScale.height);
+      patches.set(node.id, { id: node.id, x: local.x - width / 2, y: local.y - height / 2, width, height });
+    }
   }
   return patches;
 }

@@ -14,9 +14,77 @@ const textVariableBindingProperties = ['text', 'fontSize', 'lineHeight', 'letter
 const midpointProperties = [
   ...colorProperties, 'fills', 'strokes',
   'fillStyleId', 'fillGradient', 'imageFill', 'transforms', 'fit', 'fillVariableId', 'strokeVariableId', 'textVariableId',
+  'affineTransform',
   'blendMode', 'effects', 'text', 'fontFamily', 'fontStyle', 'lineHeightUnit', 'textCase', 'textDecoration', 'paragraphStyles', 'align', 'verticalAlign', 'textFit', 'textStyleId',
   'strokePattern', 'strokeCap', 'strokeJoin', 'fillRule'
 ];
+
+const AFFINE_DETERMINANT_EPSILON = 1e-12;
+
+function validAffineTransform(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !['a', 'b', 'c', 'd'].every(key => Number.isFinite(value[key]))) return false;
+  const determinant = value.a * value.d - value.b * value.c;
+  return Number.isFinite(determinant) && Math.abs(determinant) > AFFINE_DETERMINANT_EPSILON;
+}
+
+function positivePolarParts(matrix, reflected) {
+  // A fixed reflection on the right turns a negative-determinant matrix into
+  // a positive-determinant one. The remaining polar factors are a rotation
+  // and a symmetric positive-definite stretch matrix.
+  const positive = reflected
+    ? { a: -matrix.a, b: -matrix.b, c: matrix.c, d: matrix.d }
+    : matrix;
+  const angle = Math.atan2(positive.b - positive.c, positive.a + positive.d);
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  const s00 = cosine * positive.a + sine * positive.b;
+  const s01a = cosine * positive.c + sine * positive.d;
+  const s10 = -sine * positive.a + cosine * positive.b;
+  const s11 = -sine * positive.c + cosine * positive.d;
+  const s01 = (s01a + s10) / 2;
+  const stretchDeterminant = s00 * s11 - s01 * s01;
+  if (![angle, s00, s01, s11, stretchDeterminant].every(Number.isFinite)
+    || s00 <= 0 || s11 <= 0 || stretchDeterminant <= AFFINE_DETERMINANT_EPSILON) return null;
+  return { angle, s00, s01, s11 };
+}
+
+function shortestRadianDelta(from, to) {
+  let delta = to - from;
+  if (delta > Math.PI) delta -= 2 * Math.PI;
+  else if (delta < -Math.PI) delta += 2 * Math.PI;
+  return delta;
+}
+
+function interpolateAffineTransform(from, to, progress) {
+  const source = from || { a: 1, b: 0, c: 0, d: 1 };
+  const target = to || { a: 1, b: 0, c: 0, d: 1 };
+  if (!validAffineTransform(source) || !validAffineTransform(target)) return null;
+  const sourceDeterminant = source.a * source.d - source.b * source.c;
+  const targetDeterminant = target.a * target.d - target.b * target.c;
+  const reflected = sourceDeterminant < 0;
+  // Crossing between a reflected and non-reflected transform necessarily
+  // passes through a singular matrix. Keep that categorical change at the
+  // midpoint so hit testing and rendering never receive a non-invertible one.
+  if (reflected !== (targetDeterminant < 0)) return null;
+  const start = positivePolarParts(source, reflected);
+  const end = positivePolarParts(target, reflected);
+  if (!start || !end) return null;
+  const angle = start.angle + shortestRadianDelta(start.angle, end.angle) * progress;
+  const s00 = interpolateFiniteNumber(start.s00, end.s00, progress);
+  const s01 = interpolateFiniteNumber(start.s01, end.s01, progress);
+  const s11 = interpolateFiniteNumber(start.s11, end.s11, progress);
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  let result = {
+    a: cosine * s00 - sine * s01,
+    b: sine * s00 + cosine * s01,
+    c: cosine * s01 - sine * s11,
+    d: sine * s01 + cosine * s11
+  };
+  if (reflected) result = { ...result, a: -result.a, b: -result.b };
+  return validAffineTransform(result) ? result : null;
+}
 
 function interpolateColor(from, to, progress) {
   const fromMatch = /^#([0-9a-f]{6})$/i.exec(String(from || ''));
@@ -677,6 +745,13 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
       : progress === 0 ? from[property]
       : progress === 1 ? to[property]
         : start + (end - start) * progress;
+  }
+  if (progress > 0 && progress < 1) {
+    const affineTransform = interpolateAffineTransform(from.affineTransform, to.affineTransform, progress);
+    // snapProperties already installed the source/target value. A null result
+    // intentionally keeps that safe midpoint fallback for malformed or
+    // reflection-changing matrices.
+    if (affineTransform) copy.affineTransform = affineTransform;
   }
   interpolateCornerRadii(copy, from, to, progress, resolveRadius);
   for (const property of colorProperties) {
