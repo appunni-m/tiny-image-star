@@ -9,6 +9,8 @@ The local `.fig` import worker bundles the following MIT-licensed packages. Thei
 
 The build-only `esbuild` 0.28.2 dependency is also MIT-licensed; copyright (c) Evan Wallace, 2020. Its code is not included in the deployed importer bundle.
 
+The local object-erase worker bundles `onnxruntime-web` 1.30.0, Copyright (c) Microsoft Corporation, under the MIT License. The pinned MI-GAN-512 Places2 ONNX pipeline model was published by Picsart AI Research under MIT; its complete upstream `LICENSE-WEIGHTS` text is shipped at `wasm/models/MI-GAN-LICENSE.txt`.
+
 The `.fig` compatibility samples in `tests/fixtures/fig-import/` are copied from OpenFig-org/openfig-core's test corpus at the commit named in that directory's README. The upstream package metadata declares MIT; the fixture directory contains its attribution and license notice.
 
 MIT License

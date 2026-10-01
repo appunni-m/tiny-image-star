@@ -1,6 +1,7 @@
 import { isValidLayerEffects } from './layer-effects.js';
 import { ensureFillStack, fillStackForNode, isFillStackSupported, isValidFillStack, isValidGradientFill, syncLegacyFillFields } from './fills.js';
 import { createImageFill, defaultImageAdjustments, isImageFillSupported, isValidImageAdjustments, isValidImageFill, normalizeImageAdjustments } from './image-fills.js';
+import { isValidImageEraseStrokes, normalizeImageEraseStrokes } from './inpaint-mask.js';
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { validateLinkedInstanceSnapshot } from './component-library.js';
@@ -457,7 +458,8 @@ export function createNode(type, overrides = {}) {
     ...(Array.isArray(overrides.paragraphStyles) ? { paragraphStyles: clone(overrides.paragraphStyles) } : {}),
     ...(type === 'image' ? {
       adjustments: normalizeImageAdjustments(overrides.adjustments ?? preset.adjustments),
-      transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {})
+      transforms: createImageTransforms(overrides.transforms ?? preset.transforms ?? {}),
+      inpaintStrokes: normalizeImageEraseStrokes(overrides.inpaintStrokes ?? [])
     } : {})
   };
   if (Array.isArray(node.strokes)) syncLegacyStrokeFields(node);
@@ -1263,6 +1265,7 @@ export function createImageRecipe(imageNode, name, output = {}, document = null)
     name: String(name).trim() || `${imageNode.name} recipe`,
     adjustments: normalizeImageAdjustments(imageNode.adjustments || {}),
     transforms: createImageTransforms(imageNode.transforms || {}),
+    inpaintStrokes: normalizeImageEraseStrokes(imageNode.inpaintStrokes || []),
     fit,
     opacity,
     effects,
@@ -1294,6 +1297,7 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
   // a partially-applied image look behind.
   const adjustments = normalizeImageAdjustments(recipe.adjustments || {});
   const transforms = createImageTransforms(recipe.transforms || {});
+  const inpaintStrokes = recipe.inpaintStrokes == null ? null : normalizeImageEraseStrokes(recipe.inpaintStrokes);
   const effects = hasEffects
     ? recipe.effects.map(effect => ({ ...clone(effect), id: createId('effect') }))
     : null;
@@ -1302,6 +1306,7 @@ export function applyImageRecipe(document, nodeId, recipe, pageId = document.act
 
   entry.node.adjustments = adjustments;
   entry.node.transforms = transforms;
+  if (inpaintStrokes) entry.node.inpaintStrokes = inpaintStrokes;
   entry.node.fit = fit;
   entry.node.opacity = opacity;
   entry.node.outputFormat = format;
@@ -3296,6 +3301,7 @@ export function validateDocument(document) {
       if (Object.hasOwn(node, 'fills') && !isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) throw new TypeError(`Invalid fill stack on layer ${node.name || node.id}.`);
       if (node.adjustments != null && (node.type !== 'image' || !isValidImageAdjustments(node.adjustments))) throw new TypeError(`Invalid image adjustments on layer ${node.name || node.id}.`);
       if (node.transforms != null && (node.type !== 'image' || !isValidImageTransforms(node.transforms))) throw new TypeError(`Invalid image transforms on layer ${node.name || node.id}.`);
+      if (node.inpaintStrokes != null && (node.type !== 'image' || !isValidImageEraseStrokes(node.inpaintStrokes))) throw new TypeError(`Invalid object-erase strokes on layer ${node.name || node.id}.`);
       if (node.outputFormat != null && (node.type !== 'image' || !exportFormats.has(node.outputFormat))) throw new TypeError(`Invalid image output format on layer ${node.name || node.id}.`);
       if (node.outputQuality != null && (node.type !== 'image' || !Number.isInteger(node.outputQuality) || node.outputQuality < 1 || node.outputQuality > 100)) throw new TypeError(`Invalid image output quality on layer ${node.name || node.id}.`);
       if (node.type === 'path' && !validVectorPath(node)) throw new TypeError(`Invalid vector path on layer ${node.name || node.id}.`);
@@ -3724,6 +3730,9 @@ export function validateDocument(document) {
   }
   if (document.recipes.some(recipe => recipe?.transforms != null && !isValidImageTransforms(recipe.transforms))) {
     throw new TypeError('Invalid image transforms in image recipe.');
+  }
+  if (document.recipes.some(recipe => recipe?.inpaintStrokes != null && !isValidImageEraseStrokes(recipe.inpaintStrokes))) {
+    throw new TypeError('Invalid object-erase strokes in image recipe.');
   }
   if (document.recipes.some(recipe => recipe?.format != null && !exportFormats.has(recipe.format))) {
     throw new TypeError('Invalid image output format in image recipe.');

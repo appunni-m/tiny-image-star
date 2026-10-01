@@ -3,6 +3,48 @@ import assert from 'node:assert/strict';
 import { addNode, bindVariable, createDocument, createLayerEffect, createNode, createVariable, createVariableCollection, getNodePropertyValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import { interpolateSmartFrame } from '../src/smart-animate.js';
+import { easePrototypeProgress } from '../src/prototype-easing.js';
+
+test('back and spring easing preserve bounded layer presence while spatial geometry anticipates and overshoots', () => {
+  const from = createNode('frame', {
+    width: 100, height: 120, opacity: 0.8, fill: '#000000',
+    children: [createNode('rectangle', {
+      name: 'Card', x: 10, y: 20, width: 40, height: 30, rotation: 0, opacity: 0.7, fill: '#000000'
+    })]
+  });
+  const to = createNode('frame', {
+    width: 200, height: 220, opacity: 0.2, fill: '#ffffff',
+    children: [
+      createNode('rectangle', {
+        name: 'Card', x: 110, y: 120, width: 80, height: 60, rotation: 90, opacity: 0.3, fill: '#ffffff'
+      }),
+      createNode('ellipse', { name: 'Entering layer', x: 30, y: 40, width: 10, height: 10 })
+    ]
+  });
+
+  const anticipationProgress = easePrototypeProgress(0.2, 'ease-in-back');
+  assert.ok(anticipationProgress < 0, 'ease-in-back should retain its negative anticipation sample');
+  const anticipated = interpolateSmartFrame(from, to, anticipationProgress, { allowOvershoot: true });
+  assert.equal(anticipated.children.length, 1, 'destination-only layers stay absent before the transition midpoint');
+  assert.ok(anticipated.children[0].x < from.children[0].x, 'matched layer position anticipates past its source');
+  assert.ok(anticipated.children[0].width < from.children[0].width, 'matched layer size anticipates past its source');
+  assert.equal(anticipated.opacity, from.opacity, 'frame opacity stays bounded at the source endpoint');
+  assert.equal(anticipated.fill, from.fill, 'categorical paint stays at the source endpoint');
+
+  const overshootProgress = easePrototypeProgress(0.4, 'spring-bouncy');
+  assert.ok(overshootProgress > 1, 'spring-bouncy should retain its endpoint overshoot sample');
+  const overshot = interpolateSmartFrame(from, to, overshootProgress, { allowOvershoot: true });
+  assert.equal(overshot.children.length, 2, 'destination-only layers appear at the destination endpoint');
+  assert.ok(overshot.children[0].x > to.children[0].x, 'matched layer position overshoots the destination');
+  assert.ok(overshot.children[0].width > to.children[0].width, 'matched layer size overshoots the destination');
+  assert.ok(overshot.children[0].rotation > to.children[0].rotation, 'matched layer rotation keeps the spring overshoot');
+  assert.equal(overshot.opacity, to.opacity, 'frame opacity remains in [0, 1] at overshoot');
+  assert.ok(overshot.children[0].opacity >= 0 && overshot.children[0].opacity <= 1,
+    'layer opacity remains valid while geometry overshoots');
+  assert.equal(overshot.fill, to.fill, 'paint remains the authored destination color');
+  assert.ok(overshot.width >= 0 && overshot.height >= 0 && overshot.children[0].width >= 0,
+    'eased geometry never produces negative dimensions');
+});
 
 test('smart animation interpolates supported size, position, rotation, opacity, and solid-fill changes', () => {
   const from = createNode('frame', {

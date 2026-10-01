@@ -34,8 +34,8 @@ jobs:
       - name: Install locked build dependencies
         run: npm ci
 
-      - name: Build the isolated local design importer
-        run: npm run build:fig-import-worker
+      - name: Build local image workers
+        run: npm run build:fig-import-worker && npm run build:inpaint-worker
 
       - name: Run model, storage, and WASM tests
         run: node scripts/ci-test.mjs
@@ -66,8 +66,8 @@ jobs:
       - name: Install locked build dependencies
         run: npm ci
 
-      - name: Build the isolated local design importer
-        run: npm run build:fig-import-worker
+      - name: Build local image workers
+        run: npm run build:fig-import-worker && npm run build:inpaint-worker
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

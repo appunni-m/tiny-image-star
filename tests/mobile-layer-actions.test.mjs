@@ -50,6 +50,15 @@ test('canvas pointer selection takes keyboard focus away from a stale layer row'
     'canvas selection should make the canvas the keyboard target so Delete follows the current selection');
 });
 
+test('choosing a layer row exits vector-anchor editing before layer selection', () => {
+  const start = source.indexOf("$('#layers-list').addEventListener('click', event => {");
+  const end = source.indexOf("$('#layers-list').addEventListener('dblclick'", start);
+  assert.ok(start >= 0 && end > start, 'layer-row click handling should have a bounded event handler');
+  const handler = source.slice(start, end);
+  assert.match(handler, /if \(event\.target\.closest\('\[data-action="visibility"\]'\)\)[\s\S]*?clearVectorAnchorSelection\(\);[\s\S]*?if \(state\.layerSelectionMode\)/,
+    'clicking a layer row, including the already-selected path, must clear stale anchor selection before Delete');
+});
+
 test('the layer action menu keeps common actions and conditionally adds group/component actions', () => {
   const start = source.indexOf('function openNodeMenu(');
   const end = source.indexOf('\nfunction combineSelectedBoolean(', start);

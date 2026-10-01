@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sourceRef = 'v0.1.3';
-const sourceCommit = 'fd78eb80402a0d6d99e6b696d0a1ebf9ba11d5fb';
+const sourceRef = 'v12.2.0-alpha.5';
+const sourceCommit = 'f341b59a6ecb223b6899345120739abe345494f6';
 // Keep these aligned with the upstream rust-toolchain.toml and CI env pins at
 // sourceCommit so local WASM generation does not silently drift by PATH.
 const expectedRustVersion = '1.96.1';

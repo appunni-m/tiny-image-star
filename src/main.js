@@ -11,6 +11,7 @@ import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { clipboardImageFilename, routeClipboardPaste } from './image-clipboard.js';
 import { createImageTransforms, flipImageTransforms, rotateImageTransforms } from './image-transforms.js';
 import { calculateImageCropDisplayBounds, imageCropFromDisplayDrag, imageCropFromDisplayRect, imageCropToDisplayRect, moveImageCropHandle } from './image-crop-geometry.js';
+import { imageErasePointFromDisplay, imageEraseRadiusFraction, imageEraseRadiusLocal } from './image-erase-geometry.js';
 import { calculateImageFillCropWindow, moveImageFillCropWindow, zoomImageFillCropWindow } from './image-fill-geometry.js';
 import { createFallbackImage, createPillowFallbackImage, fallbackImageDimensions } from './fallback-image-bitmap.js';
 import { imageDecodeFailureMessage, isImageImportCandidate, requiresPillowFallback } from './image-intake.js';
@@ -23,7 +24,10 @@ import { History } from './history.js';
 import { deepestContainerAtPagePoint, fillLayerColor, getPresentationScrollOffset, scrollableFramePathAtPagePoint, SceneRenderer, hitTestPage, screenToWorld, selectionOverlayGeometry, selectionGroupHandles, sliceSelectionHandles, worldToScreen } from './renderer.js';
 import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, preserveAutoWidthTextAnchor, resolvedLineHeight } from './text-layout.js';
 import { summarizeTextRunRange } from './text-run-selection.js';
+import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
+import { LocalInpaintEngine } from './inpaint-engine.js';
+import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
 import { assertImagePayloadMatchesPreflight, defaultRetainedImageMemoryBudget, estimateAssetMemoryBytes, estimateBitmapBytes, estimatePreviewMemoryBytes, estimatePreviewMemoryReservationBytes, ImageMemoryLimitError, releaseImageMemoryReservations, RetainedImageMemoryBudget, transformedImageDimensions, withImageMemoryReservation } from './image-memory-budget.js';
 import { encodeRenderedImageOutput } from './image-output.js';
 import { collectLiveImageAssetIds, collectLiveImagePreviewNodeIds, imagePreviewFailureStatus, imagePreviewKey, pruneImageAssetRuntime, pruneImagePreviewRuntime, setImagePreviewFailureStatus } from './image-preview-runtime.js';
@@ -133,6 +137,7 @@ const state = {
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest',
   imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null,
+  imageEraseMode: false, imageEraseBrushDiameter: 32, imageEraseDraft: null, inpaintControllers: new Map(),
   componentPropertyTargetId: null, componentPropertyType: 'BOOLEAN',
   componentLibraries: [], componentLibraryTargetId: null,
   componentSlotDialog: null,
@@ -162,9 +167,11 @@ let presentationAnimationFrame = 0;
 const presentationTransitionFrames = new Set();
 let presentationDelayCancel = null;
 const imageEngine = new LocalImageEngine({ maxWorkers: CPU_LIMIT, onChange: updateImageEngineState });
+const inpaintEngine = new LocalInpaintEngine();
 const previewTimers = new Map();
 const previewsEvictedForCapacity = new Set();
 let nextImageRenderVersion = 0;
+let nextInpaintSourceId = 0;
 let presentRenderer = null;
 let presentRenderState = null;
 let presentRuntimeDocument = null;
@@ -1085,6 +1092,12 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
   const nextSelectedIds = [...new Set(valid)];
+  if (state.imageEraseMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
+    if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas?.classList.remove('tool-image-erase');
+  }
   if (state.imageCropMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
     if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageCropMode = false;
@@ -1121,10 +1134,14 @@ function selectedImageAssetId() {
   return imageFill?.assetId || null;
 }
 function syncActiveImageSource() { imageEngine.setActiveSource(selectedImageAssetId()); }
+function formatInspectorNumber(value) { return formatEditorNumber(value); }
 function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
-  if (nodes.length === 1) $('#position-status').textContent = `${Math.round(nodes[0].x)}, ${Math.round(nodes[0].y)} · ${Math.round(nodes[0].width)} × ${Math.round(nodes[0].height)}`;
+  if (nodes.length === 1) {
+    const geometry = resolvedGeometry(nodes[0]);
+    $('#position-status').textContent = `${formatInspectorNumber(geometry.x)}, ${formatInspectorNumber(geometry.y)} · ${formatInspectorNumber(geometry.width)} × ${formatInspectorNumber(geometry.height)}`;
+  }
   else $('#position-status').textContent = `${Math.round(state.zoom * 100)}%`;
 }
 function showToast(message, duration = 2500) {
@@ -1346,22 +1363,22 @@ function renderLayers() {
 function section(title, body, iconName = null) {
   return `<section class="property-section"><div class="property-heading">${iconName ? `<span>${icon(iconName, 13)} </span>` : ''}<span>${title}</span></div>${body}</section>`;
 }
-function numberField(label, prop, value, step = 1, min = null, max = null, disabled = false, ariaLabel = label) {
-  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${Number.isFinite(Number(value)) ? Number(value) : 0}" aria-label="${ariaLabel}" /></div>`;
+function numberField(label, prop, value, step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, ariaLabel = label) {
+  return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''} value="${formatInspectorNumber(value)}" aria-label="${ariaLabel}" /></div>`;
 }
-function selectionNumberField(label, property, value, { step = 1, min = null, max = null, disabled = false, mixed = false } = {}) {
-  const shownValue = !mixed && Number.isFinite(value) ? ` value="${value}"` : '';
+function selectionNumberField(label, property, value, { step = EDITOR_NUMBER_STEP, min = null, max = null, disabled = false, mixed = false } = {}) {
+  const shownValue = !mixed && Number.isFinite(value) ? ` value="${formatInspectorNumber(value)}"` : '';
   return `<div class="property-field"><label>${label}</label><input class="prop-input" data-prop="selection.${property}" type="number" step="${step}"${min == null ? '' : ` min="${min}"`}${max == null ? '' : ` max="${max}"`}${disabled ? ' disabled' : ''}${shownValue}${mixed ? ' placeholder="Mixed"' : ''} aria-label="Selection ${property}" /></div>`;
 }
 function optionalNumberField(label, prop, value) {
-  return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="1" value="${Number.isFinite(value) ? value : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
+  return `<label class="size-limit-field"><span>${label}</span><input class="prop-input" data-prop="${prop}" data-optional-number type="number" min="0" step="0.01" value="${Number.isFinite(value) ? formatInspectorNumber(value) : ''}" placeholder="None" title="Leave blank for no limit" aria-label="${label}"/></label>`;
 }
 function sliderField(label, prop, value, min, max, step = 1, disabled = false) {
   return `<div class="slider-row"><label>${label}</label><input class="prop-input" data-prop="${prop}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" aria-label="${escapeHtml(label)}"${disabled ? ' disabled' : ''}/><output>${Number(value).toFixed(step < 1 ? 2 : 0)}${prop === 'opacity' ? '%' : ''}</output></div>`;
 }
 function colorField(label, prop, value, opacity = 100) {
   const safe = /^#[0-9a-f]{6}$/i.test(value || '') ? value : '#ffffff';
-  return `<div class="fill-row"><label class="color-swatch" title="${label}"><input class="prop-input" data-prop="${prop}" type="color" value="${safe}" aria-label="${label} color"/></label><input class="prop-input color-value" data-prop="${prop}" type="text" value="${safe}" maxlength="7" aria-label="${label} color value"/><input class="prop-input fill-opacity" data-prop="fillOpacity" type="number" min="0" max="100" value="${opacity}" title="Opacity percent"/></div>`;
+  return `<div class="fill-row"><label class="color-swatch" title="${label}"><input class="prop-input" data-prop="${prop}" type="color" value="${safe}" aria-label="${label} color"/></label><input class="prop-input color-value" data-prop="${prop}" type="text" value="${safe}" maxlength="7" aria-label="${label} color value"/><input class="prop-input fill-opacity" data-prop="fillOpacity" type="number" min="0" max="100" step="0.01" value="${formatInspectorNumber(opacity)}" title="Opacity percent"/></div>`;
 }
 function networkFaceControls(node) {
   return (node.faces || []).map((face, index) => {
@@ -1426,7 +1443,7 @@ function gradientGeometryControls(node, gradient, { fillId = '', strokeId = '' }
   const fields = handles.map((point, index) => {
     const x = Number((point.x / Math.max(1, geometry.width) * 100).toFixed(2));
     const y = Number((point.y / Math.max(1, geometry.height) * 100).toFixed(2));
-    return `<div class="gradient-geometry-point" role="group" aria-label="${labels[index]} handle"><strong>${labels[index]}</strong><label>X %<input type="number" step="0.1" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="x" ${ownerData} value="${x}" aria-label="${labels[index]} handle X position in percent"${disabled ? ' disabled' : ''}/></label><label>Y %<input type="number" step="0.1" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="y" ${ownerData} value="${y}" aria-label="${labels[index]} handle Y position in percent"${disabled ? ' disabled' : ''}/></label></div>`;
+    return `<div class="gradient-geometry-point" role="group" aria-label="${labels[index]} handle"><strong>${labels[index]}</strong><label>X %<input type="number" step="0.01" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="x" ${ownerData} value="${x}" aria-label="${labels[index]} handle X position in percent"${disabled ? ' disabled' : ''}/></label><label>Y %<input type="number" step="0.01" data-gradient-geometry-field data-gradient-geometry-index="${index}" data-gradient-geometry-axis="y" ${ownerData} value="${y}" aria-label="${labels[index]} handle Y position in percent"${disabled ? ' disabled' : ''}/></label></div>`;
   }).join('');
   return `<div class="gradient-geometry-controls"><button class="add-fill gradient-geometry-toggle" type="button" data-action="toggle-gradient-geometry" ${ownerData} aria-pressed="${active}"${disabled || handles.length !== 3 ? ' disabled' : ''}>${active ? 'Done editing on canvas' : 'Edit geometry on canvas'}</button><div class="image-properties-note">Drag the ${gradient.type === 'linear' ? 'start, end, and width' : 'center and radius axis'} handles on the canvas, or set their normalized positions here.</div><div class="gradient-geometry-fields"${active ? '' : ' hidden'}>${fields}</div></div>`;
 }
@@ -1434,14 +1451,14 @@ function gradientStopRail(node, gradient, { fillId = '', strokeId = '' } = {}) {
   const background = gradientFillToCSS(gradient);
   if (!background) return '';
   const ownerData = `data-gradient-node-id="${escapeHtml(node.id)}"${fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : ''}${strokeId ? ` data-stroke-id="${escapeHtml(strokeId)}"` : ''}`;
-  const handles = gradient.stops.map((stop, index) => `<button class="gradient-stop-handle" type="button" role="slider" aria-orientation="horizontal" aria-label="Gradient stop ${index + 1} position" aria-valuemin="0" aria-valuemax="100" aria-valuestep="1" aria-valuenow="${Math.round(stop.position * 100)}" aria-valuetext="${Math.round(stop.position * 100)} percent" title="Drag to move stop ${index + 1}; use arrow keys to adjust" data-gradient-stop-handle data-gradient-stop-id="${escapeHtml(stop.id)}" style="left:${Number((stop.position * 100).toFixed(4))}%;--gradient-stop-color:${escapeHtml(stop.color)}"${node.locked ? ' disabled' : ''}></button>`).join('');
+  const handles = gradient.stops.map((stop, index) => `<button class="gradient-stop-handle" type="button" role="slider" aria-orientation="horizontal" aria-label="Gradient stop ${index + 1} position" aria-valuemin="0" aria-valuemax="100" aria-valuestep="0.01" aria-valuenow="${formatInspectorNumber(stop.position * 100)}" aria-valuetext="${formatInspectorNumber(stop.position * 100)} percent" title="Drag to move stop ${index + 1}; use arrow keys to adjust" data-gradient-stop-handle data-gradient-stop-id="${escapeHtml(stop.id)}" style="left:${Number((stop.position * 100).toFixed(4))}%;--gradient-stop-color:${escapeHtml(stop.color)}"${node.locked ? ' disabled' : ''}></button>`).join('');
   return `<div class="gradient-stop-rail" role="group" aria-label="Gradient color stops"><div class="gradient-stop-track" data-gradient-stop-track ${ownerData} style="--gradient-preview:${escapeHtml(background)}">${handles}</div></div>`;
 }
 function gradientFillControls(node, gradient = node.fillGradient, fillId = '') {
   if (!gradient) return '';
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
-  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
-  const angle = ['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<div class="property-grid"><div class="property-field"><label>${gradient.type === 'angular' ? 'Start angle' : '°'}</label><input type="number" min="0" max="359" step="1" data-gradient-field="angle"${fillData} value="${gradient.angle}" aria-label="${gradient.type === 'angular' ? 'Angular gradient start angle' : 'Gradient angle'}"${node.locked ? ' disabled' : ''}/></div></div>` : '';
+  const stops = gradient.stops.map((stop, index) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${index + 1}</span><input type="color" data-gradient-field="color"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="Gradient stop ${index + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${formatInspectorNumber(stop.position * 100)}%</span><input type="number" min="0" max="100" step="0.01" data-gradient-field="position"${fillData} data-gradient-stop-id="${escapeHtml(stop.id)}" value="${formatInspectorNumber(stop.position * 100)}" aria-label="Gradient stop ${index + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-gradient-stop"${fillData} data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove gradient stop ${index + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('');
+  const angle = ['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<div class="property-grid"><div class="property-field"><label>${gradient.type === 'angular' ? 'Start angle' : '°'}</label><input type="number" min="0" max="359" step="0.01" data-gradient-field="angle"${fillData} value="${formatInspectorNumber(gradient.angle)}" aria-label="${gradient.type === 'angular' ? 'Angular gradient start angle' : 'Gradient angle'}"${node.locked ? ' disabled' : ''}/></div></div>` : '';
   return `${angle}${gradientGeometryControls(node, gradient, { fillId })}<div class="gradient-editor">${gradientStopRail(node, gradient, { fillId })}<div class="gradient-stops">${stops}</div><button class="add-fill" type="button" data-action="add-gradient-stop"${fillData}${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>`;
 }
 function imageFillSources() {
@@ -1500,6 +1517,24 @@ function syncImageToneControls(input, adjustments, disabled = false) {
   threshold.value = String(adjustments.solarizeThreshold);
   if (threshold.nextElementSibling) threshold.nextElementSibling.value = String(adjustments.solarizeThreshold);
 }
+function imageEraseControls(node) {
+  const asset = state.assets.get(node.assetId);
+  const width = asset?.sourceWidth || node.sourceWidth;
+  const height = asset?.sourceHeight || node.sourceHeight;
+  const blockedByParent = findNode(state.document, node.id)?.parents.some(parent => parent.locked);
+  let unavailableReason = '';
+  try {
+    if (!asset?.sourceBytes) throw new Error('The original image is not available on this device.');
+    validateInpaintDimensions(width, height);
+    if (node.locked || blockedByParent) throw new Error('Unlock the image and its parent layers to use object erase.');
+  } catch (error) { unavailableReason = error.message; }
+  const active = state.imageEraseMode && state.selectedIds.length === 1 && state.selectedIds[0] === node.id;
+  const strokes = Array.isArray(node.inpaintStrokes) ? node.inpaintStrokes : [];
+  const disabled = Boolean(unavailableReason || isImageRecipeBatchActive(state.bulk));
+  const buttonLabel = active ? 'Done erasing' : 'Brush to erase';
+  const status = state.imageStatus.get(node.id) || 'Ready · original image stays unchanged';
+  return section('Object erase · local AI', `<div class="image-erase-actions"><button class="add-fill image-erase-mode-button" type="button" data-action="toggle-image-erase-mode" aria-pressed="${active}"${disabled ? ` disabled title="${escapeHtml(unavailableReason || 'Pause the image batch before drawing.') }"` : ''}>${buttonLabel}</button><button class="add-fill" type="button" data-action="undo-image-erase"${disabled || !strokes.length ? ' disabled' : ''}>Undo stroke</button><button class="add-fill" type="button" data-action="clear-image-erase"${disabled || !strokes.length ? ' disabled' : ''}>Clear</button></div><div class="slider-row image-erase-brush"><label>Brush</label><input type="range" min="8" max="96" step="2" value="${state.imageEraseBrushDiameter}" data-image-erase-brush aria-label="Object erase brush diameter"${disabled ? ' disabled' : ''}/><output>${state.imageEraseBrushDiameter} px</output></div>${active ? '<div class="image-properties-note image-erase-hint">Paint over the object to remove it. Use one or more strokes; finish with Done. The original pixels remain available for undo and recipes.</div>' : ''}<div class="image-engine-status" role="status">${escapeHtml(strokes.length ? `${strokes.length} erase stroke${strokes.length === 1 ? '' : 's'} · ${status}` : unavailableReason || status)}</div><div class="image-properties-note">Uses the bundled MI-GAN model and local WASM only. Erase marks are saved with the image and copied by recipes.</div>`);
+}
 function imageTransformControls(transforms, target, disabled = false, fillId = '', nodeId = null) {
   const crop = transforms?.crop || { left: 0, top: 0, right: 1, bottom: 1 };
   const fillData = fillId ? ` data-fill-id="${escapeHtml(fillId)}"` : '';
@@ -1512,7 +1547,7 @@ function imageTransformControls(transforms, target, disabled = false, fillId = '
     ? `<button class="add-fill image-crop-mode-button" type="button" data-action="toggle-image-crop-mode" aria-pressed="${state.imageCropMode && state.selectedIds[0] === nodeId}"${disabled || !cropAvailable ? ' disabled' : ''}>${state.imageCropMode && state.selectedIds[0] === nodeId ? 'Done cropping' : 'Crop on canvas'}</button>${state.imageCropMode && state.selectedIds[0] === nodeId ? '<div class="image-properties-note image-crop-mode-hint">The full source stays visible. The current edit appears inside the crop; the uncropped image provides context. Drag to choose a crop or move a handle; Escape finishes the crop.</div>' : ''}`
     : '';
   const edges = [['left', 'Left'], ['top', 'Top'], ['right', 'Right'], ['bottom', 'Bottom']].map(([edge, label]) =>
-    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="1" value="${Math.round(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
+    `<label class="property-field"><span class="field-caption">${label}</span><input type="number" min="0" max="100" step="0.01" value="${formatInspectorNumber(crop[edge] * 100)}" data-image-transform-field="${edge}" data-image-transform-target="${target}"${fillData} aria-label="Crop ${label.toLowerCase()} percent"${disabled ? ' disabled' : ''} /></label>`).join('');
   return `<div class="image-transform-controls"><div class="property-heading">Crop · percent of source</div><div class="property-grid">${edges}</div>${cropTool}<div class="property-inline"><button class="add-fill" type="button" data-action="rotate-image" data-direction="left" data-transform-target="${target}"${fillData} aria-label="Rotate image left 90 degrees"${disabled ? ' disabled' : ''}>↶ Rotate left</button><button class="add-fill" type="button" data-action="rotate-image" data-direction="right" data-transform-target="${target}"${fillData} aria-label="Rotate image right 90 degrees"${disabled ? ' disabled' : ''}>↷ Rotate right</button></div><div class="property-inline"><button class="add-fill" type="button" data-action="flip-image" data-direction="horizontal" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipHorizontal)}"${disabled ? ' disabled' : ''}>⇋ Flip horizontal</button><button class="add-fill" type="button" data-action="flip-image" data-direction="vertical" data-transform-target="${target}"${fillData} aria-pressed="${Boolean(transforms?.flipVertical)}"${disabled ? ' disabled' : ''}>⇵ Flip vertical</button></div><button class="add-fill" type="button" data-action="reset-image-transforms" data-transform-target="${target}"${fillData}${disabled || (!transforms?.crop && !transforms?.rotation && !transforms?.flipHorizontal && !transforms?.flipVertical) ? ' disabled' : ''}>Reset image transforms</button><div class="image-properties-note">Crop, rotation, and flips stay editable and are included in saved recipes.</div></div>`;
 }
 function transformSection(node) {
@@ -1524,12 +1559,12 @@ function transformSection(node) {
   const hugNote = hugAxes.length
     ? `<div class="image-properties-note">Resize handles for ${hugAxes.join(' and ')} are disabled while this frame hugs that axis. Set the matching Hug sizing to Fixed first.</div>`
     : '';
-  const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width, 1, null, null, node.locked || hugAxes.includes('width'), 'Width')}${numberField('H', 'height', geometry.height, 1, null, null, node.locked || hugAxes.includes('height'), 'Height')}${numberField('↻', 'rotation', geometry.rotation, 1)}${numberField('◐', 'opacity', Math.round((opacity ?? 1) * 100))}</div>${hugNote}${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
+  const body = `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width, 0.01, null, null, node.locked || hugAxes.includes('width'), 'Width')}${numberField('H', 'height', geometry.height, 0.01, null, null, node.locked || hugAxes.includes('height'), 'Height')}${numberField('↻', 'rotation', geometry.rotation, 0.01)}${numberField('◐', 'opacity', Number(((opacity ?? 1) * 100).toFixed(2)), 0.01, 0, 100)}</div>${hugNote}${variablePropertyBindingControl(node, 'x', 'X')}${variablePropertyBindingControl(node, 'y', 'Y')}${variablePropertyBindingControl(node, 'width', 'Width')}${variablePropertyBindingControl(node, 'height', 'Height')}${variablePropertyBindingControl(node, 'rotation', 'Rotation')}${variablePropertyBindingControl(node, 'opacity', 'Opacity')}${variablePropertyBindingControl(node, 'visible', 'Visibility')}`;
   return section('Position', body);
 }
 function slicePositionSection(node) {
   const geometry = resolvedGeometry(node);
-  return section('Slice bounds', `<div class="property-grid">${numberField('X', 'x', geometry.x, 1, null, null, node.locked)}${numberField('Y', 'y', geometry.y, 1, null, null, node.locked)}${numberField('W', 'width', geometry.width, 1, 1, 100_000, node.locked, 'Width')}${numberField('H', 'height', geometry.height, 1, 1, 100_000, node.locked, 'Height')}</div><div class="image-properties-note">The dashed region exports the artwork underneath it. Slice outlines stay out of image, SVG, PDF, and prototype output.</div>`);
+  return section('Slice bounds', `<div class="property-grid">${numberField('X', 'x', geometry.x)}${numberField('Y', 'y', geometry.y)}${numberField('W', 'width', geometry.width, 0.01, 1, 100_000, node.locked, 'Width')}${numberField('H', 'height', geometry.height, 0.01, 1, 100_000, node.locked, 'Height')}</div><div class="image-properties-note">The dashed region exports the artwork underneath it. Slice outlines stay out of image, SVG, PDF, and prototype output.</div>`);
 }
 function sliceExportGeometry(node) {
   return { ...node, ...resolvedGeometry(node), rotation: 0 };
@@ -1562,7 +1597,7 @@ function strokeStackControls(node) {
       : '';
     const opacity = Math.round(stroke.opacity * 100);
     const gradient = stroke.gradient;
-    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient']])}${gradient ? `<div class="stroke-gradient-controls">${['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<label class="stroke-field"><span>${gradient.type === 'angular' ? 'Start angle' : 'Angle'}</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="1" value="${gradient.angle}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${Math.round(stop.position * 100)}%</span><input type="number" min="0" max="100" step="1" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${Math.round(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
+    const paintControls = `<div class="stroke-paint-controls">${select('paint', 'Paint', gradient?.type || 'solid', [['solid', 'Solid color'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient']])}${gradient ? `<div class="stroke-gradient-controls">${['linear', 'angular'].includes(gradient.type) && !gradient.geometry ? `<label class="stroke-field"><span>${gradient.type === 'angular' ? 'Start angle' : 'Angle'}</span><input type="number" data-stroke-field="gradientAngle" data-stroke-id="${id}" min="0" max="359" step="0.01" value="${formatInspectorNumber(gradient.angle)}" aria-label="${name} gradient angle"${node.locked ? ' disabled' : ''}/></label>` : ''}${gradientGeometryControls(node, gradient, { strokeId: stroke.id })}${gradientStopRail(node, gradient, { strokeId: id })}<div class="gradient-stops">${gradient.stops.map((stop, stopIndex) => `<div class="gradient-stop-row" data-gradient-stop-row data-gradient-stop-id="${escapeHtml(stop.id)}"><label><span>Stop ${stopIndex + 1}</span><input type="color" data-stroke-field="gradientStopColor" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${escapeHtml(stop.color)}" aria-label="${name} gradient stop ${stopIndex + 1} color"${node.locked ? ' disabled' : ''}/></label><label><span>${formatInspectorNumber(stop.position * 100)}%</span><input type="number" min="0" max="100" step="0.01" data-stroke-field="gradientStopPosition" data-stroke-id="${id}" data-stroke-gradient-stop-id="${escapeHtml(stop.id)}" value="${formatInspectorNumber(stop.position * 100)}" aria-label="${name} gradient stop ${stopIndex + 1} position"${node.locked ? ' disabled' : ''}/></label><button class="tiny-icon-button" type="button" data-action="remove-stroke-gradient-stop" data-stroke-id="${id}" data-stop-id="${escapeHtml(stop.id)}" aria-label="Remove ${name.toLowerCase()} gradient stop ${stopIndex + 1}"${node.locked || gradient.stops.length <= 2 ? ' disabled' : ''}>×</button></div>`).join('')}</div><button class="add-fill" type="button" data-action="add-stroke-gradient-stop" data-stroke-id="${id}"${node.locked || gradient.stops.length >= 8 ? ' disabled' : ''}>＋ Add color stop</button><div class="image-properties-note">Tap or click the gradient to add a stop. Drag a stop to move it.</div></div>` : ''}</div>`;
     return `<div class="layer-effect-card stroke-stack-card" data-stroke-row="${id}">
       <div class="layer-effect-heading">
         <strong>${name}</strong>
@@ -1574,12 +1609,12 @@ function strokeStackControls(node) {
       <div class="stroke-field-grid">
         ${paintControls}
         ${gradient ? '' : `<label class="stroke-field"><span>Color</span><input type="color" data-stroke-field="color" data-stroke-id="${id}" value="${escapeHtml(safeColor)}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`}
-        <label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.5" value="${Number(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>
+        <label class="stroke-field"><span>Width</span><input type="number" data-stroke-field="width" data-stroke-id="${id}" min="0" max="100000" step="0.01" value="${formatInspectorNumber(stroke.width)}" aria-label="${name} width"${node.locked ? ' disabled' : ''}/></label>
         <div class="slider-row stroke-opacity-row"><label for="stroke-opacity-${id}">Opacity</label><input id="stroke-opacity-${id}" type="range" min="0" max="100" step="1" value="${opacity}" data-stroke-field="opacity" data-stroke-id="${id}" aria-label="${name} opacity"${node.locked ? ' disabled' : ''}/><output>${opacity}%</output></div>
         ${select('pattern', 'Pattern', stroke.pattern, [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']])}
         ${select('cap', 'Cap', cap, [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']], stroke.pattern === 'dotted')}
         ${select('join', 'Join', stroke.join, [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']])}
-        <label class="stroke-field"><span>Miter limit</span><input type="number" data-stroke-field="miterLimit" data-stroke-id="${id}" min="1" max="1000" step="0.5" value="${Number(stroke.miterLimit)}" aria-label="${name} miter limit"${node.locked ? ' disabled' : ''}/></label>
+        <label class="stroke-field"><span>Miter limit</span><input type="number" data-stroke-field="miterLimit" data-stroke-id="${id}" min="1" max="1000" step="0.01" value="${formatInspectorNumber(stroke.miterLimit)}" aria-label="${name} miter limit"${node.locked ? ' disabled' : ''}/></label>
         ${decorationControls}
       </div>
       ${primaryControls}
@@ -1593,11 +1628,11 @@ function cornerRadiusControls(node) {
     const fields = [
       ['topLeft', 'Top left'], ['topRight', 'Top right'],
       ['bottomLeft', 'Bottom left'], ['bottomRight', 'Bottom right']
-    ].map(([side, label]) => numberField(label, `cornerRadii.${side}`, node.cornerRadii[side], 1, 0, 100_000, node.locked, `${label} corner radius`)).join('');
+    ].map(([side, label]) => numberField(label, `cornerRadii.${side}`, node.cornerRadii[side], 0.01, 0, 100_000, node.locked, `${label} corner radius`)).join('');
     return `<div class="corner-radius-controls"><div class="property-heading">Independent corners</div><div class="property-grid">${fields}</div><div class="image-properties-note">Independent corners use local values and detach this layer from a shared radius variable.</div><button class="add-fill" type="button" data-action="link-corners"${node.locked ? ' disabled' : ''}>Link corners · use average</button></div>`;
   }
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
-  return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 1, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button></div>`;
+  return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 0.01, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button></div>`;
 }
 function fillStackControls(node) {
   const fills = fillStackForNode(node);
@@ -1677,8 +1712,8 @@ function selectionImageRecipesSection(imageCount) {
     : '<div class="image-properties-note">Save a look from one image first, then apply it to selected images here.</div>';
   return section('Image recipes', `<div class="image-properties-note">${imageCount} image${imageCount === 1 ? '' : 's'} selected. Recipe changes are applied to these image layers in place.</div>${picker}`);
 }
-function effectNumberField(label, effect, field, step = 1, min = 0, max = 100, disabled = false) {
-  return `<div class="property-field"><label>${label}</label><input data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" type="number" step="${step}" min="${min}" max="${max}" value="${Number(effect[field])}" aria-label="${label}"${disabled ? ' disabled' : ''}/></div>`;
+function effectNumberField(label, effect, field, step = 0.01, min = 0, max = 100, disabled = false) {
+  return `<div class="property-field"><label>${label}</label><input data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" type="number" step="${step}" min="${min}" max="${max}" value="${formatInspectorNumber(effect[field])}" aria-label="${label}"${disabled ? ' disabled' : ''}/></div>`;
 }
 function effectStylesSection({ canSave = false } = {}) {
   const styles = state.document.effectStyles || [];
@@ -1699,8 +1734,8 @@ function layerEffectsSection(node) {
   const rows = effects.map((effect, index) => {
     const name = effect.type === 'drop-shadow' ? 'Drop shadow' : effect.type === 'inner-shadow' ? 'Inner shadow' : effect.type === 'background-blur' ? 'Background blur' : effect.type === 'noise' ? 'Noise' : effect.type === 'texture' ? 'Texture' : effect.type === 'glass' ? 'Glass' : 'Layer blur';
     const noiseColorFields = effect.mode === 'multi' ? '' : `<div class="effect-color-row noise-colors"><label><span>${effect.mode === 'duo' ? 'Color 1' : 'Color'}</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="Noise color 1"${locked ? ' disabled' : ''}/></label>${effect.mode === 'duo' ? `<label><span>Color 2</span><input type="color" data-effect-field="color2" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color2)}" aria-label="Noise color 2"${locked ? ' disabled' : ''}/></label>` : ''}</div>`;
-    const noiseFields = `<div class="property-grid"><label class="property-field"><span>Color count</span><select class="select-field" data-effect-field="mode" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise color count"${locked ? ' disabled' : ''}><option value="mono"${effect.mode === 'mono' ? ' selected' : ''}>Mono</option><option value="duo"${effect.mode === 'duo' ? ' selected' : ''}>Duo</option><option value="multi"${effect.mode === 'multi' ? ' selected' : ''}>Multi</option></select></label>${effectNumberField('X size (px)', effect, 'sizeX', 1, 1, 100, locked)}${effectNumberField('Y size (px)', effect, 'sizeY', 1, 1, 100, locked)}</div>${noiseColorFields}<label class="effect-opacity"><span>Density</span><input type="range" min="0" max="100" step="1" value="${effect.density}" data-effect-field="density" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise density"${locked ? ' disabled' : ''}/><output>${Math.round(effect.density)}%</output></label><label class="effect-opacity"><span>${effect.mode === 'multi' ? 'Opacity' : 'Color opacity'}</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise opacity"${locked ? ' disabled' : ''}/><output>${Math.round(effect.opacity * 100)}%</output></label>`;
-    const textureFields = `<div class="property-grid">${effectNumberField('X size', effect, 'sizeX', 0.1, 0.1, 100, locked)}${effectNumberField('Y size', effect, 'sizeY', 0.1, 0.1, 100, locked)}${effectNumberField('Radius', effect, 'radius', 0.1, 0, 100, locked)}</div><label class="effect-clip"><input type="checkbox" data-effect-field="clipToShape" data-effect-id="${escapeHtml(effect.id)}" aria-label="Clip texture to shape"${effect.clipToShape ? ' checked' : ''}${locked ? ' disabled' : ''}/><span>Clip to shape</span></label>`;
+    const noiseFields = `<div class="property-grid"><label class="property-field"><span>Color count</span><select class="select-field" data-effect-field="mode" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise color count"${locked ? ' disabled' : ''}><option value="mono"${effect.mode === 'mono' ? ' selected' : ''}>Mono</option><option value="duo"${effect.mode === 'duo' ? ' selected' : ''}>Duo</option><option value="multi"${effect.mode === 'multi' ? ' selected' : ''}>Multi</option></select></label>${effectNumberField('X size (px)', effect, 'sizeX', 0.01, 0.01, 100, locked)}${effectNumberField('Y size (px)', effect, 'sizeY', 0.01, 0.01, 100, locked)}</div>${noiseColorFields}<label class="effect-opacity"><span>Density</span><input type="range" min="0" max="100" step="1" value="${effect.density}" data-effect-field="density" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise density"${locked ? ' disabled' : ''}/><output>${Math.round(effect.density)}%</output></label><label class="effect-opacity"><span>${effect.mode === 'multi' ? 'Opacity' : 'Color opacity'}</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="Noise opacity"${locked ? ' disabled' : ''}/><output>${Math.round(effect.opacity * 100)}%</output></label>`;
+    const textureFields = `<div class="property-grid">${effectNumberField('X size', effect, 'sizeX', 0.01, 0.01, 100, locked)}${effectNumberField('Y size', effect, 'sizeY', 0.01, 0.01, 100, locked)}${effectNumberField('Radius', effect, 'radius', 0.01, 0, 100, locked)}</div><label class="effect-clip"><input type="checkbox" data-effect-field="clipToShape" data-effect-id="${escapeHtml(effect.id)}" aria-label="Clip texture to shape"${effect.clipToShape ? ' checked' : ''}${locked ? ' disabled' : ''}/><span>Clip to shape</span></label>`;
     const glassSlider = (label, field) => `<label class="effect-opacity glass-effect-slider"><span>${label}</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect[field])}" data-effect-field="${field}" data-effect-id="${escapeHtml(effect.id)}" aria-label="Glass ${label.toLowerCase()}"${locked ? ' disabled' : ''}/><output>${Math.round(effect[field])}%</output></label>`;
     const glassFields = `<label class="glass-angle-field"><span>Light angle</span><input type="number" min="0" max="360" step="1" value="${Number(effect.lightAngle)}" data-effect-field="lightAngle" data-effect-id="${escapeHtml(effect.id)}" aria-label="Glass light angle in degrees"${locked ? ' disabled' : ''}/><b>°</b></label>${glassSlider('Light intensity', 'lightIntensity')}${glassSlider('Refraction', 'refraction')}${glassSlider('Depth', 'depth')}${glassSlider('Dispersion', 'dispersion')}${glassSlider('Frost', 'frost')}${glassSlider('Splay', 'splay')}`;
     const fields = effect.type === 'noise'
@@ -1710,8 +1745,8 @@ function layerEffectsSection(node) {
       : effect.type === 'glass'
       ? glassFields
       : ['drop-shadow', 'inner-shadow'].includes(effect.type)
-      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 1, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 1, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 1, 0, 100)}</div>`
-      : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 1, 0, 100)}</div>`;
+      ? `<div class="effect-color-row"><label><span>Color</span><input type="color" data-effect-field="color" data-effect-id="${escapeHtml(effect.id)}" value="${escapeHtml(effect.color)}" aria-label="${name} color" /></label><label class="effect-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(effect.opacity * 100)}" data-effect-field="opacity" data-effect-id="${escapeHtml(effect.id)}" aria-label="${name} opacity" /><output>${Math.round(effect.opacity * 100)}%</output></label></div><div class="property-grid">${effectNumberField('X', effect, 'offsetX', 0.01, -1000, 1000)}${effectNumberField('Y', effect, 'offsetY', 0.01, -1000, 1000)}${effectNumberField('Blur', effect, 'blur', 0.01, 0, 100)}</div>`
+      : `<div class="property-grid">${effectNumberField('Radius', effect, 'radius', 0.01, 0, 100)}</div>`;
     return `<div class="layer-effect-card" data-effect-row="${escapeHtml(effect.id)}"><div class="layer-effect-heading"><strong>${name}</strong><label><input type="checkbox" data-effect-field="visible" data-effect-id="${escapeHtml(effect.id)}" ${effect.visible ? 'checked' : ''} aria-label="Show ${name.toLowerCase()}"${locked ? ' disabled' : ''}/> Show</label><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="up" aria-label="Move ${name.toLowerCase()} up" title="Move up"${locked || index === 0 ? ' disabled' : ''}>↑</button><button class="tiny-icon-button" type="button" data-action="move-layer-effect" data-effect-id="${escapeHtml(effect.id)}" data-direction="down" aria-label="Move ${name.toLowerCase()} down" title="Move down"${locked || index === effects.length - 1 ? ' disabled' : ''}>↓</button><button class="tiny-icon-button" type="button" data-action="remove-layer-effect" data-effect-id="${escapeHtml(effect.id)}" aria-label="Remove ${name.toLowerCase()}"${locked ? ' disabled' : ''}>×</button></div>${fields}</div>`;
   }).join('');
   const dropShadowCount = effects.filter(effect => effect.type === 'drop-shadow').length;
@@ -1790,7 +1825,7 @@ function gridTrackEditor(node, axis, count, tracks, fallbackMode) {
       .map(([value, label]) => `<option value="${value}"${mode === value ? ' selected' : ''}>${label}</option>`).join('');
     const valueControl = mode === 'hug'
       ? '<span class="grid-track-content">Content size</span>'
-      : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="${mode === 'fixed' ? 1 : 0.1}" value="${mode === 'fixed' ? track.value : track.weight ?? 1}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${node.locked ? ' disabled' : ''}/></label>`;
+      : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${node.locked ? ' disabled' : ''}/></label>`;
     return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}</div>`;
   }).join('');
   return `<details class="grid-track-editor"><summary>${title} sizing</summary><div class="grid-track-list">${rows}</div></details>`;
@@ -1870,16 +1905,16 @@ function autoLayoutSection(node) {
   const select = (prop, value, values) => `<select class="prop-input select-field" data-prop="autoLayout.${prop}" aria-label="${prop}">${values.map(([key, label]) => `<option value="${key}"${String(value) === key ? ' selected' : ''}>${label}</option>`).join('')}</select>`;
   const axis = select('axis', layout.axis, [['vertical','Vertical'],['horizontal','Horizontal'],['grid','Grid']]);
   const minimumGap = layout.axis === 'grid' ? 0 : -100_000;
-  const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 1, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 1, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 1, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 1, 0)}</div>`;
+  const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 0.01, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 0.01, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 0.01, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 0.01, 0)}</div>`;
   const variableProperties = autoLayoutBindingProperties.map(([property, label]) => variablePropertyBindingControl(node, property, label)).filter(Boolean).join('');
   const variableBindings = variableProperties ? `<details class="auto-layout-variable-bindings"><summary>Bind layout properties</summary>${variableProperties}</details>` : '';
   const body = layout.axis === 'grid'
-    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill')}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill')}${padding}<div class="image-properties-note">Each track can stay fixed, hug its contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
-    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 1, minimumGap, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 1, minimumGap, 100_000)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between'],['space-around','Space around'],['space-evenly','Space evenly']])}${layout.wrap ? `<span class="field-caption">Line distribution</span>${select('wrapDistribution', layout.wrapDistribution, [['start','Start'],['center','Center'],['end','End'],['space-between','Space between']])}` : ''}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Negative gaps overlap adjacent layers.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill')}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill')}${padding}<div class="image-properties-note">Each track can stay fixed, hug its contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, minimumGap, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, minimumGap, 100_000)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between'],['space-around','Space around'],['space-evenly','Space evenly']])}${layout.wrap ? `<span class="field-caption">Line distribution</span>${select('wrapDistribution', layout.wrapDistribution, [['start','Start'],['center','Center'],['end','End'],['space-between','Space between']])}` : ''}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Negative gaps overlap adjacent layers.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
-function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 1) {
-  return `<label class="layout-guide-field"><span>${label}</span><input type="number" min="${min}" max="${max}" step="${step}" value="${value}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="${property}" aria-label="${label}"/></label>`;
+function guideNumberField(guide, label, property, value, min = 0, max = 10_000, step = 0.01) {
+  return `<label class="layout-guide-field"><span>${label}</span><input type="number" min="${min}" max="${max}" step="${step}" value="${formatInspectorNumber(value)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="${property}" aria-label="${label}"/></label>`;
 }
 function layoutGuidesSection(node) {
   const guides = node.layoutGuides || [];
@@ -1891,8 +1926,8 @@ function layoutGuidesSection(node) {
       : [['stretch','Stretch'],['top','Top'],['center','Center'],['bottom','Bottom']];
     const alignment = guide.type === 'grid' ? '' : `<label class="layout-guide-field"><span>Type</span><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="alignment" aria-label="Guide placement">${alignmentOptions.map(([value, label]) => `<option value="${value}"${guide.alignment === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
     const geometry = guide.type === 'grid'
-      ? guideNumberField(guide, 'Size', 'size', guide.size, 1, 500)
-      : `<div class="layout-guide-fields">${guideNumberField(guide, 'Count', 'count', guide.count, 1, 64)}${alignment}${guide.alignment === 'stretch' ? `${guideNumberField(guide, 'Margin', 'margin', guide.margin)}${guideNumberField(guide, 'Gutter', 'gutter', guide.gutter)}` : `${guideNumberField(guide, guide.type === 'columns' ? 'Width' : 'Height', 'bandSize', guide.bandSize, 1)}${['left','right','top','bottom'].includes(guide.alignment) ? guideNumberField(guide, 'Offset', 'offset', guide.offset) : ''}`}</div>`;
+      ? guideNumberField(guide, 'Size', 'size', guide.size, 1, 500, 0.01)
+      : `<div class="layout-guide-fields">${guideNumberField(guide, 'Count', 'count', guide.count, 1, 64, 1)}${alignment}${guide.alignment === 'stretch' ? `${guideNumberField(guide, 'Margin', 'margin', guide.margin)}${guideNumberField(guide, 'Gutter', 'gutter', guide.gutter)}` : `${guideNumberField(guide, guide.type === 'columns' ? 'Width' : 'Height', 'bandSize', guide.bandSize, 1)}${['left','right','top','bottom'].includes(guide.alignment) ? guideNumberField(guide, 'Offset', 'offset', guide.offset) : ''}`}</div>`;
     return `<div class="layout-guide-card" data-layout-guide="${escapeHtml(guide.id)}"><div class="layout-guide-heading"><button class="tiny-icon-button layout-guide-visibility" type="button" data-action="toggle-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="${guide.visible ? 'Hide' : 'Show'} this guide" aria-pressed="${guide.visible}">${guide.visible ? '◉' : '○'}</button><select data-guide-id="${escapeHtml(guide.id)}" data-guide-field="type" aria-label="Layout guide type">${typeOptions}</select><button class="tiny-icon-button layout-guide-remove" type="button" data-action="remove-layout-guide" data-guide-id="${escapeHtml(guide.id)}" aria-label="Remove layout guide">×</button></div>${geometry}<div class="layout-guide-appearance"><label><span>Color</span><input type="color" value="${escapeHtml(guide.color)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="color" aria-label="Guide color"/></label><label class="layout-guide-opacity"><span>Opacity</span><input type="range" min="0" max="100" step="1" value="${Math.round(guide.opacity * 100)}" data-guide-id="${escapeHtml(guide.id)}" data-guide-field="opacity" aria-label="Guide opacity"/><output>${Math.round(guide.opacity * 100)}%</output></label></div></div>`;
   }).join('');
   const add = guides.length >= 32
@@ -2055,7 +2090,7 @@ function textSection(node) {
     : '';
   const unitOptions = [['ratio', 'Legacy ratio'], ['auto', 'Auto'], ['pixels', 'Pixels'], ['percent', 'Percent']]
     .map(([value, label]) => `<option value="${value}"${(node.lineHeightUnit || 'ratio') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 1)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, .05)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, .1)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 1, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 1, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 1, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -2797,7 +2832,7 @@ function renderInspector() {
             : hugWidth || hugHeight
               ? `Position and size use page-space visual bounds. Auto layout Hug controls ${[hugWidth && 'width', hugHeight && 'height'].filter(Boolean).join(' and ')}; edit its sizing mode first.`
               : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
-    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 1, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 1, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
+    const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 0.01, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 0.01, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
     content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>`)}`;
     if (activeImageBatchSelected) {
@@ -2847,7 +2882,7 @@ function renderInspector() {
     const anchorLocked = node.locked || pathEntry.parents.some(parent => parent.locked);
     const anchorMode = selectedAnchor ? `<label class="field-label" for="vector-anchor-mode">Selected anchor mode</label><select id="vector-anchor-mode" class="select-field" data-vector-anchor-mode aria-label="Selected anchor mode" style="width:100%;min-height:44px"${anchorLocked ? ' disabled' : ''}><option value="corner"${(selectedAnchor.mode || 'corner') === 'corner' ? ' selected' : ''}>Corner</option><option value="smooth"${selectedAnchor.mode === 'smooth' ? ' selected' : ''}>Smooth</option><option value="symmetric"${selectedAnchor.mode === 'symmetric' ? ' selected' : ''}>Symmetric</option></select>` : '';
     const fillRule = hasClosedContour ? `<label class="field-label" for="vector-fill-rule">Fill rule</label><select id="vector-fill-rule" class="select-field prop-input" data-prop="fillRule" aria-label="Vector fill rule"${anchorLocked ? ' disabled' : ''}><option value="nonzero"${(node.fillRule || 'nonzero') === 'nonzero' ? ' selected' : ''}>Nonzero</option><option value="evenodd"${node.fillRule === 'evenodd' ? ' selected' : ''}>Even-odd</option></select>` : '';
-    body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); turn this mode off, then drag any selected anchor to move them together.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use Delete to remove them.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together.'}</div>`);
+  body += section('Vector', `${anchorMode}<label class="field-caption" style="display:flex;align-items:center;gap:8px"><input class="prop-input" data-prop="closed" type="checkbox" ${selectedContour?.closed ? 'checked' : ''}${anchorLocked ? ' disabled' : ''}/> Close selected contour</label>${fillRule}<div class="image-properties-note">${contours.length} contours · ${pointCount} points · double-click a segment to insert; drag anchors and handles to refine it.</div><div class="vector-point-actions"><button class="add-fill" data-action="toggle-vector-anchor-select-mode" aria-pressed="${state.vectorPointSelectMode}"${anchorLocked ? ' disabled' : ''}>${state.vectorPointSelectMode ? 'Done selecting anchors' : 'Select multiple anchors'}</button><button class="add-fill" data-action="insert-vector-point"${anchorLocked ? ' disabled' : ''}>＋ Add point</button><button class="add-fill" data-action="delete-vector-point"${anchorLocked || !selectedPoint ? ' disabled' : ''}>− Delete${selectedAnchorCount > 1 ? ` ${selectedAnchorCount} anchors` : ' point'}</button><button class="add-fill" data-action="reverse-vector-contour"${anchorLocked || (selectedContour?.points?.length || 0) < 2 ? ' disabled' : ''}>↻ Reverse contour direction</button><button class="add-fill" data-action="add-vector-contour"${anchorLocked || contours.length >= 10_000 ? ' disabled' : ''}>＋ Add contour</button><button class="add-fill" data-action="remove-vector-contour"${anchorLocked || !selectedPoint || selectedContourIndex === 0 ? ' disabled' : ''}>− Remove selected contour</button></div><div class="image-properties-note" role="status">${state.vectorPointSelectMode ? `Tap anchors to select or clear them (${selectedAnchorCount} selected); Delete removes the layer when none are selected. Turn this mode off to drag selected anchors.` : selectedAnchorCount > 1 ? `${selectedAnchorCount} anchors selected. Drag any selected anchor to move them together; use Delete to remove them.` : 'Turn on Select multiple anchors to collect anchors across contours, then drag one to move them together.'}</div>`);
     if (hasClosedContour) body += appearanceSection(node);
     else body += strokeSection(node);
   } else if (node.type === 'network') {
@@ -2878,7 +2913,10 @@ function renderInspector() {
     }
   } else if (parent?.type === 'frame') body += constraintsSection(node);
   body += sizeLimitsSection(node, parent);
-  if (node.type === 'image') body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, and adjustments at the original image resolution. JPEG/WebP quality is applied in the local Pillow-RS WASM worker. Format and quality are also saved in recipes for batch export.</div>`);
+  if (node.type === 'image') {
+    body += section('Image', `<div class="property-heading" style="font-weight:400;color:#777">${escapeHtml(node.fileName || node.name)}</div><div class="property-grid"><select class="prop-input select-field" data-prop="fit" aria-label="Image fill mode"><option value="cover">Fill</option><option value="contain">Fit</option></select><button class="add-fill" data-action="reset-image">Reset image</button><label class="image-output-field"><span>Output format</span><select class="prop-input select-field" data-prop="outputFormat" aria-label="Image output format"><option value="png"${(node.outputFormat ?? 'png') === 'png' ? ' selected' : ''}>PNG</option><option value="jpeg"${node.outputFormat === 'jpeg' ? ' selected' : ''}>JPEG</option><option value="webp"${node.outputFormat === 'webp' ? ' selected' : ''}>WebP</option></select></label><label class="image-output-field"><span>Quality</span><input class="prop-input" data-prop="outputQuality" type="range" min="1" max="100" step="1" value="${node.outputQuality ?? 90}" aria-label="Image output quality"/><output>${node.outputQuality ?? 90}%</output></label></div><button class="add-fill" type="button" data-action="export-edited-source">Download edited original</button><div class="image-properties-note">This exports the crop, rotation, flips, adjustments, and object erase at the original image resolution. Output format and quality are also saved in recipes for batch export.</div>`);
+    body += imageEraseControls(node);
+  }
   body += exportSettingsSection(node);
   content.innerHTML = body;
   for (const input of content.querySelectorAll('[data-prop="fontFamily"],[data-prop="fontWeight"],[data-prop="align"],[data-prop="verticalAlign"],[data-prop="fit"],[data-prop="textFit"]')) input.value = String(node[input.dataset.prop] ?? input.value);
@@ -4219,7 +4257,7 @@ function onCanvasPointerDown(event) {
     state.interaction = { kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom, center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, panX: state.panX, panY: state.panY };
     event.preventDefault(); return;
   }
-  if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode)) {
+  if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode && !state.imageEraseMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
     pauseGuestViewFollowing();
     canvas.classList.add('is-panning'); event.preventDefault(); return;
@@ -4239,6 +4277,7 @@ function onCanvasPointerDown(event) {
   // Crop mode owns ordinary canvas taps regardless of the active drawing or
   // prototype tool. Space/middle-button pan and two-finger pinch remain usable.
   if (state.imageCropMode) { beginImageCropInteraction(event, world); return; }
+  if (state.imageEraseMode && event.button === 0) { beginImageEraseStroke(event, world); return; }
   if (state.tool === 'lasso') {
     const additive = event.shiftKey || (event.pointerType !== 'mouse' && state.selectedIds.length > 0);
     state.interaction = { kind: 'lasso', pointerId: event.pointerId, points: [world], additive };
@@ -4463,6 +4502,11 @@ function onCanvasPointerMove(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'image-erase') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (appendImageErasePointer(interaction, world)) renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'lasso') {
     if (interaction.pointerId !== event.pointerId) return;
     appendLassoPoint(interaction.points, world, { minDistance: 1.25 / Math.max(.08, state.zoom) });
@@ -4589,7 +4633,7 @@ function onCanvasPointerMove(event) {
       setNodePropertyValue(node, 'x', original.x + dx);
       setNodePropertyValue(node, 'y', original.y + dy);
     }
-    $('#position-status').textContent = `${Math.round(movement.x)}, ${Math.round(movement.y)} moved${movement.guides.length ? ' · Aligned' : ''}`;
+    $('#position-status').textContent = `${formatInspectorNumber(movement.x)}, ${formatInspectorNumber(movement.y)} moved${movement.guides.length ? ' · Aligned' : ''}`;
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'group-rotate') {
@@ -4602,7 +4646,7 @@ function onCanvasPointerMove(event) {
       if (!node) continue;
       node.x = patch.x; node.y = patch.y; node.rotation = patch.rotation;
     }
-    $('#position-status').textContent = `${Math.round(rotationDelta)}° · ${interaction.ids.length} layers`;
+    $('#position-status').textContent = `${formatInspectorNumber(rotationDelta)}° · ${interaction.ids.length} layers`;
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'group-resize') {
@@ -4631,7 +4675,7 @@ function onCanvasPointerMove(event) {
     interaction.lastAngle = angle;
     const nextRotation = interaction.rotation + interaction.rotationDelta;
     setNodePropertyValue(interaction.node, 'rotation', event.shiftKey ? Math.round(nextRotation / 15) * 15 : nextRotation);
-    $('#position-status').textContent = `${Math.round(resolvedGeometry(interaction.node).rotation)}° rotation`;
+    $('#position-status').textContent = `${formatInspectorNumber(resolvedGeometry(interaction.node).rotation)}° rotation`;
     renderer.invalidate(); return;
   }
   if (interaction.kind === 'reorder' && interaction.duplicateOnDrag && !interaction.duplicated) {
@@ -4690,6 +4734,12 @@ function onCanvasPointerUp(event) {
   const interaction = state.interaction;
   if (!interaction) return;
   if (interaction.kind === 'ruler-guide-move') { finishRulerGuideGesture(event); return; }
+  if (interaction.kind === 'image-erase') {
+    if (interaction.pointerId !== event.pointerId) return;
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) appendImageErasePointer(interaction, screenToWorld(event, canvas, state));
+    finishImageEraseStroke(interaction);
+    return;
+  }
   if (interaction.kind === 'image-fill-crop') {
     if (interaction.mode === 'pinch' && interaction.pointerIds?.includes(event.pointerId) && state.pointerMap.size) {
       const [pointerId, point] = state.pointerMap.entries().next().value;
@@ -4970,6 +5020,7 @@ function cancelCanvasInteraction(event) {
     state.penHover = null;
   }
   if (interaction.kind === 'image-crop') state.imageCropDraftSelection = null;
+  if (interaction.kind === 'image-erase') state.imageEraseDraft = null;
   state.pointerMap.clear();
   state.smartGuides = [];
   canvas.classList.remove('is-panning');
@@ -6444,6 +6495,148 @@ function imageCropHandleAt(event, context) {
   return nearestScreenHandle({ x: event.clientX, y: event.clientY }, handles, event.pointerType === 'touch' ? 24 : 12);
 }
 
+function imageEraseLayerContext(node = selectedNodes().length === 1 ? selectedNodes()[0] : null) {
+  if (node?.type !== 'image' || node.locked || isImageRecipeBatchActive(state.bulk)) return null;
+  const entry = findNode(state.document, node.id);
+  if (!entry || entry.parents.some(parent => parent.locked)) return null;
+  const asset = state.assets.get(node.assetId);
+  const sourceWidth = asset?.sourceWidth || node.sourceWidth;
+  const sourceHeight = asset?.sourceHeight || node.sourceHeight;
+  if (!asset?.sourceBytes || !Number.isSafeInteger(sourceWidth) || !Number.isSafeInteger(sourceHeight)) return null;
+  validateInpaintDimensions(sourceWidth, sourceHeight);
+  const context = imageCropContext(node);
+  return context ? { ...context, asset, sourceWidth, sourceHeight } : null;
+}
+
+function toggleImageEraseMode(node) {
+  const active = state.imageEraseMode && state.selectedIds.length === 1 && state.selectedIds[0] === node?.id;
+  if (active) {
+    if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas.classList.remove('tool-image-erase');
+    renderInspector(); renderer.invalidate();
+    return;
+  }
+  let context;
+  try { context = imageEraseLayerContext(node); }
+  catch (error) { showToast(error.message || 'Object erase is unavailable for this image.'); return; }
+  if (!context) { showToast('Select an unlocked image with a locally available original to erase an object.'); return; }
+  if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+  if (state.imageCropMode) {
+    state.imageCropMode = false;
+    state.imageFillCropTarget = null;
+    state.imageCropDraftSelection = null;
+    syncImageCropOverlay();
+  }
+  state.imageEraseMode = true;
+  canvas.classList.add('tool-image-erase');
+  renderInspector(); renderer.invalidate();
+  showToast('Brush over the object, then choose Done erasing. Processing stays on this device.');
+}
+
+function updateImageEraseStrokes(node, strokes, label) {
+  if (!node || node.type !== 'image' || node.locked || isImageRecipeBatchActive(state.bulk)) return false;
+  const entry = findNode(state.document, node.id);
+  if (!entry || entry.parents.some(parent => parent.locked)) return false;
+  let normalized;
+  try { normalized = normalizeImageEraseStrokes(strokes); }
+  catch (error) { showToast(error.message || 'The erase stroke could not be saved.'); return false; }
+  checkpoint(label);
+  node.inpaintStrokes = normalized;
+  recordNodeComponentOverrides(node, ['inpaintStrokes']);
+  schedulePreview(node, true);
+  renderInspector(); queueSave(); renderer.invalidate();
+  return true;
+}
+
+function undoImageEraseStroke(node) {
+  const strokes = node?.type === 'image' && Array.isArray(node.inpaintStrokes) ? node.inpaintStrokes : [];
+  if (!strokes.length) return;
+  updateImageEraseStrokes(node, strokes.slice(0, -1), 'Undo object erase stroke');
+}
+
+function clearImageErase(node) {
+  if (node?.type !== 'image' || !node.inpaintStrokes?.length) return;
+  updateImageEraseStrokes(node, [], 'Clear object erase');
+}
+
+function displayedImagePointIsPaintable(local, context) {
+  const { drawBounds, geometry } = context;
+  return local.x >= 0 && local.x <= geometry.width && local.y >= 0 && local.y <= geometry.height
+    && local.x >= drawBounds.left && local.x <= drawBounds.left + drawBounds.width
+    && local.y >= drawBounds.top && local.y <= drawBounds.top + drawBounds.height;
+}
+
+function appendImageErasePointer(interaction, world) {
+  const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+  if (!displayedImagePointIsPaintable(local, interaction.context)) return false;
+  const point = imageErasePointFromDisplay(local, interaction.context.virtualBounds, {
+    rotation: interaction.rotation,
+    flipHorizontal: interaction.flipHorizontal,
+    flipVertical: interaction.flipVertical
+  });
+  const previous = interaction.points.at(-1);
+  const minDistance = 1 / Math.max(.08, state.zoom * interaction.context.scale);
+  if (previous && checkPointDistance(previous.local, local) < minDistance) return false;
+  if (interaction.points.length >= 8192) {
+    interaction.truncated = true;
+    return false;
+  }
+  interaction.points.push({ local, source: point });
+  state.imageEraseDraft = { nodeId: interaction.node.id, points: interaction.points.map(item => item.local), radius: interaction.radiusLocal };
+  return true;
+}
+
+function beginImageEraseStroke(event, world) {
+  const node = state.selectedIds.length === 1 ? findNode(state.document, state.selectedIds[0])?.node : null;
+  let context;
+  try { context = imageEraseLayerContext(node); }
+  catch (error) { showToast(error.message || 'Object erase is unavailable for this image.'); return; }
+  if (!context) { showToast('Select an unlocked image with a locally available original to paint an erase area.'); return; }
+  const local = pageToNodeLocal(context.geometry, world, context.ancestors);
+  if (!displayedImagePointIsPaintable(local, context)) return;
+  const point = imageErasePointFromDisplay(local, context.virtualBounds, {
+    rotation: context.rotation,
+    flipHorizontal: context.flipHorizontal,
+    flipVertical: context.flipVertical
+  });
+  const radius = imageEraseRadiusFraction({
+    brushDiameterCssPx: state.imageEraseBrushDiameter,
+    zoom: state.zoom,
+    imageScale: context.scale,
+    sourceWidth: context.sourceWidth,
+    sourceHeight: context.sourceHeight
+  });
+  const radiusLocal = imageEraseRadiusLocal(radius, context.sourceWidth, context.sourceHeight, context.scale);
+  const interaction = {
+    kind: 'image-erase', pointerId: event.pointerId, node,
+    geometry: context.geometry, ancestors: context.ancestors, context,
+    rotation: context.rotation, flipHorizontal: context.flipHorizontal, flipVertical: context.flipVertical,
+    radius, radiusLocal, points: [{ local, source: point }], truncated: false
+  };
+  state.interaction = interaction;
+  state.imageEraseDraft = { nodeId: node.id, points: [local], radius: radiusLocal };
+  event.preventDefault(); renderer.invalidate();
+}
+
+function finishImageEraseStroke(interaction) {
+  state.interaction = null;
+  state.imageEraseDraft = null;
+  canvas.classList.remove('is-panning');
+  if (interaction.truncated) {
+    showToast('This stroke reached the point limit. Keep it and start another shorter stroke.');
+  }
+  try {
+    const strokes = normalizeImageEraseStrokes([...(interaction.node.inpaintStrokes || []), {
+      radius: interaction.radius,
+      points: interaction.points.map(item => item.source)
+    }]);
+    updateImageEraseStrokes(interaction.node, strokes, 'Erase image object');
+  } catch (error) { showToast(error.message || 'This erase stroke could not be saved.'); }
+  renderer.invalidate();
+}
+
 function imageCropVisibleBounds(context) {
   return { ...context.virtualBounds };
 }
@@ -6871,12 +7064,57 @@ function releasePreviewResources(previewKey) {
   renderer?.invalidate();
 }
 
+function inpaintStageLabel(stage) {
+  return ({
+    'loading-model': 'Loading the local model',
+    'decoding-image': 'Reading source pixels',
+    inpainting: 'Filling the selected area',
+    'encoding-preview': 'Building the edited image'
+  })[stage] || 'Processing the image';
+}
+
+async function renderImageWithEdits(node, asset, adjustments, transforms, options = {}, {
+  output = false, signal, onInpaintStage, inpaintStrokes = undefined
+} = {}) {
+  const eraseStrokes = inpaintStrokes === undefined ? node?.inpaintStrokes : inpaintStrokes;
+  const hasErase = node?.type === 'image' && Array.isArray(eraseStrokes) && eraseStrokes.length > 0;
+  const render = output ? imageEngine.renderOutput.bind(imageEngine) : imageEngine.render.bind(imageEngine);
+  if (!hasErase) return render(asset.assetId, asset.sourceBytes, adjustments, transforms, options);
+  const strokes = normalizeImageEraseStrokes(eraseStrokes);
+  let prepared = null;
+  let preparedAssetId = null;
+  let inpaintReservation = null;
+  try {
+    const originalDimensions = assertSafeRasterDimensions(asset.sourceBytes);
+    validateInpaintDimensions(originalDimensions.width, originalDimensions.height);
+    inpaintReservation = imageMemoryBudget.reserve(estimateBitmapBytes(originalDimensions.width, originalDimensions.height, 8), { kind: 'local-object-erase' });
+    if (!inpaintReservation) {
+      throw new ImageMemoryLimitError('There is not enough free local image memory for object erase. Close another large design or crop the source image, then retry.', 'local-object-erase');
+    }
+    prepared = await inpaintEngine.run(asset.sourceBytes, strokes, { signal, onStage: onInpaintStage });
+    if (signal?.aborted) throw new DOMException('Object erase was cancelled.', 'AbortError');
+    if (!originalDimensions || prepared.width !== originalDimensions.width || prepared.height !== originalDimensions.height) {
+      throw new Error('The local object-erase model returned dimensions that do not match the original image.');
+    }
+    preparedAssetId = `inpaint-source:${node.id}:${++nextInpaintSourceId}`;
+    return await render(preparedAssetId, prepared.bytes, adjustments, transforms, options);
+  } finally {
+    if (preparedAssetId) imageEngine.dispose(preparedAssetId);
+    prepared?.bytes?.fill?.(0);
+    if (inpaintReservation) imageMemoryBudget.releaseReservation(inpaintReservation);
+  }
+}
+
 async function renderImagePreview(nodeId, assetId, adjustments, transforms = {}, fillId = null, queueGroup = null, pageId = state.document.activePageId) {
   const previewKey = imagePreviewKey(nodeId, fillId);
   const generation = state.documentGeneration;
   const asset = state.assets.get(assetId);
   if (!asset?.sourceBytes) throw new Error('The original image could not be found on this device.');
   if (state.selectedIds.length === 1 && state.selectedIds[0] === nodeId) imageEngine.setActiveSource(assetId);
+  const previousInpaintController = state.inpaintControllers.get(previewKey);
+  previousInpaintController?.abort();
+  const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
+  const inpaintController = imageNode?.type === 'image' && imageNode.inpaintStrokes?.length ? new AbortController() : null;
   const version = ++nextImageRenderVersion;
   state.renderVersion.set(previewKey, version);
   state.imageStatus.set(previewKey, 'Processing locally…');
@@ -6890,6 +7128,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   let bitmap = null;
   let previewUrl = null;
   let releasedPreviewForCapacity = false;
+  if (inpaintController) state.inpaintControllers.set(previewKey, inpaintController);
   try {
     const currentMemoryKey = previewMemoryKey(previewKey);
     reservation = imageMemoryBudget.reserve(previewAdmission.retainedBytes, { kind: 'preview-pending' });
@@ -6904,12 +7143,20 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
     if (!reservation) throw retainedImageLimitMessage();
 
     return await withImageMemoryReservation(imageMemoryBudget, reservation, async () => {
-      const imageNode = !fillId ? findNode(state.document, nodeId, pageId)?.node : null;
       const outputFormat = imageNode?.type === 'image' ? imageNode.outputFormat ?? 'png' : 'png';
       const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
-      const result = await imageEngine.render(assetId, asset.sourceBytes, adjustments, transforms, {
+      const result = await renderImageWithEdits(imageNode, { assetId, sourceBytes: asset.sourceBytes }, adjustments, transforms, {
         replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
         queueGroup,
+      }, {
+        signal: inpaintController?.signal,
+        inpaintStrokes: fillId ? [] : undefined,
+        onInpaintStage: ({ stage }) => {
+          if (!inpaintController?.signal.aborted && generation === state.documentGeneration && state.renderVersion.get(previewKey) === version) {
+            state.imageStatus.set(previewKey, `Object erase · ${inpaintStageLabel(stage)}…`);
+            updateSelectedImageStatus(nodeId, previewKey, fillId);
+          }
+        }
       });
       if (generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version) return false;
       if (result.width !== outputDimensions.width || result.height !== outputDimensions.height) {
@@ -6951,11 +7198,18 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   } finally {
     try { bitmap?.close?.(); } catch { /* browser bitmap disposal is best-effort */ }
     try { if (previewUrl) URL.revokeObjectURL(previewUrl); } catch { /* URL may already be revoked */ }
+    if (inpaintController && state.inpaintControllers.get(previewKey) === inpaintController) state.inpaintControllers.delete(previewKey);
   }
 }
 
 function reconcileImagePreviewRuntime() {
   const livePreviewKeys = collectLiveImagePreviewNodeIds(state.document);
+  for (const [previewKey, controller] of state.inpaintControllers) {
+    if (!livePreviewKeys.has(previewKey)) {
+      controller.abort();
+      state.inpaintControllers.delete(previewKey);
+    }
+  }
   for (const previewKey of state.renderVersion.keys()) {
     if (!livePreviewKeys.has(previewKey)) imageEngine.cancelQueuedByKey(`preview:${previewKey}`);
   }
@@ -7534,6 +7788,7 @@ function snapshotRecipeState(node) {
   return {
     adjustments: { ...(node.adjustments || {}) },
     transforms: snapshotRecipeField(node, 'transforms'),
+    inpaintStrokes: snapshotRecipeField(node, 'inpaintStrokes'),
     fit: snapshotRecipeField(node, 'fit'),
     opacity: snapshotRecipeField(node, 'opacity'),
     opacityBinding: snapshotRecipeField(node.variableBindings || {}, 'opacity'),
@@ -7577,6 +7832,15 @@ function rollbackRecipeStateIfUnchanged(node, before, applied) {
     else delete node.transforms;
     changed = true;
     changedProperties.add('transforms');
+  }
+
+  const currentInpaintStrokes = snapshotRecipeField(node, 'inpaintStrokes');
+  if (recipeFieldMatches(currentInpaintStrokes, applied.inpaintStrokes)
+    && !recipeFieldMatches(currentInpaintStrokes, before.inpaintStrokes)) {
+    if (before.inpaintStrokes.present) node.inpaintStrokes = structuredClone(before.inpaintStrokes.value);
+    else delete node.inpaintStrokes;
+    changed = true;
+    changedProperties.add('inpaintStrokes');
   }
 
   for (const key of ['fit', 'opacity', 'outputFormat', 'outputQuality']) {
@@ -7648,6 +7912,7 @@ function scheduleBulk() {
     }
     applyImageRecipe(state.document, id, bulk.recipe, bulk.pageId);
     const recipeOverrides = ['adjustments', 'transforms', 'fit', 'outputFormat', 'outputQuality'];
+    if (Object.hasOwn(bulk.recipe, 'inpaintStrokes')) recipeOverrides.push('inpaintStrokes');
     if (Object.hasOwn(bulk.recipe, 'opacity') && bulk.recipe.opacity != null) recipeOverrides.push('opacity');
     if (bulk.recipe.effects != null) recipeOverrides.push('effects');
     if (bulk.recipe.blendMode != null) recipeOverrides.push('blendMode');
@@ -9787,7 +10052,7 @@ function renderPresentationFrame(interaction = null, previousFrame = null, progr
     ? resolveVariableValueWithModeOverrides(runtimeDocument, node.variableBindings.radius, state.presenting.variableModes || {}, node)
     : node.radius;
   const displayFrame = applySessionVariableModes(previousFrame && Number.isFinite(progress)
-    ? interpolateSmartFrame(previousFrame, target.node, progress, { resolveRadius: resolveTransitionRadius })
+    ? interpolateSmartFrame(previousFrame, target.node, progress, { resolveRadius: resolveTransitionRadius, allowOvershoot: true })
     : structuredClone(target.node));
   displayFrame.x = 0; displayFrame.y = 0;
   const sceneChildren = [displayFrame];
@@ -10493,6 +10758,8 @@ async function persistCurrentDocumentNow() {
 function releaseImageRuntimeForDocumentSwitch() {
   for (const timer of previewTimers.values()) clearTimeout(timer);
   previewTimers.clear();
+  for (const controller of state.inpaintControllers.values()) controller.abort();
+  state.inpaintControllers.clear();
   for (const nodeId of state.renderVersion.keys()) imageEngine.cancelQueuedByKey(`preview:${nodeId}`);
   for (const assetId of state.assets.keys()) imageEngine.dispose(assetId);
   for (const asset of state.assets.values()) {
@@ -11151,7 +11418,7 @@ async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
     if (node) walkNodes([node], ({ node: child }) => {
       if (child.type === 'image' && child.assetId && sliceExportImageDependencyNeeded(child, crop)) {
         const previewKey = imagePreviewKey(child.id);
-        images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, previewKey });
+        images.set(previewKey, { node: child, assetId: child.assetId, adjustments: child.adjustments, transforms: child.transforms, inpaintStrokes: child.inpaintStrokes, previewKey });
       }
       if (Array.isArray(child.fills)) {
         for (const fill of child.fills) {
@@ -11166,7 +11433,7 @@ async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
       }
     });
   }
-  await Promise.all([...images.values()].map(async ({ node, fillId = null, previewKey, assetId, adjustments, transforms }) => {
+  await Promise.all([...images.values()].map(async ({ node, fillId = null, previewKey, assetId, adjustments, transforms, inpaintStrokes = [] }) => {
     const asset = state.assets.get(assetId);
     if (!asset?.sourceBytes) throw new Error(`The original image for “${node.name}” is unavailable on this device.`);
     const status = state.imageStatus.get(previewKey) || '';
@@ -11176,7 +11443,8 @@ async function refreshImagesForExport(nodeIds, { crop = null } = {}) {
       await renderImagePreview(node.id, assetId, adjustments, transforms, fillId);
     }
     const hasEdits = hasImageAdjustmentEdits(adjustments)
-      || Boolean(transforms?.crop || transforms?.rotation || transforms?.flipHorizontal || transforms?.flipVertical);
+      || Boolean(transforms?.crop || transforms?.rotation || transforms?.flipHorizontal || transforms?.flipVertical)
+      || inpaintStrokes.length > 0;
     const previewMatchesAsset = state.previews.has(previewKey)
       && (state.previewAssetIds.get(previewKey) == null || state.previewAssetIds.get(previewKey) === assetId);
     if (!previewMatchesAsset && hasEdits) await renderImagePreview(node.id, assetId, adjustments, transforms, fillId);
@@ -11437,9 +11705,9 @@ async function exportEditedImageSource(nodeId) {
       throw new ImageMemoryLimitError('There is not enough free local image memory for this full-resolution export. Close other large designs or resize the source image.', 'image-export');
     }
     showToast(`Rendering ${node.name || 'image'} from its original pixels… Press Escape to discard the result.`, 5000);
-    const rendered = await imageEngine.renderOutput(node.assetId, asset.sourceBytes, node.adjustments, node.transforms, {
+    const rendered = await renderImageWithEdits(node, asset, node.adjustments, node.transforms, {
       format, quality, replaceKey, queueGroup: `image-export:${generation}`,
-    });
+    }, { output: true, signal: controller.signal });
     assertCurrent();
     if (rendered.width !== transformed.width || rendered.height !== transformed.height) {
       throw new Error('The full-resolution image dimensions changed during export. Try again.');
@@ -11475,11 +11743,13 @@ function createSvgTextMeasurer() {
   };
 }
 
-function hasImageAdjustmentEdits(adjustments = {}) {
+function hasImageAdjustmentEdits(adjustments = {}, transforms = {}, inpaintStrokes = []) {
   return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur']
     .some(key => Number(adjustments[key] || 0) !== 0)
     || Boolean(adjustments.autoContrast || adjustments.solarize || adjustments.invert)
-    || Number(adjustments.posterizeBits || 0) > 0;
+    || Number(adjustments.posterizeBits || 0) > 0
+    || Boolean(transforms?.crop || transforms?.rotation || transforms?.flipHorizontal || transforms?.flipVertical)
+    || (Array.isArray(inpaintStrokes) && inpaintStrokes.length > 0);
 }
 
 async function imagePreviewsForSvgExport(rootNodeIds) {
@@ -11494,7 +11764,7 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
         || getNodePropertyValue(state.document, node, 'visible') === false) return;
       if (node.type === 'image' && node.assetId) {
         const previewKey = imagePreviewKey(node.id);
-        references.set(previewKey, { node, previewKey, assetId: node.assetId, adjustments: node.adjustments, transforms: node.transforms });
+        references.set(previewKey, { node, previewKey, assetId: node.assetId, adjustments: node.adjustments, transforms: node.transforms, inpaintStrokes: node.inpaintStrokes || [] });
       }
       if (Array.isArray(node.fills)) {
         for (const fill of node.fills) {
@@ -11510,7 +11780,7 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
   }
 
   const imagePreviews = new Map();
-  const editedReferences = [...references.values()].filter(({ adjustments, transforms }) => hasRasterImageEdits(adjustments, transforms));
+  const editedReferences = [...references.values()].filter(({ adjustments, transforms, inpaintStrokes }) => hasRasterImageEdits(adjustments, transforms, inpaintStrokes));
   const previewsToRefresh = editedReferences.filter(({ previewKey, assetId }) =>
     state.imageStatus.get(previewKey) !== 'Updated · Pillow-RS WASM'
     || !state.previews.has(previewKey)
@@ -11521,13 +11791,13 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
     throw new Error(`An image changed while ${formatLabel} export was being prepared. Retry the export after its preview updates.`);
   }
 
-  for (const { node, fillId = null, previewKey, assetId, adjustments, transforms } of editedReferences) {
+  for (const { node, fillId = null, previewKey, assetId, adjustments, transforms, inpaintStrokes = [] } of editedReferences) {
     const preview = state.previews.get(previewKey);
     const previewUrl = state.previewUrls.get(previewKey);
     if (!preview || !previewUrl || state.previewAssetIds.get(previewKey) !== assetId) {
       throw new Error(`The edited preview for “${node.name}” is not ready for ${formatLabel} export.`);
     }
-    const settingsSignature = JSON.stringify([assetId, adjustments || {}, transforms || {}]);
+    const settingsSignature = JSON.stringify([assetId, adjustments || {}, transforms || {}, inpaintStrokes]);
     const renderVersion = state.renderVersion.get(previewKey);
     const response = await fetch(previewUrl);
     if (!response.ok) throw new Error(`The edited preview for “${node.name}” could not be read for ${formatLabel} export.`);
@@ -11539,7 +11809,7 @@ async function imagePreviewsForSvgExport(rootNodeIds) {
     const currentImageFill = fillId
       ? currentNode?.fills?.find(fill => fill.id === fillId)?.imageFill
       : currentNode?.type === 'image' ? currentNode : currentNode?.imageFill;
-    const currentSettings = [currentImageFill?.assetId, currentImageFill?.adjustments || {}, currentImageFill?.transforms || {}];
+    const currentSettings = [currentImageFill?.assetId, currentImageFill?.adjustments || {}, currentImageFill?.transforms || {}, fillId ? [] : currentNode?.inpaintStrokes || []];
     if (!currentNode || state.renderVersion.get(previewKey) !== renderVersion
       || JSON.stringify(currentSettings) !== settingsSignature
       || state.imageStatus.get(previewKey) !== 'Updated · Pillow-RS WASM') {
@@ -11670,15 +11940,18 @@ async function exportActivePageRasterPdf() {
 }
 
 function assertVectorPdfTreeSupported(documentSnapshot, frame) {
-  const assertRasterSource = (node, { assetId, adjustments, transforms }) => {
+  const assertRasterSource = (node, { assetId, adjustments, transforms, inpaintStrokes = [] }) => {
     const label = node.name || (node.type === 'image' ? 'Image' : 'Layer');
     const asset = state.assets.get(assetId);
-    const plan = planVectorPdfRasterSource({ asset, adjustments, transforms });
+    const plan = planVectorPdfRasterSource({ asset, adjustments, transforms, inpaintStrokes });
     if (plan.kind === 'missing-source') {
       throw new PdfVectorExportError('local raster image source', `layer “${label}” has no retained original bytes; restore or reimport the image before exporting`);
     }
     if (plan.kind === 'invalid-adjustments') {
       throw new PdfVectorExportError('raster image adjustments', `layer “${label}” has unsupported or invalid settings; reset its image adjustments before exporting`);
+    }
+    if (plan.kind === 'invalid-inpaint-strokes') {
+      throw new PdfVectorExportError('object-erase strokes', `layer “${label}” has invalid saved erase strokes; clear or repair its local object-erase edits before exporting`);
     }
     if (plan.kind === 'unsupported') {
       const source = plan.sourceMimeType || 'unknown image format';
@@ -11722,7 +11995,7 @@ function vectorPdfRasterReferences(rootNodeIds) {
         const previewKey = imagePreviewKey(node.id);
         references.set(previewKey, {
           node, previewKey, assetId: node.assetId,
-          adjustments: node.adjustments, transforms: node.transforms,
+          adjustments: node.adjustments, transforms: node.transforms, inpaintStrokes: node.inpaintStrokes || [],
         });
       }
       if (Array.isArray(node.fills)) {
@@ -11745,7 +12018,7 @@ function vectorPdfRasterReferences(rootNodeIds) {
   }
   return [...references.values()].map(reference => {
     const asset = state.assets.get(reference.assetId);
-    const plan = planVectorPdfRasterSource({ asset, adjustments: reference.adjustments, transforms: reference.transforms });
+    const plan = planVectorPdfRasterSource({ asset, adjustments: reference.adjustments, transforms: reference.transforms, inpaintStrokes: reference.inpaintStrokes || [] });
     return { ...reference, plan };
   });
 }
@@ -11772,7 +12045,7 @@ async function vectorPdfImagePreviews(rootNodeIds, { controller, assertCurrent, 
     }
     reference.expectedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, reference.transforms);
   }
-  const tasks = previewReferences.map(async ({ node, previewKey, assetId, adjustments, transforms, expectedDimensions }) => {
+  const tasks = previewReferences.map(async ({ node, fillId = null, previewKey, assetId, adjustments, transforms, inpaintStrokes = [], expectedDimensions }) => {
     abortIfExportCanceled(controller.signal);
     assertCurrent();
     const asset = state.assets.get(assetId);
@@ -11781,9 +12054,9 @@ async function vectorPdfImagePreviews(rootNodeIds, { controller, assertCurrent, 
     pendingQueueKeys.add(replaceKey);
     let rendered = null;
     try {
-      rendered = await imageEngine.render(assetId, asset.sourceBytes, adjustments ?? defaultImageAdjustments, transforms, {
+      rendered = await renderImageWithEdits(node, asset, adjustments ?? defaultImageAdjustments, transforms, {
         format: 'png', quality: 100, replaceKey, queueGroup,
-      });
+      }, { signal: controller.signal, inpaintStrokes: fillId ? [] : inpaintStrokes });
       abortIfExportCanceled(controller.signal);
       assertCurrent();
       if (rendered.mimeType !== 'image/png') throw new Error(`Pillow-RS returned ${rendered.mimeType || 'unknown bytes'} instead of PNG.`);
@@ -12144,6 +12417,18 @@ function applyInspectorAction(action, details = {}) {
     return;
   }
   if (action === 'save-image-recipe') { saveRecipeFor(details.nodeId || node?.id); return; }
+  if (action === 'toggle-image-erase-mode' && node?.type === 'image') {
+    toggleImageEraseMode(node);
+    return;
+  }
+  if (action === 'undo-image-erase' && node?.type === 'image') {
+    undoImageEraseStroke(node);
+    return;
+  }
+  if (action === 'clear-image-erase' && node?.type === 'image') {
+    clearImageErase(node);
+    return;
+  }
   if (action === 'toggle-image-crop-mode') {
     if (details.transformTarget === 'fill') {
       const context = node && imageFillCropContext(node, details.fillId);
@@ -12569,8 +12854,12 @@ function applyInspectorAction(action, details = {}) {
   }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
   else if (action === 'reset-image' && node?.type === 'image') {
-    checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover';
-    recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit']);
+    if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas?.classList.remove('tool-image-erase');
+    checkpoint('Reset image'); node.adjustments = { ...defaultImageAdjustments }; node.transforms = createImageTransforms(); node.fit = 'cover'; node.inpaintStrokes = [];
+    recordNodeComponentOverrides(node, ['adjustments', 'transforms', 'fit', 'inpaintStrokes']);
     schedulePreview(node, true); renderInspector(); queueSave();
   } else if (action === 'create-frame') { setTool('frame'); showToast('Drag on the canvas to create a frame.'); }
   else if (action === 'unlink-corners' && node && ['rectangle', 'frame', 'section', 'image'].includes(node.type)) {
@@ -13146,6 +13435,9 @@ function initEvents() {
       return;
     }
     if (event.target.closest('[data-action="visibility"]')) { checkpoint('Toggle visibility'); setNodePropertyValue(node, 'visible', !getNodePropertyValue(state.document, node, 'visible')); renderUI(); queueSave(); return; }
+    // Selecting a layer row switches focus back from vector-point editing to
+    // the layer itself, even when that same path was already selected.
+    clearVectorAnchorSelection();
     if (state.layerSelectionMode) {
       row.focus({ preventScroll: true });
       setSelection(state.selectedIds.includes(node.id) ? state.selectedIds.filter(id => id !== node.id) : [...state.selectedIds, node.id], { refreshLayers: false });
@@ -13165,6 +13457,13 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    const eraseBrush = event.target.closest('[data-image-erase-brush]');
+    if (eraseBrush) {
+      state.imageEraseBrushDiameter = Math.max(8, Math.min(96, Number(eraseBrush.value) || 32));
+      eraseBrush.value = String(state.imageEraseBrushDiameter);
+      if (eraseBrush.nextElementSibling) eraseBrush.nextElementSibling.value = `${state.imageEraseBrushDiameter} px`;
+      return;
+    }
     if (event.target.id === 'motion-playhead') { setMotionPlayhead(event.target.value); return; }
     if (event.target.id === 'prototype-variable-value') { state.prototypeVariableValue = event.target.value; return; }
     if (event.target.id === 'prototype-variable-expression') { state.prototypeVariableExpression = event.target.value; return; }
@@ -13812,6 +14111,17 @@ function onKeyDown(event) {
     return;
   }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && state.imageEraseMode && !editing && !document.querySelector('dialog[open]')) {
+    if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas.classList.remove('tool-image-erase');
+    renderInspector();
+    renderer.invalidate();
+    canvas.focus({ preventScroll: true });
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && state.imageCropMode && !editing && !document.querySelector('dialog[open]')) {
     if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction();
     state.imageCropMode = false;
@@ -13886,12 +14196,6 @@ function onKeyDown(event) {
   if (mod && key === 'a') { event.preventDefault(); setSelection(pageLayerRows().map(entry => entry.node.id)); return; }
   if (mod && key === 's') { event.preventDefault(); event.shiftKey ? exportDesign() : queueSave(); return; }
   if (mod && key === 'n') { event.preventDefault(); newDesign(); return; }
-  if ((key === 'delete' || key === 'backspace') && state.vectorPointSelectMode
-    && selectedNodes().length === 1 && selectedNodes()[0].type === 'path' && !state.selectedVectorPoint) {
-    showToast('No anchors are selected. Turn off anchor selection mode before deleting the path layer.');
-    event.preventDefault();
-    return;
-  }
   if ((key === 'delete' || key === 'backspace') && state.selectedVectorPoint) {
     deleteSelectedVectorPoint();
     event.preventDefault();

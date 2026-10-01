@@ -2188,6 +2188,34 @@ export class SceneRenderer {
         }
       }
     }
+    const eraseDraft = state.imageEraseDraft;
+    const eraseEntry = eraseDraft?.nodeId ? selected.find(entry => entry.node.id === eraseDraft.nodeId && entry.node.type === 'image') : null;
+    if (eraseEntry && Array.isArray(eraseDraft.points) && eraseDraft.points.length && Number.isFinite(eraseDraft.radius)) {
+      const { node, ancestors } = eraseEntry;
+      const pagePoint = point => nodeLocalToPage(node, point, ancestors);
+      const clipCorners = [
+        { x: 0, y: 0 }, { x: node.width, y: 0 },
+        { x: node.width, y: node.height }, { x: 0, y: node.height }
+      ].map(pagePoint);
+      const points = eraseDraft.points.map(pagePoint);
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(clipCorners[0].x, clipCorners[0].y);
+      for (let index = 1; index < clipCorners.length; index += 1) ctx.lineTo(clipCorners[index].x, clipCorners[index].y);
+      ctx.closePath(); ctx.clip();
+      ctx.strokeStyle = 'rgba(230, 54, 70, .78)';
+      ctx.fillStyle = 'rgba(230, 54, 70, .2)';
+      ctx.lineWidth = Math.max(.5, eraseDraft.radius * 2);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      if (points.length === 1) {
+        ctx.beginPath(); ctx.arc(points[0].x, points[0].y, eraseDraft.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      } else {
+        ctx.beginPath(); ctx.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index += 1) ctx.lineTo(points[index].x, points[index].y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     const gradientTarget = state.gradientGeometryTarget;
     if (!state.presenting && !state.imageCropMode && state.tool === 'select'
       && gradientTarget && selectedIds.length === 1 && selectedIds[0] === gradientTarget.nodeId) {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
+import { hitTestPage } from '../src/renderer.js';
 
 test('keyboard delete prefers a focused unselected layer and preserves an active multi-selection', () => {
   const selectedIds = ['selected-a', 'selected-b'];
@@ -36,6 +37,25 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.equal(findNode(result.document, second.id), null);
   assert.ok(findNode(document, first.id), 'the active document is left untouched until deletion succeeds');
   assert.deepEqual(result.removedIds, [first.id, second.id]);
+});
+
+test('a re-picked overflow child can be deleted without removing its clipping frame', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 20, y: 20, width: 100, height: 100, clip: true });
+  const child = createNode('rectangle', { x: 120, y: 10, width: 40, height: 40, fill: '#ff0000', stroke: null, strokeWidth: 0 });
+  addNode(document, frame);
+  addNode(document, child, { parentId: frame.id });
+  const outsidePoint = { x: 150, y: 40 };
+
+  assert.equal(hitTestPage(document.pages[0], outsidePoint, null, document), null,
+    'ordinary picking continues to respect the frame clip');
+  const picked = hitTestPage(document.pages[0], outsidePoint, null, document, null, 1, { allowClippedNodeIds: [child.id] });
+  assert.equal(picked?.id, child.id, 'an already-selected child remains reachable outside its clipping frame');
+  const result = removeLayersAtomically(document, [picked.id]);
+
+  assert.equal(findNode(result.document, child.id), null);
+  assert.ok(findNode(result.document, frame.id), 'deleting the child leaves the frame intact');
+  assert.equal(validateDocument(result.document), true);
 });
 
 test('deleting a mask source removes only that layer and keeps the remaining group editable', () => {

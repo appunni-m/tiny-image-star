@@ -1,4 +1,5 @@
 import { defaultImageAdjustments, isValidImageAdjustments } from './image-fills.js';
+import { isValidImageEraseStrokes } from './inpaint-mask.js';
 
 const directPdfRasterTypes = new Set(['image/png', 'image/jpeg']);
 
@@ -27,12 +28,13 @@ export function addVectorPdfEmbeddedImageBytes(currentBytes, additionalBytes, { 
 }
 
 /** Report whether an SVG image must use a rendered pixel preview to preserve its edited appearance. */
-export function hasRasterImageEdits(adjustments = {}, transforms = {}) {
+export function hasRasterImageEdits(adjustments = {}, transforms = {}, inpaintStrokes = []) {
   return ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur']
     .some(key => Number(adjustments[key] || 0) !== 0)
     || Boolean(adjustments.autoContrast || adjustments.solarize || adjustments.invert)
     || Number(adjustments.posterizeBits || 0) > 0
-    || Boolean(transforms?.crop || transforms?.rotation || transforms?.flipHorizontal || transforms?.flipVertical);
+    || Boolean(transforms?.crop || transforms?.rotation || transforms?.flipHorizontal || transforms?.flipVertical)
+    || (Array.isArray(inpaintStrokes) && inpaintStrokes.length > 0);
 }
 
 /**
@@ -40,9 +42,9 @@ export function hasRasterImageEdits(adjustments = {}, transforms = {}) {
  * PNG/JPEG sources are retained verbatim; edited pixels must come from a local
  * lossless Pillow-RS PNG preview so the export matches the editor appearance.
  */
-export function planVectorPdfRaster({ mimeType, adjustments = {}, transforms = {} } = {}) {
+export function planVectorPdfRaster({ mimeType, adjustments = {}, transforms = {}, inpaintStrokes = [] } = {}) {
   const sourceMimeType = String(mimeType || '').toLowerCase().split(';')[0].trim();
-  if (hasRasterImageEdits(adjustments, transforms)) {
+  if (hasRasterImageEdits(adjustments, transforms, inpaintStrokes)) {
     return { kind: 'png-preview', sourceMimeType, outputMimeType: 'image/png' };
   }
   if (directPdfRasterTypes.has(sourceMimeType)) {
@@ -52,7 +54,7 @@ export function planVectorPdfRaster({ mimeType, adjustments = {}, transforms = {
 }
 
 /** Include local-source and edit-data validation in the export preflight plan. */
-export function planVectorPdfRasterSource({ asset, adjustments, transforms } = {}) {
+export function planVectorPdfRasterSource({ asset, adjustments, transforms, inpaintStrokes } = {}) {
   const sourceBytes = asset?.sourceBytes;
   const hasSourceBytes = sourceBytes instanceof ArrayBuffer ? sourceBytes.byteLength > 0
     : ArrayBuffer.isView(sourceBytes) && sourceBytes.byteLength > 0;
@@ -60,5 +62,7 @@ export function planVectorPdfRasterSource({ asset, adjustments, transforms } = {
   if (!hasSourceBytes) return { kind: 'missing-source', sourceMimeType, outputMimeType: null };
   const imageAdjustments = adjustments ?? defaultImageAdjustments;
   if (!isValidImageAdjustments(imageAdjustments)) return { kind: 'invalid-adjustments', sourceMimeType, outputMimeType: null };
-  return planVectorPdfRaster({ mimeType: sourceMimeType, adjustments: imageAdjustments, transforms });
+  const imageEraseStrokes = inpaintStrokes ?? [];
+  if (!isValidImageEraseStrokes(imageEraseStrokes)) return { kind: 'invalid-inpaint-strokes', sourceMimeType, outputMimeType: null };
+  return planVectorPdfRaster({ mimeType: sourceMimeType, adjustments: imageAdjustments, transforms, inpaintStrokes: imageEraseStrokes });
 }

@@ -1,11 +1,11 @@
 {
   "package": "pillow-rs",
-  "version": "0.1.3",
-  "sourceRef": "v0.1.3",
-  "sourceCommit": "fd78eb80402a0d6d99e6b696d0a1ebf9ba11d5fb",
+  "version": "12.2.0-alpha.5",
+  "sourceRef": "v12.2.0-alpha.5",
+  "sourceCommit": "f341b59a6ecb223b6899345120739abe345494f6",
   "sourcePatch": {
     "path": "patches/pillow-rs/encode-quality.patch",
-    "sha256": "3fffc9aa53e70dcfde04e1e0f789e1a4f6cb0b19525ab963c73a5c771cbd9621"
+    "sha256": "53e149772bf1b4ce5ea48e6a2112a512a13da90bd1455acceca5618010076857"
   },
   "buildToolchain": {
     "rust": "1.96.1",
@@ -13,11 +13,11 @@
     "wasmOpt": false
   },
   "files": {
-    "pillow_rs_js.js": "e4daef83a3ae79568da0c9bf18c62aa25cb152cfc6e36201301aea48a6a0b778",
-    "pillow_rs_js_bg.wasm": "1b1f5793bb9dff7081a10bb76208ad7a819a8cf3ad4b688aa9b7a26b1a8bb02d",
+    "pillow_rs_js.js": "bbaa64fbad4660be3407ee76b55546f26dc90aade3ed49fc0a20210cbe517e6d",
+    "pillow_rs_js_bg.wasm": "e0df876c270d4e252dd9e667c211258a0331925cb392e185de84d6e24d3fd738",
     "PILLOW_RS_LICENSE.txt": "8ca8cadb9e37b8b279e4363b6657fc5764b7090246e98397b0bc2bf9c90a8405"
   },
   "integrityAlgorithm": "sha512 over each sorted filename, NUL, file bytes, NUL",
-  "integrity": "sha512-R1ej6tTG4W3NpCmE5j1cHEaFtVVgjuzZvwtCsk/dSBJU0wuRmGTn2lvHzr06IL/4LNuioWsHCdwdFjhk3Cupvg==",
-  "artifactSource": "Release-profile WASM compiled from the pinned upstream v0.1.3 tag with the local JPEG/WebP quality patch and fixed build toolchain."
+  "integrity": "sha512-nNiX9B/AVXYO4NmCmFBaNZSFFfykvHy6v21R4le76uimQbnrj1D8gFnlya0+POOJWGQXTUOScQC34fOxg9j9Yw==",
+  "artifactSource": "Release-profile WASM compiled from the pinned upstream v12.2.0-alpha.5 tag with the local JPEG/WebP quality patch and fixed build toolchain."
 }

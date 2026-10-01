@@ -178,7 +178,7 @@ test('late editor renders are fenced after both async boundaries before publishi
   assert.notEqual(renderEnd, -1);
   const body = source.slice(renderStart, renderEnd);
   const fence = 'generation !== state.documentGeneration || state.renderVersion.get(previewKey) !== version';
-  const firstRender = body.indexOf('const result = await imageEngine.render(');
+  const firstRender = body.indexOf('const result = await renderImageWithEdits(');
   const bitmapDecode = body.indexOf('bitmap = await createImageBitmap(previewBlob);');
   const publish = body.indexOf('releasePreviewResources(previewKey);', bitmapDecode);
 
@@ -202,7 +202,7 @@ test('preview memory is reserved before worker dispatch and held through decode 
   const estimate = body.indexOf('estimatePreviewMemoryReservationBytes(outputDimensions)');
   const reserve = body.indexOf('imageMemoryBudget.reserve(previewAdmission.retainedBytes');
   const reservationScope = body.indexOf('withImageMemoryReservation(imageMemoryBudget, reservation, async () => {');
-  const dispatch = body.indexOf('await imageEngine.render(');
+  const dispatch = body.indexOf('await renderImageWithEdits(');
   const decode = body.indexOf('bitmap = await createImageBitmap(previewBlob);');
   const commit = body.indexOf('imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes');
   const publish = body.indexOf('state.previews.set(previewKey, bitmap);');

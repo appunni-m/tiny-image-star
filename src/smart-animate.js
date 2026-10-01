@@ -549,9 +549,9 @@ function interpolateFiniteNumber(from, to, progress) {
     : start + (end - start) * progress;
 }
 
-function interpolateNetwork(from, to, progress) {
-  if (progress === 0) return structuredClone(from);
-  if (progress === 1) return structuredClone(to);
+function interpolateNetwork(from, to, progress, geometryProgress = progress) {
+  if (geometryProgress === 0 && progress === 0) return structuredClone(from);
+  if (geometryProgress === 1 && progress === 1) return structuredClone(to);
 
   const copy = structuredClone(to);
   const sourceVertices = indexNetworkRecords(from.vertices);
@@ -561,7 +561,7 @@ function interpolateNetwork(from, to, progress) {
   copy.vertices = to.vertices.map(target => {
     const source = sourceVertices.get(target.id);
     const vertex = structuredClone(progress < 0.5 ? source : target);
-    Object.assign(vertex, interpolateNetworkPoint(source, target, progress));
+    Object.assign(vertex, interpolateNetworkPoint(source, target, geometryProgress));
     return vertex;
   });
   copy.edges = to.edges.map(target => {
@@ -579,7 +579,7 @@ function interpolateNetwork(from, to, progress) {
         if (Object.prototype.hasOwnProperty.call(edge, property)) edge[property] = null;
         continue;
       }
-      edge[property] = interpolateNetworkPoint(sourceControl, targetControl, progress);
+      edge[property] = interpolateNetworkPoint(sourceControl, targetControl, geometryProgress);
     }
     return edge;
   });
@@ -638,8 +638,8 @@ function interpolatePathPoints(fromPoints, toPoints, progress) {
   return toPoints.map((toPoint, index) => {
     const fromPoint = fromPoints[index];
     const point = structuredClone(toPoint);
-    point.x = Number(fromPoint.x) + (Number(toPoint.x) - Number(fromPoint.x)) * progress;
-    point.y = Number(fromPoint.y) + (Number(toPoint.y) - Number(fromPoint.y)) * progress;
+    point.x = interpolateFiniteNumber(fromPoint.x, toPoint.x, progress);
+    point.y = interpolateFiniteNumber(fromPoint.y, toPoint.y, progress);
     for (const part of ['in', 'out']) {
       const fromHandle = fromPoint[part];
       const toHandle = toPoint[part];
@@ -647,8 +647,8 @@ function interpolatePathPoints(fromPoints, toPoints, progress) {
       const start = fromHandle ?? { x: 0, y: 0 };
       const end = toHandle ?? { x: 0, y: 0 };
       point[part] = {
-        x: Number(start.x) + (Number(end.x) - Number(start.x)) * progress,
-        y: Number(start.y) + (Number(end.y) - Number(start.y)) * progress
+        x: interpolateFiniteNumber(start.x, end.x, progress),
+        y: interpolateFiniteNumber(start.y, end.y, progress)
       };
     }
     return point;
@@ -694,10 +694,10 @@ function interpolateCornerRadii(copy, from, to, progress, resolveRadius = null) 
   const radiusFor = node => finiteStyleNumber(resolveRadius?.(node)) ?? finiteStyleNumber(node.radius) ?? 0;
   const fromRadii = cornerRadiiForNode(from, radiusFor(from));
   const toRadii = cornerRadiiForNode(to, radiusFor(to));
-  copy.cornerRadii = Object.fromEntries(cornerRadiusKeys.map(key => [
-    key,
-    fromRadii[key] + (toRadii[key] - fromRadii[key]) * progress
-  ]));
+  copy.cornerRadii = Object.fromEntries(cornerRadiusKeys.map(key => {
+    const value = interpolateFiniteNumber(fromRadii[key], toRadii[key], progress);
+    return [key, Math.max(0, Math.min(100_000, value))];
+  }));
 }
 
 function fadeLayer(node, progress, entering) {
@@ -709,7 +709,7 @@ function fadeLayer(node, progress, entering) {
   return copy;
 }
 
-function interpolateLayer(from, to, progress, resolveRadius = null) {
+function interpolateLayer(from, to, progress, resolveRadius = null, geometryProgress = progress) {
   const copy = structuredClone(to);
   snapProperties(copy, from, to, progress);
   if (from.type === 'image' && to.type === 'image') {
@@ -741,19 +741,22 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
     const start = finiteStyleNumber(from[property]);
     const end = finiteStyleNumber(to[property]);
     if (start === null || end === null) continue;
-    copy[property] = property === 'rotation' ? interpolateRotation(from[property], to[property], progress)
-      : progress === 0 ? from[property]
-      : progress === 1 ? to[property]
-        : start + (end - start) * progress;
+    const propertyProgress = ['x', 'y', 'width', 'height', 'rotation'].includes(property) ? geometryProgress : progress;
+    const value = property === 'rotation'
+      ? interpolateRotation(from[property], to[property], propertyProgress)
+      : propertyProgress === 0 ? from[property]
+        : propertyProgress === 1 ? to[property]
+          : interpolateFiniteNumber(start, end, propertyProgress);
+    copy[property] = ['width', 'height'].includes(property) ? Math.max(0, value) : value;
   }
-  if (progress > 0 && progress < 1) {
-    const affineTransform = interpolateAffineTransform(from.affineTransform, to.affineTransform, progress);
+  if (geometryProgress !== 0 && geometryProgress !== 1) {
+    const affineTransform = interpolateAffineTransform(from.affineTransform, to.affineTransform, geometryProgress);
     // snapProperties already installed the source/target value. A null result
     // intentionally keeps that safe midpoint fallback for malformed or
     // reflection-changing matrices.
     if (affineTransform) copy.affineTransform = affineTransform;
   }
-  interpolateCornerRadii(copy, from, to, progress, resolveRadius);
+  interpolateCornerRadii(copy, from, to, geometryProgress, resolveRadius);
   for (const property of colorProperties) {
     if (property === 'color' && from.type === 'text' && to.type === 'text'
       && (hasTextTypographyBinding(from) || hasTextTypographyBinding(to))) {
@@ -802,23 +805,23 @@ function interpolateLayer(from, to, progress, resolveRadius = null) {
     else snapProperty(copy, from, to, 'textRuns', progress);
   }
   if (from.type === 'path' && to.type === 'path') {
-    copy.points = interpolatePathPoints(from.points, to.points, progress);
+    copy.points = interpolatePathPoints(from.points, to.points, geometryProgress);
     const fromSubpaths = from.subpaths || [];
     const toSubpaths = to.subpaths || [];
     if (toSubpaths.length) {
       copy.subpaths = toSubpaths.map((subpath, index) => ({
         ...structuredClone(subpath),
-        points: interpolatePathPoints(fromSubpaths[index].points, subpath.points, progress)
+        points: interpolatePathPoints(fromSubpaths[index].points, subpath.points, geometryProgress)
       }));
     } else delete copy.subpaths;
   }
   if (from.type === 'network' && to.type === 'network') {
-    const network = interpolateNetwork(from, to, progress);
+    const network = interpolateNetwork(from, to, progress, geometryProgress);
     copy.vertices = network.vertices;
     copy.edges = network.edges;
     copy.faces = network.faces;
   }
-  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius);
+  copy.children = blendChildren(from.children || [], to.children || [], progress, resolveRadius, geometryProgress);
   return copy;
 }
 
@@ -887,16 +890,33 @@ function interpolateTextRuns(fromRuns, toRuns, progress, fromNode, toNode) {
   });
 }
 
-function blendChildren(fromChildren, toChildren, progress, resolveRadius = null) {
+function blendChildren(fromChildren, toChildren, progress, resolveRadius = null, geometryProgress = progress) {
   const fromKeys = siblingKeys(fromChildren);
   const toKeys = siblingKeys(toChildren);
   const sourceByKey = new Map(fromChildren.map((node, index) => [fromKeys[index], { node, index }]));
+  const destinationByKey = new Map(toChildren.map((node, index) => [toKeys[index], { node, index }]));
+
+  // Back and spring easings can briefly leave [0, 1]. Keep layer presence and
+  // order on the corresponding endpoint while matched geometry anticipates or
+  // overshoots; zero-opacity entering layers can still affect masks and picks.
+  if (progress === 0 || progress === 1) {
+    const endpointChildren = progress === 0 ? fromChildren : toChildren;
+    const endpointKeys = progress === 0 ? fromKeys : toKeys;
+    return endpointChildren.map((node, index) => {
+      const source = sourceByKey.get(endpointKeys[index])?.node;
+      const destination = destinationByKey.get(endpointKeys[index])?.node;
+      return source && destination && canMatch(source, destination)
+        ? interpolateLayer(source, destination, progress, resolveRadius, geometryProgress)
+        : structuredClone(node);
+    });
+  }
+
   const matchedSourceIndexes = new Set();
   const destination = toChildren.map((node, index) => {
     const match = sourceByKey.get(toKeys[index]);
     if (match && canMatch(match.node, node)) {
       matchedSourceIndexes.add(match.index);
-      return { node: interpolateLayer(match.node, node, progress, resolveRadius), sourceIndex: match.index };
+      return { node: interpolateLayer(match.node, node, progress, resolveRadius, geometryProgress), sourceIndex: match.index };
     }
     return { node: fadeLayer(node, progress, true), sourceIndex: null };
   });
@@ -977,25 +997,38 @@ function blendChildren(fromChildren, toChildren, progress, resolveRadius = null)
 
 export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}) {
   if (fromFrame?.type !== 'frame' || toFrame?.type !== 'frame') throw new TypeError('Smart animation requires two frames.');
-  const amount = Math.max(0, Math.min(1, Number.isFinite(Number(progress)) ? Number(progress) : 0));
+  const requestedProgress = Number.isFinite(Number(progress)) ? Number(progress) : 0;
+  const amount = Math.max(0, Math.min(1, requestedProgress));
+  const allowOvershoot = options?.allowOvershoot === true;
+  // The supported back and spring curves briefly exceed their endpoints. Keep
+  // that easing for spatial transforms while bounding hostile/custom values to
+  // a finite range. Direct callers retain the historical clamped behavior;
+  // the presentation player opts in. Non-spatial channels and layer presence
+  // always use `amount`.
+  const geometryProgress = allowOvershoot
+    ? Math.max(-2, Math.min(2, requestedProgress))
+    : amount;
   // Return the authored snapshots at the endpoints. Building the transition
   // tree from the destination and snapping only known fields can otherwise
   // leak destination-only metadata into the source frame, and zero-opacity
   // entering layers can still affect masks or hit testing in some renderers.
-  if (amount === 0) return structuredClone(fromFrame);
-  if (amount === 1) return structuredClone(toFrame);
+  if (allowOvershoot ? requestedProgress === 0 : amount === 0) return structuredClone(fromFrame);
+  if (allowOvershoot ? requestedProgress === 1 : amount === 1) return structuredClone(toFrame);
   const resolveRadius = typeof options?.resolveRadius === 'function' ? options.resolveRadius : null;
   const frame = structuredClone(toFrame);
   snapProperties(frame, fromFrame, toFrame, amount);
   for (const property of ['width', 'height', 'opacity', 'rotation']) {
     if (Number.isFinite(fromFrame[property]) && Number.isFinite(toFrame[property])) {
-      frame[property] = property === 'rotation' ? interpolateRotation(fromFrame[property], toFrame[property], amount)
-        : amount === 0 ? fromFrame[property]
-          : amount === 1 ? toFrame[property]
-          : fromFrame[property] + (toFrame[property] - fromFrame[property]) * amount;
+      const channelProgress = property === 'opacity' ? amount : geometryProgress;
+      const value = property === 'rotation' ? interpolateRotation(fromFrame[property], toFrame[property], channelProgress)
+        : channelProgress === 0 ? fromFrame[property]
+          : channelProgress === 1 ? toFrame[property]
+            : interpolateFiniteNumber(fromFrame[property], toFrame[property], channelProgress);
+      frame[property] = property === 'opacity' ? Math.max(0, Math.min(1, value))
+        : ['width', 'height'].includes(property) ? Math.max(0, value) : value;
     }
   }
-  interpolateCornerRadii(frame, fromFrame, toFrame, amount, resolveRadius);
+  interpolateCornerRadii(frame, fromFrame, toFrame, geometryProgress, resolveRadius);
   const fill = interpolateColor(fromFrame.fill, toFrame.fill, amount);
   if (fill && !fromFrame.fillVariableId && !toFrame.fillVariableId) frame.fill = fill;
   if (!fromFrame.fillVariableId && !toFrame.fillVariableId && canInterpolateGradient(fromFrame.fillGradient, toFrame.fillGradient)) {
@@ -1005,6 +1038,6 @@ export function interpolateSmartFrame(fromFrame, toFrame, progress, options = {}
   if (fills) frame.fills = fills;
   const strokes = interpolateStrokeStack(fromFrame, toFrame, amount);
   if (strokes) frame.strokes = strokes;
-  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius);
+  frame.children = blendChildren(fromFrame.children || [], toFrame.children || [], amount, resolveRadius, geometryProgress);
   return frame;
 }

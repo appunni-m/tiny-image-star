@@ -1518,6 +1518,16 @@ try {
     ] }]
   });
   addNode(compoundDocument, compoundPath);
+  const emptyAnchorDeletePath = createNode('path', {
+    name: 'Delete path with no selected anchors', x: 270, y: 52, width: 80, height: 80,
+    fill: '#7654d6', closed: true,
+    points: [
+      { x: .1, y: .1, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .9, y: .1, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } },
+      { x: .5, y: .9, in: { x: 0, y: 0 }, out: { x: 0, y: 0 } }
+    ]
+  });
+  addNode(compoundDocument, emptyAnchorDeletePath);
   const compoundInput = app.querySelector('#open-file-input'); const compoundTransfer = new DataTransfer();
   compoundTransfer.items.add(new File([buildPackage(compoundDocument, [])], 'compound-contour-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(compoundInput, 'files', { configurable: true, value: compoundTransfer.files });
@@ -1583,10 +1593,14 @@ try {
     dispatchCanvasPointer(app, designCanvas, 'pointerup', screen.x, screen.y, pointerId);
   }
   await waitFor(() => app.querySelector('#inspector-content')?.textContent.includes('0 selected'), 'clear all selected anchors');
+  const emptyAnchorDeleteRow = app.querySelector(`[data-layer-id="${emptyAnchorDeletePath.id}"]`);
+  assert(emptyAnchorDeleteRow, 'the empty-anchor deletion fixture was missing');
+  dispatchClick(emptyAnchorDeleteRow);
   app.body.dispatchEvent(new app.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Delete' }));
-  assert(app.querySelector(`[data-layer-id="${compoundPath.id}"]`), 'Delete with empty anchor selection should not remove the path layer');
-  await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('No anchors are selected')),
-    'empty anchor selection delete guard');
+  await waitFor(() => !app.querySelector(`[data-layer-id="${emptyAnchorDeletePath.id}"]`), 'Delete removes a path layer when anchor selection is empty');
+  assert(app.querySelector(`[data-layer-id="${compoundPath.id}"]`), 'deleting a path with no selected anchors should leave other path layers intact');
+  dispatchClick(app.querySelector(`[data-layer-id="${compoundPath.id}"]`));
+  dispatchClick(app.querySelector('#inspector-content [data-action="toggle-vector-anchor-select-mode"]'));
   for (const [contourIndex, index, pointerId] of [[0, 0, 506], [1, 1, 507]]) {
     const screen = compoundAnchorScreen(contourIndex, index);
     dispatchCanvasPointer(app, designCanvas, 'pointerdown', screen.x, screen.y, pointerId);

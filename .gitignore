@@ -4,3 +4,4 @@ _site/
 .local-data/
 .coverage-mcp/
 src/workers/fig-import-worker.bundle.js
+src/workers/inpaint-worker.bundle.js

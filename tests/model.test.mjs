@@ -639,6 +639,40 @@ test('image recipes validate complete fill/output settings before changing an im
   assert.throws(() => createImageRecipe(image, 'Invalid source'), /fit must be Fill or Fit/);
 });
 
+test('image object-erase edits round-trip, save into recipes, scale across targets, and reject malformed strokes', () => {
+  const document = createDocument();
+  const source = createNode('image', {
+    assetId: 'asset-erase-source',
+    inpaintStrokes: [{ radius: 0.04, points: [{ x: 0.3, y: 0.6 }, { x: 0.35, y: 0.62 }] }],
+  });
+  const target = createNode('image', { assetId: 'asset-erase-target', inpaintStrokes: [{ radius: 0.02, points: [{ x: 0.8, y: 0.2 }] }] });
+  addNode(document, source);
+  addNode(document, target);
+
+  const recipe = createImageRecipe(source, 'Erase background sign');
+  assert.deepEqual(recipe.inpaintStrokes, source.inpaintStrokes);
+  document.recipes.push(recipe);
+  assert.equal(applyImageRecipe(document, target.id, recipe), true);
+  assert.deepEqual(findNode(document, target.id).node.inpaintStrokes, recipe.inpaintStrokes,
+    'the saved recipe replaces prior target strokes with source-relative erase points');
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.deepEqual(reopened.recipes[0].inpaintStrokes, source.inpaintStrokes);
+  assert.deepEqual(findNode(reopened, target.id).node.inpaintStrokes, source.inpaintStrokes);
+  assert.equal(validateDocument(reopened), true);
+
+  const legacyRecipe = { id: 'legacy-erase', name: 'Legacy', adjustments: {}, transforms: { crop: null, rotation: 0 } };
+  const beforeLegacyStrokes = structuredClone(findNode(reopened, target.id).node.inpaintStrokes);
+  applyImageRecipe(reopened, target.id, legacyRecipe);
+  assert.deepEqual(findNode(reopened, target.id).node.inpaintStrokes, beforeLegacyStrokes,
+    'recipes saved before object erase do not clear an existing target edit');
+
+  const invalid = structuredClone(reopened);
+  findNode(invalid, target.id).node.inpaintStrokes[0].points[0].x = 1.01;
+  assert.throws(() => validateDocument(invalid), /Invalid object-erase strokes/);
+  assert.throws(() => applyImageRecipe(reopened, target.id, { ...recipe, inpaintStrokes: [{ radius: 0, points: [{ x: 0.5, y: 0.5 }] }] }), /saved object-erase stroke is malformed/);
+});
+
 test('image adjustment validation rejects invalid creative tone settings', () => {
   const document = createDocument();
   const image = createNode('image'); addNode(document, image);

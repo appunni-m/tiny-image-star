@@ -114,12 +114,15 @@ try {
   await waitFor(() => app.querySelectorAll('.layer-row.is-selected[data-layer-id]').length === 3, 'multi-selection');
   assert(app.querySelectorAll('[data-prop^="selection."]').length === 6, 'multi-selection should expose X, Y, width, height, rotation, and opacity controls.');
   assert(app.querySelector('[data-prop="selection.x"]')?.value !== '0', 'selection X should use the actual visual bounds instead of a placeholder.');
+  for (const property of ['x', 'y', 'width', 'height', 'rotation', 'opacity']) {
+    assert(app.querySelector(`[data-prop="selection.${property}"]`)?.step === '0.01', `${property} should accept hundredth-unit precision.`);
+  }
   assert(app.querySelector('[data-prop="selection.opacity"]')?.placeholder === 'Mixed', 'different layer opacity values should display as Mixed.');
 
   let stored = await loadDocumentById(designId);
   let currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   let bounds = boundsFor(currentNodes);
-  const targetX = bounds.x + 17;
+  const targetX = Number((bounds.x + 17.23).toFixed(2));
   setInput(app, '[data-prop="selection.x"]', targetX);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);
@@ -129,7 +132,7 @@ try {
   stored = await loadDocumentById(designId);
   currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   bounds = boundsFor(currentNodes);
-  const targetY = bounds.y + 11;
+  const targetY = Number((bounds.y + 11.17).toFixed(2));
   setInput(app, '[data-prop="selection.y"]', targetY);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);
@@ -139,7 +142,7 @@ try {
   stored = await loadDocumentById(designId);
   currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   bounds = boundsFor(currentNodes);
-  const targetWidth = bounds.width + 24;
+  const targetWidth = Number((bounds.width + 24.35).toFixed(2));
   setInput(app, '[data-prop="selection.width"]', targetWidth);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);
@@ -149,7 +152,7 @@ try {
   stored = await loadDocumentById(designId);
   currentNodes = nodes.map(node => stored.pages[0].children.find(item => item.id === node.id));
   bounds = boundsFor(currentNodes);
-  const targetHeight = bounds.height + 19;
+  const targetHeight = Number((bounds.height + 19.29).toFixed(2));
   setInput(app, '[data-prop="selection.height"]', targetHeight);
   await waitFor(async () => {
     const saved = await loadDocumentById(designId);

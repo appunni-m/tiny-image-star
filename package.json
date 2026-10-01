@@ -4,17 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "npm run build:fig-import-worker",
+    "predev": "npm run build:fig-import-worker && npm run build:inpaint-worker",
     "dev": "node scripts/server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "preverify:static": "npm run build:fig-import-worker",
+    "preverify:static": "npm run build:fig-import-worker && npm run build:inpaint-worker",
     "verify:static": "node scripts/static-smoke.mjs",
     "build:wasm": "node scripts/build-pillow-runtime.mjs",
-    "build:fig-import-worker": "node scripts/build-fig-import-worker.mjs"
+    "build:fig-import-worker": "node scripts/build-fig-import-worker.mjs",
+    "build:inpaint-worker": "node scripts/build-inpaint-worker.mjs"
   },
   "dependencies": {
     "fflate": "0.8.3",
     "fzstd": "0.1.1",
+    "onnxruntime-web": "1.30.0",
     "openfig-core": "0.4.1"
   },
   "devDependencies": {

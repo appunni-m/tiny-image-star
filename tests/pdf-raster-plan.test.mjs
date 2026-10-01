@@ -25,9 +25,10 @@ test('pixel edits, crop, rotation, and flips request a lossless local PNG previe
     { transforms: { rotation: 90 } },
     { transforms: { flipHorizontal: true } },
     { transforms: { flipVertical: true } },
+    { inpaintStrokes: [{ radius: 0.04, points: [{ x: 0.3, y: 0.6 }] }] },
   ];
   for (const options of cases) {
-    assert.equal(hasRasterImageEdits(options.adjustments, options.transforms), true);
+    assert.equal(hasRasterImageEdits(options.adjustments, options.transforms, options.inpaintStrokes), true);
     assert.deepEqual(planVectorPdfRaster({ mimeType: 'image/jpeg', ...options }), {
       kind: 'png-preview', sourceMimeType: 'image/jpeg', outputMimeType: 'image/png',
     });
@@ -54,6 +55,10 @@ test('source planning distinguishes missing local bytes and invalid adjustment r
   assert.equal(planVectorPdfRasterSource({
     asset: { mimeType: 'image/jpeg; charset=binary', sourceBytes: new Uint8Array([1]) },
   }).kind, 'source');
+  assert.equal(planVectorPdfRasterSource({
+    asset: { type: 'image/png', sourceBytes: new Uint8Array([1]) },
+    inpaintStrokes: [{ radius: 0, points: [{ x: 0.5, y: 0.5 }] }],
+  }).kind, 'invalid-inpaint-strokes');
 });
 
 test('direct images and rendered previews share a bounded aggregate embedded-image budget', () => {
