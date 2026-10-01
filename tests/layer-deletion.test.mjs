@@ -9,6 +9,7 @@ test('keyboard delete prefers a focused unselected layer and preserves an active
   assert.deepEqual(layerDeleteTargets(selectedIds, 'focused-unselected'), ['focused-unselected']);
   assert.deepEqual(layerDeleteTargets(selectedIds, 'selected-b'), selectedIds);
   assert.deepEqual(layerDeleteTargets(selectedIds, null), selectedIds);
+  assert.deepEqual(layerDeleteTargets([], 'focused-layer'), ['focused-layer']);
   assert.deepEqual(layerDeleteTargets(['selected-a', 'selected-a'], null), ['selected-a']);
 });
 

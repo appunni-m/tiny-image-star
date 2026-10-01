@@ -12982,6 +12982,12 @@ function initEvents() {
   $('#layers-list').addEventListener('keydown', event => {
     const row = event.target.closest('[data-layer-id]');
     if (!row) return;
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      const targetIds = layerDeleteTargets(state.selectedIds, row.dataset.layerId);
+      event.preventDefault(); event.stopPropagation();
+      deleteSelected(targetIds);
+      return;
+    }
     const orderDirection = event.target === row ? layerOrderShortcutDirection(event) : null;
     if (orderDirection) {
       event.preventDefault(); event.stopPropagation();
@@ -13824,7 +13830,8 @@ function onKeyDown(event) {
     return;
   }
   if (key === 'delete' || key === 'backspace') {
-    const focusedLayer = event.target.closest?.('#layers-list [data-layer-id]');
+    const focusedLayer = event.target.closest?.('#layers-list [data-layer-id]')
+      || document.activeElement?.closest?.('#layers-list [data-layer-id]');
     const targetIds = layerDeleteTargets(state.selectedIds, focusedLayer?.dataset.layerId);
     event.preventDefault(); deleteSelected(targetIds); return;
   }
