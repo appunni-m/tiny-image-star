@@ -267,7 +267,10 @@ test('converts editable text, fills, constraints, and embedded images while repo
       node('FRAME', 2, pageGuid, '!', { name: 'Main frame', frameMaskDisabled: false, fillPaints: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1, a: 1 } }] }),
       node('RECTANGLE', 3, frameGuid, 'a', { name: 'Photo', fillPaints: [{ type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'FIT', visible: true }] }),
       node('TEXT', 4, frameGuid, 'B', { name: 'Headline', textData: { characters: 'Hello mobile' }, fontName: { family: 'Inter', style: 'Semi Bold Italic' }, fontSize: 32, textAlignHorizontal: 'RIGHT', textAlignVertical: 'CENTER', textAutoResize: 'HEIGHT', paragraphSpacing: 2, fillPaints: [{ type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.3, a: 1 }, opacity: 0.5, visible: true }] }),
-      node('MYSTERY_CONTAINER', 5, frameGuid, 'c', { name: 'Kept container' }),
+      node('MYSTERY_CONTAINER', 5, frameGuid, 'c', {
+        name: 'Kept container',
+        effects: [{ type: 'DROP_SHADOW', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3 }]
+      }),
       node('ELLIPSE', 6, { sessionID: 1, localID: 5 }, '!', { name: 'Kept child', fillPaints: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] }),
       node('MYSTERY_LEAF', 7, frameGuid, 'z', { name: 'Omitted visible layer' }),
       node('BOOLEAN_OPERATION', 8, frameGuid, 'zz', { name: 'Invalid boolean', booleanOperation: 'UNION' }),
@@ -294,12 +297,81 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.deepEqual(imported.document.imageLibrary.map(({ width, height }) => ({ width, height })), [{ width: 2, height: 3 }]);
   assert.equal(frame.children[2].type, 'group');
   assert.equal(frame.children[2].children[0].type, 'ellipse');
+  assert.equal(frame.children[2].effects[0].type, 'drop-shadow', 'supported effects survive editable-container fallback');
   assert.equal(frame.children[3].type, 'group');
   assert.equal(imported.report.flattenedTypes.MYSTERY_CONTAINER, 1);
   assert.equal(imported.report.flattenedTypes.BOOLEAN_OPERATION, 1);
   assert.equal(imported.report.unsupportedTypes.MYSTERY_LEAF, 1);
   assert.equal(imported.report.unsupportedTypes.__proto__, 1);
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
+});
+
+test('imports common Figma shadows and foreground/background blurs as editable local effects', () => {
+  const pageGuid = { sessionID: 71, localID: 1 };
+  const frameGuid = { sessionID: 71, localID: 3 };
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Card',
+        effects: [
+          { type: 'DROP_SHADOW', color: { r: 0.1, g: 0.2, b: 0.3, a: 0.5 }, opacity: 0.5, offset: { x: 3.5, y: 7 }, radius: 12 },
+          { type: 'INNER_SHADOW', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: -2, y: 1 }, radius: 4 },
+          { type: 'FOREGROUND_BLUR', radius: 6 }
+        ]
+      }),
+      node('FRAME', 3, pageGuid, 'b', {
+        guid: frameGuid, name: 'Frosted panel',
+        effects: [{ type: 'BACKGROUND_BLUR', radius: 14 }]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const [card, panel] = imported.document.pages[0].children;
+
+  assert.deepEqual(card.effects.map(({ type, color, opacity, offsetX, offsetY, blur, radius }) => ({ type, color, opacity, offsetX, offsetY, blur, radius })), [
+    { type: 'drop-shadow', color: '#1a334d', opacity: 0.25, offsetX: 3.5, offsetY: 7, blur: 12, radius: undefined },
+    { type: 'inner-shadow', color: '#000000', opacity: 1, offsetX: -2, offsetY: 1, blur: 4, radius: undefined },
+    { type: 'layer-blur', color: undefined, opacity: undefined, offsetX: undefined, offsetY: undefined, blur: undefined, radius: 6 }
+  ]);
+  assert.deepEqual(panel.effects.map(({ type, radius }) => [type, radius]), [['background-blur', 14]]);
+  assert.equal(imported.report.unsupportedTypes.EFFECT, undefined);
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].effects.map(effect => effect.type), ['drop-shadow', 'inner-shadow', 'layer-blur']);
+  assert.deepEqual(restored.pages[0].children[1].effects.map(effect => effect.type), ['background-blur']);
+});
+
+test('keeps supported effects editable while explicitly reporting effect features that cannot be represented', () => {
+  const pageGuid = { sessionID: 72, localID: 1 };
+  const shadows = Array.from({ length: 9 }, (_, index) => ({
+    type: 'DROP_SHADOW', color: { r: 0, g: 0, b: 0, a: 1 }, offset: { x: 0, y: 2 }, radius: 3,
+    ...(index === 0 ? { spread: 5, blendMode: 'MULTIPLY', showShadowBehindNode: false } : {})
+  }));
+  const imported = convertFigDocument({
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('RECTANGLE', 2, pageGuid, 'a', {
+        name: 'Unsupported effects', effects: [
+          ...shadows,
+          { type: 'FOREGROUND_BLUR', radius: 4 },
+          { type: 'BACKGROUND_BLUR', radius: 8 },
+          { type: 'REPEAT', visible: true }
+        ]
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+  const layer = imported.document.pages[0].children[0];
+
+  assert.equal(layer.effects.length, 9, 'eight shadows and one blur fit the local stack');
+  assert.equal(layer.effects.filter(effect => effect.type === 'drop-shadow').length, 8);
+  assert.equal(layer.effects.filter(effect => effect.type === 'layer-blur').length, 1);
+  assert.equal(layer.effects.some(effect => effect.type === 'background-blur'), false,
+    'the local model permits only one foreground or background blur');
+  assert.equal(imported.report.unsupportedTypes.EFFECT_STACK, 2, 'the ninth shadow and competing blur are reported');
+  assert.equal(imported.report.unsupportedTypes.REPEAT, 1, 'unsupported effect types are omitted and identified');
+  for (const warningType of ['EFFECT_SPREAD', 'EFFECT_BLEND', 'EFFECT_ORDER']) {
+    assert.equal(imported.report.flattenedTypes[warningType], 1, `${warningType} loss is reported`);
+  }
+  assert.equal(parseDocument(serializeDocument(imported.document)).pages[0].children[0].effects.length, 9);
 });
 
 test('imports supported mixed character styles as editable rich-text runs', () => {

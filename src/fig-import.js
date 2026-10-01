@@ -3,6 +3,10 @@ import { createComponentSet, createDocument, createId, createNode, MAX_DOCUMENT_
 import { assertSafeRasterDimensions, inspectRasterDimensions } from './image-engine.js';
 import { createImageFill } from './image-fills.js';
 import { createAutoLayout } from './layout-engine.js';
+import {
+  MAX_BACKGROUND_BLURS_PER_LAYER, MAX_DROP_SHADOWS_PER_LAYER,
+  MAX_INNER_SHADOWS_PER_LAYER, MAX_LAYER_BLURS_PER_LAYER
+} from './layer-effects.js';
 import { preflightFigArchive, FIG_IMPORT_LIMITS } from './fig-import-preflight.js';
 
 const MAX_WARNINGS = 40;
@@ -197,6 +201,85 @@ function mapStrokes(paints, node, report) {
     });
   }
   return strokes;
+}
+
+function boundedEffectMetric(value, fallback, minimum, maximum, report, name, property) {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    warn(report, 'flattened', 'EFFECT_METRIC', name, `The ${property} value was invalid and reset to ${fallback}.`);
+    return fallback;
+  }
+  if (number < minimum || number > maximum) {
+    warn(report, 'flattened', 'EFFECT_METRIC', name, `The ${property} value was clamped to the supported ${minimum}–${maximum} range.`);
+    return Math.max(minimum, Math.min(maximum, number));
+  }
+  return number;
+}
+
+function mapLayerEffects(effects, node, report) {
+  if (!Array.isArray(effects)) return [];
+  const result = [];
+  const counts = { 'drop-shadow': 0, 'inner-shadow': 0, 'layer-blur': 0, 'background-blur': 0 };
+  const typeMap = {
+    DROP_SHADOW: 'drop-shadow', INNER_SHADOW: 'inner-shadow',
+    FOREGROUND_BLUR: 'layer-blur', BACKGROUND_BLUR: 'background-blur'
+  };
+  const limits = {
+    'drop-shadow': MAX_DROP_SHADOWS_PER_LAYER,
+    'inner-shadow': MAX_INNER_SHADOWS_PER_LAYER,
+    'layer-blur': MAX_LAYER_BLURS_PER_LAYER,
+    'background-blur': MAX_BACKGROUND_BLURS_PER_LAYER
+  };
+  for (const source of effects) {
+    if (!source || source.visible === false) continue;
+    const type = typeMap[String(source.type || '').toUpperCase()];
+    if (!type) {
+      warn(report, 'unsupported', source.type || 'EFFECT', node.name, 'This Figma effect type has no equivalent editable local effect and was omitted.');
+      continue;
+    }
+    if (counts[type] >= limits[type]) {
+      warn(report, 'unsupported', 'EFFECT_STACK', node.name, `Additional ${type} effects exceed the local layer limit and were omitted.`);
+      continue;
+    }
+    if ((type === 'layer-blur' || type === 'background-blur')
+      && (counts['layer-blur'] + counts['background-blur']) > 0) {
+      warn(report, 'unsupported', 'EFFECT_STACK', node.name, 'Only one foreground or background blur can be represented on a local layer; this additional blur was omitted.');
+      continue;
+    }
+
+    const effect = { id: createId('effect'), type, visible: true };
+    if (type === 'drop-shadow' || type === 'inner-shadow') {
+      const color = hexColor(source.color);
+      if (!color) {
+        warn(report, 'unsupported', 'EFFECT_COLOR', node.name, `The ${type} had no valid color and was omitted.`);
+        continue;
+      }
+      const offset = source.offset && typeof source.offset === 'object' ? source.offset : {};
+      effect.color = color;
+      effect.opacity = paintOpacity(source);
+      effect.offsetX = boundedEffectMetric(offset.x, 0, -1000, 1000, report, node.name, 'effect offset x');
+      effect.offsetY = boundedEffectMetric(offset.y, 0, -1000, 1000, report, node.name, 'effect offset y');
+      effect.blur = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
+      if (source.spread != null && (!Number.isFinite(Number(source.spread)) || Number(source.spread) !== 0)) {
+        warn(report, 'flattened', 'EFFECT_SPREAD', node.name, 'Shadow spread is not supported locally and was reset to zero.');
+      }
+      if (source.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(source.blendMode).toUpperCase())) {
+        warn(report, 'flattened', 'EFFECT_BLEND', node.name, 'The effect blend mode was reset to normal.');
+      }
+      if (source.showShadowBehindNode === false) {
+        warn(report, 'flattened', 'EFFECT_ORDER', node.name, 'The source shadow ordering was reduced to the local shadow rendering order.');
+      }
+    } else {
+      effect.radius = boundedEffectMetric(source.radius, 0, 0, 100, report, node.name, 'effect blur radius');
+      if (source.blendMode && !['NORMAL', 'PASS_THROUGH'].includes(String(source.blendMode).toUpperCase())) {
+        warn(report, 'flattened', 'EFFECT_BLEND', node.name, 'The effect blend mode was reset to normal.');
+      }
+    }
+    result.push(effect);
+    counts[type] += 1;
+  }
+  return result;
 }
 
 function localTransform(source, report) {
@@ -914,6 +997,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
       name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
       visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children: vectorChildren(source, paths, context)
     };
+    const effects = mapLayerEffects(source.effects, source, context.report);
+    if (effects.length) overrides.effects = effects;
     mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
     const node = createNode('group', {
       ...overrides
@@ -933,6 +1018,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
         name, ...transform, width: finite(source.size?.x, 0, 0, 1_000_000), height: finite(source.size?.y, 0, 0, 1_000_000),
         visible: source.visible !== false, opacity: finite(source.opacity, 1, 0, 1), children
       };
+      const effects = mapLayerEffects(source.effects, source, context.report);
+      if (effects.length) overrides.effects = effects;
       mapChildAutoLayout(source, parentSource, overrides, context.report, name, context);
       const node = createNode('group', overrides);
       warn(context.report, 'flattened', source.type || 'NODE', name, 'An unsupported container was kept as an editable group so its children remain available.');
@@ -964,7 +1051,8 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
   else if (['frame', 'section', 'rectangle', 'ellipse', 'star', 'polygon', 'boolean'].includes(type)) overrides.fill = 'transparent';
   if (strokes.length) overrides.strokes = strokes;
   else { overrides.stroke = null; overrides.strokeWidth = 0; }
-  if (Array.isArray(source.effects) && source.effects.some(effect => effect?.visible !== false)) warn(context.report, 'unsupported', 'EFFECT', name, 'Layer effects were omitted.');
+  const effects = mapLayerEffects(source.effects, source, context.report);
+  if (effects.length) overrides.effects = effects;
   if (source.blendMode && source.blendMode !== 'PASS_THROUGH' && source.blendMode !== 'NORMAL') {
     warn(context.report, 'flattened', 'BLEND_MODE', name, 'The layer blend mode was reset to normal.');
   }

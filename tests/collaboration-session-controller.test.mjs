@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode } from '../src/model.js';
+import {
+  addCommentReply, addNode, createCommentThread, createDocument, createNode,
+  parseDocument, removeCommentThread, serializeDocument, setCommentResolved
+} from '../src/model.js';
 import { decodeCollaborationMessage, encodeCollaborationMessage } from '../src/collaboration/protocol.js';
 import { createGuestSessionController, createHostSessionController } from '../src/collaboration/session-controller.js';
 
@@ -137,6 +140,79 @@ test('host sends a snapshot only after HELLO and persists guest snapshot before 
   const reply = decodeCollaborationMessage(channel.sent.at(-1), { direction: 'host-to-guest' });
   assert.equal(reply.kind, 'ACK');
   assert.equal(reply.revision, 3);
+  controller.close();
+});
+
+test('live comment create, reply, resolve, and delete sync through durable full-snapshot ACKs', async () => {
+  const initial = fakeDesign();
+  let stored = {
+    ...initial,
+    document: parseDocument(serializeDocument(initial.document))
+  };
+  let commitCount = 0;
+  const { controller, channel } = await hostFixture({
+    open: async () => stored,
+    commit: async (_workspace, _designId, snapshot, options) => {
+      // Model a verified workspace reopen: only a parseable, schema-valid saved
+      // snapshot can become the state for which the host returns an ACK.
+      const reopened = parseDocument(serializeDocument(snapshot));
+      const sequence = options.expectedHead.sequence + 1;
+      stored = {
+        ...stored,
+        document: reopened,
+        head: { sequence, commitHash: sequence.toString(16).padStart(64, '0') }
+      };
+      commitCount += 1;
+      return stored;
+    }
+  });
+  await controller.acceptAnswer('answer-capsule');
+  channel.receive(context('HELLO', { lastRevision: 0 }));
+  await settle();
+
+  let guestCopy = parseDocument(serializeDocument(stored.document));
+  const thread = createCommentThread(guestCopy, {
+    pageId: guestCopy.activePageId, x: 24.5, y: -12, text: 'Check this spacing.', author: 'Guest'
+  });
+  const acknowledged = [];
+  async function propose(opId) {
+    const beforeRevision = controller.head.sequence;
+    channel.receive(context('OPERATION', {
+      operation: {
+        type: 'ReplaceSnapshot', opId, baseRevision: beforeRevision,
+        snapshot: JSON.parse(serializeDocument(guestCopy))
+      }
+    }));
+    await settle();
+    const ack = decodeCollaborationMessage(channel.sent.at(-1), { direction: 'host-to-guest' });
+    assert.equal(ack.kind, 'ACK');
+    assert.equal(ack.opId, opId);
+    assert.equal(ack.revision, beforeRevision + 1);
+    assert.equal(stored.head.sequence, ack.revision, 'the ACK names the reopened durable workspace head');
+    assert.deepEqual(stored.document.comments || [], guestCopy.comments || [], 'the host persisted the exact comment snapshot before ACK');
+    acknowledged.push(ack);
+    guestCopy = parseDocument(serializeDocument(stored.document));
+  }
+
+  await propose('comment-create');
+  assert.equal(stored.document.comments[0].messages[0].text, 'Check this spacing.');
+
+  addCommentReply(guestCopy, thread.id, 'Adjusted to 16 px.', 'Guest');
+  await propose('comment-reply');
+  assert.deepEqual(stored.document.comments[0].messages.map(message => message.text), [
+    'Check this spacing.', 'Adjusted to 16 px.'
+  ]);
+
+  assert.equal(setCommentResolved(guestCopy, thread.id, true), true);
+  await propose('comment-resolve');
+  assert.equal(stored.document.comments[0].resolved, true);
+
+  assert.equal(removeCommentThread(guestCopy, thread.id), true);
+  await propose('comment-delete');
+  assert.deepEqual(stored.document.comments, []);
+  assert.equal(commitCount, 4);
+  assert.deepEqual(acknowledged.map(ack => ack.revision), [3, 4, 5, 6]);
+
   controller.close();
 });
 
