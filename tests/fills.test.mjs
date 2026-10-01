@@ -84,12 +84,14 @@ test('linear, radial, and angular gradients survive local design serialization',
   assert.deepEqual(restored.pages[0].children.map(node => node.fillGradient), [linear.fillGradient, radial.fillGradient, angular.fillGradient]);
 });
 
-test('gradient validation rejects invalid types, unsupported layers, and unordered stops', () => {
+test('text accepts gradient paints while validation rejects invalid types and unordered stops', () => {
   const valid = createGradientFill('linear');
   assert.equal(isValidGradientFill(valid), true);
   const document = createDocument();
   addNode(document, createNode('text', { fillGradient: valid }));
-  assert.throws(() => validateDocument(document), /Gradient fill is not supported/);
+  assert.equal(validateDocument(document), true);
+  const restoredText = parseDocument(serializeDocument(document)).pages[0].children[0];
+  assert.deepEqual(restoredText.fillGradient, valid, 'legacy text gradient paints survive a local document round trip');
   const invalid = createDocument();
   const shape = createNode('rectangle', { fillGradient: valid });
   shape.fillGradient.stops.reverse();

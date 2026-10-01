@@ -40,7 +40,8 @@ export function fillStackForNode(node) {
   const base = { id: `legacy-fill:${node.id || 'node'}`, visible: true, opacity: node.fillOpacity ?? 1 };
   if (node.imageFill) return [{ ...base, type: 'image', imageFill: clone(node.imageFill) }];
   if (node.fillGradient) return [{ ...base, type: node.fillGradient.type, gradient: clone(node.fillGradient) }];
-  return [{ ...base, type: 'solid', color: typeof node.fill === 'string' ? node.fill : '#d9d9d9' }];
+  const color = node.type === 'text' ? node.color : node.fill;
+  return [{ ...base, type: 'solid', color: typeof color === 'string' ? color : node.type === 'text' ? '#1e1e1e' : '#d9d9d9' }];
 }
 
 /** Materialize the compatibility representation when changing a legacy fill. */
@@ -132,7 +133,7 @@ export function detachPrimaryFillBinding(node, previousPrimary, resolvedColor) {
 
 export function isFillStackSupported(node) {
   if (!node) return false;
-  return ['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
+  return ['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'text'].includes(node.type)
     || (node.type === 'path' && vectorPathContours(node).some(contour => contour.closed && contour.points.length >= 2))
     || (node.type === 'network' && Array.isArray(node.faces) && node.faces.length > 0);
 }
@@ -145,7 +146,7 @@ export function isValidFillLayer(fill, node = null, { isValidImageFill = () => f
     || (Object.hasOwn(fill, 'blendMode') && !isValidLayerBlendMode(fill.blendMode))) return false;
   if (fill.type === 'solid') return typeof fill.color === 'string' && (/^#[0-9a-f]{6}$/i.test(fill.color) || fill.color === 'transparent');
   if (gradientTypes.has(fill.type)) return fill.gradient?.type === fill.type && isValidGradientFill(fill.gradient);
-  return Boolean(node && isImageFillSupported(node) && isValidImageFill(fill.imageFill));
+  return Boolean(node && (node.type === 'text' || isImageFillSupported(node)) && isValidImageFill(fill.imageFill));
 }
 
 export function isValidFillStack(fills, node, imageFillValidators = {}) {

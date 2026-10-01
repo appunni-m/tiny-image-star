@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from '../src/menu-keyboard.js';
+import { contextMenuActionByLabel, contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from '../src/menu-keyboard.js';
 
 function menuFixture() {
   const items = [
@@ -25,6 +25,14 @@ function menuFixture() {
 test('context menu item collection includes enabled radio choices and skips disabled rows', () => {
   const { menu, enabled } = menuFixture();
   assert.deepEqual(contextMenuItems(menu), enabled);
+});
+
+test('context menu shortcuts resolve the visible action label without matching shortcut text', () => {
+  const duplicate = { firstElementChild: { textContent: 'Duplicate' } };
+  const deleteAction = { firstElementChild: { textContent: 'Delete' }, lastElementChild: { textContent: '⌫' } };
+  assert.equal(contextMenuActionByLabel([duplicate, deleteAction], 'Delete'), deleteAction);
+  assert.equal(contextMenuActionByLabel([duplicate, deleteAction], 'Remove'), null);
+  assert.equal(contextMenuActionByLabel(null, 'Delete'), null);
 });
 
 test('initial context-menu focus includes radio choices and avoids scrolling', () => {
@@ -88,6 +96,12 @@ test('editor menu opening and keyboard handling use the shared mixed-role focus 
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(source, /focusFirstContextMenuItem\(menu\);/);
   assert.match(source, /contextMenuNavigationTarget\(menuItems, document\.activeElement, event\.key\)/);
+  const contextDeleteShortcut = source.indexOf("const deleteAction = contextMenuActionByLabel(menuItems, 'Delete');");
+  const vectorDeleteShortcut = source.indexOf('shouldDeleteSelectedVectorAnchor(state.selectedIds, state.selectedVectorPoint)');
+  assert.ok(contextDeleteShortcut >= 0 && vectorDeleteShortcut > contextDeleteShortcut,
+    'a focused layer menu Delete action must take precedence over vector-anchor Delete');
+  assert.match(source, /if \(event\.key === 'Delete' \|\| event\.key === 'Backspace'\)[\s\S]*?contextMenuActionByLabel\(menuItems, 'Delete'\)[\s\S]*?deleteAction\.click\(\)/,
+    'the visible menu Delete shortcut should activate the actual layer deletion action');
   assert.match(source, /mobilePanelTabTarget\(focusStops, document\.activeElement, event\.shiftKey\)/);
   assert.match(source, /const menuItems = menu\.hidden \? \[\] : contextMenuItems\(menu\)/,
     'the drawer focus trap should treat its external popup menu as part of the focus sequence');

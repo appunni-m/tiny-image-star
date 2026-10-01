@@ -7,7 +7,7 @@ import { imageCropPixels, isValidImageTransforms, normalizeImageTransforms } fro
 import { isValidLayerEffects, layerEffectPadding } from './layer-effects.js';
 import { isValidLayerBlendMode } from './layer-blend.js';
 import { strokeDashArray } from './stroke-style.js';
-import { strokeStackForNode } from './strokes.js';
+import { isValidStrokeStack, strokeStackForNode } from './strokes.js';
 import { strokeEndpointDecorations } from './stroke-decorations.js';
 import { vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorPathContours } from './vector-path.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
@@ -365,7 +365,10 @@ function shapeStrokeStackMarkup(node, document, measureText, gradientId = null, 
     const strokeGradientId = addStrokeGradientDefinition(node, stroke, index, layerIndex, context);
     let markup;
     if (node.type === 'image') markup = roundedRectMarkup(node, document, ` fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}`);
-    else if (node.type === 'text') markup = `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node, stroke, index, strokeGradientId)}/>`;
+    else if (node.type === 'text') markup = textMarkup(node, document, measureText, {
+      fillValue: 'transparent', fillOpacity: 0, includeStroke: true,
+      strokeItem: stroke, strokeIndex: index, strokeGradientId
+    });
     else markup = shapeMarkup(node, document, measureText, gradientId, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true, strokeItem: stroke, strokeIndex: index, strokeGradientId });
     if (markup) markup = markup.replace(/^<([a-z][\w:-]*)\b/, `<$1 data-tiny-image-star-stroke-id="${escapeXml(stroke.id)}" data-tiny-image-star-stroke-order="${index}"${paintBlendStyle(stroke.blendMode)}`);
     return markup + strokeDecorationMarkup(node, document, stroke, index, strokeGradientId);
@@ -421,21 +424,25 @@ function roundedRectMarkup(node, document, attributes = '') {
 
 function unsupportedFeature(node, assets, imagePreviews = null, document = emptyDocument) {
   if (!supportedTypes.has(node.type)) return `${node.type || 'unknown'} layers`;
+  const fillValidationNode = node.type === 'text' ? { ...node, type: 'rectangle' } : node;
   if (Array.isArray(node.fills)) {
     for (const fill of node.fills) {
       if (fill?.blendMode != null && !isValidLayerBlendMode(fill.blendMode)) {
         throw new TypeError(`SVG export requires a supported fill blend mode on layer ${node.name || node.id || '(unnamed)'}.`);
       }
     }
-    if (!isValidFillStack(node.fills, node, { isValidImageFill, isImageFillSupported })) {
+    if (!isValidFillStack(node.fills, fillValidationNode, { isValidImageFill, isImageFillSupported })) {
       throw new TypeError(`SVG export requires a valid fill stack on layer ${node.name || node.id || '(unnamed)'}.`);
     }
     for (let index = 0; index < node.fills.length; index += 1) {
       const fill = node.fills[index];
       if (fill.type !== 'image' || !fill.visible || fill.opacity <= 0) continue;
-      const problem = unsupportedImageFill(node, fill.imageFill, assets, imagePreviews, imagePreviewKey(node.id, fill.id));
+      const problem = unsupportedImageFill(fillValidationNode, fill.imageFill, assets, imagePreviews, imagePreviewKey(node.id, fill.id));
       if (problem) return problem;
     }
+  }
+  if (node.type === 'text' && Array.isArray(node.strokes) && !isValidStrokeStack(node.strokes, node)) {
+    return 'invalid text stroke stacks';
   }
   for (const stroke of strokeStackForNode(node)) {
     if (stroke?.blendMode != null && !isValidLayerBlendMode(stroke.blendMode)) {
@@ -737,6 +744,7 @@ function isolatesSvgPaintBackdrop(document, node, maskSource = null) {
 }
 
 function renderShapeFillStack(node, document, context, index, measureText) {
+  if (node.type === 'text') return renderTextFillStack(node, document, context, index, measureText);
   const fills = node.fills;
   let markup = '';
   let hasImage = false;
@@ -947,11 +955,17 @@ function textListMarkerTspan(line, node, document, verticalOffset, fillOverride 
   };
   const rawMarkerColor = fillOverride === undefined ? style.color || color(document, node, 'text') : fillOverride;
   const markerColor = rawMarkerColor === 'transparent' ? 'none' : rawMarkerColor;
-  if (markerColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(markerColor)) {
+  if (markerColor !== 'none' && !isSvgPaintValue(markerColor)) {
     throw new TypeError(`SVG export supports solid hexadecimal list marker colors only on layer ${node.name || node.id || '(unnamed)'}.`);
   }
   const textLength = marker.width > 0 ? ` textLength="${number(marker.width)}" lengthAdjust="spacingAndGlyphs"` : '';
   return `<tspan data-tiny-image-star-list-marker="${marker.listStyle || line.listStyle}" data-list-level="${line.listLevel}" x="${number(marker.anchorX)}" y="${number(line.y + verticalOffset)}" text-anchor="end" text-transform="none" font-family="${escapeXml(style.fontFamily || node.fontFamily || 'Arial, sans-serif')}" font-size="${number(style.fontSize || getNodePropertyValue(document, node, 'fontSize') || 24)}" font-weight="${escapeXml(style.fontWeight || getNodePropertyValue(document, node, 'fontWeight') || 400)}" font-style="${style.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(style.letterSpacing ?? getNodePropertyValue(document, node, 'letterSpacing') ?? 0)}" fill="${escapeXml(markerColor)}"${textLength}>${escapeXml(marker.text)}</tspan>`;
+}
+
+function isSvgPaintValue(value) {
+  return typeof value === 'string'
+    && (/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) || value === 'none'
+      || /^url\(#[-\w.]+\)$/u.test(value));
 }
 
 function richLineJustificationOffsets(line) {
@@ -978,7 +992,10 @@ function richLineJustificationOffsets(line) {
   return offsets;
 }
 
-function textMarkup(node, document, measureText, { fillValue, fillOpacity, includeStroke = true } = {}) {
+function textMarkup(node, document, measureText, {
+  fillValue, fillOpacity, includeStroke = true,
+  strokeItem, strokeIndex = 0, strokeGradientId = null
+} = {}) {
   const fontSize = Number(getNodePropertyValue(document, node, 'fontSize') || 24);
   const lineHeight = Number(getNodePropertyValue(document, node, 'lineHeight') || 1.25) * fontSize;
   const letterSpacing = Number(getNodePropertyValue(document, node, 'letterSpacing') ?? 0);
@@ -1007,7 +1024,7 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
         const style = part.style;
         const rawPartColor = fillValue === undefined ? style.color : fillValue;
         const partColor = rawPartColor === 'transparent' ? 'none' : rawPartColor;
-        if (partColor !== 'none' && !/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(partColor)) {
+        if (partColor !== 'none' && !isSvgPaintValue(partColor)) {
           throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
         }
         const baselineShift = Number(style.baselineShift || 0);
@@ -1031,11 +1048,9 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
       return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
         + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${parts}</tspan>`;
     }).join('');
-    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
-    const border = includeStroke && node.stroke && Number(node.strokeWidth) > 0
-      ? `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node)}/>`
-      : '';
-    return element + border + decorations.join('');
+    const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
+    const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${richTspans}</text>`;
+    return element + decorations.join('');
   }
   const tspans = lines.map(line => {
     const { displayText, width, naturalWidth } = line;
@@ -1048,10 +1063,8 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
     return textListMarkerTspan(line, node, document, verticalOffset, fillValue)
       + `<tspan x="${number(lineAnchorX)}" y="${number(line.y + verticalOffset)}"${lineTextAnchorOverride}${textLength}${wordSpacing}>${escapeXml(displayText)}</tspan>`;
   }).join('');
-  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
-  const border = includeStroke && node.stroke && Number(node.strokeWidth) > 0
-    ? `<rect x="0" y="0" width="${number(node.width)}" height="${number(node.height)}" fill="none"${strokeAttributes(document, node)}/>`
-    : '';
+  const stroke = includeStroke ? strokeAttributes(document, node, strokeItem, strokeIndex, strokeGradientId) : '';
+  const element = `<text x="${number(anchorX)}" y="0" text-anchor="${align}" dominant-baseline="text-before-edge" xml:space="preserve" font-family="${escapeXml(fontFamily)}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle === 'italic' ? 'italic' : 'normal'}" letter-spacing="${number(letterSpacing)}"${textCase}${fillAttributes(document, node, { text: true, fillValue, fillOpacity })}${stroke} data-tiny-image-star-text-wrap="canvas-word-wrap">${tspans}</text>`;
   const decoration = ['underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : null;
   const textColor = fillValue === undefined ? color(document, node, 'text') : fillValue;
   const textOpacity = fillOpacity ?? node.fillOpacity ?? 1;
@@ -1061,7 +1074,59 @@ function textMarkup(node, document, measureText, { fillValue, fillOpacity, inclu
     const y = line.y + verticalOffset + fontSize * (decoration === 'underline' ? 1.03 : 0.55);
     return `<path d="M ${number(x)} ${number(y)} L ${number(x + line.width)} ${number(y)}" fill="none" stroke="${escapeXml(textColor === 'transparent' ? 'none' : textColor)}" stroke-opacity="${number(textOpacity)}" stroke-width="${number(decorationWidth)}"/>`;
   }).join('') : '';
-  return element + border + decorations;
+  return element + decorations;
+}
+
+function markTextFillMarkup(markup, fill) {
+  if (!markup) return '';
+  const metadata = ` data-tiny-image-star-fill-id="${escapeXml(fill.id)}" data-tiny-image-star-fill-type="${escapeXml(fill.type)}"${paintBlendStyle(fill.blendMode)}`;
+  return `<g${metadata}>${markup}</g>`;
+}
+
+function addTextImagePattern(node, fill, fillIndex, layerIndex, context) {
+  const image = resolveLocalImage(node, context.assets, fill.imageFill.assetId, context.imagePreviews, imagePreviewKey(node.id, fill.id));
+  if (!(Number(node.width) > 0) || !(Number(node.height) > 0)) {
+    throw new SvgExportError('image fills on zero-size text layers', node);
+  }
+  const id = `tis-text-image-fill-${layerIndex}-${fillIndex}`;
+  const imageMarkup = rasterImageMarkup({
+    image, width: node.width, height: node.height, fit: fill.imageFill.fit,
+    transforms: image.isPreview ? {} : fill.imageFill.transforms
+  });
+  context.defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="0" y="0" width="${number(node.width)}" height="${number(node.height)}">${imageMarkup}</pattern>`);
+  return `url(#${id})`;
+}
+
+function renderTextFillStack(node, document, context, layerIndex, measureText) {
+  let markup = '';
+  for (let fillIndex = 0; fillIndex < node.fills.length; fillIndex += 1) {
+    const fill = node.fills[fillIndex];
+    if (!fill.visible || fill.opacity <= 0) continue;
+    let fillValue;
+    if (fill.type === 'solid') {
+      const value = stackSolidValue(document, node, fill, fillIndex);
+      fillValue = value === 'transparent' ? 'none' : value;
+    } else if (fill.type === 'image') {
+      fillValue = addTextImagePattern(node, fill, fillIndex, layerIndex, context);
+    } else {
+      const id = `tis-gradient-${layerIndex}-fill-${fillIndex}`;
+      const gradient = gradientDefinition(node, layerIndex, fill.gradient, id);
+      context.defs.push(gradient.markup);
+      fillValue = `url(#${gradient.id})`;
+    }
+    const painted = textMarkup(node, document, measureText, {
+      fillValue, fillOpacity: fill.opacity, includeStroke: false
+    });
+    markup += markTextFillMarkup(painted, fill);
+  }
+  // Text strokes trace glyph contours. Keep the complete ordered stack above
+  // every fill, matching the vector renderer's paint order.
+  if (Array.isArray(node.strokes)) {
+    markup += shapeStrokeStackMarkup(node, document, measureText, null, context, layerIndex);
+  } else {
+    markup += textMarkup(node, document, measureText, { fillValue: 'transparent', fillOpacity: 0, includeStroke: true });
+  }
+  return markup;
 }
 
 function clipDefinition(document, id, node) {

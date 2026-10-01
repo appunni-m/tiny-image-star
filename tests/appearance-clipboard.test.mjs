@@ -217,7 +217,7 @@ test('text appearance copies typography but preserves target rich text, paragrap
   assert.equal(pasted.visible, false);
 });
 
-test('incompatible target types skip complete fill/radius/text groups and retain their own editable fields', () => {
+test('text targets accept complete fill stacks while still skipping incompatible radius and text groups', () => {
   const shapeAppearance = snapshotAppearance({
     type: 'rectangle', opacity: 0.5, blendMode: 'screen',
     fills: [{ id: 'source-image-fill', type: 'image', visible: true, opacity: 1, imageFill: createImageFill('asset-photo') }],
@@ -229,10 +229,12 @@ test('incompatible target types skip complete fill/radius/text groups and retain
     fontFamily: 'Arial', fontSize: 15, textRuns: [{ text: 'Do not replace', color: '#008800' }]
   };
   const textResult = applyAppearance(textTarget, shapeAppearance, { idFactory: ids() });
-  assert.ok(textResult.skipped.some(item => item.startsWith('fills:')));
+  assert.ok(textResult.applied.includes('fills'));
+  assert.deepEqual(textResult.node.fills.map(fill => fill.type), ['image']);
+  assert.equal(textResult.node.fills[0].imageFill.assetId, 'asset-photo');
   assert.ok(textResult.skipped.some(item => item.startsWith('radii:')));
   assert.ok(textResult.skipped.some(item => item.startsWith('textStyle:')));
-  assert.equal(Object.hasOwn(textResult.node, 'fills'), false);
+  assert.equal(Object.hasOwn(textResult.node, 'fills'), true);
   assert.equal(textResult.node.fill, '#eeeeee');
   assert.equal(textResult.node.text, 'Do not replace');
   assert.equal(textResult.node.fontSize, 15);

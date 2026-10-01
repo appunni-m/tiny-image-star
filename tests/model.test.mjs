@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
+import { addNode, absoluteBounds, applyImageRecipe, bindVariable, canBindVariable, createComponent, createComponentInstance, createComponentProperty, createDocument, createFillLayer, createGradientFill, createImageRecipe, createLayerEffect, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, MAX_DOCUMENT_NODE_COUNT, MAX_DOCUMENT_TREE_DEPTH, MAX_PAGE_RULER_GUIDES, moveNode, parseDocument, removeNode, serializeDocument, setComponentSlotContent, syncComponentInstances, updateNode, validateDocument } from '../src/model.js';
 import { History } from '../src/history.js';
 import { createImageFill } from '../src/image-fills.js';
 
@@ -794,8 +794,41 @@ test('image fills validate and survive a portable design round trip', () => {
   reopened.pages[0].children[0].imageFill = fill;
   reopened.pages[0].children[0].imageFill.adjustments.solarizeThreshold = 300;
   assert.throws(() => validateDocument(reopened), /Invalid image fill/);
-  reopened.pages[0].children[0] = createNode('text', { imageFill: fill });
-  assert.throws(() => validateDocument(reopened), /Image fill is not supported/);
+  reopened.pages[0].children[0] = createNode('text', { imageFill: createImageFill('asset-local-text') });
+  assert.equal(validateDocument(reopened), true, 'text layers accept local image paints while preserving the original image fill contract');
+});
+
+test('text paint stacks serialize while legacy text colors and their variable/style bindings remain intact', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Text paints');
+  const textVariable = createVariable(document, collection.id, 'Text ink', 'color', '#a12b3c');
+  document.colorStyles.push({ id: 'text-color-style', name: 'Legacy text ink', kind: 'text', value: '#a12b3c' });
+  const legacyText = createNode('text', {
+    id: 'legacy-text-color', color: '#a12b3c', textVariableId: textVariable.id, textStyleId: 'text-color-style'
+  });
+  const stackText = createNode('text', {
+    id: 'stacked-text-paints', color: '#124578',
+    fills: [
+      createFillLayer('solid', { id: 'text-base', color: '#224466' }),
+      createFillLayer('linear', { id: 'text-gradient', gradient: createGradientFill('linear', '#ff0000') }),
+      createFillLayer('image', { id: 'text-image', imageFill: createImageFill('asset-local') })
+    ],
+    strokes: [{ id: 'text-stroke', color: '#000000', width: 2, opacity: 1, visible: true, cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }]
+  });
+  addNode(document, legacyText); addNode(document, stackText);
+
+  const reopened = parseDocument(serializeDocument(document));
+  assert.equal(validateDocument(reopened), true);
+  const [legacy, stacked] = reopened.pages[0].children;
+  assert.equal(legacy.color, '#a12b3c');
+  assert.equal(legacy.textVariableId, textVariable.id);
+  assert.equal(legacy.textStyleId, 'text-color-style');
+  assert.equal(Object.hasOwn(legacy, 'fills'), false, 'old text nodes do not gain a paint stack during load');
+  assert.deepEqual(stacked.fills.map(fill => [fill.id, fill.type]), [
+    ['text-base', 'solid'], ['text-gradient', 'linear'], ['text-image', 'image']
+  ]);
+  assert.equal(stacked.color, '#124578', 'the compatibility text color remains unchanged beside the paint stack');
+  assert.deepEqual(stacked.strokes.map(stroke => stroke.id), ['text-stroke']);
 });
 
 test('layer blend modes validate and survive local design serialization', () => {

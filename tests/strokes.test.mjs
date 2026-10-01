@@ -78,3 +78,13 @@ test('stroke edits validate independently and removing the stack clears stale sc
   assert.equal(node.strokeVariableId, undefined);
   assert.deepEqual(node.variableBindings, { fill: 'variable-2' });
 });
+
+test('text layers accept editable stroke stacks without changing legacy text color data', () => {
+  const text = createNode('text', { color: '#235689', textVariableId: 'text-variable' });
+  const stroke = createStroke({ id: 'glyph-outline', color: '#ffffff', width: 3 });
+  assert.equal(addStroke(text, stroke), true);
+  assert.equal(isValidStrokeStack(text.strokes, text), true);
+  assert.equal(text.color, '#235689');
+  assert.equal(text.textVariableId, 'text-variable');
+  assert.equal(text.stroke, '#ffffff');
+});

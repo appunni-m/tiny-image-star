@@ -311,8 +311,21 @@ function mapStrokes(paints, node, report) {
   if (paints.length && dash.length) warn(report, 'flattened', 'STROKE_PATTERN', node.name, 'Custom dash lengths were reduced to a standard dashed or dotted stroke.');
   if (paints.length > 32) warn(report, 'unsupported', 'STROKE_STACK', node.name, 'Only the first 32 stroke paint layers were considered.');
   for (const paint of paints.slice(0, 32)) {
-    if (!paint || paint.visible === false || paint.type !== 'SOLID' || !Number.isFinite(paint.color?.r)) {
-      if (paint?.visible !== false) warn(report, 'unsupported', paint?.type || 'STROKE', node.name, 'Only solid stroke paints are imported.');
+    if (!paint || paint.visible === false || paintOpacity(paint) <= 0) continue;
+    if (['GRADIENT_LINEAR', 'GRADIENT_RADIAL', 'GRADIENT_ANGULAR'].includes(paint.type)) {
+      const mapped = mapGradientPaint(paint, node, report);
+      if (!mapped) continue;
+      strokes.push({
+        id: createId('stroke'), color: mapped.gradient.stops[0].color,
+        gradient: mapped.gradient, width: finite(node.strokeWeight, 1, 0, 100_000),
+        opacity: mapped.opacity, visible: true, cap, join, pattern,
+        miterLimit: finite(node.strokeMiterLimit, 10, 1, 1000), startDecoration: 'none', endDecoration: 'none',
+        ...mappedPaintBlendMode(paint, report, node.name)
+      });
+      continue;
+    }
+    if (paint.type !== 'SOLID' || !Number.isFinite(paint.color?.r)) {
+      warn(report, 'unsupported', paint.type || 'STROKE', node.name, 'Only solid and gradient stroke paints are imported.');
       continue;
     }
     const blend = mappedPaintBlendMode(paint, report, node.name);
@@ -611,11 +624,13 @@ function textRunStyleOverrides(style, base, context, name) {
       const color = hexColor(paint.color);
       if (color && color !== base.color.toLowerCase()) result.color = color;
       if (paintOpacity(paint) < 1) warn(context.report, 'flattened', 'TEXT_STYLE_OPACITY', name, 'Per-range text fill opacity was reset to opaque because editable text runs do not store range opacity.');
-      if (visibleFills.length > 1 || visibleFills.some(item => item.type !== 'SOLID')) {
+      if (visibleFills.some(item => item.type !== 'SOLID')) {
+        warn(context.report, 'unsupported', 'TEXT_STYLE_PAINT', name, 'Per-range gradient, image, or patterned text paints cannot be represented by the local text-run model; the first solid color was used when present.');
+      } else if (visibleFills.length > 1) {
         warn(context.report, 'flattened', 'TEXT_STYLE_PAINT', name, 'Per-range text paint stacks were reduced to their first solid color.');
       }
     } else if (visibleFills.length) {
-      warn(context.report, 'unsupported', 'TEXT_STYLE_PAINT', name, 'A per-range text paint without a solid color was reduced to the layer text color.');
+      warn(context.report, 'unsupported', 'TEXT_STYLE_PAINT', name, 'Per-range gradient, image, or patterned text paints cannot be represented by the local text-run model and were reduced to the layer text color.');
     }
   }
 
@@ -693,11 +708,6 @@ function textProperties(source, context) {
     : [];
   const solidPaints = visiblePaints.filter(item => item.type === 'SOLID');
   const paint = solidPaints[0] || null;
-  if (visiblePaints.some(item => item.type !== 'SOLID')) {
-    warn(context.report, 'unsupported', 'TEXT_PAINT', source.name, 'Gradient, image, and patterned text paints were reduced to the first solid color or the local default.');
-  }
-  if (visiblePaints.length > 1) warn(context.report, 'flattened', 'TEXT_PAINT_STACK', source.name, 'Multiple text paints were reduced to the first solid color.');
-  visiblePaints.forEach(item => warnPaintBlend(item, context.report, source.name, 'TEXT_PAINT_BLEND'));
   const color = hexColor(paint?.color) || '#1e1e1e';
   if (paint && !hexColor(paint.color)) warn(context.report, 'unsupported', 'TEXT_PAINT', source.name, 'The text color could not be decoded and uses the local default.');
   const namedStyle = String(style.fontName?.style || source.fontName?.style || '');
@@ -712,7 +722,9 @@ function textProperties(source, context) {
     warn(context.report, 'flattened', 'TEXT_FIT', source.name, 'This text resizing mode was reduced to a fixed text box.');
   }
   const properties = {
-    opacity: finite(source.opacity, 1, 0, 1) * (paint ? paintOpacity(paint) : 1),
+    // Layer paint opacity stays attached to each imported fill. The legacy
+    // `color` field remains as a fallback for older local documents and runs.
+    opacity: finite(source.opacity, 1, 0, 1),
     text: characters,
     fontFamily,
     fontSize,
@@ -1165,7 +1177,7 @@ function createLayer(source, children, context, pageId, depth = 0, parentSource 
     children: ['frame', 'group', 'section', 'boolean'].includes(type) ? (children || []) : []
   };
   mapLayerBlendMode(source, overrides, context.report, name);
-  const fills = type === 'text' || type === 'line' ? [] : mapPaints(source.fillPaints, source, context);
+  const fills = type === 'line' ? [] : mapPaints(source.fillPaints, source, context);
   if (type === 'line' && Array.isArray(source.fillPaints) && source.fillPaints.some(paint => paint?.visible !== false)) {
     warn(context.report, 'unsupported', 'LINE_FILL', name, 'Fill paints on lines are not supported by the local editor.');
   }

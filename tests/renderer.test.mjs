@@ -1276,10 +1276,203 @@ function richContext() {
   return context;
 }
 
+function textPaintContext() {
+  const stack = [];
+  const calls = [];
+  const context = {
+    calls, globalAlpha: 1, globalCompositeOperation: 'source-over', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+    font: '400 10px Arial', textAlign: 'left', textBaseline: 'alphabetic',
+    save() {
+      stack.push(Object.fromEntries(['globalAlpha', 'globalCompositeOperation', 'fillStyle', 'strokeStyle',
+        'lineWidth', 'lineCap', 'lineJoin', 'miterLimit', 'font', 'textAlign', 'textBaseline']
+        .map(key => [key, this[key]])));
+    },
+    restore() { Object.assign(this, stack.pop() || {}); },
+    setTransform(...values) { calls.push({ kind: 'setTransform', values }); },
+    getTransform() { return { a: 1, b: 0 }; },
+    translate(...values) { calls.push({ kind: 'translate', values }); },
+    scale(...values) { calls.push({ kind: 'scale', values }); },
+    beginPath() { calls.push({ kind: 'beginPath' }); },
+    rect(...values) { calls.push({ kind: 'rect', values }); },
+    clip(...values) { calls.push({ kind: 'clip', values }); },
+    moveTo(...values) { calls.push({ kind: 'moveTo', values }); },
+    lineTo(...values) { calls.push({ kind: 'lineTo', values }); },
+    setLineDash(values) { calls.push({ kind: 'setLineDash', values: [...values] }); },
+    clearRect(...values) { calls.push({ kind: 'clearRect', values }); },
+    measureText(text) {
+      const size = Number(this.font.match(/(\d+(?:\.\d+)?)px/)?.[1] || 10);
+      return { width: [...String(text)].length * size * .5 };
+    },
+    fillText(text, x, y, maxWidth) {
+      calls.push({ kind: 'fillText', text, x, y, maxWidth, font: this.font, fillStyle: this.fillStyle,
+        alpha: this.globalAlpha, blendMode: this.globalCompositeOperation });
+    },
+    strokeText(text, x, y, maxWidth) {
+      calls.push({ kind: 'strokeText', text, x, y, maxWidth, font: this.font, strokeStyle: this.strokeStyle,
+        lineWidth: this.lineWidth, alpha: this.globalAlpha, blendMode: this.globalCompositeOperation });
+    },
+    fill() {
+      calls.push({ kind: 'fill', fillStyle: this.fillStyle, alpha: this.globalAlpha,
+        blendMode: this.globalCompositeOperation });
+    },
+    stroke() {
+      calls.push({ kind: 'stroke', strokeStyle: this.strokeStyle, lineWidth: this.lineWidth,
+        alpha: this.globalAlpha, blendMode: this.globalCompositeOperation });
+    },
+    drawImage(image, ...values) {
+      calls.push({ kind: 'drawImage', image, values, alpha: this.globalAlpha,
+        blendMode: this.globalCompositeOperation,
+        sourceCalls: image?.context?.calls ? [...image.context.calls] : null });
+    }
+  };
+  return context;
+}
+
+test('text fill stacks composite ordered paints through the combined laid-out glyph alpha', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    x: 10, y: 20, width: 120, height: 54, opacity: .75, align: 'right', verticalAlign: 'middle',
+    text: 'A👩‍💻',
+    textRuns: [
+      { text: 'A', fontSize: 16, color: '#ff0000', letterSpacing: 2 },
+      { text: '👩‍💻', fontSize: 20, color: '#0000ff', textDecoration: 'underline' }
+    ],
+    fills: [
+      { id: 'magenta', type: 'solid', color: '#ff00ff', visible: true, opacity: .6, blendMode: 'multiply' },
+      { id: 'photo', type: 'image', imageFill: createImageFill('local-photo'), visible: true, opacity: .4, blendMode: 'screen' }
+    ],
+    strokes: []
+  });
+  addNode(document, text);
+  const preview = { name: 'local fill preview', width: 16, height: 12 };
+  const fillKey = imagePreviewKey(text.id, 'photo');
+  const state = {
+    document, assets: new Map(), previews: new Map([[fillKey, preview]]),
+    previewAssetIds: new Map([[fillKey, 'local-photo']]),
+    outlineMode: false, presenting: false, zoom: 1
+  };
+  const context = textPaintContext();
+  const canvases = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.context = textPaintContext();
+      canvases.push(this);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => state;
+    renderer.drawNode(context, text, 0, 0, state.assets);
+
+    assert.equal(canvases.length, 2, 'glyph alpha and one reusable paint surface are bounded to a pair of canvases');
+    assert.ok(canvases.every(canvas => canvas.width === 120 && canvas.height === 54));
+    const glyphCalls = canvases[0].context.calls;
+    const glyphs = glyphCalls.filter(call => call.kind === 'fillText');
+    assert.deepEqual(glyphs.map(call => call.text), ['A', '👩‍💻'],
+      'the white alpha pass keeps run segmentation and grapheme-safe tracking');
+    assert.ok(glyphs.every(call => call.fillStyle === 'rgba(255, 255, 255, 1)'),
+      'an explicit node fill stack replaces rich-run colors only while building its common glyph alpha');
+    assert.deepEqual(glyphs.map(call => call.font), ['400 16px Inter, Arial, sans-serif', '400 20px Inter, Arial, sans-serif'],
+      'rich-run typography survives the layer paint override');
+    assert.ok(glyphCalls.some(call => call.kind === 'stroke' && call.strokeStyle === 'rgba(255, 255, 255, 1)'),
+      'rich paragraph decoration is included in the same text alpha');
+
+    const composites = context.calls.filter(call => call.kind === 'drawImage' && call.image instanceof RecordingCanvas);
+    assert.deepEqual(composites.map(call => [call.blendMode, call.alpha]), [['multiply', .75], ['screen', .75]],
+      'each paint composites in order against the active destination with node opacity applied once');
+    assert.ok(composites[0].sourceCalls.some(call => call.kind === 'fill'
+      && call.fillStyle === 'rgba(255, 0, 255, 1)' && call.alpha === .6),
+    'the first solid paint is rendered with its own opacity before glyph clipping');
+    assert.ok(composites.every(call => call.sourceCalls.some(sourceCall => sourceCall.kind === 'drawImage'
+      && sourceCall.image === canvases[0] && sourceCall.blendMode === 'destination-in')),
+    'each paint is clipped by the same combined glyph alpha');
+    assert.ok(composites[1].sourceCalls.some(call => call.kind === 'drawImage' && call.image === preview),
+      'image fills use the local fill preview cache before glyph clipping');
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
+test('text strokes outline rich glyphs with matching grapheme positions and retain run colors without layer fills', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    x: 8, y: 12, width: 180, height: 48, text: 'A👩‍💻',
+    textRuns: [{ text: 'A👩‍💻', color: '#ff0000', fontSize: 18, letterSpacing: 2 }],
+    strokes: [
+      { id: 'green-outline', color: '#00aa00', width: 2, opacity: .5, visible: true,
+        cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10, blendMode: 'multiply' },
+      { id: 'blue-outline', color: '#0000ff', width: 4, opacity: .25, visible: true,
+        cap: 'square', join: 'bevel', pattern: 'dashed', miterLimit: 5, blendMode: 'screen' }
+    ]
+  });
+  addNode(document, text);
+  const context = textPaintContext();
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+  renderer.drawNode(context, text, 0, 0, new Map());
+
+  const fills = context.calls.filter(call => call.kind === 'fillText');
+  const outlines = context.calls.filter(call => call.kind === 'strokeText');
+  assert.deepEqual(fills.map(call => call.text), ['A', '👩‍💻'],
+    'fallback letter spacing positions the source text by grapheme cluster');
+  assert.ok(fills.every(call => call.fillStyle === 'rgba(255, 0, 0, 1)'),
+    'rich-run color remains the fill when no explicit layer fill stack exists');
+  assert.deepEqual(outlines.map(call => [call.text, call.x, call.y]), [
+    ...fills.map(call => [call.text, call.x, call.y]),
+    ...fills.map(call => [call.text, call.x, call.y])
+  ], 'every stroke follows the same glyph outlines, line positions, and grapheme tracking as the fill');
+  assert.deepEqual(outlines.map(call => [call.strokeStyle, call.lineWidth, call.alpha, call.blendMode]), [
+    ...fills.map(() => ['#00aa00', 2, .5, 'multiply']),
+    ...fills.map(() => ['#0000ff', 4, .25, 'screen'])
+  ], 'stroke paints retain order, color, width, opacity, and blend mode');
+  assert.equal(context.calls.filter(call => call.kind === 'stroke').length, 0,
+    'text strokes must not stroke the text-box rectangle or paragraph decorations');
+});
+
+test('text fill-stack offscreen surfaces remain bounded for oversized text boxes', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    width: 100_000, height: 100_000, text: 'X',
+    fills: [{ id: 'white', type: 'solid', color: '#ffffff', visible: true, opacity: 1 }]
+  });
+  addNode(document, text);
+  const dimensions = [];
+  class RecordingCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.context = textPaintContext();
+      dimensions.push([width, height]);
+    }
+    getContext() { return this.context; }
+  }
+  const previousCanvas = globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas = RecordingCanvas;
+  try {
+    const context = textPaintContext();
+    const renderer = Object.create(SceneRenderer.prototype);
+    renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+    renderer.drawNode(context, text, 0, 0, new Map());
+    assert.equal(dimensions.length, 2);
+    assert.ok(dimensions.every(([width, height]) => width <= 4096 && height <= 4096 && width * height <= 4_000_000),
+      `text fill surfaces should stay within the bounded preview budget: ${JSON.stringify(dimensions)}`);
+    assert.deepEqual(dimensions, [[2000, 2000], [2000, 2000]]);
+  } finally {
+    if (previousCanvas === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previousCanvas;
+  }
+});
+
 test('text layers render as white alpha masks regardless of their editable text colors', () => {
   const document = createDocument();
   const text = createNode('text', {
     text: 'STAR', fillOpacity: 0.6,
+    fills: [{ id: 'unused-mask-fill', type: 'solid', color: '#00ff00', visible: true, opacity: 1 }],
+    strokes: [{ id: 'unused-mask-stroke', color: '#ff0000', width: 8, opacity: 1, visible: true,
+      cap: 'butt', join: 'miter', pattern: 'solid', miterLimit: 10 }],
     textRuns: [{ text: 'STAR', color: '#ff0000', fontSize: 24 }]
   });
   addNode(document, text);
@@ -1292,6 +1485,8 @@ test('text layers render as white alpha masks regardless of their editable text 
   const glyph = context.calls.find(call => call.text === 'STAR');
   assert.ok(glyph, 'mask mode should draw the actual text glyphs');
   assert.equal(glyph.fillStyle, 'rgba(255, 255, 255, 0.6)', 'mask alpha should retain fill opacity while replacing source color with white');
+  assert.equal(context.calls.some(call => call.strokeText), false,
+    'existing alpha-mask text semantics continue to ignore layer fill and stroke stacks');
 });
 
 const defaultRunStyle = {

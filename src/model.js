@@ -3293,7 +3293,7 @@ export function validateDocument(document) {
       if (node.type !== 'star' && node.innerRadius != null) throw new TypeError(`Star inner radius is only supported on star layers (${node.name || node.id}).`);
       if (node.effects != null && !isValidLayerEffects(node.effects)) throw new TypeError(`Invalid layer effects on layer ${node.name || node.id}.`);
       if (node.blendMode != null && !isValidLayerBlendMode(node.blendMode)) throw new TypeError(`Invalid blend mode on layer ${node.name || node.id}.`);
-      if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon'].includes(node.type)
+      if (node.fillGradient != null && (!['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'text'].includes(node.type)
         && !(node.type === 'path' && hasFillablePathContour(node)) && !(node.type === 'network' && node.faces?.length))) throw new TypeError(`Gradient fill is not supported on layer ${node.name || node.id}.`);
       if (node.fillGradient != null && !isValidGradientFill(node.fillGradient)) throw new TypeError(`Invalid gradient fill on layer ${node.name || node.id}.`);
       if (node.imageFill != null && !isImageFillSupported(node)) throw new TypeError(`Image fill is not supported on layer ${node.name || node.id}.`);

@@ -88,7 +88,7 @@ import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInsta
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
 import { addComponentVariantAxis, componentSetAssetMarkup, removeComponentVariantAxis, renameComponentSet, renameComponentVariantAxis } from './component-set-editor.js';
 import { createThemePreferenceController } from './theme-preference.js';
-import { contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
+import { contextMenuActionByLabel, contextMenuItems, contextMenuNavigationTarget, focusFirstContextMenuItem, menuFocusReturnTarget, mobilePanelTabTarget, shouldDismissDesktopMenuOnTab } from './menu-keyboard.js';
 import { toolbarNavigationTarget } from './toolbar-keyboard.js';
 import { imageRecipeBatchAnnouncement } from './bulk-recipe-a11y.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT, normalizeTextRunBaselineShift, transformTextRunsInRange } from './text-run-editing.js';
@@ -1597,7 +1597,7 @@ function strokeStackControls(node) {
       const choices = options.map(([key, text]) => `<option value="${key}"${value === key ? ' selected' : ''}>${text}</option>`).join('');
       return `<label class="stroke-field"><span>${label}</span><select data-stroke-field="${field}" data-stroke-id="${id}" aria-label="${name} ${label.toLowerCase()}"${node.locked || disabled ? ' disabled' : ''}>${choices}</select></label>`;
     };
-    const primaryControls = index === 0
+    const primaryControls = index === 0 && node.type !== 'text'
       ? (stroke.gradient ? '' : `${variableBindingControl(node, 'stroke')}<button class="add-fill" type="button" data-action="create-color-variable" data-kind="stroke"${node.locked ? ' disabled' : ''}>＋ Create stroke variable</button>`)
       : '';
     const decorationControls = supportsEndpointDecorations
@@ -1642,6 +1642,16 @@ function cornerRadiusControls(node) {
   const radiusValue = getNodePropertyValue(state.document, node, 'radius');
   return `<div class="corner-radius-controls"><div class="property-grid">${numberField('◒', 'radius', radiusValue || 0, 0.01, 0, 100_000, node.locked, 'Corner radius')}</div>${variablePropertyBindingControl(node, 'radius', 'Corner radius')}<button class="add-fill" type="button" data-action="unlink-corners"${node.locked ? ' disabled' : ''}>Set independent corners</button></div>`;
 }
+function ensureInspectorFillStack(node) {
+  const hadExplicitStack = Array.isArray(node?.fills);
+  const fills = ensureFillStack(node);
+  // Materializing a legacy text paint should preserve its currently resolved
+  // text style/variable color. Existing bindings remain saved on the text node.
+  if (!hadExplicitStack && node?.type === 'text' && fills[0]?.type === 'solid') {
+    fills[0].color = getNodeColor(state.document, node, 'text');
+  }
+  return fills;
+}
 function fillStackControls(node) {
   const fills = fillStackForNode(node);
   const sources = imageFillSources();
@@ -1650,8 +1660,10 @@ function fillStackControls(node) {
     const name = fills.length === 1 ? 'Fill' : `Fill ${index + 1}`;
     const typeOptions = [['solid', 'Solid'], ['linear', 'Linear gradient'], ['radial', 'Radial gradient'], ['angular', 'Angular gradient'], ['image', 'Image']]
       .map(([value, label]) => `<option value="${value}"${fill.type === value ? ' selected' : ''}${value === 'image' && !sources.length && fill.type !== 'image' ? ' disabled' : ''}>${label}</option>`).join('');
+    const color = index === 0 && node.type === 'text' && !Array.isArray(node.fills)
+      ? getNodeColor(state.document, node, 'text') : fill.color;
     const paint = fill.type === 'solid'
-      ? `<label class="image-fill-source"><span>Color</span><input type="color" data-fill-field="color" data-fill-id="${id}" value="${/^#[0-9a-f]{6}$/i.test(fill.color) ? escapeHtml(fill.color) : '#d9d9d9'}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`
+      ? `<label class="image-fill-source"><span>Color</span><input type="color" data-fill-field="color" data-fill-id="${id}" value="${/^#[0-9a-f]{6}$/i.test(color || '') ? escapeHtml(color) : '#d9d9d9'}" aria-label="${name} color"${node.locked ? ' disabled' : ''}/></label>`
       : gradientTypes.has(fill.type)
         ? gradientFillControls(node, fill.gradient, fill.id)
         : imageFillControls(node, fill.imageFill, fill.id);
@@ -1683,7 +1695,7 @@ function paintBlendCompositionWarning(node) {
 function appearanceSection(node) {
   const hasFill = isFillStackSupported(node);
   const fills = hasFill ? fillStackControls(node) : '';
-  const canBindPrimaryFill = hasFill && fillStackForNode(node)[0]?.type === 'solid';
+  const canBindPrimaryFill = node.type !== 'text' && hasFill && fillStackForNode(node)[0]?.type === 'solid';
   const fillBinding = canBindPrimaryFill ? variableBindingControl(node, 'fill') : '';
   const stroke = strokeStackControls(node);
   const paintBlendWarning = paintBlendCompositionWarning(node);
@@ -1691,16 +1703,16 @@ function appearanceSection(node) {
   const fillStyleActions = canBindPrimaryFill
     ? `<button class="add-fill" data-action="create-color-style">${node.fillStyleId ? '✦ Linked color style' : '＋ Create color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="fill">＋ Create fill variable</button>`
     : '';
-  const canAddStroke = !['text', 'boolean'].includes(node.type);
+  const canAddStroke = node.type !== 'boolean';
   const strokeCount = strokeStackForNode(node).length;
   const addStrokeAction = canAddStroke ? `<button class="add-fill" data-action="add-stroke"${node.locked || strokeCount >= MAX_STROKES_PER_NODE ? ' disabled' : ''}>＋ Add stroke</button>` : '';
-  const styleActions = node.type === 'text'
-    ? ''
-    : node.type === 'path' || (node.type === 'network' && !hasFill)
+  const styleActions = node.type === 'path' || (node.type === 'network' && !hasFill)
     ? `<div class="style-actions">${addStrokeAction}</div>`
     : node.type === 'boolean'
       ? fillStyleActions ? `<div class="style-actions">${fillStyleActions}</div>` : ''
-      : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
+      : node.type === 'text'
+        ? `<div class="style-actions">${addStrokeAction}</div>`
+        : `<div class="style-actions">${addStrokeAction}${fillStyleActions}</div>`;
   const body = `${fills}${fillBinding}${stroke}${paintBlendWarning}${styleActions}${radius}`;
   return section('Appearance', body);
 }
@@ -2117,7 +2129,11 @@ function textSection(node) {
     : '';
   const unitOptions = [['ratio', 'Legacy ratio'], ['auto', 'Auto'], ['pixels', 'Pixels'], ['percent', 'Percent']]
     .map(([value, label]) => `<option value="${value}"${(node.lineHeightUnit || 'ratio') === value ? ' selected' : ''}>${label}</option>`).join('');
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${colorField('Text color', 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const textColorLabel = Array.isArray(node.fills) ? 'Legacy text color' : 'Text color';
+  const textColorNote = Array.isArray(node.fills)
+    ? '<div class="image-properties-note">Appearance fills control the visible text paint; this legacy color and its style or variable binding are preserved for compatibility.</div>'
+    : '';
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -2921,7 +2937,7 @@ function renderInspector() {
     const faceColorsEditable = Array.isArray(node.fills) ? primaryFill?.type === 'solid' : !node.imageFill;
     if (node.faces.length && faceColorsEditable) body += section('Region fills', networkFaceControls(node));
     body += appearanceSection(node);
-  } else if (!['image', 'text', 'line'].includes(node.type)) body += appearanceSection(node);
+  } else if (!['image', 'line'].includes(node.type)) body += appearanceSection(node);
   else if (node.type === 'line') body += strokeSection(node);
   body += effectStylesSection({ canSave: true }) + layerEffectsSection(node);
   if (node.type === 'frame') body += frameVariableModesSection(node) + frameOverflowSection(node) + autoLayoutSection(node) + layoutGuidesSection(node);
@@ -5862,7 +5878,7 @@ function zoomToSelection() {
 
 function updateGradientInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  const stack = node && input.dataset.fillId ? ensureFillStack(node) : null;
+  const stack = node && input.dataset.fillId ? ensureInspectorFillStack(node) : null;
   const layer = stack?.find(item => item.id === input.dataset.fillId);
   const gradient = layer?.gradient || node?.fillGradient;
   if (!gradient || node.locked) return;
@@ -6187,7 +6203,7 @@ function finishGradientStopInput() {
 function updateFillInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
   if (!node || node.locked) return;
-  const fills = ensureFillStack(node);
+  const fills = ensureInspectorFillStack(node);
   const fill = fills.find(item => item.id === input.dataset.fillId);
   if (!fill) return;
   const field = input.dataset.fillField;
@@ -6199,7 +6215,7 @@ function updateFillInput(input) {
     if (input.nextElementSibling) input.nextElementSibling.value = `${input.value}%`;
   } else if (field === 'color' && /^#[0-9a-f]{6}$/i.test(input.value)) {
     updateFillLayer(node, fill.id, { color: input.value });
-    if (fill === fills[0]) {
+    if (fill === fills[0] && node.type !== 'text') {
       delete node.fillVariableId;
       delete node.fillStyleId;
       if (node.variableBindings) delete node.variableBindings.fill;
@@ -6213,21 +6229,23 @@ function updateFillInput(input) {
       if (!source) { showToast('Place an image on the canvas before using it as a fill.'); renderInspector(); return; }
       replacement = createFillLayer('image', { assetId: source.assetId });
     } else {
-      const resolvedColor = getNodeColor(state.document, node, 'fill');
+      const resolvedColor = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
       replacement = createFillLayer(input.value, input.value === 'solid' ? { color: /^#[0-9a-f]{6}$/i.test(resolvedColor) ? resolvedColor : '#d9d9d9' } : {});
     }
     const wasPrimary = fill === fills[0];
     for (const key of ['color', 'gradient', 'imageFill']) delete fill[key];
     Object.assign(fill, replacement, { id: fill.id, visible: fill.visible, opacity: fill.opacity, blendMode: fill.blendMode || 'normal' });
-    if (wasPrimary) {
+    if (wasPrimary && node.type !== 'text') {
       delete node.fillVariableId; delete node.fillStyleId;
       if (node.variableBindings) delete node.variableBindings.fill;
     }
   } else return;
-  const isPrimary = ensureFillStack(node)[0] === fill;
+  const isPrimary = ensureInspectorFillStack(node)[0] === fill;
   if (isPrimary) syncLegacyFillFields(node);
   if (field === 'type') reconcileImagePreviewRuntime();
-  recordNodeComponentOverrides(node, ['fills', ...(isPrimary ? ['fill', 'fillOpacity', 'fillGradient', 'imageFill', 'fillStyleId', 'fillVariableId', 'variableBindings'] : [])]);
+  recordNodeComponentOverrides(node, ['fills', ...(isPrimary
+    ? ['fill', 'fillOpacity', 'fillGradient', 'imageFill', ...(node.type === 'text' ? [] : ['fillStyleId', 'fillVariableId', 'variableBindings'])]
+    : [])]);
   renderer.invalidate();
 }
 
@@ -6339,7 +6357,7 @@ function updateLayerEffectInput(input) {
 
 function updateImageFillInput(input) {
   const node = selectedNodes().length === 1 ? selectedNodes()[0] : null;
-  const fill = node && input.dataset.fillId ? ensureFillStack(node).find(item => item.id === input.dataset.fillId) : null;
+  const fill = node && input.dataset.fillId ? ensureInspectorFillStack(node).find(item => item.id === input.dataset.fillId) : null;
   const imageFill = input.dataset.fillId ? fill?.imageFill : node?.imageFill;
   if (!imageFill || node.locked) return;
   if (!state.controlEdit) { checkpoint('Edit image fill'); state.controlEdit = true; }
@@ -6358,8 +6376,8 @@ function updateImageFillInput(input) {
     syncImageToneControls(input, imageFill.adjustments, node.locked);
   } else return;
   if (fill) {
-    if (fill === ensureFillStack(node)[0]) syncLegacyFillFields(node);
-    recordNodeComponentOverrides(node, ['fills', ...(fill === ensureFillStack(node)[0] ? ['imageFill'] : [])]);
+    if (fill === ensureInspectorFillStack(node)[0]) syncLegacyFillFields(node);
+    recordNodeComponentOverrides(node, ['fills', ...(fill === ensureInspectorFillStack(node)[0] ? ['imageFill'] : [])]);
   } else recordNodeComponentOverrides(node, ['imageFill']);
   if (field === 'assetId' || field.startsWith('adjustments.')) schedulePreview(node, field === 'assetId', fill?.id || null);
   if (state.imageFillCropTarget?.nodeId === node.id && state.imageFillCropTarget?.fillId === (fill?.id || null)) syncImageCropOverlay();
@@ -6369,7 +6387,7 @@ function updateImageFillInput(input) {
 function imageTransformTarget(node, target, fillId = '') {
   if (target === 'fill') {
     if (fillId) {
-      const fill = ensureFillStack(node).find(item => item.id === fillId);
+      const fill = ensureInspectorFillStack(node).find(item => item.id === fillId);
       return fill?.type === 'image' ? fill.imageFill || null : null;
     }
     return node?.imageFill || null;
@@ -6721,7 +6739,7 @@ function updateImageTransformInput(input) {
   target.transforms = transforms;
   if (input.nextElementSibling?.tagName === 'OUTPUT') input.nextElementSibling.value = `${Math.round(crop[edge] * 100)}%`;
   if (targetName === 'fill') {
-    const fills = ensureFillStack(node);
+    const fills = ensureInspectorFillStack(node);
     const fill = fills.find(item => item.id === input.dataset.fillId);
     if (!fill) return;
     if (fill === fills[0]) syncLegacyFillFields(node);
@@ -6767,7 +6785,7 @@ function updateImageFillZoomInput(input) {
   if (JSON.stringify(transforms) === JSON.stringify(current)) return;
   if (!state.controlEdit) { checkpoint('Zoom image fill'); state.controlEdit = true; }
   if (!Array.isArray(node.fills)) {
-    const materialized = ensureFillStack(node).find(item => item.id === fillId && item.type === 'image');
+    const materialized = ensureInspectorFillStack(node).find(item => item.id === fillId && item.type === 'image');
     if (!materialized) return;
     target = materialized.imageFill;
   }
@@ -6798,7 +6816,7 @@ function applyImageTransformAction(node, targetName, action, direction, fillId =
   checkpoint(action === 'rotate-image' ? 'Rotate image' : action === 'flip-image' ? 'Flip image' : 'Reset image transforms');
   target.transforms = transforms;
   if (targetName === 'fill') {
-    const fills = ensureFillStack(node);
+    const fills = ensureInspectorFillStack(node);
     const fill = fills.find(item => item.id === fillId);
     if (!fill) return;
     if (fill === fills[0]) syncLegacyFillFields(node);
@@ -12725,16 +12743,16 @@ function applyInspectorAction(action, details = {}) {
   }
   if (action === 'add-fill-layer' || action === 'remove-fill-layer' || action === 'move-fill-layer') {
     if (!node || node.locked) return;
-    const fills = ensureFillStack(node);
+    const fills = ensureInspectorFillStack(node);
     const previousPrimary = fills[0];
-    const hadPrimaryBinding = Boolean(node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
+    const hadPrimaryBinding = node.type !== 'text' && Boolean(node.fillStyleId || node.fillVariableId || node.variableBindings?.fill);
     const previousPrimaryColor = hadPrimaryBinding ? getNodeColor(state.document, node, 'fill') : null;
     let primaryChanged = false;
     if (action === 'add-fill-layer') {
       if (fills.length >= 32) { showToast('A layer can have up to 32 fills.'); return; }
       const type = details.fillType || 'solid';
       try {
-        const resolvedColor = getNodeColor(state.document, node, 'fill');
+        const resolvedColor = getNodeColor(state.document, node, node.type === 'text' ? 'text' : 'fill');
         const fill = type === 'image'
           ? createFillLayer('image', { assetId: imageFillSources()[0]?.assetId })
           : createFillLayer(type, type === 'solid' ? { color: /^#[0-9a-f]{6}$/i.test(resolvedColor) ? resolvedColor : '#d9d9d9' } : {});
@@ -12755,7 +12773,7 @@ function applyInspectorAction(action, details = {}) {
     if (primaryChanged && hadPrimaryBinding) detachPrimaryFillBinding(node, previousPrimary, previousPrimaryColor);
     syncLegacyFillFields(node);
     reconcileImagePreviewRuntime();
-    recordNodeComponentOverrides(node, ['fills', 'fill', 'fillOpacity', 'fillGradient', 'imageFill', ...(primaryChanged ? ['fillStyleId', 'fillVariableId', 'variableBindings'] : [])]);
+    recordNodeComponentOverrides(node, ['fills', 'fill', 'fillOpacity', 'fillGradient', 'imageFill', ...(primaryChanged && node.type !== 'text' ? ['fillStyleId', 'fillVariableId', 'variableBindings'] : [])]);
     renderInspector(); queueSave(); renderer.invalidate();
     return;
   }
@@ -14407,6 +14425,14 @@ function onKeyDown(event) {
   if (trapMobilePanelTab(event)) return;
   if (!contextMenu.hidden && contextMenu.contains(document.activeElement)) {
     const menuItems = contextMenuItems(contextMenu);
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      const deleteAction = contextMenuActionByLabel(menuItems, 'Delete');
+      if (deleteAction) {
+        event.preventDefault();
+        deleteAction.click();
+        return;
+      }
+    }
     const target = contextMenuNavigationTarget(menuItems, document.activeElement, event.key);
     if (target) {
       target.focus({ preventScroll: true });

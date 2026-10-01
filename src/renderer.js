@@ -104,10 +104,13 @@ function drawTextMask(ctx, node, document, x, y, width, height) {
   });
 }
 
-function drawPlainText(ctx, node, document, x, y, width, height, colorOverride = undefined) {
+function drawPlainText(ctx, node, document, x, y, width, height, colorOverride = undefined, options = {}) {
   const sourceText = getNodePropertyValue(document, node, 'text');
   const textColor = colorOverride ?? getNodeColor(document, node, 'text');
-  ctx.fillStyle = rgba(textColor, node.fillOpacity ?? 1);
+  const fillOpacity = options.fillOpacity ?? node.fillOpacity ?? 1;
+  const paintMode = options.paintMode || 'fill';
+  const includeDecorations = options.includeDecorations !== false;
+  if (paintMode !== 'stroke') ctx.fillStyle = rgba(textColor, fillOpacity);
   const text = transformTextCase(sourceText, node.textCase || 'none');
   const fontSize = getNodePropertyValue(document, node, 'fontSize');
   const lineHeightScale = getNodePropertyValue(document, node, 'lineHeight');
@@ -130,15 +133,132 @@ function drawPlainText(ctx, node, document, x, y, width, height, colorOverride =
       fontFamily: node.fontFamily || 'Arial, sans-serif', fontSize: fontSize || 24,
       fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
       letterSpacing: letterSpacing || 0, color: textColor
-    }, node.fillOpacity ?? 1);
+    }, fillOpacity, paintMode);
     const availableWidth = Math.max(1, width - line.indent);
     const lineAlign = line.align || node.align || 'left';
     const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
-    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace);
-    else drawTrackedText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth);
-    drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
+    if (line.justify) drawJustifiedPlainText(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, line.justificationExtraSpace, paintMode);
+    else drawTrackedTextPaint(ctx, line.displayText, x + offsetX, textY + line.y, letterSpacing, availableWidth, paintMode);
+    if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, x + offsetX, textY + line.y, line.width, fontSize || 24, node.textDecoration || 'none');
   });
   return layout;
+}
+
+function drawTextLayerContent(ctx, node, document, x, y, width, height, {
+  colorOverride = undefined, fillOpacity = node.fillOpacity ?? 1,
+  paintMode = 'fill', includeDecorations = true, overrideRunColors = false
+} = {}) {
+  const text = getNodePropertyValue(document, node, 'text');
+  const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
+  if (!currentRuns) {
+    return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {
+      fillOpacity, paintMode, includeDecorations
+    });
+  }
+
+  const color = colorOverride ?? getNodeColor(document, node, 'text');
+  const runs = overrideRunColors
+    ? node.textRuns.map(run => ({ ...run, color }))
+    : node.textRuns;
+  return drawTextRuns(ctx, runs, x, y, width, {
+    fontFamily: node.fontFamily || 'Arial, sans-serif',
+    fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
+    fontWeight: node.fontWeight || 400,
+    fontStyle: node.fontStyle || 'normal',
+    lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
+    lineHeightUnit: node.lineHeightUnit || 'ratio',
+    letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
+    color,
+    textCase: node.textCase || 'none',
+    textDecoration: node.textDecoration || 'none',
+    paragraphSpacing: node.paragraphSpacing || 0,
+    listSpacing: node.listSpacing || 0,
+    paragraphStyles: node.paragraphStyles || [],
+    firstLineIndent: node.firstLineIndent || 0,
+    align: node.align || 'left',
+    verticalAlign: node.verticalAlign || 'top',
+    height,
+    fillOpacity,
+    paintMode,
+    includeDecorations
+  });
+}
+
+function createTextSurface(width, height) {
+  if (typeof OffscreenCanvas === 'function') return new OffscreenCanvas(width, height);
+  const canvas = globalThis.document?.createElement?.('canvas');
+  if (!canvas) return null;
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+function resizeTextSurface(surface, width, height) {
+  if (!surface) return createTextSurface(width, height);
+  if (surface.width !== width) surface.width = width;
+  if (surface.height !== height) surface.height = height;
+  return surface;
+}
+
+function setTextSurfaceTransform(context, x, y, width, height, pixelWidth, pixelHeight) {
+  const scaleX = pixelWidth / width;
+  const scaleY = pixelHeight / height;
+  context.setTransform(scaleX, 0, 0, scaleY, -x * scaleX, -y * scaleY);
+  return { scaleX, scaleY };
+}
+
+function drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces) {
+  if (!Array.isArray(node.fills) || width <= 0 || height <= 0) return false;
+  const transform = ctx.getTransform?.();
+  const requestedScale = transform ? Math.hypot(transform.a, transform.b)
+    : (globalThis.devicePixelRatio || 1) * Math.max(.08, state.zoom || 1);
+  const dimensions = booleanSurfaceDimensions(width, height, requestedScale);
+  surfaces.glyph = resizeTextSurface(surfaces.glyph, dimensions.width, dimensions.height);
+  surfaces.paint = resizeTextSurface(surfaces.paint, dimensions.width, dimensions.height);
+  const glyphSurface = surfaces.glyph;
+  const paintSurface = surfaces.paint;
+  const glyphContext = glyphSurface?.getContext('2d');
+  const paintContext = paintSurface?.getContext('2d');
+  if (!glyphContext || !paintContext) return false;
+
+  setTextSurfaceTransform(glyphContext, x, y, width, height, dimensions.width, dimensions.height);
+  drawTextLayerContent(glyphContext, node, document, x, y, width, height, {
+    colorOverride: '#ffffff', fillOpacity: 1, overrideRunColors: true
+  });
+
+  const motionFillIndex = node.fills.findIndex(fill => fill.type === 'solid');
+  for (let index = 0; index < node.fills.length; index += 1) {
+    const fill = node.fills[index];
+    if (!fill.visible || fill.opacity <= 0) continue;
+    paintContext.setTransform(1, 0, 0, 1, 0, 0);
+    paintContext.globalAlpha = 1;
+    paintContext.globalCompositeOperation = 'source-over';
+    paintContext.clearRect(0, 0, dimensions.width, dimensions.height);
+    setTextSurfaceTransform(paintContext, x, y, width, height, dimensions.width, dimensions.height);
+    paintContext.beginPath();
+    paintContext.rect(x, y, width, height);
+    const paintNode = {
+      ...node, type: 'rectangle', fills: [fill],
+      stroke: null, strokeWidth: 0, strokes: []
+    };
+    drawFillStack(paintContext, paintNode, assets, state, x, y, width, height,
+      null, motionValues, true, index, motionFillIndex);
+
+    paintContext.save();
+    paintContext.setTransform(1, 0, 0, 1, 0, 0);
+    paintContext.globalAlpha = 1;
+    paintContext.globalCompositeOperation = 'destination-in';
+    paintContext.drawImage(glyphSurface, 0, 0);
+    paintContext.restore();
+
+    ctx.save();
+    if (fill.blendMode && fill.blendMode !== 'normal') {
+      ctx.globalCompositeOperation = canvasBlendOperation(fill.blendMode);
+    }
+    ctx.drawImage(paintSurface, x, y, width, height);
+    ctx.restore();
+  }
+  return true;
 }
 
 const BLUE = '#0d99ff';
@@ -295,12 +415,13 @@ function fillCurrentPath(ctx, node) {
   else ctx.fill();
 }
 
-function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false) {
+function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverride = null, motionValues = state.motionPreview?.get(node.id), maskMode = false, fillIndexOffset = 0, motionFillIndexOverride = null) {
   const fills = fillStackForNode(node);
-  const motionFillIndex = fills.findIndex(fill => fill.type === 'solid');
+  const motionFillIndex = motionFillIndexOverride ?? fills.findIndex(fill => fill.type === 'solid');
   for (let index = 0; index < fills.length; index += 1) {
     const fill = fills[index];
-    const animatedFill = index === motionFillIndex;
+    const paintIndex = index + fillIndexOffset;
+    const animatedFill = paintIndex === motionFillIndex;
     const fillOpacity = animatedFill && Number.isFinite(motionValues?.fillOpacity) ? motionValues.fillOpacity : fill.opacity;
     if (!fill.visible || fillOpacity <= 0) continue;
     ctx.save();
@@ -313,9 +434,9 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
     if (fill.type === 'solid') {
       const color = animatedFill && typeof motionValues?.fillColor === 'string'
         ? motionValues.fillColor
-        : colorOverride != null && index === 0
+        : colorOverride != null && paintIndex === 0
         ? colorOverride
-        : fillLayerColor(state.document, node, fill, index);
+        : fillLayerColor(state.document, node, fill, paintIndex);
       if (color && color !== 'transparent') { ctx.fillStyle = rgba(color, 1); fillCurrentPath(ctx, node); }
     } else if (gradientTypes.has(fill.type)) {
       const paint = createGradientPaint(ctx, fill.gradient, x, y, width, height);
@@ -354,7 +475,7 @@ function drawFillStack(ctx, node, assets, state, x, y, width, height, colorOverr
   }
 }
 
-function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false) {
+function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = null, maskMode = false, paintOutline = null) {
   const strokes = strokeStackForNode(node);
   for (let index = 0; index < strokes.length; index += 1) {
     const stroke = strokes[index];
@@ -373,9 +494,12 @@ function drawStrokeStack(ctx, node, document, x, y, width, height, tracePath = n
     if (!paint) { ctx.restore(); continue; }
     ctx.strokeStyle = paint;
     applyStrokeStyle(ctx, stroke);
-    if (tracePath) { ctx.beginPath(); tracePath(ctx); }
-    ctx.stroke();
-    drawStrokeEndpointDecorations(ctx, node, stroke, { x, y }, paint);
+    if (paintOutline) paintOutline(ctx);
+    else {
+      if (tracePath) { ctx.beginPath(); tracePath(ctx); }
+      ctx.stroke();
+      drawStrokeEndpointDecorations(ctx, node, stroke, { x, y }, paint);
+    }
     ctx.restore();
   }
 }
@@ -599,14 +723,19 @@ function traceVectorNetworkFace(ctx, node, face, x, y) {
 }
 
 export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = undefined) {
+  return drawTrackedTextPaint(ctx, text, x, y, letterSpacing, maxWidth, 'fill');
+}
+
+function drawTrackedTextPaint(ctx, text, x, y, letterSpacing = 0, maxWidth = undefined, paintMode = 'fill') {
   const value = String(text ?? '');
   const spacing = Number(letterSpacing) || 0;
-  if (!spacing) { ctx.fillText(value, x, y, maxWidth); return; }
+  const drawText = paintMode === 'stroke' ? ctx.strokeText.bind(ctx) : ctx.fillText.bind(ctx);
+  if (!spacing) { drawText(value, x, y, maxWidth); return; }
   if (typeof ctx.letterSpacing === 'string') {
     const previous = ctx.letterSpacing;
     try {
       ctx.letterSpacing = `${spacing}px`;
-      ctx.fillText(value, x, y, maxWidth);
+      drawText(value, x, y, maxWidth);
       return;
     } finally { ctx.letterSpacing = previous; }
   }
@@ -615,18 +744,18 @@ export function drawTrackedText(ctx, text, x, y, letterSpacing = 0, maxWidth = u
   for (let index = 0; index < glyphs.length; index += 1) {
     const glyph = glyphs[index];
     const position = ctx.measureText(prefix + glyph).width - ctx.measureText(glyph).width + index * spacing;
-    ctx.fillText(glyph, x + position, y);
+    drawText(glyph, x + position, y);
     prefix += glyph;
   }
 }
 
-function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace) {
+function drawJustifiedPlainText(ctx, text, x, y, letterSpacing, extraSpace, paintMode = 'fill') {
   const segments = String(text ?? '').match(/\s+|\S+/gu) || [];
   let offset = 0;
   let hasTextBefore = false;
   for (const [index, segment] of segments.entries()) {
     const whitespace = /^\s+$/u.test(segment);
-    drawTrackedText(ctx, segment, x + offset, y, letterSpacing);
+    drawTrackedTextPaint(ctx, segment, x + offset, y, letterSpacing, undefined, paintMode);
     offset += measureTrackedText(ctx, segment, letterSpacing);
     // Drawing tokens separately removes the tracking between adjacent tokens.
     // Keep that boundary advance so justified text matches measuring the full line.
@@ -664,22 +793,24 @@ function richFont(style) {
   return `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
 }
 
-function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1) {
+function drawParagraphMarker(ctx, marker, x, y, fallbackStyle, fillOpacity = 1, paintMode = 'fill') {
   const style = marker.style || fallbackStyle;
   ctx.save();
   ctx.font = richFont(style);
-  ctx.fillStyle = rgba(style.color || fallbackStyle.color, fillOpacity);
+  if (paintMode !== 'stroke') ctx.fillStyle = rgba(style.color || fallbackStyle.color, fillOpacity);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const markerWidth = measureTrackedText(ctx, marker.text, style.letterSpacing);
   // Right-align within the marker column. Keeping this draw independent from
   // the text-line transform preserves a stable gutter for center/right text.
-  drawTrackedText(ctx, marker.text, x + marker.anchorX - markerWidth, y, style.letterSpacing);
+  drawTrackedTextPaint(ctx, marker.text, x + marker.anchorX - markerWidth, y, style.letterSpacing, undefined, paintMode);
   ctx.restore();
 }
 
 /** Draws styled text runs using node-wide values as fallbacks for each run. */
 export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
+  const paintMode = baseStyle.paintMode || 'fill';
+  const includeDecorations = baseStyle.includeDecorations !== false;
   const previousFont = ctx.font;
   let layout;
   try {
@@ -694,7 +825,7 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
   const contentHeight = layout.height;
   let top = y + textVerticalOffset(baseStyle.height ?? contentHeight, contentHeight, baseStyle.verticalAlign);
   for (const line of lines) {
-    if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle), baseStyle.fillOpacity ?? 1);
+    if (line.marker) drawParagraphMarker(ctx, line.marker, x, top + line.y, richTextStyleForMarker(baseStyle), baseStyle.fillOpacity ?? 1, paintMode);
     const availableWidth = Math.max(1, width - line.indent);
     const lineAlign = line.align || baseStyle.align || 'left';
     const offsetX = line.indent + (lineAlign === 'center' ? (availableWidth - line.width) / 2 : lineAlign === 'right' ? availableWidth - line.width : 0);
@@ -717,9 +848,9 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         const { part, text } = segment;
         const style = part.style;
         ctx.font = richFont(style);
-        ctx.fillStyle = rgba(style.color, baseStyle.fillOpacity ?? 1);
+        if (paintMode !== 'stroke') ctx.fillStyle = rgba(style.color, baseStyle.fillOpacity ?? 1);
         const start = offset;
-        drawTrackedText(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing);
+        drawTrackedTextPaint(ctx, text, start, -Number(style.baselineShift || 0), style.letterSpacing, undefined, paintMode);
         offset += measureTrackedText(ctx, text, style.letterSpacing);
         if (segments[index + 1]?.part === part) offset += Number(style.letterSpacing) || 0;
         const bounds = partBounds.get(part) || { start, end: offset };
@@ -735,17 +866,17 @@ export function drawTextRuns(ctx, runs, x, y, width, baseStyle = {}) {
         const bounds = partBounds.get(part);
         if (!bounds) continue;
         ctx.font = richFont(part.style);
-        ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-        drawTextDecoration(ctx, bounds.start, -Number(part.style.baselineShift || 0), bounds.end - bounds.start, part.style.fontSize, part.style.textDecoration);
+        if (paintMode !== 'stroke') ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
+        if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, bounds.start, -Number(part.style.baselineShift || 0), bounds.end - bounds.start, part.style.fontSize, part.style.textDecoration);
       }
       ctx.restore();
       continue;
     }
     for (const part of line.parts) {
       ctx.font = richFont(part.style);
-      ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
-      drawTrackedText(ctx, part.text, part.offsetX, -Number(part.style.baselineShift || 0), part.style.letterSpacing);
-      drawTextDecoration(ctx, part.offsetX, -Number(part.style.baselineShift || 0), part.width, part.style.fontSize, part.style.textDecoration);
+      if (paintMode !== 'stroke') ctx.fillStyle = rgba(part.style.color, baseStyle.fillOpacity ?? 1);
+      drawTrackedTextPaint(ctx, part.text, part.offsetX, -Number(part.style.baselineShift || 0), part.style.letterSpacing, undefined, paintMode);
+      if (includeDecorations && paintMode !== 'stroke') drawTextDecoration(ctx, part.offsetX, -Number(part.style.baselineShift || 0), part.width, part.style.fontSize, part.style.textDecoration);
     }
     ctx.restore();
   }
@@ -772,6 +903,7 @@ export class SceneRenderer {
     this.frame = 0;
     this.booleanCache = new Map();
     this.booleanCachePixels = 0;
+    this.textPaintSurfaces = { glyph: null, paint: null };
     this.noiseCache = new Map();
     this.noiseCachePixels = 0;
     this.samplingSurface = null;
@@ -1109,30 +1241,20 @@ export class SceneRenderer {
       }
       drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => roundedRect(pathContext, x, y, width, height, radius), maskMode);
     } else if (node.type === 'text') {
-      const sourceText = getNodePropertyValue(document, node, 'text');
-      if (Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === sourceText) {
-        drawTextRuns(ctx, node.textRuns, x, y, width, {
-          fontFamily: node.fontFamily || 'Arial, sans-serif',
-          fontSize: getNodePropertyValue(document, node, 'fontSize') || 24,
-          fontWeight: node.fontWeight || 400,
-          fontStyle: node.fontStyle || 'normal',
-          lineHeight: getNodePropertyValue(document, node, 'lineHeight') || 1.25,
-          lineHeightUnit: node.lineHeightUnit || 'ratio',
-          letterSpacing: getNodePropertyValue(document, node, 'letterSpacing') || 0,
-          color: getNodeColor(document, node, 'text'),
-          textCase: node.textCase || 'none',
-          textDecoration: node.textDecoration || 'none',
-          paragraphSpacing: node.paragraphSpacing || 0,
-          listSpacing: node.listSpacing || 0,
-          paragraphStyles: node.paragraphStyles || [],
-          firstLineIndent: node.firstLineIndent || 0,
-          align: node.align || 'left',
-          verticalAlign: node.verticalAlign || 'top',
-          height,
-          fillOpacity: node.fillOpacity ?? 1
-        });
-      } else drawPlainText(ctx, node, document, x, y, width, height);
-      drawStrokeStack(ctx, node, document, x, y, width, height, pathContext => pathContext.rect(x, y, width, height), maskMode);
+      if (Array.isArray(node.fills) && !maskMode) {
+        const surfaces = this.textPaintSurfaces || (this.textPaintSurfaces = { glyph: null, paint: null });
+        const rendered = drawTextFillStack(ctx, node, document, assets, state, x, y, width, height, motionValues, surfaces);
+        if (!rendered && node.fills.length) {
+          // Keep text visible if a browser cannot allocate an auxiliary surface.
+          drawTextLayerContent(ctx, node, document, x, y, width, height);
+        }
+      } else {
+        drawTextLayerContent(ctx, node, document, x, y, width, height);
+      }
+      drawStrokeStack(ctx, node, document, x, y, width, height, null, maskMode,
+        outlineContext => drawTextLayerContent(outlineContext, node, document, x, y, width, height, {
+          fillOpacity: 1, paintMode: 'stroke', includeDecorations: false
+        }));
     } else if (node.type === 'network') {
       const fills = fillStackForNode(node);
       for (const face of node.faces || []) {

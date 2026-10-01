@@ -5,6 +5,12 @@ export function contextMenuItems(menu) {
   return [...(menu?.querySelectorAll?.(contextMenuItemSelector) || [])];
 }
 
+/** Find an enabled menu row by its visible primary label. */
+export function contextMenuActionByLabel(items, label) {
+  if (!Array.isArray(items) || typeof label !== 'string') return null;
+  return items.find(item => item?.firstElementChild?.textContent?.trim() === label) || null;
+}
+
 /** Return the menu row that should receive focus for a navigation key. */
 export function contextMenuNavigationTarget(items, activeItem, key) {
   if (!Array.isArray(items) || !items.length) return null;

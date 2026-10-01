@@ -1,7 +1,7 @@
 import { createImageTransforms, isValidImageTransforms } from './image-transforms.js';
 import { vectorPathContours } from './vector-path.js';
 
-export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
+export const imageFillNodeTypes = new Set(['frame', 'section', 'group', 'boolean', 'rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text']);
 export const imageFillAdjustmentRanges = Object.freeze({
   exposure: [-100, 100],
   temperature: [-100, 100],

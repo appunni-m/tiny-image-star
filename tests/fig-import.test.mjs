@@ -632,8 +632,10 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(frame.children[0].verticalAlign, 'middle');
   assert.equal(frame.children[0].textFit, 'auto-height');
   assert.equal(frame.children[0].color, '#1a334d');
-  assert.equal(frame.children[0].opacity, 0.5);
-  assert.equal(Object.hasOwn(frame.children[0], 'fills'), false, 'text colors map to text properties, not an invalid shape fill stack');
+  assert.equal(frame.children[0].opacity, 1, 'base paint opacity stays on its own paint instead of changing layer opacity');
+  assert.equal(frame.children[0].fills[0].type, 'solid');
+  assert.equal(frame.children[0].fills[0].opacity, 0.5);
+  assert.equal(frame.children[0].color, '#1a334d', 'the legacy text color remains a compatibility fallback');
   assert.equal(frame.children[1].fills[0].type, 'image');
   assert.deepEqual(imported.assets[0].bytes, png);
   assert.deepEqual(imported.document.imageLibrary.map(({ width, height }) => ({ width, height })), [{ width: 2, height: 3 }]);
@@ -646,6 +648,80 @@ test('converts editable text, fills, constraints, and embedded images while repo
   assert.equal(imported.report.unsupportedTypes.MYSTERY_LEAF, 1);
   assert.equal(imported.report.unsupportedTypes.__proto__, 1);
   assert.match(imported.report.warnings.find(warning => warning.type === 'MYSTERY_LEAF').detail, /omitted/);
+});
+
+test('imports text-node solid, gradient, image fills and solid/gradient strokes as editable paint stacks', () => {
+  const pageGuid = { sessionID: 91, localID: 1 };
+  const imageHash = 'b'.repeat(40);
+  const png = pngHeader(2, 3);
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, 'a', {
+        name: 'Painted heading', strokeWeight: 3,
+        textData: { characters: 'Brand' },
+        fillPaints: [
+          { type: 'SOLID', color: { r: 0.1, g: 0.2, b: 0.3, a: 1 }, opacity: 0.8 },
+          { type: 'GRADIENT_LINEAR', opacity: 0.7, stops: [
+            { position: 0, color: { r: 1, g: 0, b: 0, a: 1 } },
+            { position: 1, color: { r: 0, g: 0, b: 1, a: 1 } }
+          ] },
+          { type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'FIT', opacity: 0.6 }
+        ],
+        strokePaints: [
+          { type: 'SOLID', color: { r: 0, g: 0, b: 0, a: 1 }, opacity: 0.9 },
+          { type: 'GRADIENT_RADIAL', opacity: 0.75, stops: [
+            { position: 0, color: { r: 1, g: 1, b: 1, a: 1 } },
+            { position: 1, color: { r: 0, g: 0, b: 0, a: 1 } }
+          ] },
+          { type: 'IMAGE', image: { hash: imageHash }, scaleMode: 'FIT' }
+        ]
+      })
+    ],
+    images: new Map([[imageHash, png]]), message: { blobs: [] }
+  });
+
+  const text = imported.document.pages[0].children[0];
+  assert.deepEqual(text.fills.map(fill => fill.type), ['solid', 'linear', 'image']);
+  assert.deepEqual(text.fills.map(fill => fill.opacity), [0.8, 0.7, 0.6]);
+  assert.deepEqual(text.strokes.map(stroke => Boolean(stroke.gradient)), [false, true]);
+  assert.deepEqual(text.strokes.map(stroke => stroke.opacity), [0.9, 0.75]);
+  assert.equal(text.strokes[0].width, 3);
+  assert.equal(text.color, '#1a334d', 'the compatibility color stays available alongside the new layer paints');
+  assert.equal(imported.assets.length, 1);
+  const restored = parseDocument(serializeDocument(imported.document));
+  assert.deepEqual(restored.pages[0].children[0].fills, text.fills);
+  assert.deepEqual(restored.pages[0].children[0].strokes, text.strokes);
+  assert.equal(imported.report.unsupportedTypes.IMAGE, 1, 'image strokes stay explicitly reported as unsupported');
+});
+
+test('text run solid fills stay editable without node paint stacks and unsupported non-solid run paints are reported', () => {
+  const pageGuid = { sessionID: 92, localID: 1 };
+  const imported = convertFigDocument({
+    header: { version: 106 },
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid, name: 'Page' }),
+      node('TEXT', 2, pageGuid, 'a', {
+        name: 'Run paints', textData: {
+          characters: 'AB', characterStyleOverrides: [1, 2],
+          styleOverrideTable: {
+            1: { fills: [{ type: 'SOLID', color: { r: 1, g: 0, b: 0, a: 1 } }] },
+            2: { fills: [{ type: 'GRADIENT_LINEAR', stops: [
+              { position: 0, color: { r: 0, g: 0, b: 0, a: 1 } },
+              { position: 1, color: { r: 1, g: 1, b: 1, a: 1 } }
+            ] }] }
+          }
+        }
+      })
+    ], images: new Map(), message: { blobs: [] }
+  });
+
+  const text = imported.document.pages[0].children[0];
+  assert.equal(text.fills, undefined, 'no empty node paint stack is invented');
+  assert.deepEqual(text.textRuns, [{ text: 'A', color: '#ff0000' }, { text: 'B' }]);
+  assert.equal(imported.report.unsupportedTypes.TEXT_STYLE_PAINT, 1);
+  assert.match(imported.report.warnings.find(warning => warning.type === 'TEXT_STYLE_PAINT').detail, /Per-range gradient/);
 });
 
 test('imports common Figma shadows and foreground/background blurs as editable local effects', () => {

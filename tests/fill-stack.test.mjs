@@ -195,7 +195,8 @@ test('fill stacks validate and round-trip through the document model, including 
   assert.equal(restored.fill, node.fill, 'the original one-fill field remains available to older consumers');
   assert.equal(isValidFillStack([{ ...node.fills[0], opacity: 1.1 }], node), false);
   assert.equal(isValidFillStack([node.fills[0], { ...node.fills[0] }], node), false, 'fill IDs are unique within the stack');
-  for (const unsupportedType of ['image', 'line', 'text']) {
+  assert.equal(isFillStackSupported(createNode('text')), true, 'text layers support the same ordered paint stack as vector shapes');
+  for (const unsupportedType of ['image', 'line']) {
     const unsupported = createNode(unsupportedType);
     assert.equal(isFillStackSupported(unsupported), false, `${unsupportedType} keeps its dedicated paint controls`);
     assert.equal(isValidFillStack([createFillLayer('solid')], unsupported), false, `${unsupportedType} rejects unsupported fill stacks`);
@@ -310,4 +311,21 @@ test('Inspector markup and delegated events expose add/remove/reorder/visibility
     'data-fill-field="visible"', 'data-fill-field="opacity"', 'data-fill-field="blendMode"', "select('blendMode', 'Blend'", "field === 'blendMode') updateStroke", 'paintBlendCompositionWarning(node)', 'updateFillInput(fillField)',
     "recordNodeComponentOverrides(node, ['fills'"
   ]) assert.ok(source.includes(marker), `Inspector is wired for ${marker}`);
+});
+
+test('text Appearance exposes paint and stroke stacks while retaining legacy text color bindings', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  for (const marker of [
+    "if (node.type === 'text') body += textSection(node);",
+    "else if (!['image', 'line'].includes(node.type)) body += appearanceSection(node);",
+    "const canBindPrimaryFill = node.type !== 'text' && hasFill",
+    "const canAddStroke = node.type !== 'boolean';",
+    "const textColorLabel = Array.isArray(node.fills) ? 'Legacy text color' : 'Text color';",
+    "if (!hadExplicitStack && node?.type === 'text' && fills[0]?.type === 'solid')",
+    "getNodeColor(state.document, node, 'text')",
+    "node.type === 'text' ? 'text' : 'fill'",
+    "index === 0 && node.type !== 'text'",
+    "data-stroke-field=\"color\"",
+    "${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}"
+  ]) assert.ok(source.includes(marker), `Text Appearance is wired for ${marker}`);
 });

@@ -1414,6 +1414,95 @@ test('exports mixed text runs with matching font metrics, wrapping, colors, and 
   assert.match(svg, /viewBox="0 -1\.5 35 46\.5"/);
 });
 
+test('SVG text fill stacks retain rich typography and paint order for solid, gradient, and image glyph paints', () => {
+  const text = createNode('text', {
+    id: 'stacked-text', name: 'Stacked text', width: 90, height: 32, fontSize: 12,
+    text: 'Brand title', textFit: 'fixed',
+    textRuns: [
+      { text: 'Brand ', fontFamily: 'Display Sans', fontWeight: 600, fontStyle: 'italic', color: '#112233' },
+      { text: 'title', fontFamily: 'Body Sans', fontWeight: 400, letterSpacing: 0.5, color: '#445566' }
+    ],
+    fills: [
+      createFillLayer('solid', { id: 'text-solid', color: '#123456', opacity: 0.9 }),
+      createFillLayer('linear', {
+        id: 'text-gradient', opacity: 0.7, blendMode: 'screen',
+        gradient: createGradientFill('linear', '#ff0000')
+      }),
+      createFillLayer('image', {
+        id: 'text-image', opacity: 0.5, blendMode: 'multiply',
+        imageFill: createImageFill('text-photo', { fit: 'cover' })
+      })
+    ]
+  });
+  const assets = new Map([['text-photo', {
+    id: 'text-photo', type: 'image/png', width: 120, height: 80, sourceBytes: new Uint8Array([1, 2, 3])
+  }]]);
+  const svg = exportNodeToSvg(text, { assets, measureText: value => [...value].length * 6 });
+  const solidIndex = svg.indexOf('data-tiny-image-star-fill-id="text-solid"');
+  const gradientIndex = svg.indexOf('data-tiny-image-star-fill-id="text-gradient"');
+  const imageIndex = svg.indexOf('data-tiny-image-star-fill-id="text-image"');
+  assert.ok(solidIndex >= 0 && solidIndex < gradientIndex && gradientIndex < imageIndex,
+    'text fill paints remain ordered as authored');
+  assert.match(svg, /<g data-tiny-image-star-fill-id="text-gradient" data-tiny-image-star-fill-type="linear" style="mix-blend-mode:screen"><text[^>]*fill="url\(#tis-gradient-0-fill-1\)" fill-opacity="0\.7"/);
+  assert.match(svg, /<pattern id="tis-text-image-fill-0-2" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="0" y="0" width="90" height="32"><image[^>]*href="data:image\/png;base64,AQID"/);
+  assert.match(svg, /<g data-tiny-image-star-fill-id="text-image" data-tiny-image-star-fill-type="image" style="mix-blend-mode:multiply"><text[^>]*fill="url\(#tis-text-image-fill-0-2\)" fill-opacity="0\.5"/);
+  for (const [family, weight, content] of [['Display Sans', '600', 'Brand '], ['Body Sans', '400', 'title']]) {
+    assert.ok((svg.match(new RegExp(`font-family="${family}" font-size="12" font-weight="${weight}"`, 'gu')) || []).length >= 3,
+      `${family} typography remains on each repeated paint run`);
+    assert.ok((svg.match(new RegExp(`>${content.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}<\\/tspan>`, 'gu')) || []).length >= 3,
+      `${family} text content remains editable in each paint run`);
+  }
+});
+
+test('SVG text stroke stacks outline glyphs above all fill paints, including gradients', () => {
+  const text = createNode('text', {
+    id: 'outlined-text', width: 100, height: 30, fontSize: 14, text: 'Outlined', textFit: 'fixed',
+    fills: [createFillLayer('solid', { id: 'text-fill', color: '#123456' })],
+    strokes: [
+      { id: 'text-outline', color: '#ff0000', width: 1, opacity: 0.8, visible: true, cap: 'round', join: 'round', pattern: 'solid', miterLimit: 10 },
+      { id: 'text-gradient-outline', color: '#00ff00', width: 2, opacity: 0.6, visible: true, cap: 'butt', join: 'miter', pattern: 'dashed', miterLimit: 10, gradient: createGradientFill('linear', '#00ff00') }
+    ]
+  });
+  const svg = exportNodeToSvg(text, { measureText: value => [...value].length * 7 });
+  const fillIndex = svg.indexOf('data-tiny-image-star-fill-id="text-fill"');
+  const firstStrokeIndex = svg.indexOf('data-tiny-image-star-stroke-id="text-outline"');
+  const gradientStrokeIndex = svg.indexOf('data-tiny-image-star-stroke-id="text-gradient-outline"');
+  assert.ok(fillIndex >= 0 && fillIndex < firstStrokeIndex && firstStrokeIndex < gradientStrokeIndex,
+    'glyph strokes are emitted in order after all fill paints');
+  assert.match(svg, /<text[^>]*data-tiny-image-star-stroke-id="text-outline"[^>]*fill="none" fill-opacity="0" stroke="#ff0000" stroke-opacity="0\.8" stroke-width="1"[^>]*>[^<]*<tspan[^>]*>Outlined<\/tspan><\/text>/);
+  assert.match(svg, /<text[^>]*data-tiny-image-star-stroke-id="text-gradient-outline"[^>]*stroke="url\(#tis-gradient-0-stroke-1\)" stroke-opacity="0\.6" stroke-width="2"[^>]*stroke-dasharray="8 4"/);
+  assert.doesNotMatch(svg, /<rect[^>]*stroke="(?:#ff0000|url\(#tis-gradient-0-stroke-1\))/,
+    'text stroke paints outline the glyphs instead of the text box');
+
+  const scalarStroke = createNode('text', {
+    id: 'legacy-text-outline', width: 100, height: 30, fontSize: 14, text: 'Legacy',
+    stroke: '#abcdef', strokeWidth: 3
+  });
+  const legacySvg = exportNodeToSvg(scalarStroke, { measureText: value => [...value].length * 7 });
+  assert.match(legacySvg, /<text[^>]*stroke="#abcdef"[^>]*stroke-width="3"/);
+  assert.doesNotMatch(legacySvg, /<rect[^>]*stroke="#abcdef"/);
+});
+
+test('SVG text paint stacks fail closed for invalid or unrenderable paints', () => {
+  const invalid = createNode('text', {
+    id: 'invalid-text-stack', fills: [createFillLayer('solid', { id: 'bad-text-paint', color: '#123456', blendMode: 'pass-through' })]
+  });
+  assert.throws(() => exportNodeToSvg(invalid), /supported fill blend mode/);
+
+  const angular = createNode('text', {
+    id: 'angular-text-stack', width: 40, height: 20, text: 'Angle',
+    fills: [createFillLayer('angular', { id: 'angular-text-paint', gradient: createGradientFill('angular', '#123456') })]
+  });
+  assert.throws(() => exportNodeToSvg(angular, { measureText: value => value.length * 5 }), error =>
+    error instanceof SvgExportError && /angular gradients/.test(error.feature));
+
+  const malformedStroke = createNode('text', {
+    id: 'malformed-text-stroke', text: 'No outline', strokes: [{ id: 'bad-stroke' }]
+  });
+  assert.throws(() => exportNodeToSvg(malformedStroke), error =>
+    error instanceof SvgExportError && error.feature === 'invalid text stroke stacks');
+});
+
 test('paragraph spacing and first-line indentation match plain and rich SVG text geometry', () => {
   const wrappedPlain = createNode('text', {
     width: 50, height: 20, fontSize: 10, lineHeight: 1, text: 'one two',
