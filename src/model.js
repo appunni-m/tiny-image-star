@@ -391,7 +391,7 @@ const componentOverrideProperties = new Set([
   'fillGradient',
   'imageFill',
   'blendMode',
-  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder'
+  'layoutPositioning', 'layoutSizingMain', 'layoutSizingCross', 'layoutSizingX', 'layoutSizingY', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'gridCell', 'points', 'subpaths', 'fillRule', 'innerRadius', 'lineReverseY', 'closed', 'vertices', 'edges', 'faces', 'operation', 'exportSettings', 'outputFormat', 'outputQuality', 'layoutGuides', 'interactions', '__childOrder', '__deletedChildren'
 ]);
 const componentPropertyTypes = new Set(['BOOLEAN', 'TEXT', 'INSTANCE_SWAP', 'SLOT']);
 
@@ -668,6 +668,17 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   const slotContext = componentSlotMutationContext(document, entry);
   requireOverriddenSlotForMutation(slotContext, 'remove');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot remove a component slot target from its instance.');
+  if (entry.parent && entry.parent !== slotContext?.target && entry.node.componentSourceId && entry.parent.componentSourceId) {
+    const instanceRoot = [...entry.parents].reverse().find(parent => parent.isInstance);
+    const sourceParent = findNodeAcrossPages(document, entry.parent.componentSourceId)?.node;
+    if (instanceRoot && sourceParent?.children?.some(child => child.id === entry.node.componentSourceId)) {
+      instanceRoot.componentOverrides ||= {};
+      const overrides = instanceRoot.componentOverrides[entry.parent.componentSourceId] ||= {};
+      const deletedChildren = new Set(overrides.__deletedChildren || []);
+      deletedChildren.add(entry.node.componentSourceId);
+      overrides.__deletedChildren = [...deletedChildren];
+    }
+  }
   const list = entry.parent ? entry.parent.children : getActivePage({ ...document, activePageId: pageId }).children;
   const [removed] = list.splice(entry.index, 1);
   if (entry.parent === slotContext?.target) syncSlotChildOrder(slotContext, list);
@@ -2139,7 +2150,7 @@ function assignComponentPropertyValue(document, component, instance, property, v
       // nested component's subtree.
       const ownerOverrides = instance.componentOverrides?.[property.targetSourceId] || {};
       for (const [key, overrideValue] of Object.entries(ownerOverrides)) {
-        if (key === '__childOrder' || !componentOverrideProperties.has(key)) continue;
+        if (key === '__childOrder' || key === '__deletedChildren' || !componentOverrideProperties.has(key)) continue;
         if (['text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration'].includes(key) && target.type !== 'text') continue;
         if (key === 'transforms' && target.type !== 'image') continue;
         target[key] = clone(overrideValue);
@@ -2620,6 +2631,12 @@ export function switchComponentInstanceVariant(document, instanceId, targetCompo
       const source = findNodeAcrossPages(document, id)?.node;
       return source?.variantNodeKey ? targetNodesByKey.get(source.variantNodeKey)?.id : null;
     }).filter(Boolean);
+    if (Array.isArray(migrated.__deletedChildren)) migrated.__deletedChildren = migrated.__deletedChildren.map(id => {
+      const source = findNodeAcrossPages(document, id)?.node;
+      return source?.variantNodeKey
+        ? targetNode.children?.find(child => child.variantNodeKey === source.variantNodeKey)?.id || null
+        : null;
+    }).filter(Boolean);
     nextOverrides[targetNode.id] = migrated;
   }
   instance.componentId = targetComponent.id;
@@ -2794,6 +2811,7 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const componentOverrides = isRoot ? clone(instance?.componentOverrides || {}) : null;
   const componentPropertyValues = instance?.componentPropertyValues && typeof instance.componentPropertyValues === 'object'
     ? clone(instance.componentPropertyValues) : clone(master.componentPropertyValues || {});
+  const nodeOverrides = overrides?.[master.id];
   const oldChildren = instance?.children || [];
   const oldChildrenBySourceId = new Map(oldChildren.filter(child => child.componentSourceId).map(child => [child.componentSourceId, child]));
   const oldChildrenBySourceKey = new Map(oldChildren.filter(child => child.componentSourceKey).map(child => [child.componentSourceKey, child]));
@@ -2805,7 +2823,10 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
     return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, overrides, false, slotContentsBySourceId, childOwnerInstanceId);
   });
-  const nodeOverrides = overrides?.[master.id];
+  if (!hasSlotContent && Array.isArray(nodeOverrides?.__deletedChildren) && nodeOverrides.__deletedChildren.length) {
+    const deletedChildren = new Set(nodeOverrides.__deletedChildren);
+    children = children.filter(child => !deletedChildren.has(child.componentSourceId));
+  }
   if (!hasSlotContent && Array.isArray(nodeOverrides?.__childOrder)) {
     const masterOrder = new Map((master.children || []).map((child, index) => [child.id, index]));
     const requestedOrder = new Map(nodeOverrides.__childOrder.map((id, index) => [id, index]));
@@ -2851,7 +2872,7 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   if (master.variantNodeKey) target.componentSourceKey = master.variantNodeKey;
   else delete target.componentSourceKey;
   if (nodeOverrides && typeof nodeOverrides === 'object' && !Array.isArray(nodeOverrides)) {
-    for (const [key, value] of Object.entries(nodeOverrides)) if (key !== '__childOrder' && componentOverrideProperties.has(key)) target[key] = clone(value);
+    for (const [key, value] of Object.entries(nodeOverrides)) if (key !== '__childOrder' && key !== '__deletedChildren' && componentOverrideProperties.has(key)) target[key] = clone(value);
   }
   return target;
 }
@@ -3225,7 +3246,7 @@ export function validateDocument(document) {
       if (node.componentOverrides != null) {
         if (!node.isInstance || typeof node.componentOverrides !== 'object' || Array.isArray(node.componentOverrides)) throw new TypeError(`Invalid component overrides on ${node.name || node.id}.`);
         for (const [sourceId, overrides] of Object.entries(node.componentOverrides)) {
-          if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string')))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
+          if (!sourceId || !overrides || typeof overrides !== 'object' || Array.isArray(overrides) || Object.keys(overrides).some(key => !componentOverrideProperties.has(key)) || (overrides.__childOrder != null && (!Array.isArray(overrides.__childOrder) || overrides.__childOrder.some(id => typeof id !== 'string'))) || (overrides.__deletedChildren != null && (!Array.isArray(overrides.__deletedChildren) || overrides.__deletedChildren.length > 100_000 || overrides.__deletedChildren.some(id => typeof id !== 'string' || !id || id.length > 160) || new Set(overrides.__deletedChildren).size !== overrides.__deletedChildren.length))) throw new TypeError(`Invalid component override on ${node.name || node.id}.`);
           const sourceNode = findNodeAcrossPages(document, sourceId)?.node;
           if (Object.hasOwn(overrides, 'lineReverseY')
             && (sourceNode?.type !== 'line' || typeof overrides.lineReverseY !== 'boolean')) {

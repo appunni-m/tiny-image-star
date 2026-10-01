@@ -27,6 +27,27 @@ test('component instances link to a main component and can be placed on another 
   assert.equal(validateDocument(document), true);
 });
 
+test('deleting an inherited instance layer survives component synchronization and reload', () => {
+  const document = createDocument();
+  const master = createNode('frame', { name: 'Card' });
+  const child = createNode('rectangle', { name: 'Badge' });
+  addNode(document, master);
+  addNode(document, child, { parentId: master.id });
+  const component = createComponent(document, master.id, 'Card');
+  const instance = createComponentInstance(document, component.id);
+  const instanceChildId = instance.children[0].id;
+
+  assert.equal(removeNode(document, instanceChildId)?.id, instanceChildId);
+  assert.deepEqual(instance.children, []);
+  syncAllComponentInstances(document);
+  assert.deepEqual(instance.children, [], 'saving must not regenerate a child the user deleted from this instance');
+
+  const reloaded = parseDocument(serializeDocument(document));
+  syncAllComponentInstances(reloaded);
+  assert.deepEqual(findNode(reloaded, instance.id).node.children, [], 'the deletion override must survive reload');
+  assert.equal(validateDocument(reloaded), true);
+});
+
 test('component synchronization remaps internal prototype scroll targets to each instance', () => {
   const document = createDocument();
   const main = createNode('frame', { name: 'Scrollable card', width: 300, height: 220 });
@@ -431,6 +452,25 @@ test('variant sets capture property values and switch instances without losing c
   assert.equal(instance.children[0].fill, '#12abef');
   assert.equal(instance.children[0].componentSourceId, largeLabel.id);
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+});
+
+test('deleted instance children map to their matching layer when switching component variants', () => {
+  const document = createDocument();
+  const small = createNode('frame', { name: 'Small card' });
+  const smallChild = createNode('rectangle', { name: 'Badge' });
+  const large = createNode('frame', { name: 'Large card' });
+  const largeChild = createNode('rectangle', { name: 'Badge' });
+  addNode(document, small); addNode(document, smallChild, { parentId: small.id });
+  addNode(document, large); addNode(document, largeChild, { parentId: large.id });
+  const smallComponent = createComponent(document, small.id, 'Card / Size=Small');
+  const largeComponent = createComponent(document, large.id, 'Card / Size=Large');
+  const instance = createComponentInstance(document, smallComponent.id);
+  createComponentSet(document, [smallComponent.id, largeComponent.id], 'Card');
+
+  removeNode(document, instance.children[0].id);
+  assert.equal(switchComponentInstanceVariant(document, instance.id, largeComponent.id), true);
+  assert.deepEqual(instance.children, [], 'the deleted Badge stays deleted when the corresponding variant is selected');
+  assert.equal(validateDocument(document), true);
 });
 
 test('variant value changes reject duplicate combinations and deleting a variant dissolves a degenerate set', () => {
