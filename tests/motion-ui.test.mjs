@@ -14,6 +14,7 @@ test('Motion is a keyboard-accessible inspector tab with a duration, playhead, a
   assert.match(main, /id="motion-duration" type="number"[^>]*aria-label="Motion duration in milliseconds"/);
   assert.match(main, /data-motion-action="add-track"/);
   assert.match(main, /data-motion-action="add-keyframe"/);
+  assert.match(main, /width: 'Width', height: 'Height'/);
   assert.match(main, /data-motion-field="easing"/);
 });
 
@@ -29,6 +30,9 @@ test('motion playback samples transient renderer overrides without mutating auth
 
 test('motion controls remain usable on phone widths and follow the selected color theme', () => {
   assert.match(css, /\.motion-playback-controls input\[type="range"\] \{[^}]*accent-color: var\(--blue\)/);
+  const phoneInspectorLayout = css.slice(css.lastIndexOf('/* Keep the edited artwork visible above the phone properties sheet. */'));
+  assert.match(phoneInspectorLayout, /\.right-panel\s*\{[^}]*height:\s*min\(50dvh,\s*500px\)/);
+  assert.match(phoneInspectorLayout, /\.mobile-scrim\.is-visible\s*\{[^}]*bottom:\s*min\(50dvh,\s*500px\)/);
   assert.match(css, /@media \(max-width: 820px\) and \(pointer: coarse\)[\s\S]*?\.motion-keyframe-row label input, \.motion-keyframe-row label select \{[^}]*min-height: 44px/);
   assert.match(css, /:root\[data-theme="dark"\] \.motion-keyframe-row label input,[\s\S]*background: #30333a; color: #e0e4eb/);
 });

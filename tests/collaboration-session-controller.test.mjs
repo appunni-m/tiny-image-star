@@ -20,6 +20,15 @@ function context(kind, fields = {}) {
   return { v: 1, kind, designId: 'design-a', sessionId: 'session-a', actorId: 'guest-a', ...fields };
 }
 async function settle() { await new Promise(resolve => setTimeout(resolve, 0)); }
+function fakeTimers() {
+  let id = 0;
+  const tasks = new Map();
+  return {
+    tasks,
+    schedule(callback, delay) { const task = { id: ++id, callback, delay, cancelled: false }; tasks.set(task.id, task); return task.id; },
+    cancel(timerId) { const task = tasks.get(timerId); if (task) task.cancelled = true; }
+  };
+}
 
 function fakeDesign() {
   const document = createDocument();
@@ -48,7 +57,7 @@ async function hostFixture(overrides = {}) {
     },
     createTransport: async () => ({
       offerCapsule: 'offer-a', dataChannel: channel,
-      session: { sessionId: 'session-a' },
+      session: { sessionId: 'session-a', expiresAt: overrides.offerExpiresAt },
       acceptAnswer: async () => { events.push('answer-applied'); },
       waitForOpen: async () => true,
       close: () => channel.close()
@@ -64,6 +73,38 @@ test('host verifies and durably consumes an answer before accepting the peer', a
   await controller.acceptAnswer('answer-capsule');
   assert.deepEqual(events, ['verified', 'consumed', 'answer-applied']);
   controller.close();
+});
+
+test('manual offer relay remains available until capsule expiry, then starts the HELLO timeout', async () => {
+  let clock = 1_000;
+  const timers = fakeTimers();
+  const { controller } = await hostFixture({
+    now: () => clock,
+    offerExpiresAt: clock + 5 * 60_000,
+    handshakeTimeoutMs: 20_000,
+    scheduleTimeout: timers.schedule,
+    cancelTimeout: timers.cancel
+  });
+  const offerTimer = [...timers.tasks.values()][0];
+  assert.equal(offerTimer.delay, 5 * 60_000);
+
+  clock += 30_000;
+  await controller.acceptAnswer('answer-capsule');
+  assert.equal(controller.state, 'waiting-guest');
+  assert.equal(offerTimer.cancelled, true);
+  assert.equal([...timers.tasks.values()].at(-1).delay, 20_000);
+  controller.close();
+
+  const expiredTimers = fakeTimers();
+  const expired = await hostFixture({
+    now: () => 1_000,
+    offerExpiresAt: 6 * 60_000,
+    scheduleTimeout: expiredTimers.schedule,
+    cancelTimeout: expiredTimers.cancel
+  });
+  [...expiredTimers.tasks.values()][0].callback();
+  assert.equal(expired.controller.state, 'timeout');
+  assert.equal(expired.channel.closed, true);
 });
 
 test('host sends a snapshot only after HELLO and persists guest snapshot before ACK', async () => {

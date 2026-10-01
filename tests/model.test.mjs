@@ -24,6 +24,10 @@ test('motion tracks persist with a design, validate their layer references, and 
       { id: 'motion-x-end', timeMs: 1000, value: 240, easing: 'linear' }
     ]
   });
+  document.motion.tracks.push({
+    id: 'motion-width', nodeId: node.id, property: 'width',
+    keyframes: [{ id: 'motion-width-start', timeMs: 0, value: 120 }, { id: 'motion-width-end', timeMs: 1000, value: 240 }]
+  });
   const reopened = parseDocument(serializeDocument(document));
   assert.deepEqual(reopened.motion, document.motion);
   assert.equal(validateDocument(reopened), true);

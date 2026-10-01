@@ -1,3 +1,5 @@
+import { MAX_MOTION_KEYFRAMES, MAX_MOTION_TRACKS } from './motion.js';
+
 const clone = value => structuredClone(value);
 
 function requireDocument(document) {
@@ -18,7 +20,7 @@ function makeUniquePageName(pages, base) {
   return candidate;
 }
 
-/** Duplicate a page after its source, renewing all layer ids and internal prototype links. */
+/** Duplicate a page after its source, renewing layer, motion, and internal prototype ids. */
 export function duplicatePage(document, pageId, { createId = prefix => `${prefix}-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}` } = {}) {
   requireDocument(document);
   const index = document.pages.findIndex(page => page.id === pageId);
@@ -36,6 +38,12 @@ export function duplicatePage(document, pageId, { createId = prefix => `${prefix
       }
     };
     collectNodeIds(page.children);
+  }
+  for (const track of document.motion?.tracks || []) {
+    if (typeof track?.id === 'string') usedIds.add(track.id);
+    for (const keyframe of track?.keyframes || []) {
+      if (typeof keyframe?.id === 'string') usedIds.add(keyframe.id);
+    }
   }
   const newPageId = createId('page');
   if (typeof newPageId !== 'string' || !newPageId.trim() || newPageId.trim() !== newPageId || usedIds.has(newPageId)) throw new TypeError('Page id factory must return a unique non-empty id.');
@@ -72,6 +80,37 @@ export function duplicatePage(document, pageId, { createId = prefix => `${prefix
       for (const child of item.children || []) rewrite(child);
     };
     rewrite(node);
+  }
+  const copiedMotionTracks = (document.motion?.tracks || [])
+    .filter(track => ids.has(track.nodeId))
+    .map(track => {
+      const nextTrackId = createId('motion-track');
+      if (typeof nextTrackId !== 'string' || !nextTrackId.trim() || nextTrackId.trim() !== nextTrackId || usedIds.has(nextTrackId)) {
+        throw new TypeError('Motion track id factory must return a unique non-empty id.');
+      }
+      usedIds.add(nextTrackId);
+      const copy = clone(track);
+      copy.id = nextTrackId;
+      copy.nodeId = ids.get(track.nodeId);
+      copy.keyframes = copy.keyframes.map(keyframe => {
+        const nextKeyframeId = createId('keyframe');
+        if (typeof nextKeyframeId !== 'string' || !nextKeyframeId.trim() || nextKeyframeId.trim() !== nextKeyframeId || usedIds.has(nextKeyframeId)) {
+          throw new TypeError('Motion keyframe id factory must return a unique non-empty id.');
+        }
+        usedIds.add(nextKeyframeId);
+        return { ...keyframe, id: nextKeyframeId };
+      });
+      return copy;
+    });
+  if (copiedMotionTracks.length) {
+    const currentTracks = document.motion.tracks;
+    const currentKeyframes = currentTracks.reduce((total, track) => total + track.keyframes.length, 0);
+    const copiedKeyframes = copiedMotionTracks.reduce((total, track) => total + track.keyframes.length, 0);
+    if (currentTracks.length + copiedMotionTracks.length > MAX_MOTION_TRACKS
+      || currentKeyframes + copiedKeyframes > MAX_MOTION_KEYFRAMES) {
+      throw new RangeError('Duplicating this page would exceed the motion document limits.');
+    }
+    document.motion.tracks.push(...copiedMotionTracks);
   }
   document.pages.splice(index + 1, 0, duplicate);
   return duplicate;

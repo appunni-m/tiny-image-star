@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deletePage, duplicatePage, renamePage, reorderPage } from '../src/page-management.js';
+import { validateMotion } from '../src/motion.js';
 
 function fixture() {
   return {
@@ -33,6 +34,76 @@ test('duplicatePage inserts a uniquely named deep copy, renews node ids and loca
   assert.equal(first.interactions[0].destinationPageId, duplicate.id);
   assert.equal(document.activePageId, 'b');
   assert.equal(document.pages[1].children[0].id, 'frame-a');
+});
+
+test('duplicatePage copies motion tracks onto new frame and child ids without changing source tracks', () => {
+  const document = fixture();
+  document.motion = { durationMs: 1000, tracks: [
+    { id: 'frame-x', nodeId: 'frame-a', property: 'x', keyframes: [
+      { id: 'frame-x-start', timeMs: 0, value: 10, easing: 'ease-in' },
+      { id: 'frame-x-end', timeMs: 1000, value: 180, easing: 'linear' }
+    ] },
+    { id: 'child-opacity', nodeId: 'rect', property: 'opacity', keyframes: [
+      { id: 'child-opacity-start', timeMs: 0, value: 1, easing: 'ease-out' },
+      { id: 'child-opacity-end', timeMs: 700, value: 0.25, easing: 'ease-in-out' }
+    ] },
+    { id: 'other-page-y', nodeId: 'frame-c', property: 'y', keyframes: [
+      { id: 'other-page-y-start', timeMs: 0, value: 0, easing: 'linear' }
+    ] }
+  ] };
+  document.pages[2].children.push({ id: 'frame-c', type: 'frame', children: [] });
+  const originalTracks = structuredClone(document.motion.tracks);
+  let counter = 0;
+
+  const duplicate = duplicatePage(document, 'b', { createId: prefix => `${prefix}-motion-copy-${++counter}` });
+  const [copiedFrame, copiedSecondFrame] = duplicate.children;
+  const copiedChild = copiedSecondFrame.children[0];
+  const copiedTracks = document.motion.tracks.filter(track => [copiedFrame.id, copiedChild.id].includes(track.nodeId));
+
+  assert.deepEqual(document.motion.tracks.slice(0, originalTracks.length), originalTracks, 'source and unrelated page tracks remain unchanged');
+  assert.equal(copiedTracks.length, 2);
+  const copiedFrameTrack = copiedTracks.find(track => track.property === 'x');
+  const copiedChildTrack = copiedTracks.find(track => track.property === 'opacity');
+  assert.equal(copiedFrameTrack.nodeId, copiedFrame.id);
+  assert.equal(copiedChildTrack.nodeId, copiedChild.id);
+  assert.notEqual(copiedFrameTrack.id, 'frame-x');
+  assert.notEqual(copiedChildTrack.id, 'child-opacity');
+  assert.deepEqual(copiedFrameTrack.keyframes.map(({ id, ...keyframe }) => keyframe), originalTracks[0].keyframes.map(({ id, ...keyframe }) => keyframe));
+  assert.deepEqual(copiedChildTrack.keyframes.map(({ id, ...keyframe }) => keyframe), originalTracks[1].keyframes.map(({ id, ...keyframe }) => keyframe));
+  assert.ok(copiedTracks.every(track => track.keyframes.every(keyframe => !originalTracks.some(source => source.keyframes.some(item => item.id === keyframe.id)))),
+    'copied keyframes receive fresh IDs');
+  assert.deepEqual(document.motion.tracks.find(track => track.id === 'other-page-y'), originalTracks[2]);
+  const nodeIds = new Set(document.pages.flatMap(page => [page.id, ...page.children.flatMap(node => [node.id, ...(node.children || []).map(child => child.id)])]));
+  assert.equal(validateMotion(document.motion, { nodeIds }), true);
+});
+
+test('duplicatePage refuses a motion track limit overflow without inserting a partial page', () => {
+  const document = fixture();
+  document.motion = { durationMs: 1000, tracks: Array.from({ length: 100 }, (_, index) => ({
+    id: `motion-${index}`, nodeId: index === 0 ? 'frame-a' : `unrelated-${index}`, property: 'x', keyframes: []
+  })) };
+  const before = structuredClone(document);
+  let counter = 0;
+
+  assert.throws(() => duplicatePage(document, 'b', { createId: prefix => `${prefix}-overflow-${++counter}` }),
+    { name: 'RangeError', message: /motion document limits/ });
+  assert.deepEqual(document, before);
+});
+
+test('duplicatePage refuses a global keyframe limit overflow without inserting a partial page', () => {
+  const document = fixture();
+  document.motion = { durationMs: 1000, tracks: Array.from({ length: 50 }, (_, trackIndex) => ({
+    id: `motion-${trackIndex}`, nodeId: trackIndex === 0 ? 'frame-a' : `unrelated-${trackIndex}`, property: 'x',
+    keyframes: Array.from({ length: 200 }, (_, keyframeIndex) => ({
+      id: `keyframe-${trackIndex}-${keyframeIndex}`, timeMs: keyframeIndex, value: keyframeIndex
+    }))
+  })) };
+  const before = structuredClone(document);
+  let counter = 0;
+
+  assert.throws(() => duplicatePage(document, 'b', { createId: prefix => `${prefix}-overflow-${++counter}` }),
+    { name: 'RangeError', message: /motion document limits/ });
+  assert.deepEqual(document, before);
 });
 
 test('duplicatePage remaps internal scroll-to anchors without changing the source page', () => {

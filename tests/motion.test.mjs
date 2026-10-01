@@ -37,7 +37,7 @@ test('sampling clamps to endpoint values and handles exact keyframe timestamps',
 });
 
 test('linear and supported easing curves interpolate numeric design properties', () => {
-  const properties = ['x', 'y', 'rotation', 'opacity'];
+  const properties = ['x', 'y', 'width', 'height', 'rotation', 'opacity'];
   for (const property of properties) {
     const motion = { durationMs: 100, tracks: [track(property, [key('a', 0, 0), key('b', 100, 1)])] };
     assert.equal(sampleMotion(motion, 'node-a', property, 25), 0.25);
@@ -70,6 +70,8 @@ test('motion validation enforces document bounds, supported properties, values, 
   assert.throws(() => validateMotion(valid, { nodeIds: new Set(['other-node']) }), /missing node/);
   assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('fill', [key('k', 0, 1)])] }), /unsupported animated property/);
   assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('opacity', [key('k', 0, 1.01)])] }), /invalid opacity/);
+  assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('width', [key('k', 0, -0.1)])] }), /invalid width/);
+  assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('height', [key('k', 0, 1_000_000_001)])] }), /invalid height/);
   assert.throws(() => validateMotion({ durationMs: 100, tracks: [track('x', [key('k', 0, Number.NaN)])] }), /invalid x/);
 });
 

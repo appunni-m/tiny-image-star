@@ -4,7 +4,7 @@ export const MAX_MOTION_TRACKS = 100;
 export const MAX_MOTION_KEYFRAMES_PER_TRACK = 500;
 export const MAX_MOTION_KEYFRAMES = 10_000;
 
-const properties = new Set(['x', 'y', 'rotation', 'opacity']);
+const properties = new Set(['x', 'y', 'width', 'height', 'rotation', 'opacity']);
 const easings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const allowedMotionKeys = new Set(['durationMs', 'tracks']);
@@ -26,6 +26,7 @@ function validId(value) {
 function valueInRange(property, value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return false;
   if (property === 'opacity') return value >= 0 && value <= 1;
+  if (property === 'width' || property === 'height') return value >= 0 && value <= 1_000_000_000;
   if (property === 'rotation') return Math.abs(value) <= 1_000_000;
   return Math.abs(value) <= 1_000_000_000;
 }

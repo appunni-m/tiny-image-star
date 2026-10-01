@@ -104,6 +104,8 @@ export async function createHostSessionController({
   locks = globalThis.navigator?.locks,
   crypto = globalThis.crypto,
   now = () => Date.now(),
+  scheduleTimeout = globalThis.setTimeout?.bind(globalThis),
+  cancelTimeout = globalThis.clearTimeout?.bind(globalThis),
   onState = () => {},
   onSnapshot = () => {},
   peerConnectionFactory = globalThis.RTCPeerConnection,
@@ -132,6 +134,9 @@ export async function createHostSessionController({
   if (typeof handshakeTimeoutMs !== 'number' || !Number.isFinite(handshakeTimeoutMs) || handshakeTimeoutMs < 1 || handshakeTimeoutMs > 120_000) {
     throw new RangeError('The collaboration handshake timeout is invalid.');
   }
+  if (typeof scheduleTimeout !== 'function' || typeof cancelTimeout !== 'function') {
+    throw new TypeError('Collaboration timeout functions are unavailable.');
+  }
   sessionBudget({ maxSessionAssetBytes, maxSessionAssetCount });
   let state = 'preparing';
   let grant = await loadGrant(workspace, designId, { locks, crypto });
@@ -148,7 +153,7 @@ export async function createHostSessionController({
   let incomingReservation = null;
   let disposed = false;
   const messageQueue = { queue: Promise.resolve(), messages: 0, bytes: 0 };
-  let handshakeTimer = 0;
+  let handshakeTimer = null;
   const removers = [];
   const emit = next => { state = next; try { onState(next); } catch {} };
   const sessionId = () => transport?.session?.sessionId;
@@ -157,7 +162,8 @@ export async function createHostSessionController({
   function close(reason = 'closed') {
     if (disposed) return;
     disposed = true;
-    clearTimeout(handshakeTimer);
+    if (handshakeTimer != null) cancelTimeout(handshakeTimer);
+    handshakeTimer = null;
     assetReceiver?.cancel?.();
     for (const remove of removers.splice(0)) { try { remove(); } catch {} }
     try { transport?.close?.(); } catch {}
@@ -269,7 +275,8 @@ export async function createHostSessionController({
       return;
     }
     guestActorId = message.actorId;
-    clearTimeout(handshakeTimer);
+    if (handshakeTimer != null) cancelTimeout(handshakeTimer);
+    handshakeTimer = null;
     engine = createHostOperationEngine({
       designId,
       sessionId: sessionId(),
@@ -384,7 +391,16 @@ export async function createHostSessionController({
   removers.push(listen(channel, 'close', () => close('disconnected')));
   removers.push(listen(channel, 'error', () => close('failed')));
   emit('waiting-answer');
-  handshakeTimer = setTimeout(() => close('timeout'), handshakeTimeoutMs);
+  const offerExpiry = transport.session?.expiresAt;
+  const offerWaitMs = Number.isSafeInteger(offerExpiry) ? offerExpiry - now() : handshakeTimeoutMs;
+  if (offerWaitMs <= 0) {
+    close('timeout');
+    throw new Error('The session offer expired before it could be shared.');
+  }
+  // The manual offer/answer relay may cross apps and take several minutes. Keep
+  // the host alive for the signed offer's own validity window; the shorter
+  // handshake timeout is only for the guest's first HELLO after the channel opens.
+  handshakeTimer = scheduleTimeout(() => close('timeout'), offerWaitMs);
 
   return Object.freeze({
     role: 'host',
@@ -398,9 +414,16 @@ export async function createHostSessionController({
       emit('verifying-answer');
       let answer;
       try { answer = await verifyAnswer(answerCapsule, transport.offerCapsule, { expectedInvite: grant.invite, now: now(), crypto }); }
-      catch (error) { emit('waiting-answer'); throw error; }
+      catch (error) { if (!disposed) emit('waiting-answer'); throw error; }
+      if (disposed || (Number.isSafeInteger(answer.expiresAt) && now() > answer.expiresAt)) {
+        if (!disposed) close('timeout');
+        throw new Error('The session offer expired before the answer was accepted.');
+      }
       try { await consumeAnswer(workspace, answer, { locks, now: now() }); }
-      catch (error) { emit('waiting-answer'); throw error; }
+      catch (error) { if (!disposed) emit('waiting-answer'); throw error; }
+      if (disposed) throw new Error('The host session expired before the answer was accepted.');
+      if (handshakeTimer != null) cancelTimeout(handshakeTimer);
+      handshakeTimer = null;
       const active = await loadGrant(workspace, designId, { locks, crypto });
       if (!active || active.shareId !== grant.shareId) { close('revoked'); throw new Error('This live sharing link has been revoked.'); }
       emit('connecting');
@@ -413,6 +436,7 @@ export async function createHostSessionController({
       }
       if (disposed) throw new Error('The host session closed before the guest was ready.');
       emit('waiting-guest');
+      if (!guestActorId) handshakeTimer = scheduleTimeout(() => close('timeout'), handshakeTimeoutMs);
       return true;
     },
     revoke: async () => {
