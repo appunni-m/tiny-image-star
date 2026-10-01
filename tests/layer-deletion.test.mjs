@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createNode, findNode, setComponentSlotContent } from '../src/model.js';
+import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createNode, findNode, parseDocument, serializeDocument, setComponentSlotContent, syncAllComponentInstances } from '../src/model.js';
 import { removeLayersAtomically } from '../src/layer-deletion.js';
 
 test('layer deletion removes selections from a new valid document', () => {
@@ -55,4 +55,45 @@ test('deleting a selected slot override remains supported', () => {
 
   assert.equal(findNode(result.document, customLayer.id), null);
   assert.deepEqual(findNode(result.document, instanceSlot.id).node.children, []);
+});
+
+test('deleting inside deeply nested component instances survives the save-time component sync', () => {
+  const document = createDocument();
+  const leafMaster = createNode('frame', { name: 'Leaf component' });
+  const leafChild = createNode('rectangle', { name: 'Deletable leaf' });
+  addNode(document, leafMaster);
+  addNode(document, leafChild, { parentId: leafMaster.id });
+  const leafComponent = createComponent(document, leafMaster.id, 'Leaf component');
+
+  const middleMaster = createNode('frame', { name: 'Middle component' });
+  addNode(document, middleMaster);
+  createComponentInstance(document, leafComponent.id, { parentId: middleMaster.id });
+  createComponentInstance(document, leafComponent.id, { parentId: middleMaster.id });
+  const middleComponent = createComponent(document, middleMaster.id, 'Middle component');
+
+  const outerMaster = createNode('frame', { name: 'Outer component' });
+  addNode(document, outerMaster);
+  createComponentInstance(document, middleComponent.id, { parentId: outerMaster.id });
+  const outerComponent = createComponent(document, outerMaster.id, 'Outer component');
+  const outerInstance = createComponentInstance(document, outerComponent.id);
+  const firstNestedLeafInstance = outerInstance.children[0].children[0];
+  const selectedLeaf = firstNestedLeafInstance.children[0];
+
+  const result = removeLayersAtomically(document, [selectedLeaf.id]);
+  assert.equal(findNode(result.document, selectedLeaf.id), null);
+  syncAllComponentInstances(result.document);
+  const syncedOuter = findNode(result.document, outerInstance.id).node;
+  assert.deepEqual(syncedOuter.children[0].children[0].children, [],
+    'refreshing an enclosing component must preserve the nested instance deletion');
+  assert.equal(syncedOuter.children[0].children[1].children[0].name, 'Deletable leaf',
+    'the sibling instance of the same component must retain its own unedited content');
+  assert.ok(findNode(result.document, leafChild.id), 'the source component layer must remain intact');
+
+  const reloaded = parseDocument(serializeDocument(result.document));
+  syncAllComponentInstances(reloaded);
+  const restoredOuter = findNode(reloaded, outerInstance.id).node;
+  assert.deepEqual(restoredOuter.children[0].children[0].children, [],
+    'the nested deletion must survive local save and reload');
+  assert.equal(restoredOuter.children[0].children[1].children[0].name, 'Deletable leaf',
+    'a sibling instance must remain unchanged after local save and reload');
 });

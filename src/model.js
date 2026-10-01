@@ -2833,7 +2833,19 @@ function syncInstanceNode(instance, master, componentId, overrides, isRoot = fal
   const childOverrides = nestedComponentOverrides || overrides;
   let children = hasSlotContent ? slotContentsBySourceId.get(slotContentKey).slice() : (master.children || []).map((child, index) => {
     const legacyChild = oldChildren[index]?.componentSourceId ? null : oldChildren[index];
-    return syncInstanceNode(oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey) || legacyChild, child, componentId, childOverrides, false, slotContentsBySourceId, childOwnerInstanceId);
+    const sourceMatchedChild = oldChildrenBySourceId.get(child.id) || oldChildrenBySourceKey.get(child.variantNodeKey);
+    const previousNestedInstance = oldChildren[index];
+    const nestedInstanceFallback = !sourceMatchedChild && child.isInstance
+      && previousNestedInstance?.isInstance
+      && previousNestedInstance.componentId === child.componentId
+      && previousNestedInstance.nestedComponentSourceId === (child.nestedComponentSourceId || child.componentSourceId)
+      ? previousNestedInstance : null;
+    // When a component contains a nested instance, cloning that enclosing
+    // component can give the nested root a different owner-source ID. Keep the
+    // existing nested instance by matching its linked component identity at the
+    // same source position; otherwise parent synchronization discards local
+    // overrides such as deleted children and recreates the original subtree.
+    return syncInstanceNode(sourceMatchedChild || nestedInstanceFallback || legacyChild, child, componentId, childOverrides, false, slotContentsBySourceId, childOwnerInstanceId);
   });
   if (!hasSlotContent) {
     const deletedChildren = new Set([
