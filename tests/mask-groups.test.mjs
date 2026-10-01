@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addNode, canCreateMaskGroup, createDocument, createMaskGroup, createNode,
+  addNode, canCreateMaskGroup, createDocument, createMaskGroup, createNode, findNode,
   parseDocument, releaseMaskGroup, serializeDocument, validateDocument
 } from '../src/model.js';
 
-test('mask groups use the frontmost selected vector and preserve layer order on release', () => {
+test('mask groups use the frontmost supported layer and preserve layer order on release', () => {
   const document = createDocument();
   const back = createNode('rectangle', { name: 'Back', x: -20, y: 0 });
   const content = createNode('rectangle', { name: 'Content', x: 30, y: 40, width: 100, height: 80 });
@@ -30,15 +30,31 @@ test('mask groups use the frontmost selected vector and preserve layer order on 
   assert.equal(validateDocument(document), true);
 });
 
-test('mask creation rejects open paths, non-vector front layers, locks, and mixed parents', () => {
+test('text layers can be saved and reused as editable alpha-mask sources', () => {
+  const document = createDocument();
+  const content = createNode('rectangle', { name: 'Photo window' });
+  const text = createNode('text', { name: 'STAR', text: 'STAR', fontSize: 48, fillOpacity: 0.8 });
+  addNode(document, content);
+  addNode(document, text);
+
+  assert.equal(canCreateMaskGroup(document, [content.id, text.id]), true);
+  const group = createMaskGroup(document, [content.id, text.id]);
+  const reloaded = parseDocument(serializeDocument(document));
+
+  assert.equal(group.maskSourceId, text.id);
+  assert.equal(findNode(reloaded, group.id).node.maskSourceId, text.id);
+  assert.equal(validateDocument(reloaded), true);
+});
+
+test('mask creation rejects open paths, image layers, locks, and mixed parents', () => {
   const document = createDocument();
   const frame = createNode('frame');
   const content = createNode('rectangle');
   const openPath = createNode('path', { closed: false, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
-  const text = createNode('text');
-  addNode(document, frame); addNode(document, content); addNode(document, openPath); addNode(document, text);
+  const image = createNode('image');
+  addNode(document, frame); addNode(document, content); addNode(document, openPath); addNode(document, image);
   assert.equal(canCreateMaskGroup(document, [content.id, openPath.id]), false);
-  assert.equal(canCreateMaskGroup(document, [content.id, text.id]), false);
+  assert.equal(canCreateMaskGroup(document, [content.id, image.id]), false);
 
   const lockedShape = createNode('ellipse', { locked: true });
   const sibling = createNode('rectangle');

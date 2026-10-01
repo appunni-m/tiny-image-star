@@ -1056,7 +1056,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   return group;
 }
 
-const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean']);
+const maskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'boolean', 'text']);
 function isMaskSource(node) {
   return Boolean(node && maskSourceTypes.has(node.type) && (node.type !== 'path' || hasFillablePathContour(node)) && (node.type !== 'network' || (node.faces || []).length > 0));
 }
@@ -1073,9 +1073,9 @@ export function canCreateMaskGroup(document, nodeIds, pageId = document.activePa
   return isMaskSource(frontmost.node);
 }
 
-/** Group sibling layers under the frontmost selected closed vector mask. */
+/** Group sibling layers under the frontmost selected supported alpha mask. */
 export function createMaskGroup(document, nodeIds, pageId = document.activePageId) {
-  if (!canCreateMaskGroup(document, nodeIds, pageId)) throw new Error('Select a closed vector shape and at least one unlocked sibling layer; the frontmost selected shape becomes the mask.');
+  if (!canCreateMaskGroup(document, nodeIds, pageId)) throw new Error('Select at least two unlocked sibling layers and place a supported mask source at the front.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createLayerEffect, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, combineBoolean, createDocument, createFillLayer, createGradientFill, createLayerEffect, createMaskGroup, createNode, createVariable, createVariableCollection, setFrameVariableMode, setVariableValue } from '../src/model.js';
 import { createImageFill } from '../src/image-fills.js';
 import { isValidGradientFill, moveFillLayer } from '../src/fills.js';
 import { imagePreviewKey } from '../src/image-preview-runtime.js';
@@ -331,7 +331,7 @@ test('exports simple vector alpha-mask groups with editable mask geometry and so
   const svg = exportNodeToSvg(group);
 
   assert.match(svg, /<mask id="tis-mask-0" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="100" height="80">/);
-  assert.match(svg, /<g transform="matrix\([^)]*\)"><ellipse cx="30" cy="25" rx="30" ry="25" fill="#ffffff" fill-opacity="0\.2" stroke="none" stroke-width="0"\/><\/g>/);
+  assert.match(svg, /<g transform="matrix\([^)]*\)"><ellipse cx="30" cy="25" rx="30" ry="25" fill="#ffffff" fill-opacity="0\.2"\/><\/g>/);
   assert.match(svg, /<g opacity="0\.7" mask="url\(#tis-mask-0\)" data-tiny-image-star-type="group" data-tiny-image-star-node-id="alpha-group">/);
   assert.match(svg, /data-tiny-image-star-node-id="masked-content"/);
   assert.doesNotMatch(svg, /data-tiny-image-star-node-id="alpha-source"/);
@@ -361,9 +361,41 @@ test('exports simple vector alpha-mask groups with editable mask geometry and so
   assert.doesNotMatch(unmaskedSvg, /data-tiny-image-star-node-id="alpha-source"/);
 });
 
+test('exports editable text glyphs as white alpha-mask content with layer opacity', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Mask typography');
+  const alternate = addVariableMode(document, collection.id, 'Alternate');
+  const fontSize = createVariable(document, collection.id, 'Text size', 'number', 24);
+  setVariableValue(document, fontSize.id, 48, alternate.id);
+  const frame = createNode('frame', { width: 140, height: 70 });
+  const content = createNode('rectangle', { id: 'text-mask-content', width: 120, height: 50 });
+  const source = createNode('text', {
+    id: 'text-mask-source', name: 'Mask typography', x: 3, y: 4, width: 120, height: 50,
+    text: 'TYPE', opacity: 0.5, fillOpacity: 0.5,
+    textRuns: [{ text: 'TYPE', color: '#ff0000' }]
+  });
+  addNode(document, frame);
+  addNode(document, content, { parentId: frame.id });
+  addNode(document, source, { parentId: frame.id });
+  bindVariable(document, source.id, fontSize.id, 'fontSize');
+  const group = createMaskGroup(document, [content.id, source.id]);
+  setFrameVariableMode(document, frame.id, collection.id, alternate.id);
+  const measureText = (text, node) => [...text].length * Number(node.fontSize) * 0.6;
+  const svg = exportNodeToSvg(group, { document, measureText });
+  const mask = svg.match(/<mask id="tis-mask-0"[^>]*>([\s\S]*?)<\/mask>/)?.[1];
+
+  assert.ok(mask, 'the text group should create an SVG alpha mask');
+  assert.match(mask, /<text[^>]*fill="#ffffff" fill-opacity="0\.25"/,
+    'text source and layer opacity should combine into the glyph alpha');
+  assert.match(mask, /<tspan[^>]*fill="#ffffff">TYPE<\/tspan>/,
+    'mixed-style glyphs should be recolored white without changing their text');
+  assert.match(mask, /font-size="48"/, 'text mask layout should honor the active variable-mode font size');
+  assert.doesNotMatch(mask, /#ff0000/, 'source text color must not tint mask alpha');
+  assert.match(svg, /mask="url\(#tis-mask-0\)"/);
+});
+
 test('reports unsupported alpha-mask source contents precisely', () => {
   const cases = [
-    [createNode('text', { id: 'text-mask' }), 'text alpha mask contents'],
     [createNode('path', { id: 'open-path-mask', closed: false }), 'open path alpha mask contents'],
     [createNode('network', { id: 'open-network-mask' }), 'open vector network alpha mask contents'],
     [createNode('boolean', { id: 'boolean-mask' }), 'boolean alpha mask contents']

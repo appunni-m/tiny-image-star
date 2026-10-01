@@ -472,7 +472,7 @@ function isNodeVisible(document, node) {
   return getNodePropertyValue(document, node, 'visible') !== false;
 }
 
-const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network']);
+const svgMaskSourceTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text']);
 
 function validateMaskGroup(node, document) {
   if (node.type !== 'group' || !Array.isArray(node.children) || node.children.length < 2 || typeof node.maskSourceId !== 'string') {
@@ -1035,9 +1035,14 @@ function maskSourceMarkup(source, document, measureText) {
     fill: '#ffffff', fillOpacity: alpha, fillGradient: null, imageFill: null,
     fillStyleId: null, fillVariableId: null, stroke: null, strokeWidth: 0,
     radius: getNodePropertyValue(document, node, 'radius') ?? node.radius,
-    variableBindings: {}
+    variableBindings: node.type === 'text' ? { ...(node.variableBindings || {}) } : {}
   };
-  return `<g${transform}>${shapeMarkup(whiteShape, document, measureText)}</g>`;
+  const textMask = node.type === 'text';
+  return `<g${transform}>${shapeMarkup(whiteShape, document, measureText, null, {
+    ...(textMask ? { fillValue: '#ffffff' } : {}),
+    fillOpacity: alpha,
+    includeStroke: false
+  })}</g>`;
 }
 
 function maskDefinition(group, source, index, document, measureText) {

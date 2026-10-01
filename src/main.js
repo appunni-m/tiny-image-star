@@ -8387,7 +8387,7 @@ function maskSelectedLayers() {
     checkpoint('Create mask group');
     const group = createMaskGroup(state.document, ids);
     setSelection([group.id]); renderUI(); queueSave(); renderer.invalidate();
-    showToast(`Mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Vector shape'}”. Its source layers remain editable.`);
+    showToast(`Mask group created from “${group.children.find(child => child.id === group.maskSourceId)?.name || 'Mask source'}”. Its source layers remain editable.`);
   } catch (error) { showToast(error.message || 'These layers cannot form a mask.'); }
 }
 

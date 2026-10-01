@@ -1034,6 +1034,24 @@ function richContext() {
   return context;
 }
 
+test('text layers render as white alpha masks regardless of their editable text colors', () => {
+  const document = createDocument();
+  const text = createNode('text', {
+    text: 'STAR', fillOpacity: 0.6,
+    textRuns: [{ text: 'STAR', color: '#ff0000', fontSize: 24 }]
+  });
+  addNode(document, text);
+  const context = richContext();
+  const renderer = Object.create(SceneRenderer.prototype);
+  renderer.getState = () => ({ document, assets: new Map(), outlineMode: false, presenting: false, zoom: 1 });
+
+  renderer.drawNode(context, text, 0, 0, new Map(), false, true);
+
+  const glyph = context.calls.find(call => call.text === 'STAR');
+  assert.ok(glyph, 'mask mode should draw the actual text glyphs');
+  assert.equal(glyph.fillStyle, 'rgba(255, 255, 255, 0.6)', 'mask alpha should retain fill opacity while replacing source color with white');
+});
+
 const defaultRunStyle = {
   fontFamily: 'Arial, sans-serif', fontSize: 10, fontWeight: 400, fontStyle: 'normal',
   lineHeight: 1.25, letterSpacing: 0, color: '#000000', textDecoration: 'none', align: 'left', fillOpacity: 1
