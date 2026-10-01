@@ -46,6 +46,7 @@ test('JSON message types round-trip with strict direction and preserve typed ope
     message('ACK', { opId: 'op-a', revision: 4 }),
     message('REJECT', { opId: 'op-a', revision: 4, code: 'STALE_REVISION' }),
     message('SNAPSHOT', { revision: 4, snapshot: { pages: [{ id: 'page-a', children: [] }] } }),
+    message('VIEW_STATE', { sequence: 1, pageId: 'page-a', zoom: 1.25, centerX: -300.5, centerY: 640 }),
     message('FORK_NOTICE', { baseRevision: 3, forkId: 'fork-a', reason: 'DISCONNECTED' }),
     message('PING', { nonce: 'ping-a', sentAt: 1_700_000_000_000 }),
     message('PONG', { nonce: 'ping-a', sentAt: 1_700_000_000_000 }),
@@ -57,9 +58,12 @@ test('JSON message types round-trip with strict direction and preserve typed ope
     assert.equal(typeof encoded, 'string', item.kind);
     assert.deepEqual(decodeCollaborationMessage(encoded), item, item.kind);
   }
+  const viewState = messages.find(item => item.kind === 'VIEW_STATE');
   assert.deepEqual(validateCollaborationMessage(messages[2], { direction: 'guest-to-host' }), messages[2]);
   assertProtocolError(() => validateCollaborationMessage(messages[0], { direction: 'host-to-guest' }), 'INVALID_DIRECTION');
   assertProtocolError(() => validateCollaborationMessage(messages[1], { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
+  assertProtocolError(() => validateCollaborationMessage(viewState, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
+  assert.deepEqual(validateCollaborationMessage(viewState, { direction: 'host-to-guest', context }), viewState);
   assert.deepEqual(validateCollaborationMessage(messages.at(-2), {
     direction: 'guest-to-host', context
   }), messages.at(-2));
@@ -101,6 +105,23 @@ test('messages and operations reject unknown versions, kinds, operations, and fi
   assertProtocolError(() => validateCollaborationMessage(message('OPERATION', { operation: { ...opBase, type: 'MergeEverything' } })), 'UNKNOWN_OPERATION');
   assertProtocolError(() => validateCollaborationMessage(message('OPERATION', { operation: { ...operations[0], stealth: true } })), 'INVALID_MESSAGE');
   assertProtocolError(() => decodeCollaborationMessage('{broken json'), 'INVALID_MESSAGE');
+});
+
+test('host view-state messages are bounded, sequenced, and never accepted from guests', () => {
+  const good = message('VIEW_STATE', { sequence: 3, pageId: 'page-a', zoom: 2.5, centerX: 1200, centerY: -850 });
+  assert.deepEqual(validateCollaborationMessage(good, { direction: 'host-to-guest', context }), good);
+  for (const invalid of [
+    { ...good, pageId: '../outside' },
+    { ...good, zoom: 0 },
+    { ...good, zoom: 8.01 },
+    { ...good, zoom: Number.NaN },
+    { ...good, centerX: 10_000_001 },
+    { ...good, centerY: Infinity },
+    { ...good, sequence: 0 },
+    { ...good, sequence: -1 },
+    { ...good, extra: true }
+  ]) assertProtocolError(() => validateCollaborationMessage(invalid), 'INVALID_MESSAGE');
+  assertProtocolError(() => validateCollaborationMessage(good, { direction: 'guest-to-host' }), 'INVALID_DIRECTION');
 });
 
 test('operation IDs, revisions, property paths, finite JSON, and reserved keys are checked', () => {

@@ -10,6 +10,7 @@ import { flattenBooleanPathContours, normalizedPathGeometryFromCurveContours } f
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
 import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
+import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -202,7 +203,7 @@ const defaults = {
   path: { name: 'Vector', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, points: [] },
   network: { name: 'Vector network', width: 120, height: 100, fill: 'transparent', stroke: '#1e1e1e', strokeWidth: 2, vertices: [], edges: [], faces: [] }
 };
-const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant', 'scroll-to']);
+const prototypeActions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const prototypeTriggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const prototypeTransitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
 const prototypeEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
@@ -221,6 +222,40 @@ function isSafePrototypeLinkUrl(value) {
       || (url.protocol === 'mailto:' && !url.host && !url.username && !url.password && Boolean(url.pathname.trim()));
   } catch { return false; }
 }
+
+const prototypeExpressionTypes = new Set(['number', 'string', 'boolean']);
+
+function prototypeExpressionAliasEntries(document) {
+  const candidates = new Map();
+  for (const variable of document.variables || []) {
+    if (!prototypeExpressionTypes.has(variable.type)) continue;
+    const alias = prototypeExpressionIdentifier(variable.name);
+    if (!alias) continue;
+    const entries = candidates.get(alias) || [];
+    entries.push(variable);
+    candidates.set(alias, entries);
+  }
+  return [...candidates].filter(([, variables]) => variables.length === 1)
+    .map(([alias, [variable]]) => ({ alias, variable }));
+}
+
+/** List unambiguous variable aliases available to prototype expressions. */
+export function listPrototypeExpressionVariables(document) {
+  return prototypeExpressionAliasEntries(document).map(({ alias, variable }) => ({
+    alias, variableId: variable.id, name: variable.name, type: variable.type
+  }));
+}
+
+/** Resolve expression variables against the selected presentation modes and frame. */
+export function resolvePrototypeExpressionVariables(document, modeOverrides = {}, node = null) {
+  const variables = Object.create(null);
+  for (const { alias, variable } of prototypeExpressionAliasEntries(document)) {
+    const value = resolveVariableValueWithModeOverrides(document, variable.id, modeOverrides, node);
+    if (isVariableValue(variable.type, value)) variables[alias] = { type: variable.type, value };
+  }
+  return variables;
+}
+
 function hasInvalidPrototypeInteractions(interactions, document) {
   return !Array.isArray(interactions) || interactions.some(item => {
     if (!item || typeof item.id !== 'string' || !prototypeActions.has(item.action) || !prototypeTriggers.has(item.trigger)) return true;
@@ -243,6 +278,23 @@ function hasInvalidPrototypeInteractions(interactions, document) {
         || (item.scrollAlignment != null && !['nearest', 'start', 'center', 'end'].includes(item.scrollAlignment)))
       : (Object.hasOwn(item, 'scrollTargetId') || Object.hasOwn(item, 'scrollAlignment'))) return true;
     if (item.action === 'open-link' ? !isSafePrototypeLinkUrl(item.url) : item.url != null) return true;
+    if (item.action === 'set-variable') {
+      const variable = typeof item.variableId === 'string'
+        ? document.variables?.find(candidate => candidate.id === item.variableId)
+        : null;
+      const hasLiteral = Object.hasOwn(item, 'value');
+      const hasExpression = Object.hasOwn(item, 'valueExpression');
+      if (!variable || hasLiteral === hasExpression) return true;
+      if (hasExpression) {
+        if (!prototypeExpressionTypes.has(variable.type) || typeof item.valueExpression !== 'string'
+          || item.valueExpression.length > PROTOTYPE_EXPRESSION_LIMITS.sourceLength) return true;
+        try {
+          evaluatePrototypeExpression(item.valueExpression, {
+            variables: resolvePrototypeExpressionVariables(document), mode: variable.type
+          });
+        } catch { return true; }
+      } else if (!isVariableValue(variable.type, item.value)) return true;
+    } else if (Object.hasOwn(item, 'variableId') || Object.hasOwn(item, 'value') || Object.hasOwn(item, 'valueExpression')) return true;
     if (item.action === 'set-variable-mode'
       ? (typeof item.collectionId !== 'string' || !item.collectionId || (item.modeId != null && (typeof item.modeId !== 'string' || !item.modeId)))
       : (Object.hasOwn(item, 'collectionId') || Object.hasOwn(item, 'modeId'))) return true;
@@ -385,8 +437,6 @@ export function createNode(type, overrides = {}) {
     strokeWidth: preset.strokeWidth ?? 0,
     radius: preset.radius ?? 0,
     clip: preset.clip ?? false,
-    constraints: { horizontal: 'left', vertical: 'top' },
-    children: [],
     ...preset,
     ...overrides,
     constraints: { horizontal: 'left', vertical: 'top', ...(overrides.constraints || {}) },
@@ -1469,10 +1519,30 @@ function materializeAliasesToRemovedVariables(document, removedIds) {
 }
 
 function removePrototypeInteractionsUsingVariables(document, removedIds) {
-  for (const page of document.pages) walkNodes(page.children, ({ node }) => {
+  const removedAliases = new Set(prototypeExpressionAliasEntries(document)
+    .filter(({ variable }) => removedIds.has(variable.id)).map(({ alias }) => alias));
+  for (const page of document.pages) walkNodes(page.children, ({ node, parents }) => {
     if (!Array.isArray(node.interactions)) return;
-    node.interactions = node.interactions.filter(interaction => !removedIds.has(interaction.condition?.variableId));
-    if (!node.interactions.length) delete node.interactions;
+    const retained = node.interactions.filter(interaction => {
+      if (removedIds.has(interaction.condition?.variableId) || removedIds.has(interaction.variableId)) return false;
+      if (typeof interaction.valueExpression !== 'string') return true;
+      try {
+        return !prototypeExpressionReferences(interaction.valueExpression).some(alias => removedAliases.has(alias));
+      } catch {
+        return false;
+      }
+    });
+    if (retained.length === node.interactions.length) return;
+    if (retained.length) node.interactions = retained;
+    else delete node.interactions;
+    if (node.componentSourceId) {
+      const instanceRoot = [...parents, node].reverse().find(candidate => candidate.isInstance);
+      const override = instanceRoot?.componentOverrides?.[node.componentSourceId];
+      if (override && Object.hasOwn(override, 'interactions')) {
+        if (retained.length) override.interactions = clone(retained);
+        else delete override.interactions;
+      }
+    }
   });
 }
 
@@ -1516,8 +1586,8 @@ export function deleteVariable(document, variableId) {
   if (index < 0) return false;
   materializeAliasesToRemovedVariables(document, new Set([variableId]));
   materializeVariableBindingsToRemovedVariables(document, new Set([variableId]));
-  document.variables.splice(index, 1);
   removePrototypeInteractionsUsingVariables(document, new Set([variableId]));
+  document.variables.splice(index, 1);
   const properties = ['fillVariableId', 'textVariableId', 'strokeVariableId'];
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const property of properties) if (node[property] === variableId) delete node[property];
@@ -1532,8 +1602,8 @@ export function deleteVariableCollection(document, collectionId) {
   const variableIds = new Set((document.variables || []).filter(variable => variable.collectionId === collectionId).map(variable => variable.id));
   materializeAliasesToRemovedVariables(document, variableIds);
   materializeVariableBindingsToRemovedVariables(document, variableIds);
-  document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
   removePrototypeInteractionsUsingVariables(document, variableIds);
+  document.variables = (document.variables || []).filter(variable => variable.collectionId !== collectionId);
   document.variableCollections.splice(index, 1);
   for (const page of document.pages) walkNodes(page.children, ({ node }) => {
     for (const property of ['fillVariableId', 'textVariableId', 'strokeVariableId']) if (variableIds.has(node[property])) delete node[property];

@@ -7,7 +7,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MIME_TYPE_PATTERN = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const MESSAGE_KINDS = new Set([
-  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'FORK_NOTICE',
+  'HELLO', 'WELCOME', 'OPERATION', 'ACK', 'REJECT', 'SNAPSHOT', 'VIEW_STATE', 'FORK_NOTICE',
   'PING', 'PONG', 'ASSET_BEGIN', 'ASSET_CHUNK', 'ASSET_END'
 ]);
 const REJECTION_CODES = new Set([
@@ -34,6 +34,7 @@ const MESSAGE_FIELDS = {
   ACK: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'opId', 'revision', 'headHash'],
   REJECT: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'opId', 'revision', 'code', 'headHash'],
   SNAPSHOT: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'revision', 'headHash', 'snapshot'],
+  VIEW_STATE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'sequence', 'pageId', 'zoom', 'centerX', 'centerY'],
   FORK_NOTICE: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'baseRevision', 'forkId', 'reason'],
   PING: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'nonce', 'sentAt'],
   PONG: ['v', 'kind', 'designId', 'sessionId', 'actorId', 'nonce', 'sentAt'],
@@ -43,7 +44,7 @@ const MESSAGE_FIELDS = {
 };
 
 const GUEST_TO_HOST = new Set(['HELLO', 'OPERATION', 'FORK_NOTICE']);
-const HOST_TO_GUEST = new Set(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT']);
+const HOST_TO_GUEST = new Set(['WELCOME', 'ACK', 'REJECT', 'SNAPSHOT', 'VIEW_STATE']);
 
 /** A stable, machine-readable failure from the collaboration wire contract. */
 export class CollaborationProtocolError extends Error {
@@ -320,6 +321,17 @@ function validateMessageFields(message) {
       if (snapshotBytes > MAX_SNAPSHOT_BYTES) fail('LIMIT_EXCEEDED', 'Snapshot exceeds the snapshot size limit.');
       return { ...message, snapshot };
     }
+    case 'VIEW_STATE':
+      assertFiniteInteger(message.sequence, 1, Number.MAX_SAFE_INTEGER, 'View-state sequence');
+      assertId(message.pageId, 'View-state page ID');
+      if (!Number.isFinite(message.zoom) || message.zoom < 0.08 || message.zoom > 8) {
+        fail('INVALID_MESSAGE', 'View-state zoom must be between 0.08 and 8.');
+      }
+      if (!Number.isFinite(message.centerX) || Math.abs(message.centerX) > 10_000_000
+        || !Number.isFinite(message.centerY) || Math.abs(message.centerY) > 10_000_000) {
+        fail('INVALID_MESSAGE', 'View-state center coordinates are out of range.');
+      }
+      break;
     case 'FORK_NOTICE':
       assertRevision(message.baseRevision, 'Fork base revision');
       assertId(message.forkId, 'Fork ID');

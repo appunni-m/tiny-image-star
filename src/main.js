@@ -1,10 +1,11 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
   addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameTypographyStyle, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
+import { evaluatePrototypeExpression } from './prototype-expressions.js';
 import { createImageFill, defaultImageAdjustments } from './image-fills.js';
 import { clipboardImageFilename, routeClipboardPaste } from './image-clipboard.js';
 import { createImageTransforms, flipImageTransforms, rotateImageTransforms } from './image-transforms.js';
@@ -125,7 +126,8 @@ const state = {
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
   prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeDuration: 300, prototypeDelay: 1000,
-  prototypeVariableCollectionId: null, prototypeVariableModeId: null,
+  prototypeVariableCollectionId: null, prototypeVariableModeId: null, prototypeVariableId: null, prototypeVariableValue: null,
+  prototypeVariableExpressionMode: false, prototypeVariableExpression: '',
   prototypeConditionVariableId: null, prototypeConditionOperator: 'equals', prototypeConditionValue: null,
   prototypeVariantTargetId: null, prototypeScrollTargetId: null, prototypeScrollAlignment: 'nearest',
   imageCropMode: false, imageCropOverlay: null, imageCropDraftSelection: null, imageFillCropTarget: null,
@@ -137,6 +139,8 @@ const state = {
   presenting: null,
   motionPreview: null, motionPlayheadMs: 0, motionPlaying: false
 };
+let liveViewOnlyInertState = null;
+let liveViewSyncTimer = 0;
 const history = new History(120);
 const imageMemoryBudget = new RetainedImageMemoryBudget({ limitBytes: defaultRetainedImageMemoryBudget() });
 const canvas = $('#scene-canvas');
@@ -2113,6 +2117,30 @@ function buildPrototypeInteractionCondition() {
   return { variableId: variable.id, type: variable.type, operator: state.prototypeConditionOperator, value };
 }
 
+function buildPrototypeVariableValue() {
+  const variable = state.document.variables?.find(item => item.id === state.prototypeVariableId);
+  if (!variable) throw new TypeError('Create or choose a variable before adding this action.');
+  if (state.prototypeVariableExpressionMode) {
+    if (variable.type === 'color') throw new TypeError('Expressions support number, string, and boolean variables.');
+    const valueExpression = $('#prototype-variable-expression')?.value ?? state.prototypeVariableExpression;
+    evaluatePrototypeExpression(valueExpression, {
+      variables: resolvePrototypeExpressionVariables(state.document), mode: variable.type
+    });
+    return { variableId: variable.id, valueExpression };
+  }
+  const rawValue = $('#prototype-variable-value')?.value ?? state.prototypeVariableValue ?? String(resolveVariableValue(state.document, variable.id));
+  let value = rawValue;
+  if (variable.type === 'number') {
+    if (!String(rawValue).trim()) throw new TypeError('Enter a valid number for the variable value.');
+    value = Number(rawValue);
+    if (!Number.isFinite(value)) throw new TypeError('Enter a valid number for the variable value.');
+  } else if (variable.type === 'boolean') value = rawValue === 'true';
+  else if (variable.type === 'color' && !/^#[0-9a-f]{6}$/i.test(String(rawValue))) {
+    throw new TypeError('Choose a valid color for the variable value.');
+  }
+  return { variableId: variable.id, value };
+}
+
 function syncPrototypeConnectPrompt() {
   const prompt = $('#prototype-connect-prompt');
   const message = $('#prototype-connect-message');
@@ -2196,10 +2224,15 @@ function prototypeInspector() {
     const targetPage = interaction.destinationPageId ? state.document.pages.find(page => page.id === interaction.destinationPageId) : null;
     const variableCollection = state.document.variableCollections?.find(collection => collection.id === interaction.collectionId);
     const variableMode = variableCollection?.modes.find(mode => mode.id === interaction.modeId);
+    const actionVariable = interaction.action === 'set-variable'
+      ? state.document.variables?.find(variable => variable.id === interaction.variableId) : null;
+    const variableValueSummary = typeof interaction.valueExpression === 'string'
+      ? `ƒ ${interaction.valueExpression.slice(0, 80)}${interaction.valueExpression.length > 80 ? '…' : ''}`
+      : String(interaction.value);
     const targetVariant = interaction.action === 'change-variant' ? state.document.components?.find(item => item.id === interaction.targetVariantId) : null;
-    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : interaction.action === 'change-variant' ? 'Change variant' : interaction.action === 'scroll-to' ? `Scroll to · ${interaction.scrollAlignment || 'nearest'}` : 'Navigate to';
+    const actionLabel = interaction.action === 'open-overlay' ? `Open overlay · ${interaction.overlayPosition || 'center'}` : interaction.action === 'swap-overlay' ? 'Swap overlay' : interaction.action === 'close-overlay' ? 'Close overlay' : interaction.action === 'back' ? 'Back' : interaction.action === 'open-link' ? 'Open link' : interaction.action === 'set-variable' ? `Set ${actionVariable?.name || 'variable'}` : interaction.action === 'set-variable-mode' ? `Set ${variableCollection?.name || 'variable mode'}` : interaction.action === 'change-variant' ? 'Change variant' : interaction.action === 'scroll-to' ? `Scroll to · ${interaction.scrollAlignment || 'nearest'}` : 'Navigate to';
     const triggerLabel = interaction.trigger === 'while-hovering' ? 'While hovering' : interaction.trigger === 'after-delay' ? `After ${(interaction.delay / 1000).toFixed(1)} s` : interaction.trigger === 'on-press' ? 'On press / touch down' : interaction.trigger === 'on-drag' ? 'On drag' : 'On click / tap';
-    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'scroll-to' ? (scrollTarget?.name || 'Missing scroll target') : interaction.action === 'change-variant' ? `${targetVariant?.name || 'Missing variant'} · ${variantSourceSet?.name || 'Component set'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
+    const destinationLabel = target ? `${target.name} · ${targetPage?.name || 'Page'}` : interaction.action === 'scroll-to' ? (scrollTarget?.name || 'Missing scroll target') : interaction.action === 'change-variant' ? `${targetVariant?.name || 'Missing variant'} · ${variantSourceSet?.name || 'Component set'}` : interaction.action === 'close-overlay' ? 'Current overlay' : interaction.action === 'back' ? 'Previous screen' : interaction.action === 'open-link' ? interaction.url : interaction.action === 'set-variable' ? variableValueSummary : interaction.action === 'set-variable-mode' ? `${variableMode?.name || 'Missing mode'} · ${variableCollection?.name || 'Missing collection'}` : 'Missing frame';
     const conditionVariable = interaction.condition && state.document.variables?.find(item => item.id === interaction.condition.variableId);
     const conditionOperatorText = {
       equals: 'is', 'not-equals': 'is not', 'greater-than': 'is greater than',
@@ -2256,6 +2289,32 @@ function prototypeInspector() {
       ? `<label>Collection<select id="prototype-variable-collection" class="select-field">${variableCollections.map(collection => `<option value="${escapeHtml(collection.id)}"${collection.id === prototypeCollection.id ? ' selected' : ''}>${escapeHtml(collection.name)}</option>`).join('')}</select></label><label>Mode<select id="prototype-variable-mode" class="select-field">${prototypeModes.map(mode => `<option value="${escapeHtml(mode.id)}"${mode.id === selectedPrototypeMode?.id ? ' selected' : ''}>${escapeHtml(mode.name)}</option>`).join('')}</select></label>`
       : '<p class="prototype-hint">Create a variable collection and modes before adding this action.</p>'
     : '';
+  const prototypeVariables = state.document.variables || [];
+  const selectedPrototypeVariable = prototypeVariables.find(variable => variable.id === state.prototypeVariableId) || prototypeVariables[0] || null;
+  const prototypeVariableValue = selectedPrototypeVariable
+    ? state.prototypeVariableValue ?? String(resolveVariableValue(state.document, selectedPrototypeVariable.id))
+    : '';
+  const expressionVariables = listPrototypeExpressionVariables(state.document);
+  const prototypeVariableExpression = state.prototypeVariableExpression || '';
+  const expressionModeToggle = selectedPrototypeVariable && selectedPrototypeVariable.type !== 'color'
+    ? `<label class="prototype-expression-toggle"><input id="prototype-variable-expression-mode" type="checkbox"${state.prototypeVariableExpressionMode ? ' checked' : ''}/> Use expression</label>`
+    : '';
+  const prototypeVariableValueControl = selectedPrototypeVariable?.type === 'boolean'
+    ? `<select id="prototype-variable-value" class="select-field" aria-label="New variable value"><option value="true"${prototypeVariableValue === 'true' ? ' selected' : ''}>True</option><option value="false"${prototypeVariableValue === 'false' ? ' selected' : ''}>False</option></select>`
+    : selectedPrototypeVariable?.type === 'color'
+      ? `<input id="prototype-variable-value" type="color" value="${/^#[0-9a-f]{6}$/i.test(prototypeVariableValue) ? escapeHtml(prototypeVariableValue) : '#000000'}" aria-label="New variable value"/>`
+      : selectedPrototypeVariable?.type === 'number'
+        ? `<input id="prototype-variable-value" class="text-input" type="number" step="any" value="${escapeHtml(prototypeVariableValue)}" aria-label="New variable value"/>`
+        : selectedPrototypeVariable
+          ? `<input id="prototype-variable-value" class="text-input" type="text" maxlength="10000" value="${escapeHtml(prototypeVariableValue)}" aria-label="New variable value"/>`
+          : '';
+  const prototypeVariableControls = state.prototypeAction === 'set-variable'
+    ? selectedPrototypeVariable
+      ? `<label>Variable<select id="prototype-variable-target" class="select-field" aria-label="Variable to set">${prototypeVariables.map(variable => `<option value="${escapeHtml(variable.id)}"${variable.id === selectedPrototypeVariable.id ? ' selected' : ''}>${escapeHtml(variable.name)} · ${escapeHtml(variable.type)}</option>`).join('')}</select></label>${expressionModeToggle}${state.prototypeVariableExpressionMode && selectedPrototypeVariable.type !== 'color'
+        ? `<label class="prototype-expression-field">Expression<input id="prototype-variable-expression" class="text-input" type="text" maxlength="4096" value="${escapeHtml(prototypeVariableExpression)}" placeholder="count + 1 or name + &quot;!&quot;" aria-label="Variable value expression"/></label><small class="prototype-hint">Supports number, string, and boolean expressions${expressionVariables.length ? `; variables: ${expressionVariables.map(item => `<code>${escapeHtml(item.alias)}</code> (${escapeHtml(item.name)})`).join(', ')}` : ''}.</small>`
+        : `<label>New value${prototypeVariableValueControl}</label>`}`
+      : '<p class="prototype-hint">Create a variable before adding this action.</p>'
+    : '';
   const variantControls = state.prototypeAction === 'change-variant'
     ? variantTargets.length
       ? `<label>Change this instance to<select id="prototype-variant-target" class="select-field" aria-label="Target component variant">${variantTargets.map(item => `<option value="${escapeHtml(item.id)}"${item.id === selectedVariantTarget?.id ? ' selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(Object.entries(item.variantProperties || {}).map(([name, value]) => `${name}=${value}`).join(', '))}</option>`).join('')}</select></label>`
@@ -2272,7 +2331,7 @@ function prototypeInspector() {
     ? `<label>Destination<select id="prototype-destination" class="select-field" aria-label="Prototype destination"><option value="" disabled${state.prototypeDestinationId ? '' : ' selected'}>Choose a frame</option>${destinationFrames.map(({ page, frame }) => `<option value="${escapeHtml(frame.id)}"${frame.id === state.prototypeDestinationId ? ' selected' : ''}>${escapeHtml(page.name)} · ${escapeHtml(frame.name)}</option>`).join('')}</select></label>`
     : '';
   const actionButtonLabel = editingInteraction ? 'Save interaction' : `＋ Add ${state.prototypeAction === 'navigate' ? 'interaction' : state.prototypeAction.replace('-', ' ')}`;
-  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" /></label>${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
+  const controls = node ? `<div class="prototype-controls"><label>Trigger<select id="prototype-trigger" class="select-field">${triggerOptions}</select></label><label>Action<select id="prototype-action" class="select-field"><option value="navigate"${state.prototypeAction === 'navigate' ? ' selected' : ''}>Navigate to</option><option value="open-overlay"${state.prototypeAction === 'open-overlay' ? ' selected' : ''}>Open overlay</option><option value="swap-overlay"${state.prototypeAction === 'swap-overlay' ? ' selected' : ''}>Swap overlay</option><option value="scroll-to"${state.prototypeAction === 'scroll-to' ? ' selected' : ''}>Scroll to layer</option><option value="close-overlay"${state.prototypeAction === 'close-overlay' ? ' selected' : ''}>Close overlay</option><option value="back"${state.prototypeAction === 'back' ? ' selected' : ''}>Back</option><option value="open-link"${state.prototypeAction === 'open-link' ? ' selected' : ''}>Open link</option><option value="set-variable"${state.prototypeAction === 'set-variable' ? ' selected' : ''}>Set variable</option><option value="set-variable-mode"${state.prototypeAction === 'set-variable-mode' ? ' selected' : ''}>Set variable mode</option><option value="change-variant"${state.prototypeAction === 'change-variant' ? ' selected' : ''}>Change to variant</option></select></label>${destinationControl}${conditionControls}${prototypeVariableControls}${variableModeControls}${variantControls}${scrollToControls}${state.prototypeAction === 'open-link' ? `<label>URL<input id="prototype-url" class="text-input" type="url" value="${escapeHtml(state.prototypeUrl)}" placeholder="https://example.com or mailto:hello@example.com" /></label>` : ''}${state.prototypeTrigger === 'after-delay' && canUseDelayTrigger ? `<label>Wait <span id="prototype-delay-value">${(state.prototypeDelay / 1000).toFixed(1)} s</span><input id="prototype-delay" type="range" min="100" max="10000" step="100" value="${state.prototypeDelay}" aria-label="After-delay trigger wait" /></label>` : ''}${hasTimedTransition ? `<label>Transition<select id="prototype-transition" class="select-field">${transitionOptions}</select></label>${easingControl}<label>Duration <span id="prototype-duration-value">${(state.prototypeDuration / 1000).toFixed(1)} s</span><input id="prototype-duration" type="range" min="0" max="2000" step="100" value="${state.prototypeDuration}" aria-label="Transition duration" /></label>${overlayControls}` : ''}<div class="prototype-action-buttons"><button class="primary-button prototype-add-link" data-action="prototype-connect"${(state.prototypeAction === 'set-variable-mode' && !prototypeCollection) || (state.prototypeAction === 'set-variable' && !selectedPrototypeVariable) || needsVariantTarget || needsScrollTarget ? ' disabled' : ''}>${escapeHtml(actionButtonLabel)}</button>${editingInteraction ? '<button class="secondary-button" type="button" data-action="cancel-prototype-interaction-edit">Cancel</button>' : ''}</div>${connectState}</div>` : '<p class="prototype-hint">Select a layer to add an interaction, or choose a frame above to set the starting point.</p>';
   const sourceLabel = node ? `<div class="prototype-section-label">${escapeHtml(node.name)} interactions</div>${interactions || '<div class="prototype-empty-links">No interactions yet</div>'}` : '';
   return `<div class="prototype-inspector"><section class="prototype-section"><div class="prototype-section-label">Prototype flows</div>${flowControls}${startBody}<button class="primary-button prototype-present-button" data-action="present">▶ Present${selectedFlow ? ` · ${escapeHtml(selectedFlow.name)}` : ''}</button></section>${node ? `<section class="prototype-section">${sourceLabel}${controls}</section>` : ''}<section class="prototype-section prototype-help"><strong>Prototype links</strong><span>Connect layers to frames, or add a variant action to a component instance. Variable modes and component variants change only the active presentation.</span></section></div>`;
 }
@@ -3031,6 +3090,7 @@ function renderUI() {
   $('#document-name').value = state.document.name;
   $('#canvas-file-name').textContent = state.document.name;
   renderPageList(); renderLayers(); renderInspector(); renderAssetsTab(); updateSelectionStatus(); updateZoomUI();
+  syncLiveViewDock();
   renderer?.invalidate();
 }
 
@@ -4038,6 +4098,25 @@ function onCanvasPointerDown(event) {
   if (event.button !== 0 && event.button !== 1) return;
   state.pointerMap.set(event.pointerId, { x: event.clientX, y: event.clientY, pointerType: event.pointerType });
   canvas.setPointerCapture?.(event.pointerId);
+  if (isLiveHostViewOnly()) {
+    event.stopImmediatePropagation();
+    const points = [...state.pointerMap.values()];
+    if (points.length >= 2 && points.every(point => point.pointerType !== 'mouse')) {
+      state.interaction = {
+        kind: 'pinch', distance: checkPointDistance(points[0], points[1]), zoom: state.zoom,
+        center: { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 },
+        panX: state.panX, panY: state.panY
+      };
+    } else {
+      state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
+      canvas.classList.add('is-panning');
+    }
+    event.preventDefault();
+    return;
+  }
+  if (state.liveCollaboration?.role === 'guest' && state.liveCollaboration.followHostView !== false) {
+    pauseGuestViewFollowing();
+  }
   if (state.imageCropMode && state.imageFillCropTarget && !state.spaceDown && event.button === 0) {
     if (state.pointerMap.size === 2 && [...state.pointerMap.values()].every(point => point.pointerType !== 'mouse')) {
       if (beginImageFillCropPinch(state.interaction)) { event.preventDefault(); return; }
@@ -4047,6 +4126,7 @@ function onCanvasPointerDown(event) {
     }
   }
   if (state.pointerMap.size === 2 && [...state.pointerMap.values()].every(point => point.pointerType !== 'mouse')) {
+    pauseGuestViewFollowing();
     const interruptedInteraction = state.interaction;
     if (interruptedInteraction?.kind === 'pencil-stroke') {
       cancelPencilStroke({ retainPointer: true });
@@ -4078,6 +4158,7 @@ function onCanvasPointerDown(event) {
   }
   if (event.button === 1 || state.spaceDown || (state.tool === 'hand' && !state.imageCropMode)) {
     state.interaction = { kind: 'pan', clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
+    pauseGuestViewFollowing();
     canvas.classList.add('is-panning'); event.preventDefault(); return;
   }
   if (state.inspectorTab === 'motion' && state.motionPreview && event.button === 0) {
@@ -4294,12 +4375,16 @@ function onCanvasPointerMove(event) {
     const worldX = (centerX - interaction.panX) / interaction.zoom;
     const worldY = (centerY - interaction.panY) / interaction.zoom;
     state.zoom = nextZoom; state.panX = centerX - worldX * nextZoom; state.panY = centerY - worldY * nextZoom;
-    updateZoomUI(); renderer.invalidate(); return;
+    updateZoomUI(); renderer.invalidate();
+    if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
   }
   if (interaction.kind === 'pan') {
     state.panX = interaction.panX + event.clientX - interaction.clientX;
     state.panY = interaction.panY + event.clientY - interaction.clientY;
-    renderer.invalidate(); return;
+    renderer.invalidate();
+    if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
   }
   if (interaction.kind === 'pencil-stroke') {
     if (interaction.pointerId === event.pointerId && state.pencilDraft?.pointerId === event.pointerId) {
@@ -4604,8 +4689,16 @@ function onCanvasPointerUp(event) {
     if (interaction.pointerId === event.pointerId) finishPencilStroke(event);
     return;
   }
-  if (interaction.kind === 'pinch' && state.pointerMap.size < 2) { state.interaction = null; return; }
-  if (interaction.kind === 'pan') { canvas.classList.remove('is-panning'); state.interaction = null; return; }
+  if (interaction.kind === 'pinch' && state.pointerMap.size < 2) {
+    state.interaction = null;
+    if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
+  }
+  if (interaction.kind === 'pan') {
+    canvas.classList.remove('is-panning'); state.interaction = null;
+    if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
+  }
   if (interaction.kind === 'lasso') {
     if (interaction.pointerId !== event.pointerId) return;
     if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
@@ -5577,6 +5670,7 @@ function updateZoomUI() {
   updateSelectionStatus();
 }
 function zoomAt(clientX, clientY, nextZoom) {
+  pauseGuestViewFollowing();
   const rect = canvas.getBoundingClientRect();
   const px = clientX == null ? rect.width / 2 : clientX - rect.left;
   const py = clientY == null ? rect.height / 2 : clientY - rect.top;
@@ -5584,11 +5678,13 @@ function zoomAt(clientX, clientY, nextZoom) {
   state.zoom = Math.max(.08, Math.min(8, nextZoom));
   state.panX = px - worldX * state.zoom; state.panY = py - worldY * state.zoom;
   updateZoomUI(); renderer.invalidate();
+  queueLiveHostViewSync();
 }
 function zoomToSelection() {
+  pauseGuestViewFollowing();
   const entries = selectedEntries();
   const ids = entries.length ? entries.map(entry => entry.node.id) : pageLayerRows().filter(entry => entry.node.type === 'frame').map(entry => entry.node.id);
-  if (!ids.length) { state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2; updateZoomUI(); renderer.invalidate(); return; }
+  if (!ids.length) { state.zoom = 1; state.panX = canvas.clientWidth / 2; state.panY = canvas.clientHeight / 2; updateZoomUI(); renderer.invalidate(); queueLiveHostViewSync(); return; }
   const corners = ids.flatMap(id => {
     const entry = findNode(state.document, id);
     if (!entry) return [];
@@ -5602,6 +5698,7 @@ function zoomToSelection() {
   const zoom = Math.min(2, (canvas.clientWidth - 100) / Math.max(1, right - x), (canvas.clientHeight - 100) / Math.max(1, bottom - y));
   state.zoom = Math.max(.08, zoom); state.panX = (canvas.clientWidth - (right - x) * state.zoom) / 2 - x * state.zoom; state.panY = (canvas.clientHeight - (bottom - y) * state.zoom) / 2 - y * state.zoom;
   updateZoomUI(); renderer.invalidate();
+  queueLiveHostViewSync();
 }
 
 function updateGradientInput(input) {
@@ -6820,7 +6917,7 @@ function setZoomButtonHandlers() {
   $('#zoom-fit').addEventListener('click', zoomToSelection);
   canvas.addEventListener('wheel', event => {
     if (event.ctrlKey || event.metaKey) { zoomAt(event.clientX, event.clientY, state.zoom * Math.exp(-event.deltaY * .002)); }
-    else { state.panX -= event.deltaX; state.panY -= event.deltaY; renderer.invalidate(); }
+    else { pauseGuestViewFollowing(); state.panX -= event.deltaX; state.panY -= event.deltaY; renderer.invalidate(); queueLiveHostViewSync(); }
     event.preventDefault();
   }, { passive: false });
 }
@@ -8352,14 +8449,107 @@ function liveStatus(role, message) {
 function liveTerminal(status) {
   return ['closed', 'revoked', 'failed', 'timeout', 'disconnected', 'overloaded', 'rejected', 'diverged', 'fork-saved', 'fork-unsaved', 'disconnected-before-snapshot'].includes(status);
 }
+function isLiveHostViewOnly() {
+  return state.liveCollaboration?.role === 'host' && state.liveCollaboration.status === 'connected'
+    && !state.pendingRecipeRecovery && !state.workspacePermissionNeeded;
+}
+function syncLiveViewDock() {
+  const dock = $('#live-view-dock');
+  if (!dock) return;
+  const session = state.liveCollaboration;
+  const host = session?.role === 'host' && session.status === 'connected';
+  const guest = session?.role === 'guest' && session.replicaReady
+    && (!liveTerminal(session.status) || session.status === 'fork-unsaved');
+  dock.hidden = !host && !guest;
+  $('#live-view-host-page-wrap').hidden = !host;
+  $('#live-view-follow-wrap').hidden = !guest || liveTerminal(session.status);
+  $('#live-view-role').textContent = host ? 'You are sharing the master'
+    : session?.status === 'fork-unsaved' ? 'Local fork needs a save retry' : 'Shared design';
+  $('#live-view-manage').textContent = guest && session.status === 'fork-unsaved' ? 'Retry fork save' : 'Manage live share';
+  const pagePicker = $('#live-view-host-page');
+  if (host) {
+    const signature = state.document.pages.map(page => `${page.id}\u0000${page.name}`).join('\u0001');
+    if (pagePicker.dataset.pagesSignature !== signature) {
+      pagePicker.replaceChildren(...state.document.pages.map(page => new Option(page.name, page.id)));
+      pagePicker.dataset.pagesSignature = signature;
+    }
+    pagePicker.value = state.document.activePageId;
+  }
+  if (guest) $('#live-follow-host-view').checked = session.followHostView !== false;
+}
+function currentLiveHostViewState() {
+  const zoom = Math.max(0.08, Math.min(8, state.zoom));
+  return {
+    pageId: state.document.activePageId,
+    zoom,
+    centerX: Math.max(-10_000_000, Math.min(10_000_000, (canvas.clientWidth / 2 - state.panX) / zoom)),
+    centerY: Math.max(-10_000_000, Math.min(10_000_000, (canvas.clientHeight / 2 - state.panY) / zoom))
+  };
+}
+function queueLiveHostViewSync() {
+  const session = state.liveCollaboration;
+  if (session?.role !== 'host' || session.status !== 'connected' || !session.controller) return;
+  if (liveViewSyncTimer) return;
+  liveViewSyncTimer = setTimeout(() => {
+    liveViewSyncTimer = 0;
+    if (!isLiveHostViewOnly()) return;
+    try { session.controller.publishViewState(currentLiveHostViewState()); }
+    catch (error) { liveStatus('host', `View sharing paused: ${error.message || 'the peer connection is unavailable'}`); }
+  }, 40);
+}
+function applyGuestViewState(session, viewState) {
+  if (!session || session.role !== 'guest' || !viewState) return false;
+  session.latestViewState = { ...viewState };
+  if (session.followHostView === false || !session.replicaReady) return false;
+  if (!state.document.pages.some(page => page.id === viewState.pageId)) return false;
+  state.document.activePageId = viewState.pageId;
+  state.selectedIds = [];
+  clearVectorAnchorSelection();
+  state.zoom = viewState.zoom;
+  state.panX = canvas.clientWidth / 2 - viewState.centerX * state.zoom;
+  state.panY = canvas.clientHeight / 2 - viewState.centerY * state.zoom;
+  renderUI();
+  return true;
+}
+function pauseGuestViewFollowing() {
+  const session = state.liveCollaboration;
+  if (session?.role !== 'guest' || session.followHostView === false) return;
+  session.followHostView = false;
+  syncLiveViewDock();
+}
 function liveIceServers(role) {
   const checked = role === 'host' ? $('#live-stun-opt-in').checked : $('#live-guest-stun-opt-in').checked;
   return checked ? [{ urls: 'stun:stun.l.google.com:19302' }] : [];
 }
 function setLiveEditorBlocked(blocked) {
   const shouldBlock = Boolean(blocked || state.pendingRecipeRecovery || state.workspacePermissionNeeded);
-  $('.topbar').inert = shouldBlock;
-  $('.workspace').inert = shouldBlock;
+  const viewOnly = !shouldBlock && isLiveHostViewOnly();
+  $('.topbar').inert = shouldBlock || viewOnly;
+  $('.workspace').inert = shouldBlock && !viewOnly;
+  if (viewOnly) {
+    const selectors = [
+      '#left-panel', '#right-panel', '.canvas-topline', '#bottom-toolbar', '.canvas-status',
+      '#text-editor-overlay', '#text-format-toolbar', '#canvas-drop-overlay', '#prototype-connect-prompt',
+      '#ruler-horizontal', '#ruler-vertical', '#canvas-region', '#canvas-scroll'
+    ];
+    if (!liveViewOnlyInertState) liveViewOnlyInertState = selectors.map(selector => {
+      const element = $(selector);
+      return element ? [element, element.inert] : null;
+    }).filter(Boolean);
+    for (const [element] of liveViewOnlyInertState) element.inert = !['canvas-region', 'canvas-scroll'].includes(element.id);
+    $('#canvas-region').setAttribute('aria-hidden', 'false');
+    $('#left-panel').setAttribute('aria-hidden', 'true');
+    $('#right-panel').setAttribute('aria-hidden', 'true');
+    $('#left-panel').classList.remove('is-open');
+    $('#right-panel').classList.remove('is-open');
+    $('#mobile-scrim').classList.remove('is-visible');
+    syncMobilePanelAccessibility();
+  } else if (liveViewOnlyInertState) {
+    for (const [element, inert] of liveViewOnlyInertState) element.inert = inert;
+    liveViewOnlyInertState = null;
+    syncMobilePanelAccessibility();
+  }
+  syncLiveViewDock();
 }
 function openLiveDialog(role) {
   const dialog = liveDialog();
@@ -8373,6 +8563,15 @@ async function prepareLiveWorkspace() {
   await chooseWorkspaceFolder();
   if (!state.workspace) throw new Error('Choose a writable folder workspace before starting live collaboration.');
   return true;
+}
+function assertLiveShareReady() {
+  if (state.workspacePermissionNeeded) throw new Error('Restore write access to the selected folder before starting a live session.');
+  if (state.documentTransitioning) throw new Error('Wait for the current design switch to finish before starting a live session.');
+  if (state.bulk) throw new Error('Finish or cancel the current image batch before starting a live session.');
+  if (state.pendingRecipeRecovery) throw new Error('Resolve the pending image-recipe recovery before starting a live session.');
+  if (state.pendingImageImports) throw new Error('Wait for image imports to finish before starting a live session.');
+  if (state.imageExportAbortController) throw new Error('Wait for the current image export to finish before starting a live session.');
+  if (state.documentSaveConflict) throw new Error('Resolve the local save conflict before starting a live session.');
 }
 function invitationFromText(value) {
   const text = String(value || '').trim();
@@ -8410,6 +8609,8 @@ async function startLiveHost() {
   const current = state.liveCollaboration;
   if (current?.role === 'host' && !liveTerminal(current.status)) { openLiveDialog('host'); return; }
   try {
+    assertLiveShareReady();
+    if (state.interaction) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     await prepareLiveWorkspace();
     if (!(await persistCurrentDocumentNow())) throw new Error('Save the current design before sharing it.');
     const session = { role: 'host', status: 'preparing', controller: null, designId: state.document.id };
@@ -8435,8 +8636,13 @@ async function startLiveHost() {
           'rejected': 'The guest session was rejected.', 'diverged': 'The guest diverged from the saved head; sharing stopped.'
         };
         liveStatus('host', copy[status] || `Live session: ${status}.`);
-        if (liveTerminal(status)) setLiveEditorBlocked(false);
+        if (status === 'connected') setLiveEditorBlocked(false);
+        else if (liveTerminal(status)) {
+          if (liveViewSyncTimer) { clearTimeout(liveViewSyncTimer); liveViewSyncTimer = 0; }
+          setLiveEditorBlocked(false);
+        }
       },
+      getViewState: currentLiveHostViewState,
       onSnapshot: (snapshot, head) => {
         const next = parseDocument(snapshot);
         if (next.id !== session.designId) return;
@@ -8445,6 +8651,7 @@ async function startLiveHost() {
         state.workspaceVerifiedImageIds.set(next.id, new Set(collectReferencedAssets(next).imageAssetIds));
         state.documentGeneration += 1;
         renderUI();
+        queueLiveHostViewSync();
         void refreshLocalFontAssets().then(() => restoreImageAssets(state.documentGeneration)).then(() => renderer?.invalidate())
           .catch(error => showToast(error.message || 'The host could not refresh a newly shared asset.'));
       },
@@ -8466,6 +8673,7 @@ async function startLiveHost() {
     $('#live-share-capsules').hidden = false;
     $('#live-stop-host').hidden = false;
     liveStatus('host', 'Offer ready. Send both items to your guest; the offer expires after a few minutes.');
+    syncLiveViewDock();
   } catch (error) {
     if (state.liveCollaboration?.role === 'host') state.liveCollaboration = null;
     setLiveEditorBlocked(false);
@@ -8558,6 +8766,7 @@ async function installLiveReplicaSnapshot(session, hostSnapshot, hostHead = null
   renderUI();
   await refreshLocalFontAssets({ showFailureToast: true });
   await restoreImageAssets(++state.documentGeneration);
+  if (session.latestViewState) applyGuestViewState(session, session.latestViewState);
   setLiveEditorBlocked(false);
   if (state.pendingRecipeRecovery) setDocumentEditingBlocked(true);
   setSaveState('saved', 'Local shared copy saved');
@@ -8571,6 +8780,7 @@ async function startLiveGuest() {
   if (existing?.role === 'guest' && !liveTerminal(existing.status)) { openLiveDialog('guest'); return; }
   let session = null;
   try {
+    assertLiveShareReady();
     const invite = invitationFromText($('#live-join-invite').value);
     const offerCapsule = $('#live-join-offer').value.trim();
     if (!offerCapsule) throw new Error('Paste the owner’s one-time offer first.');
@@ -8580,7 +8790,7 @@ async function startLiveGuest() {
     session = {
       role: 'guest', status: 'preparing-answer', controller: null, hostDesignId: invite.designId,
       localDesignId: localSeed.id, localHead: null, replicaReady: false, hostRevision: null,
-      createPromise: null, sessionId: null, hostHead: null
+      createPromise: null, sessionId: null, hostHead: null, followHostView: true, latestViewState: null
     };
     state.liveCollaboration = session;
     state.liveReplicaDesignId = session.localDesignId;
@@ -8618,6 +8828,10 @@ async function startLiveGuest() {
           showToast(error.message || 'Could not save the shared design to this folder.');
           void controller.close();
         });
+      },
+      onViewState: viewState => {
+        session.latestViewState = viewState;
+        applyGuestViewState(session, viewState);
       },
       onAsset: async asset => {
         try {
@@ -8907,7 +9121,7 @@ function onDocumentPaste(event) {
   const target = event.target;
   const isEditingText = Boolean(target?.matches?.('input, textarea, select, [contenteditable="true"]'));
   routeClipboardPaste(event, {
-    canEdit: !state.documentTransitioning && !state.presenting && !document.querySelector('dialog[open]'),
+    canEdit: !isLiveHostViewOnly() && !state.documentTransitioning && !state.presenting && !document.querySelector('dialog[open]'),
     isEditingText,
     hasLayerClipboard: hasClipboardLayers(),
     importImages: files => { void importImageFiles(files); },
@@ -12087,6 +12301,10 @@ function applyInspectorAction(action, details = {}) {
     state.prototypeUrl = interaction.url || 'https://';
     state.prototypeVariableCollectionId = interaction.collectionId || null;
     state.prototypeVariableModeId = interaction.modeId || null;
+    state.prototypeVariableId = interaction.variableId || null;
+    state.prototypeVariableValue = Object.hasOwn(interaction, 'value') ? String(interaction.value) : null;
+    state.prototypeVariableExpressionMode = typeof interaction.valueExpression === 'string';
+    state.prototypeVariableExpression = state.prototypeVariableExpressionMode ? interaction.valueExpression : '';
     state.prototypeVariantTargetId = interaction.targetVariantId || null;
     state.prototypeScrollTargetId = interaction.scrollTargetId || null;
     state.prototypeScrollAlignment = interaction.scrollAlignment || 'nearest';
@@ -12116,10 +12334,12 @@ function applyInspectorAction(action, details = {}) {
         const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
         const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
         const condition = buildPrototypeInteractionCondition();
+        const variablePayload = state.prototypeAction === 'set-variable' ? buildPrototypeVariableValue() : {};
         const updateOptions = {
           action: state.prototypeAction, trigger: state.prototypeTrigger, delay: state.prototypeDelay,
           transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
           condition, url: $('#prototype-url')?.value ?? state.prototypeUrl,
+          ...variablePayload,
           collectionId: selectedCollection?.id, modeId: selectedMode?.id,
           targetVariantId: $('#prototype-variant-target')?.value || state.prototypeVariantTargetId,
           scrollTargetId: state.prototypeAction === 'scroll-to'
@@ -12148,16 +12368,17 @@ function applyInspectorAction(action, details = {}) {
       } catch (error) { showToast(error.message); }
       return;
     }
-    if (['close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant', 'scroll-to'].includes(state.prototypeAction)) {
+    if (['close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to'].includes(state.prototypeAction)) {
       try {
         const selectedCollection = state.document.variableCollections?.find(item => item.id === state.prototypeVariableCollectionId) || state.document.variableCollections?.[0];
         const selectedMode = selectedCollection?.modes.find(mode => mode.id === state.prototypeVariableModeId) || defaultVariableMode(selectedCollection);
         const condition = buildPrototypeInteractionCondition();
+        const variablePayload = state.prototypeAction === 'set-variable' ? buildPrototypeVariableValue() : {};
         const updatedDocument = structuredClone(state.document);
         addPrototypeInteraction(updatedDocument, node.id, null, {
           action: state.prototypeAction, trigger: state.prototypeTrigger,
           transition: state.prototypeTransition, easing: state.prototypeEasing, duration: state.prototypeDuration,
-          condition,
+          condition, ...variablePayload,
           url: state.prototypeUrl,
           collectionId: selectedCollection?.id,
           modeId: selectedMode?.id,
@@ -12171,7 +12392,7 @@ function applyInspectorAction(action, details = {}) {
         state.document = updatedDocument;
         const updatedNode = findNode(state.document, node.id)?.node;
         if (updatedNode) recordNodeComponentOverrides(updatedNode, ['interactions']);
-        const label = state.prototypeAction === 'open-link' ? 'Open link' : state.prototypeAction === 'back' ? 'Back' : state.prototypeAction === 'set-variable-mode' ? 'Set variable mode' : state.prototypeAction === 'change-variant' ? 'Change to variant' : state.prototypeAction === 'scroll-to' ? 'Scroll to layer' : 'Close overlay';
+        const label = state.prototypeAction === 'open-link' ? 'Open link' : state.prototypeAction === 'back' ? 'Back' : state.prototypeAction === 'set-variable' ? 'Set variable' : state.prototypeAction === 'set-variable-mode' ? 'Set variable mode' : state.prototypeAction === 'change-variant' ? 'Change to variant' : state.prototypeAction === 'scroll-to' ? 'Scroll to layer' : 'Close overlay';
         renderInspector();
         queueSave(); renderer.invalidate(); showToast(`${label} interaction added.`);
       } catch (error) { showToast(error.message); }
@@ -12349,6 +12570,7 @@ function toggleMobilePanel(panel) {
 }
 function syncMobilePanelAccessibility() {
   const mobile = innerWidth <= 820;
+  const hostViewOnly = isLiveHostViewOnly();
   const scrim = $('#mobile-scrim');
   const appShell = $('.app-shell');
   const canvasRegion = $('#canvas-region');
@@ -12359,8 +12581,9 @@ function syncMobilePanelAccessibility() {
   const inspectorOpen = mobile && panels[1].panel.classList.contains('is-open');
   let anyOpen = false;
   for (const { panel, toggle, name } of panels) {
-    const open = mobile && panel.classList.contains('is-open');
-    const closed = mobile && !open;
+    const open = !hostViewOnly && mobile && panel.classList.contains('is-open');
+    const closed = hostViewOnly || (mobile && !open);
+    if (hostViewOnly) panel.classList.remove('is-open');
     anyOpen ||= open;
     panel.inert = closed;
     panel.setAttribute('aria-hidden', String(closed));
@@ -12368,10 +12591,10 @@ function syncMobilePanelAccessibility() {
     toggle.setAttribute('aria-label', `${open ? 'Close' : 'Open'} ${name}`);
     toggle.title = `${open ? 'Close' : 'Open'} ${name}`;
   }
-  canvasRegion.inert = anyOpen;
-  canvasRegion.setAttribute('aria-hidden', String(anyOpen));
+  canvasRegion.inert = hostViewOnly ? false : anyOpen;
+  canvasRegion.setAttribute('aria-hidden', String(!hostViewOnly && anyOpen));
   appShell.classList.toggle('mobile-inspector-open', inspectorOpen);
-  scrim.classList.toggle('is-visible', anyOpen);
+  scrim.classList.toggle('is-visible', !hostViewOnly && anyOpen);
 }
 function closeMobilePanels({ restoreFocus = true } = {}) {
   if (innerWidth > 820) return;
@@ -12460,6 +12683,30 @@ function initEvents() {
     finally { $('#live-accept-answer').disabled = false; }
   });
   $('#live-join-session').addEventListener('click', () => { void startLiveGuest(); });
+  $('#live-view-host-page').addEventListener('change', event => {
+    const session = state.liveCollaboration;
+    if (!isLiveHostViewOnly() || session?.role !== 'host') return;
+    const pageId = event.currentTarget.value;
+    if (!state.document.pages.some(page => page.id === pageId) || pageId === state.document.activePageId) return;
+    state.document.activePageId = pageId;
+    state.selectedIds = [];
+    clearVectorAnchorSelection();
+    state.pendingCommentAnchor = null;
+    state.activeCommentId = null;
+    renderUI();
+    try { session.controller.publishViewState(currentLiveHostViewState()); }
+    catch (error) { liveStatus('host', `View sharing paused: ${error.message || 'the peer connection is unavailable'}`); }
+  });
+  $('#live-follow-host-view').addEventListener('change', event => {
+    const session = state.liveCollaboration;
+    if (session?.role !== 'guest') return;
+    session.followHostView = event.currentTarget.checked;
+    if (session.followHostView && session.latestViewState) applyGuestViewState(session, session.latestViewState);
+  });
+  $('#live-view-manage').addEventListener('click', () => {
+    const session = state.liveCollaboration;
+    if (session?.role === 'host' || session?.role === 'guest') openLiveDialog(session.role);
+  });
   $('#live-stop-host').addEventListener('click', () => { void stopLiveHost(); });
   $('#live-stop-guest').addEventListener('click', () => { void stopLiveGuest(); });
   $('#live-retry-fork').addEventListener('click', async () => {
@@ -12478,9 +12725,11 @@ function initEvents() {
   $('#live-collaboration-close').addEventListener('click', () => {
     const session = state.liveCollaboration;
     if (session?.role === 'host' && !liveTerminal(session.status)) {
-      showToast('Stop sharing and revoke the invitation before returning to editing.');
+      if (isLiveHostViewOnly()) liveDialogElement.close();
+      else showToast('Wait for the guest to connect or stop sharing before closing this panel.');
       return;
     }
+    if (session?.role === 'guest' && session.replicaReady && ['connected', 'pending'].includes(session.status)) { liveDialogElement.close(); return; }
     if (session?.role === 'guest' && !liveTerminal(session.status)) {
       showToast('Leave the live session first so Tiny Image Star can save your local fork.');
       return;
@@ -12489,11 +12738,14 @@ function initEvents() {
   });
   liveDialogElement.addEventListener('cancel', event => {
     const session = state.liveCollaboration;
-    if ((session?.role === 'host' || session?.role === 'guest') && !liveTerminal(session.status)) {
+    if (session?.role === 'host' && !liveTerminal(session.status)) {
+      if (!isLiveHostViewOnly()) { event.preventDefault(); showToast('Wait for the guest to connect or stop sharing before closing this panel.'); }
+      return;
+    }
+    if (session?.role === 'guest' && session.replicaReady && ['connected', 'pending'].includes(session.status)) return;
+    if (session?.role === 'guest' && !liveTerminal(session.status)) {
       event.preventDefault();
-      showToast(session.role === 'host'
-        ? 'Stop sharing and revoke the invitation before returning to editing.'
-        : 'Leave the live session first so Tiny Image Star can save your local fork.');
+      showToast('Leave the live session first so Tiny Image Star can save your local fork.');
     }
   });
   document.addEventListener('pointerdown', event => {
@@ -12525,6 +12777,7 @@ function initEvents() {
     element.addEventListener('keydown', handleRulerKeyboard);
   }
   canvas.addEventListener('dblclick', event => {
+    if (isLiveHostViewOnly()) { event.preventDefault(); return; }
     if (state.tool !== 'select') return;
     const world = screenToWorld(event, canvas, state);
     const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document, null, state.zoom);
@@ -12533,6 +12786,7 @@ function initEvents() {
   });
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
+    if (isLiveHostViewOnly()) return;
     const world = screenToWorld(event, canvas, state); const hit = hitTestPage(activePage(), world, (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true, state.document, null, state.zoom);
     if (hit) openNodeMenu(hit.id, event.clientX, event.clientY, world, canvas);
     else if (state.selectedIds.length) openNodeMenu(state.selectedIds[0], event.clientX, event.clientY, world, canvas);
@@ -12542,6 +12796,7 @@ function initEvents() {
   canvasScroll.addEventListener('dragleave', event => { if (!canvasScroll.contains(event.relatedTarget)) $('#canvas-drop-overlay').classList.remove('is-visible'); });
   canvasScroll.addEventListener('drop', event => {
     event.preventDefault(); $('#canvas-drop-overlay').classList.remove('is-visible');
+    if (isLiveHostViewOnly()) return;
     const point = screenToWorld(event, canvas, state); importImageFiles(event.dataTransfer.files, point);
   });
   $('#image-input').addEventListener('change', event => importImageFiles(event.currentTarget.files, null, { input: event.currentTarget }));
@@ -12649,6 +12904,7 @@ function initEvents() {
     if (!selection) return;
     const pageId = selection.dataset.pageSelect;
     if (pageId === state.document.activePageId) return;
+    pauseGuestViewFollowing();
     clearPrototypeConnectPrompt(); state.document.activePageId = pageId; state.selectedIds = []; clearVectorAnchorSelection(); state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI();
   });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row && !event.target.closest('.page-row-menu')) renamePage(row.dataset.pageId); });
@@ -12782,6 +13038,8 @@ function initEvents() {
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
     if (event.target.id === 'motion-playhead') { setMotionPlayhead(event.target.value); return; }
+    if (event.target.id === 'prototype-variable-value') { state.prototypeVariableValue = event.target.value; return; }
+    if (event.target.id === 'prototype-variable-expression') { state.prototypeVariableExpression = event.target.value; return; }
     const gradientGeometryField = event.target.closest('[data-gradient-geometry-field]');
     if (gradientGeometryField) { updateGradientGeometryInput(gradientGeometryField); return; }
     const strokeField = event.target.closest('[data-stroke-field]');
@@ -12853,6 +13111,11 @@ function initEvents() {
     if (vectorAnchorMode) { updateVectorAnchorMode(vectorAnchorMode); return; }
     if (event.target.id === 'prototype-condition-value') { state.prototypeConditionValue = event.target.value; return; }
     if (event.target.id === 'prototype-condition-operator') { state.prototypeConditionOperator = event.target.value; return; }
+    if (event.target.id === 'prototype-variable-expression-mode') {
+      state.prototypeVariableExpressionMode = event.target.checked;
+      renderInspector();
+      return;
+    }
     if (event.target.id === 'prototype-condition-variable') {
       state.prototypeConditionVariableId = event.target.value || null;
       const variable = state.document.variables?.find(item => item.id === state.prototypeConditionVariableId);
@@ -12926,6 +13189,13 @@ function initEvents() {
     if (event.target.id === 'prototype-action') {
       const previousAction = state.prototypeAction;
       state.prototypeAction = event.target.value;
+      if (state.prototypeAction === 'set-variable') {
+        const variable = state.document.variables?.find(item => item.id === state.prototypeVariableId) || state.document.variables?.[0] || null;
+        state.prototypeVariableId = variable?.id || null;
+        state.prototypeVariableValue = variable ? String(resolveVariableValue(state.document, variable.id)) : null;
+        state.prototypeVariableExpressionMode = false;
+        state.prototypeVariableExpression = '';
+      }
       if (state.prototypeSourceId && !['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction)) clearPrototypeConnectPrompt();
       if (!['navigate', 'open-overlay', 'swap-overlay'].includes(state.prototypeAction) && state.prototypeTrigger === 'after-delay') state.prototypeTrigger = 'on-click';
       if (state.prototypeAction !== 'navigate' && state.prototypeTransition === 'smart-animate') state.prototypeTransition = 'dissolve';
@@ -12938,6 +13208,14 @@ function initEvents() {
       }
       renderInspector();
       syncPrototypeConnectPrompt();
+    }
+    if (event.target.id === 'prototype-variable-target') {
+      state.prototypeVariableId = event.target.value || null;
+      const variable = state.document.variables?.find(item => item.id === state.prototypeVariableId);
+      state.prototypeVariableValue = variable ? String(resolveVariableValue(state.document, variable.id)) : null;
+      state.prototypeVariableExpressionMode = false;
+      state.prototypeVariableExpression = '';
+      renderInspector();
     }
     if (event.target.id === 'prototype-variable-collection') {
       state.prototypeVariableCollectionId = event.target.value;
@@ -13354,6 +13632,27 @@ function initEvents() {
 function onKeyDown(event) {
   if (state.documentTransitioning) return;
   if (state.workspacePermissionNeeded && event.key !== 'Escape') return;
+  if (isLiveHostViewOnly()) {
+    const inLiveControls = event.target.closest?.('#live-view-dock, #live-collaboration-dialog');
+    const onLiveControl = event.target.matches?.('input, textarea, select, button, [contenteditable="true"]')
+      || event.target.closest?.('button');
+    if (inLiveControls && onLiveControl) return;
+    if (event.code === 'Space' && !event.target.matches?.('input, textarea, select, [contenteditable="true"]')) {
+      state.spaceDown = true; event.preventDefault(); return;
+    }
+    if (event.key === '+' || event.key === '=') { zoomAt(null, null, state.zoom * 1.2); event.preventDefault(); return; }
+    if (event.key === '-') { zoomAt(null, null, state.zoom / 1.2); event.preventDefault(); return; }
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      const distance = event.shiftKey ? 80 : 24;
+      if (event.key === 'ArrowLeft') state.panX += distance;
+      if (event.key === 'ArrowRight') state.panX -= distance;
+      if (event.key === 'ArrowUp') state.panY += distance;
+      if (event.key === 'ArrowDown') state.panY -= distance;
+      renderer.invalidate(); queueLiveHostViewSync(); event.preventDefault(); return;
+    }
+    event.preventDefault();
+    return;
+  }
   const contextMenu = $('#context-menu');
   if (event.key.toLowerCase() === 'escape' && state.prototypeSourceId && !document.querySelector('dialog[open]')) {
     if (!contextMenu.hidden) closeMenu();

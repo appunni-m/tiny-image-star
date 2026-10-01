@@ -140,6 +140,42 @@ test('host sends a snapshot only after HELLO and persists guest snapshot before 
   controller.close();
 });
 
+test('host sends ephemeral view state and keeps its selected page through guest snapshot commits', async () => {
+  const initial = fakeDesign();
+  const firstPageId = initial.document.pages[0].id;
+  initial.document.pages.push({ ...structuredClone(initial.document.pages[0]), id: 'page-b', name: 'Page B', children: [] });
+  const { controller, channel, persisted } = await hostFixture({
+    open: async () => initial,
+    getViewState: () => ({ pageId: 'page-b', zoom: 1.5, centerX: 240, centerY: -80 })
+  });
+  await controller.acceptAnswer('answer-capsule');
+  channel.receive(context('HELLO', { lastRevision: 0 }));
+  await settle();
+  const messages = channel.sent.map(raw => decodeCollaborationMessage(raw, { direction: 'host-to-guest' }));
+  assert.deepEqual(messages.map(message => message.kind), ['WELCOME', 'SNAPSHOT', 'VIEW_STATE']);
+  assert.deepEqual({
+    sequence: messages[2].sequence, pageId: messages[2].pageId, zoom: messages[2].zoom,
+    centerX: messages[2].centerX, centerY: messages[2].centerY
+  }, { sequence: 1, pageId: 'page-b', zoom: 1.5, centerX: 240, centerY: -80 });
+  assert.equal(controller.head.sequence, 2, 'initial view sync does not create a folder commit');
+
+  const guestSnapshot = structuredClone(initial.document);
+  guestSnapshot.activePageId = firstPageId;
+  guestSnapshot.name = 'Guest edit';
+  channel.receive(context('OPERATION', {
+    operation: { type: 'ReplaceSnapshot', opId: 'op-page-view', baseRevision: 2, snapshot: guestSnapshot }
+  }));
+  await settle();
+  assert.equal(persisted().document.activePageId, 'page-b', 'guest document proposals cannot change the master-selected page');
+  assert.equal(controller.publishViewState({ pageId: firstPageId, zoom: 2, centerX: 12, centerY: 34 }), true);
+  const view = decodeCollaborationMessage(channel.sent.at(-1), { direction: 'host-to-guest' });
+  assert.equal(view.kind, 'VIEW_STATE');
+  assert.equal(view.sequence, 2);
+  assert.equal(view.pageId, firstPageId);
+  assert.equal(controller.head.sequence, 3, 'only the accepted guest edit advances the folder head');
+  controller.close();
+});
+
 test('host rejects the wrong peer identity and revocation closes the connected channel', async () => {
   let active = true;
   const { controller, channel } = await hostFixture({
@@ -190,6 +226,7 @@ test('guest sends edits with a revision fence, advances only on ACK, and saves a
   const initial = fakeDesign().document;
   const forks = [];
   let closed = 0;
+  const viewStates = [];
   const controller = await createGuestSessionController({
     expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
     createTransport: async () => ({
@@ -197,6 +234,7 @@ test('guest sends edits with a revision fence, advances only on ACK, and saves a
       waitForOpen: async () => true, close: () => channel.close()
     }),
     persistFork: async fork => { forks.push(fork); return true; },
+    onViewState: view => viewStates.push(view),
     closeSession: () => { closed += 1; }
   });
   await controller.ready;
@@ -205,6 +243,12 @@ test('guest sends edits with a revision fence, advances only on ACK, and saves a
   channel.receive({ v: 1, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', revision: 2, headHash: 'a'.repeat(64), snapshot: initial });
   await settle();
   assert.equal(controller.state, 'connected');
+  const pageId = initial.pages[0].id;
+  channel.receive({ v: 1, kind: 'VIEW_STATE', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', sequence: 1, pageId, zoom: 1.75, centerX: 480, centerY: 360 });
+  channel.receive({ v: 1, kind: 'VIEW_STATE', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', sequence: 1, pageId, zoom: 3, centerX: 0, centerY: 0 });
+  await settle();
+  assert.equal(viewStates.length, 1, 'duplicate view sequence is ignored');
+  assert.equal(controller.viewState.zoom, 1.75);
 
   const changed = JSON.parse(JSON.stringify(initial));
   changed.name = 'Optimistic edit';

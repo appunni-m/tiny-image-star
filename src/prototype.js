@@ -1,9 +1,10 @@
-import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolveVariableValueWithModeOverrides, switchComponentInstanceVariant, walkNodes } from './model.js';
+import { createId, findNode, findNodeAcrossPages, getActivePage, getNodeGeometry, getNodePropertyValue, isVariableValue, resolvePrototypeExpressionVariables, resolveVariableValueWithModeOverrides, setVariableValue, switchComponentInstanceVariant, variableModeForNode, walkNodes } from './model.js';
 import { pageToNodeLocal } from './transform-geometry.js';
+import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS } from './prototype-expressions.js';
 
 const triggers = new Set(['on-click', 'on-press', 'on-drag', 'while-hovering', 'after-delay']);
 const transitions = new Set(['instant', 'dissolve', 'move-left', 'move-right', 'smart-animate', 'scroll']);
-const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable-mode', 'change-variant', 'scroll-to']);
+const actions = new Set(['navigate', 'open-overlay', 'swap-overlay', 'close-overlay', 'back', 'open-link', 'set-variable', 'set-variable-mode', 'change-variant', 'scroll-to']);
 const delayedActions = new Set(['navigate', 'open-overlay', 'swap-overlay']);
 const minPrototypeDelay = 100;
 const maxPrototypeDelay = 10_000;
@@ -267,6 +268,9 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   collectionId,
   modeId,
   targetVariantId,
+  variableId = null,
+  value = null,
+  valueExpression = null,
   scrollTargetId,
   scrollAlignment = 'nearest',
   condition = null
@@ -303,6 +307,28 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   if (needsDestination && (!destination || destination.node.type !== 'frame')) throw new Error('Prototype navigation and overlay actions must end at a frame.');
   if (!needsDestination && destinationId != null) throw new TypeError('Back, close overlay, and open link actions cannot have a frame destination.');
   if (action === 'open-link' && !linkUrl) throw new TypeError('Open link actions require a safe http(s) or mailto URL.');
+  const variable = action === 'set-variable' ? document.variables?.find(item => item.id === variableId) : null;
+  if (action === 'set-variable') {
+    if (!variable) throw new TypeError('Choose a variable for this action.');
+    if (valueExpression !== null) {
+      if (value !== null || variable.type === 'color' || typeof valueExpression !== 'string'
+        || valueExpression.length > PROTOTYPE_EXPRESSION_LIMITS.sourceLength) {
+        throw new TypeError('Enter a bounded expression for a number, string, or boolean variable.');
+      }
+      try {
+        evaluatePrototypeExpression(valueExpression, {
+          variables: resolvePrototypeExpressionVariables(document, {}, source.node), mode: variable.type
+        });
+      } catch (error) {
+        throw new TypeError(`Invalid variable expression: ${error.message}`);
+      }
+    } else if (!isVariableValue(variable.type, value)) {
+      throw new TypeError('Choose a variable and enter a value that matches its type.');
+    }
+  }
+  if (action !== 'set-variable' && (variableId != null || value != null || valueExpression != null)) {
+    throw new TypeError('Only set-variable actions can include a variable value.');
+  }
   if (action === 'set-variable-mode' && (!collection || (modeId != null && !collection.modes.some(mode => mode.id === modeId)))) {
     throw new TypeError('Choose a variable collection and one of its modes.');
   }
@@ -328,6 +354,10 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
     && conditionIdentity(item.condition) === conditionIdentity(normalizedCondition)
     && (action !== 'open-link' || normalizePrototypeLinkUrl(item.url) === linkUrl)
     && (action !== 'set-variable-mode' || item.collectionId === collectionId)
+    && (action !== 'set-variable' || (item.variableId === variableId
+      && (valueExpression !== null
+        ? item.valueExpression === valueExpression && !Object.hasOwn(item, 'value')
+        : Object.is(item.value, value) && !Object.hasOwn(item, 'valueExpression'))))
     && (action !== 'change-variant' || item.targetVariantId === targetVariantId)
     && (action !== 'scroll-to' || (item.scrollTargetId === scrollTargetId && item.scrollAlignment === scrollAlignment)));
   if (existing) {
@@ -342,6 +372,13 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
       existing.overlayBackgroundOpacity = Math.max(0, Math.min(1, Number(overlayBackgroundOpacity) || 0));
     }
     if (action === 'set-variable-mode') existing.modeId = modeId ?? null;
+    if (action === 'set-variable') {
+      existing.variableId = variableId;
+      delete existing.value;
+      delete existing.valueExpression;
+      if (valueExpression !== null) existing.valueExpression = valueExpression;
+      else existing.value = value;
+    }
     if (action === 'change-variant') existing.targetVariantId = targetVariantId;
     if (action === 'scroll-to') {
       existing.scrollTargetId = scrollTargetId;
@@ -365,6 +402,11 @@ export function addPrototypeInteraction(document, sourceId, destinationId, {
   };
   if (action === 'open-link') interaction.url = linkUrl;
   if (action === 'set-variable-mode') Object.assign(interaction, { collectionId, modeId: modeId ?? null });
+  if (action === 'set-variable') {
+    interaction.variableId = variableId;
+    if (valueExpression !== null) interaction.valueExpression = valueExpression;
+    else interaction.value = value;
+  }
   if (action === 'change-variant') Object.assign(interaction, { instanceId: source.node.id, targetVariantId });
   if (action === 'scroll-to') Object.assign(interaction, { scrollTargetId, scrollAlignment });
   if (normalizedCondition) interaction.condition = normalizedCondition;
@@ -502,6 +544,29 @@ export function applyPrototypeInteraction(document, session, interaction) {
   if (!session || !interaction || !actions.has(interaction.action)) return false;
   if (interaction.action === 'back') return backPrototypeSession(session);
   if (interaction.action === 'open-link') return normalizePrototypeLinkUrl(interaction.url) ? 'link-opened' : false;
+  if (interaction.action === 'set-variable') {
+    const variable = document.variables?.find(item => item.id === interaction.variableId);
+    const collection = variable && document.variableCollections?.find(item => item.id === variable.collectionId);
+    if (!variable || !collection) return false;
+    const activeOverlay = session.overlays?.at(-1);
+    const activeFrame = activeOverlay
+      ? findNode(document, activeOverlay.frameId, activeOverlay.pageId)?.node
+      : findNode(document, session.frameId, session.pageId)?.node;
+    const modeId = session.variableModes?.[collection.id]
+      || variableModeForNode(document, collection.id, activeFrame);
+    let value = interaction.value;
+    if (typeof interaction.valueExpression === 'string') {
+      try {
+        value = evaluatePrototypeExpression(interaction.valueExpression, {
+          variables: resolvePrototypeExpressionVariables(document, session.variableModes, activeFrame),
+          mode: variable.type
+        });
+      } catch { return false; }
+    }
+    if (!isVariableValue(variable.type, value) || !setVariableValue(document, variable.id, value, modeId)) return false;
+    rememberPrototypeHoverInteraction(session, interaction);
+    return 'variables-updated';
+  }
   if (interaction.action === 'scroll-to') {
     const pageId = session.overlays?.at(-1)?.pageId || session.pageId;
     const target = findNode(document, interaction.scrollTargetId, pageId);

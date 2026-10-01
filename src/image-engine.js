@@ -565,6 +565,37 @@ export class LocalImageEngine {
     return removed;
   }
 
+  /** Drop every not-yet-started render that still owns a disposed source buffer. */
+  cancelQueuedByAsset(assetId, error = new DOMException('The source image was disposed.', 'AbortError')) {
+    if (typeof assetId !== 'string' || !assetId) throw new TypeError('A disposed image needs a nonempty asset ID.');
+    const survivors = [];
+    let cancelled = 0;
+    for (let index = this.queueHead; index < this.queue.length; index += 1) {
+      const job = this.queue[index];
+      if (!job) continue;
+      if (job.assetId !== assetId) {
+        survivors.push(job);
+        continue;
+      }
+      this.queuedCount -= 1;
+      if (job.queueGroup !== null) {
+        const groupCount = this.queuedByGroup.get(job.queueGroup) || 0;
+        if (groupCount <= 1) this.queuedByGroup.delete(job.queueGroup);
+        else this.queuedByGroup.set(job.queueGroup, groupCount - 1);
+      }
+      if (job.replaceKey !== undefined && this.queuedByKey.get(job.replaceKey) === job) this.queuedByKey.delete(job.replaceKey);
+      job.reject(error);
+      cancelled += 1;
+    }
+    if (!cancelled) return 0;
+    this.queue = survivors;
+    this.queueHead = 0;
+    this.queueTombstones = 0;
+    this.#dispatch();
+    this.#notify();
+    return cancelled;
+  }
+
   #dispatch() {
     if (this.dead || this.paused || !this.poolConfigured) return;
     const active = this.workers.filter(slot => slot.busy).length;
@@ -782,7 +813,9 @@ export class LocalImageEngine {
   }
 
   dispose(assetId) {
+    if (typeof assetId !== 'string' || !assetId) throw new TypeError('A disposed image needs a nonempty asset ID.');
     for (const slot of this.workers) { slot.worker.postMessage({ type: 'dispose', assetId }); slot.loaded.delete(assetId); }
+    this.cancelQueuedByAsset(assetId);
   }
 
   metrics() {

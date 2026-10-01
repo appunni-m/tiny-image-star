@@ -9,8 +9,22 @@ const [source, smoke] = await Promise.all([
 const stylesheet = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('an open phone drawer hides the covered canvas from focus and screen readers', () => {
-  assert.match(source, /canvasRegion\.inert = anyOpen;[\s\S]*?canvasRegion\.setAttribute\('aria-hidden', String\(anyOpen\)\)/);
+  assert.match(source, /canvasRegion\.inert = hostViewOnly \? false : anyOpen;[\s\S]*?canvasRegion\.setAttribute\('aria-hidden', String\(!hostViewOnly && anyOpen\)\)/);
   assert.match(smoke, /canvas behind an open phone panel should be removed from keyboard and screen-reader navigation/);
+});
+
+test('the live owner view dock keeps a safe canvas accessible while locking editing panels', () => {
+  const sync = source.match(/function syncMobilePanelAccessibility\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const pointerStart = source.indexOf('function onCanvasPointerDown(event)');
+  const pointerEnd = source.indexOf('\nfunction onCanvasPointerMove(event)', pointerStart);
+  const pointerDown = source.slice(pointerStart, pointerEnd);
+  assert.match(sync, /const hostViewOnly = isLiveHostViewOnly\(\)/);
+  assert.match(sync, /panel\.inert = closed/);
+  assert.match(sync, /canvasRegion\.inert = hostViewOnly \? false : anyOpen/);
+  assert.match(pointerDown, /if \(isLiveHostViewOnly\(\)\) \{/);
+  assert.match(pointerDown, /kind: 'pan'/);
+  assert.match(pointerDown, /event\.stopImmediatePropagation\(\)/,
+    'the owner can navigate the canvas without entering edit handlers');
 });
 
 test('phone drawer keyboard focus wraps through the open panel and its close toggle', () => {

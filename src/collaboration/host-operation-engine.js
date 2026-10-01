@@ -174,6 +174,11 @@ function applyOperation(document, operation) {
       if (document.settings?.collaborationSource && replacement.settings) {
         replacement.settings.collaborationSource = clone(document.settings.collaborationSource);
       }
+      // The owner controls the shared view. A guest may edit the document, but
+      // its snapshot cannot move the master's canonical active page.
+      if (replacement.pages.some(page => page.id === document.activePageId)) {
+        replacement.activePageId = document.activePageId;
+      }
       return replacement;
     }
     case 'SetProperty': {
@@ -457,6 +462,12 @@ export function createHostOperationEngine({
     getRevision: () => currentRevision,
     getHeadHash: () => currentHeadHash,
     getSnapshot: () => clone(document),
+    hasPageId: pageId => typeof pageId === 'string' && document.pages.some(page => page.id === pageId),
+    setActivePageId: pageId => {
+      if (typeof pageId !== 'string' || !document.pages.some(page => page.id === pageId)) return false;
+      document.activePageId = pageId;
+      return true;
+    },
     getReplayCacheStats: () => Object.freeze({
       entryCount: accepted.size,
       accountedBytes: acceptedBytes,

@@ -157,6 +157,13 @@
         </aside>
       </div>
 
+      <div class="live-view-dock" id="live-view-dock" role="region" aria-label="Live collaboration view" hidden>
+        <strong id="live-view-role">Live view</strong>
+        <label id="live-view-host-page-wrap" for="live-view-host-page" hidden>Page<select id="live-view-host-page" class="select-field" aria-label="Page shared with guests"></select></label>
+        <label id="live-view-follow-wrap" for="live-follow-host-view" hidden><input id="live-follow-host-view" type="checkbox" checked /><span>Follow owner</span></label>
+        <button class="secondary-button" id="live-view-manage" type="button">Manage live share</button>
+      </div>
+
       <div class="bulk-bar" id="bulk-bar" role="region" aria-label="Image recipe batch controls" tabindex="-1" hidden>
         <div class="bulk-info"><div class="bulk-spinner" id="bulk-spinner"></div><div><strong id="bulk-title">Applying recipe</strong><span id="bulk-subtitle">Preparing images…</span><span id="bulk-rate" class="bulk-rate" aria-live="off" aria-label="Batch processing speed and estimated time remaining">Starting…</span></div></div>
         <div class="bulk-progress-wrap"><div class="bulk-progress-track"><div class="bulk-progress-fill" id="bulk-progress-fill"></div></div><span id="bulk-progress-label">0 / 0</span></div>
@@ -251,7 +258,7 @@
           </div>
           <p class="modal-copy" id="live-collaboration-copy">Your folder stays on your device. Session setup is shared out of band; Tiny Image Star has no signaling server.</p>
           <section id="live-host-panel" hidden>
-            <p class="live-collaboration-note">Send both the design invitation and this short-lived session offer to your guest. Anyone with them can propose edits; you remain the only person who can save canonical changes. The channel you use can read both items, including network details in the offer, so share only through a channel you trust.</p>
+            <p class="live-collaboration-note">Send both the design invitation and this short-lived session offer to your guest. Anyone with them can propose edits; your device validates and saves canonical changes. While connected, use the floating page and canvas controls to guide the guest; owner editing stays paused so local changes cannot drift from the shared copy. The channel you use can read both items, including network details in the offer, so share only through a channel you trust.</p>
             <label class="field-label" for="live-invite-value">Stable design invitation</label>
             <textarea class="text-field live-capsule-field" id="live-invite-value" readonly spellcheck="false" aria-label="Stable design invitation link"></textarea>
             <button class="secondary-button live-copy-button" type="button" data-copy-field="live-invite-value">Copy invitation</button>
@@ -267,7 +274,7 @@
             <div class="dialog-actions"><button class="secondary-button" id="live-stop-host" type="button">Stop sharing and revoke link</button></div>
           </section>
           <section id="live-guest-panel" hidden>
-            <p class="live-collaboration-note">Paste the invitation and current offer from the design owner. You need a writable folder because edits are kept as a local copy and become a local fork if the connection ends. The service carrying your answer can read its network details, so use a channel you trust.</p>
+            <p class="live-collaboration-note">Paste the invitation and current offer from the design owner. You need a writable folder because edits are kept as a local copy and become a local fork if the connection ends. Once connected, you follow the owner’s page and canvas view by default; pause following from the floating bar whenever you want to inspect another area. The service carrying your answer can read its network details, so use a channel you trust.</p>
             <label class="field-label" for="live-join-invite">Design invitation or link</label>
             <textarea class="text-field live-capsule-field" id="live-join-invite" spellcheck="false" autocomplete="off" placeholder="Paste a tiny-image-star invitation link or tisd1… capsule"></textarea>
             <label class="field-label" for="live-join-offer">One-time session offer</label>

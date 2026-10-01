@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, duplicateNode, findNode, getNodePropertyValue, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
+import { addNode, addVariableMode, bindVariable, createComponent, createComponentInstance, createComponentSet, createDocument, createNode, createVariable, createVariableCollection, deleteVariable, duplicateNode, findNode, getNodePropertyValue, listPrototypeExpressionVariables, moveNode, parseDocument, reconcilePrototypeScrollInteractions, removeNode, resolveVariableValue, serializeDocument, setVariableValue, switchComponentInstanceVariant, updateNode, validateDocument } from '../src/model.js';
 import { addPrototypeInteraction, applyPrototypeInteraction, backPrototypeSession, clearPrototypeHoverInteraction, createPrototypeSession, easePrototypeProgress, findClickableInteraction, findFrameAtPoint, findPrototypeDelayInteraction, getPrototypeStartFrame, normalizePrototypeLinkUrl, removePrototypeInteraction, schedulePrototypeDelay, setPrototypeStartPoint, updatePrototypeInteraction } from '../src/prototype.js';
 
 test('prototype change-variant swaps only its presentation instance and survives local serialization', () => {
@@ -698,6 +698,100 @@ test('prototype variable-mode actions update the presentation session without mu
   assert.equal(changedMode.id, interaction.id, 'changing the chosen mode updates that collection action');
   assert.equal(changedMode.modeId, light.id);
   assert.equal(applyPrototypeInteraction(document, session, { ...interaction, modeId: 'missing-mode' }), false);
+});
+
+test('prototype set-variable actions evaluate bounded expressions in presentation state only', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Prototype state');
+  const count = createVariable(document, collection.id, 'count value', 'number', 4);
+  const result = createVariable(document, collection.id, 'result', 'number', 0);
+  const label = createVariable(document, collection.id, 'label', 'string', 'Hello');
+  const home = createNode('frame', { name: 'Home' });
+  const trigger = createNode('rectangle', { name: 'Increase' });
+  home.children.push(trigger);
+  addNode(document, home);
+
+  const interaction = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: result.id, valueExpression: 'count_value * 2 + 1'
+  });
+  const literal = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', trigger: 'on-drag', variableId: result.id, value: 2
+  });
+  const replacedLiteral = updatePrototypeInteraction(document, trigger.id, literal.id, null, {
+    action: 'set-variable', trigger: 'on-drag', variableId: result.id, valueExpression: 'count_value + 3'
+  });
+  const labelInteraction = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', trigger: 'on-press', variableId: label.id, valueExpression: 'label + "!"'
+  });
+  assert.equal(interaction.valueExpression, 'count_value * 2 + 1');
+  assert.equal(Object.hasOwn(interaction, 'value'), false);
+  assert.equal(replacedLiteral.id, literal.id);
+  assert.equal(replacedLiteral.valueExpression, 'count_value + 3');
+  assert.equal(Object.hasOwn(replacedLiteral, 'value'), false, 'switching from literal to expression removes the old stored literal');
+  assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
+
+  const runtimeDocument = structuredClone(document);
+  const session = createPrototypeSession({ page: runtimeDocument.pages[0], frame: runtimeDocument.pages[0].children[0] });
+  const runtimeTrigger = findNode(runtimeDocument, trigger.id).node;
+  const runtimeInteraction = runtimeTrigger.interactions.find(item => item.id === interaction.id);
+  const runtimeLabelInteraction = runtimeTrigger.interactions.find(item => item.id === labelInteraction.id);
+  assert.equal(applyPrototypeInteraction(runtimeDocument, session, runtimeInteraction), 'variables-updated');
+  assert.equal(resolveVariableValue(runtimeDocument, result.id), 9);
+  assert.equal(resolveVariableValue(document, result.id), 0, 'presentation actions do not change the saved design');
+  assert.equal(applyPrototypeInteraction(runtimeDocument, session, runtimeLabelInteraction), 'variables-updated');
+  assert.equal(resolveVariableValue(runtimeDocument, label.id), 'Hello!');
+  assert.equal(resolveVariableValue(document, label.id), 'Hello');
+
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: result.id, valueExpression: 'label + 1'
+  }), /Invalid variable expression/);
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: label.id, value: 'Hello', valueExpression: 'label + "!"'
+  }), /bounded expression/);
+  assert.equal(count.valuesByMode[collection.defaultModeId], 4);
+
+  const invalid = structuredClone(document);
+  findNode(invalid, trigger.id).node.interactions[0].valueExpression = 'unknown + 1';
+  assert.throws(() => validateDocument(invalid), /Invalid prototype interactions/);
+});
+
+test('prototype expressions exclude ambiguous aliases produced by similar variable names', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Alias test');
+  const target = createVariable(document, collection.id, 'total', 'number', 0);
+  createVariable(document, collection.id, 'Card width', 'number', 20);
+  createVariable(document, collection.id, 'Card_width', 'number', 24);
+  const frame = createNode('frame', { name: 'Frame' });
+  const trigger = createNode('rectangle');
+  frame.children.push(trigger);
+  addNode(document, frame);
+
+  assert.equal(listPrototypeExpressionVariables(document).some(item => item.alias === 'Card_width'), false);
+  assert.throws(() => addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: target.id, valueExpression: 'Card_width + 1'
+  }), /Unknown variable/);
+});
+
+test('deleting a variable removes actions that depend on its expression alias without matching string literals', () => {
+  const document = createDocument();
+  const collection = createVariableCollection(document, 'Dependency test');
+  const input = createVariable(document, collection.id, 'input value', 'number', 2);
+  const total = createVariable(document, collection.id, 'total', 'number', 0);
+  const label = createVariable(document, collection.id, 'label', 'string', '');
+  const frame = createNode('frame', { name: 'Frame' });
+  const trigger = createNode('rectangle');
+  frame.children.push(trigger);
+  addNode(document, frame);
+  addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', variableId: total.id, valueExpression: 'input_value + 1'
+  });
+  const literalText = addPrototypeInteraction(document, trigger.id, null, {
+    action: 'set-variable', trigger: 'on-press', variableId: label.id, valueExpression: '"input_value"'
+  });
+
+  assert.equal(deleteVariable(document, input.id), true);
+  assert.deepEqual(findNode(document, trigger.id).node.interactions.map(item => item.id), [literalText.id]);
+  assert.equal(validateDocument(document), true);
 });
 
 test('prototype routes match typed variable conditions using session modes and condition-aware deduplication', () => {

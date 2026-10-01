@@ -54,8 +54,6 @@ export function createImageFill(assetId, overrides = {}) {
   return {
     assetId,
     fit: 'cover',
-    transforms: createImageTransforms(),
-    adjustments: { ...defaultImageAdjustments },
     ...overrides,
     transforms: createImageTransforms(overrides.transforms || {}),
     adjustments: normalizeImageAdjustments(overrides.adjustments || {})

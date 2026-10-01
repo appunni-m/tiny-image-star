@@ -583,6 +583,38 @@ test('queued renders with the same replacement key keep only the latest preview'
   }, { deferRenders: true });
 });
 
+test('disposing an asset cancels queued source-buffer owners and preserves unrelated work', async () => {
+  await withEngine(async engine => {
+    engine.setConcurrency(1);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const worker = engine.workers[0].worker;
+    const active = engine.render('active', pngHeader(1, 1), {});
+    const disposed = engine.render('disposed-asset', pngHeader(2, 2), {}, {}, {
+      replaceKey: 'preview:disposed-asset', queueGroup: 'recipe:disposed',
+    });
+    const unrelated = engine.render('unrelated', pngHeader(1, 1), {});
+    const disposedRejected = assert.rejects(disposed, { name: 'AbortError' });
+
+    assert.deepEqual(engine.queueGroupMetrics('recipe:disposed'), { active: 0, queued: 1 });
+    engine.dispose('disposed-asset');
+    await disposedRejected;
+
+    assert.equal(engine.metrics().queued, 1, 'the unrelated queued render remains scheduled');
+    assert.deepEqual(engine.queueGroupMetrics('recipe:disposed'), { active: 0, queued: 0 });
+    assert.equal(engine.cancelQueuedByKey('preview:disposed-asset'), false,
+      'disposing a source also clears its queued replacement index');
+    assert.deepEqual(worker.disposed, ['disposed-asset']);
+
+    worker.completeNextRender();
+    await active;
+    assert.deepEqual(worker.renderRequests.map(request => request.assetId), ['active', 'unrelated'],
+      'a disposed source is never copied into or processed by the worker');
+    worker.completeNextRender();
+    await unrelated;
+    assert.equal(engine.metrics().queued, 0);
+  }, { maxWorkers: 1, deferRenders: true });
+});
+
 test('LocalImageEngine forgets an unconfirmed cache entry after a missing-source error', async () => {
   await withEngine(async engine => {
     await engine.render('asset', bytesFor(3), {});

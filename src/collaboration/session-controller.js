@@ -108,6 +108,7 @@ export async function createHostSessionController({
   cancelTimeout = globalThis.clearTimeout?.bind(globalThis),
   onState = () => {},
   onSnapshot = () => {},
+  getViewState = () => null,
   peerConnectionFactory = globalThis.RTCPeerConnection,
   createTransport = createHostWebRtcSession,
   loadGrant = loadShareGrant,
@@ -147,6 +148,7 @@ export async function createHostSessionController({
   let transport;
   let engine = null;
   let guestActorId = null;
+  let viewStateSequence = 0;
   let assetReceiver = null;
   let receivedAssetCount = 0;
   let receivedAssetBytes = 0;
@@ -168,6 +170,21 @@ export async function createHostSessionController({
     for (const remove of removers.splice(0)) { try { remove(); } catch {} }
     try { transport?.close?.(); } catch {}
     emit(reason);
+  }
+
+  function publishViewState(viewState) {
+    if (disposed || !engine || !guestActorId || state !== 'connected') return false;
+    if (!viewState || !engine.hasPageId(viewState.pageId)) return false;
+    if (viewStateSequence >= Number.MAX_SAFE_INTEGER) throw new Error('The live view sequence limit was reached.');
+    const message = {
+      ...baseContext(), kind: 'VIEW_STATE', sequence: viewStateSequence + 1,
+      pageId: viewState.pageId, zoom: viewState.zoom,
+      centerX: viewState.centerX, centerY: viewState.centerY
+    };
+    sendMessage(transport.dataChannel, message, 'host-to-guest');
+    engine.setActivePageId(viewState.pageId);
+    viewStateSequence = message.sequence;
+    return true;
   }
 
   function rejectGuest(message, code = 'PERMISSION_DENIED') {
@@ -315,6 +332,7 @@ export async function createHostSessionController({
       snapshot: safeSnapshot(durable.document)
     }, 'host-to-guest');
     emit('connected');
+    try { publishViewState(getViewState()); } catch { /* A failed initial view hint must not block the authenticated design snapshot. */ }
   }
 
   async function receive(raw) {
@@ -446,6 +464,7 @@ export async function createHostSessionController({
         return revoked;
       });
     },
+    publishViewState,
     close: () => close('closed')
   });
 }
@@ -465,6 +484,7 @@ export async function createGuestSessionController({
   persistFork,
   onState = () => {},
   onSnapshot = () => {},
+  onViewState = () => {},
   onFork = () => {},
   closeSession = () => {},
   onAsset,
@@ -486,6 +506,8 @@ export async function createGuestSessionController({
   let hostActorId = null;
   let hostRevision = null;
   let hostHeadHash = null;
+  let lastViewState = null;
+  let lastViewSequence = 0;
   let recovery = null;
   let lastSnapshot = null;
   let assetReceiver = null;
@@ -576,6 +598,18 @@ export async function createGuestSessionController({
       return;
     }
     if (message.actorId !== hostActorId) throw new Error('A message was not sent by the authenticated host.');
+    if (message.kind === 'VIEW_STATE') {
+      if (!recovery || !lastSnapshot) throw new Error('The host sent view state before the authenticated design snapshot.');
+      if (!lastSnapshot.pages.some(page => page.id === message.pageId)) throw new Error('The host view references a page outside the shared design.');
+      if (message.sequence <= lastViewSequence) return;
+      lastViewSequence = message.sequence;
+      lastViewState = {
+        sequence: message.sequence, pageId: message.pageId, zoom: message.zoom,
+        centerX: message.centerX, centerY: message.centerY
+      };
+      try { onViewState({ ...lastViewState }); } catch {}
+      return;
+    }
     if (message.kind === 'SNAPSHOT') {
       if (hostRevision == null || message.revision !== hostRevision || message.headHash !== hostHeadHash) {
         throw new Error('The host snapshot does not match the exact head announced in its welcome message.');
@@ -612,13 +646,17 @@ export async function createGuestSessionController({
     if (message.kind === 'ACK') {
       const operation = pendingByOp.get(message.opId);
       if (!operation) throw new Error('The host acknowledged an unknown operation.');
+      const acknowledgedSnapshot = safeSnapshot(operation.snapshot);
+      if (lastViewState && acknowledgedSnapshot.pages.some(page => page.id === lastViewState.pageId)) {
+        acknowledgedSnapshot.activePageId = lastViewState.pageId;
+      }
       const result = recovery.acknowledge(message, {
-        snapshot: operation.snapshot, revision: message.revision,
+        snapshot: acknowledgedSnapshot, revision: message.revision,
         head: { sequence: message.revision, commitHash: message.headHash }
       });
       if (!result.accepted) throw new Error(`The host ACK could not be applied: ${result.reason}.`);
       pendingByOp.delete(message.opId);
-      lastSnapshot = operation.snapshot;
+      lastSnapshot = acknowledgedSnapshot;
       hostRevision = message.revision;
       hostHeadHash = message.headHash;
       emit(recovery.state.pendingOperations.length ? 'pending' : 'connected');
@@ -669,6 +707,7 @@ export async function createGuestSessionController({
     get state() { return state; },
     get answerCapsule() { return transport.answerCapsule; },
     get snapshot() { return lastSnapshot && safeSnapshot(lastSnapshot); },
+    get viewState() { return lastViewState && { ...lastViewState }; },
     get revision() { return recovery?.state.acknowledgedRevision ?? hostRevision; },
     get fork() { return recovery?.state ?? null; },
     ready,
