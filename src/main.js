@@ -89,7 +89,7 @@ import {
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { commentCanvasAction, commentSelectionTarget } from './comment-selection.js';
+import { commentCanvasAction, commentPinCanvasAction, commentSelectionTarget } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
@@ -4592,6 +4592,7 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'comment' && event.shiftKey) {
     const target = selectCommentTargetAt(world, { preferComponent: false });
     state.commentPlacementArmed = false;
+    if (target) state.activeCommentId = null;
     if (target && state.inspectorTab === 'comments') setInspectorTab('design');
     showToast(target
       ? `Selected “${target.name}”.`
@@ -4600,7 +4601,21 @@ function onCanvasPointerDown(event) {
     return;
   }
   const commentPin = state.commentPlacementArmed ? null : commentPinAt(world);
-  if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
+  if (commentPin) {
+    const target = state.tool === 'comment' && commentPin.id === state.activeCommentId ? commentTargetAt(world) : null;
+    const action = commentPinCanvasAction(commentPin, target, {
+      tool: state.tool,
+      activeCommentId: state.activeCommentId
+    });
+    if (action === 'select') {
+      state.activeCommentId = null;
+      state.commentPlacementArmed = false;
+      setSelection([target.id]);
+      if (state.inspectorTab === 'comments') setInspectorTab('design');
+      showToast(`Selected “${target.name}”.`);
+    } else openCommentThread(commentPin.id);
+    event.preventDefault(); return;
+  }
   if (state.tool === 'comment') {
     const target = commentTargetAt(world);
     const action = commentCanvasAction(target, {
@@ -4608,6 +4623,7 @@ function onCanvasPointerDown(event) {
     });
     if (action === 'select') {
       const wasSelected = state.selectedIds.length === 1 && state.selectedIds[0] === target.id;
+      state.activeCommentId = null;
       state.commentPlacementArmed = false;
       setSelection([target.id]);
       if (state.inspectorTab === 'comments') setInspectorTab('design');

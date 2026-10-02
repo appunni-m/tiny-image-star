@@ -5,7 +5,7 @@ import {
   addCommentReply, addNode, createCommentThread, createComponent, createDocument, createNode, findNode, parseDocument,
   removeCommentThread, serializeDocument, setCommentResolved, validateDocument
 } from '../src/model.js';
-import { commentCanvasAction, commentSelectionTarget } from '../src/comment-selection.js';
+import { commentCanvasAction, commentPinCanvasAction, commentSelectionTarget } from '../src/comment-selection.js';
 import { hitTestPage } from '../src/renderer.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
@@ -66,6 +66,14 @@ test('Comment mode keeps object clicks for selection and uses explicit gestures 
     'canvas hits must resolve to an eligible frame or component');
   assert.match(editorSource, /state\.tool === 'comment' && event\.shiftKey\)[\s\S]*?selectCommentTargetAt\(world, \{ preferComponent: false \}\)/,
     'Shift-click must allow selecting a nested frame inside a component');
+  assert.match(editorSource, /commentPinCanvasAction\(commentPin, target,[\s\S]*?state\.activeCommentId = null;[\s\S]*?setSelection\(\[target\.id\]\)/,
+    'clicking an already-active pin must let the object beneath it be selected');
+  assert.match(editorSource, /if \(action === 'select'\) \{[\s\S]*?state\.activeCommentId = null;[\s\S]*?setSelection\(\[target\.id\]\)/,
+    'leaving comment mode selection should clear the active thread so its pin can be reopened');
+  assert.equal(commentPinCanvasAction({ id: 'thread' }, { id: 'frame' }, { tool: 'comment', activeCommentId: 'thread' }), 'select');
+  assert.equal(commentPinCanvasAction({ id: 'thread' }, { id: 'frame' }, { tool: 'comment', activeCommentId: null }), 'open-thread');
+  assert.equal(commentPinCanvasAction({ id: 'thread' }, null, { tool: 'comment', activeCommentId: 'thread' }), 'open-thread');
+  assert.equal(commentPinCanvasAction({ id: 'thread' }, { id: 'frame' }, { tool: 'select', activeCommentId: 'thread' }), 'open-thread');
 });
 
 test('local review threads support replies, resolution, deletion, and package round trips', () => {

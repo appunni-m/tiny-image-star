@@ -15,3 +15,8 @@ export function commentSelectionTarget(entry, { preferComponent = true } = {}) {
 export function commentCanvasAction(target, { addCommentShortcut = false } = {}) {
   return addCommentShortcut || !target ? 'place-comment' : 'select';
 }
+
+/** Let a user leave an already-open thread by selecting the object beneath its pin. */
+export function commentPinCanvasAction(comment, target, { tool, activeCommentId } = {}) {
+  return tool === 'comment' && comment?.id === activeCommentId && target ? 'select' : 'open-thread';
+}

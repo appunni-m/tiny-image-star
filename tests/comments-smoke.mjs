@@ -94,6 +94,22 @@ try {
   draft.form.requestSubmit();
   await waitFor(() => app.querySelectorAll('.comment-message').length === 1, 'first comment thread');
   await waitFor(() => app.querySelector('#save-state').textContent.includes('Saved locally'), 'comment persistence');
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId: 83, pointerType: 'mouse',
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+  }));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 83, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'),
+    'Clicking the active comment pin should select its containing component instead of trapping canvas selection.');
+  assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'),
+    'Selecting the component beneath an active comment pin should return to Design properties.');
+  click(app.querySelector('[data-tool="comment"]'));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId: 84, pointerType: 'mouse',
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+  }));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 84, pointerType: 'mouse' }));
+  await waitFor(() => app.querySelector('#comment-draft'), 'reopening the selected thread from its pin');
   await waitForPaint(app);
   const dpr = canvas.width / canvas.clientWidth;
   const pinPixel = canvas.getContext('2d').getImageData(Math.round(canvas.width / 2 + 7 * dpr), Math.round(canvas.height / 2), 1, 1).data;
