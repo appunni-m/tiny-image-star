@@ -12,3 +12,8 @@ export function shouldRecoverCanvasInteractionForDelete(key, interaction, editin
     && !editing
     && (key === 'Delete' || key === 'Backspace');
 }
+
+/** A second touch changes Shape Builder into navigation without committing it. */
+export function shouldCancelShapeBuilderOnPinch(interaction) {
+  return interaction?.kind === 'shape-builder';
+}

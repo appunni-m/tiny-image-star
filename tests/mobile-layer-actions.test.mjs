@@ -43,7 +43,7 @@ test('Delete and Backspace on a layer row directly delete that row or its active
 });
 
 test('the shared delete command reports an empty target and confirms the exact removed count', () => {
-  const start = source.indexOf('function deleteSelected(selectionIds = state.selectedIds) {');
+  const start = source.indexOf('function deleteSelected(selectionIds = null) {');
   const end = source.indexOf('\nfunction copySelected()', start);
   assert.ok(start >= 0 && end > start, 'the shared layer delete command should have a bounded function body');
   const command = source.slice(start, end);

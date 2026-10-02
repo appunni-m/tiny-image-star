@@ -54,7 +54,7 @@ import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from './layer-deletion.js';
 import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
-import { shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from './canvas-pointer-lifecycle.js';
+import { shouldCancelShapeBuilderOnPinch, shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from './canvas-pointer-lifecycle.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -73,7 +73,7 @@ import { createStoredZip } from './store-zip.js';
 import { assertImageArchiveFits, planImageArchive } from './image-export-plan.js';
 import { isValidSliceDimensionInput, MAX_SLICE_EXPORT_PIXELS, planSliceRasterExport, planSliceRenderSurface, sliceExportContentSignature, sliceRasterBoundsIntersect, sliceRenderBleedPixels } from './slice-export-plan.js';
 import { canDismissImageRecipeBatch, cancelImageRecipeBatch, completeImageRecipeBatchIfDrained, formatImageRecipeBatchTiming, imageRecipeBatchTiming, isImageRecipeBatchActive, pauseImageRecipeBatchClock, recordImageRecipeBatchTarget, resumeImageRecipeBatchClock, startImageRecipeBatchClock } from './bulk-recipe-state.js';
-import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, resizeOrientedRect, shortestAngleDelta } from './transform-geometry.js';
+import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParentLocal, pageToParentLocal, parentLocalToPageTransform, resizeOrientedRect, shortestAngleDelta, transformPoint } from './transform-geometry.js';
 import { shapeCreationGeometry } from './shape-creation-geometry.js';
 import { appendLassoPoint, clipMarqueePolygonThroughAncestors, createLassoSelectionTest, isMarqueeLayerVisible, marqueeSelectsPolygon } from './marquee-selection.js';
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
@@ -89,6 +89,8 @@ import {
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
+import { createShapeBuilderSession } from './boolean-geometry.js';
+import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
 import { createComponentLibrary, createLinkedInstanceSnapshot, updateLinkedInstanceSnapshot, validateLinkedInstanceSnapshot } from './component-library.js';
 import { applyLinkedComponentUpdate, componentTreeForPublication, createLinkedEditorInstance, recordLinkedComponentOverride } from './linked-component-editor.js';
@@ -117,6 +119,7 @@ const TYPOGRAPHY_STYLE_PROPERTIES = new Set([
   'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'textCase', 'textDecoration'
 ]);
 const state = {
+  shapeBuilder: null,
   document: createDocument(), selectedIds: [], selectedVectorPoint: null, selectedVectorPoints: [], vectorPointSelectMode: false, tool: 'select', zoom: 1, panX: 0, panY: 0,
   gradientGeometryTarget: null,
   assets: new Map(), fontAssets: new Map(), fontFaces: new Map(), previews: new Map(), previewUrls: new Map(), previewAssetIds: new Map(), previewVersions: new Map(), previewSignatures: new Map(), imageStatus: new Map(), renderVersion: new Map(), assetThumbnailImages: new Map(), imageLibraryThumbnailUrls: new Map(), imageLibraryThumbnailLoads: new Map(), imageLibraryView: null,
@@ -609,6 +612,110 @@ function rootSelectedIds(selectionIds = state.selectedIds) {
     .map(id => findNode(state.document, id))
     .filter(entry => entry && !entry.parents.some(parent => selected.has(parent.id)))
     .map(entry => entry.node.id);
+}
+const shapeBuilderVectorTypes = new Set(['rectangle', 'ellipse', 'polygon', 'star', 'path', 'network', 'boolean']);
+function shapeBuilderEntries(ids = rootSelectedIds()) {
+  const page = activePage();
+  if (!page || !Array.isArray(ids) || !ids.length || ids.length > 128) return [];
+  const selected = [...new Set(ids)].map(id => findNode(state.document, id, page.id));
+  if (selected.some(entry => !entry || !shapeBuilderVectorTypes.has(entry.node.type))) return [];
+  const parent = selected[0].parent;
+  if (selected.some(entry => entry.parent !== parent)) return [];
+  const children = parent ? parent.children : page.children;
+  const chosen = new Set(selected.map(entry => entry.node.id));
+  return children.filter(node => chosen.has(node.id)).map(node => findNode(state.document, node.id, page.id));
+}
+function canStartShapeBuilder(entries = shapeBuilderEntries()) {
+  return Boolean(entries.length)
+    && entries.every(entry => !shapeBuilderSourceBlockReason(entry))
+    && entries.every(entry => entry.parent === entries[0].parent);
+}
+function shapeBuilderPageContours(contours, ancestors) {
+  const transform = parentLocalToPageTransform(ancestors);
+  return contours.map(contour => contour.map(curve => ({
+    p0: transformPoint(transform, curve.p0), p1: transformPoint(transform, curve.p1),
+    p2: transformPoint(transform, curve.p2), p3: transformPoint(transform, curve.p3)
+  })));
+}
+function syncShapeBuilderBar() {
+  const bar = $('#shape-builder-bar');
+  if (!bar) return;
+  bar.hidden = !state.shapeBuilder;
+  for (const button of bar.querySelectorAll('[data-shape-builder-mode]')) {
+    const selected = button.dataset.shapeBuilderMode === state.shapeBuilder?.mode;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+}
+function exitShapeBuilderMode({ focusCanvas = false } = {}) {
+  if (!state.shapeBuilder) return false;
+  if (state.interaction?.kind === 'shape-builder') {
+    state.interaction = null;
+    state.pointerMap.clear();
+  }
+  state.shapeBuilder = null;
+  const bar = $('#shape-builder-bar');
+  if (bar) bar.hidden = true;
+  canvas.style.cursor = '';
+  renderer?.invalidate();
+  if (focusCanvas) canvas.focus({ preventScroll: true });
+  return true;
+}
+function enterShapeBuilder(ids = rootSelectedIds()) {
+  if (state.documentTransitioning || isLiveHostViewOnly() || state.workspacePermissionNeeded
+    || state.pendingRecipeRecovery || isImageRecipeBatchActive(state.bulk) || state.interaction) {
+    showToast('Finish the current editor action before using Shape Builder.');
+    return false;
+  }
+  const entries = shapeBuilderEntries(ids);
+  if (!canStartShapeBuilder(entries)) {
+    showToast('Select unlocked closed vector layers in the same container to use Shape Builder.');
+    return false;
+  }
+  try {
+    const ancestors = entries[0].parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+    const session = createShapeBuilderSession(entries.map(entry => entry.node));
+    setTool('select');
+    state.shapeBuilder = {
+      pageId: activePage().id,
+      sourceIds: entries.map(entry => entry.node.id),
+      sourceSignatures: entries.map(entry => JSON.stringify(entry.node)),
+      session, ancestors, mode: 'extract', previewContours: []
+    };
+    if (state.layerSelectionMode) {
+      state.layerSelectionMode = false;
+      renderLayers();
+      updateSelectionStatus();
+    }
+    state.imageCropMode = false;
+    state.imageFillCropTarget = null;
+    state.imageCropDraftSelection = null;
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas.classList.remove('tool-image-erase');
+    syncImageCropOverlay();
+    syncShapeBuilderBar();
+    canvas.style.cursor = 'crosshair';
+    closeMobilePanels({ restoreFocus: false });
+    canvas.focus({ preventScroll: true });
+    renderer.invalidate();
+    showToast('Shape Builder ready. Tap a region to extract; drag across regions to merge.');
+    return true;
+  } catch (error) {
+    showToast(error.message || 'These vectors cannot be edited with Shape Builder.');
+    return false;
+  }
+}
+function previewShapeBuilderPoint(pagePoint, interaction = null) {
+  const builder = state.shapeBuilder;
+  if (!builder || builder.pageId !== activePage()?.id) return null;
+  const point = pageToParentLocal(pagePoint, builder.ancestors);
+  const region = builder.session.regionAtPoint(point);
+  const preview = region ? shapeBuilderPageContours(region.contours, builder.ancestors) : [];
+  if (interaction && region && interaction.moved) interaction.regions.set(region.faceKey, preview);
+  builder.previewContours = [...(interaction ? interaction.regions.values() : []), ...(preview.length ? [preview] : [])];
+  renderer.invalidate();
+  return { point, region };
 }
 function orderedRootSelectedEntries() {
   const selected = new Set(rootSelectedIds());
@@ -1107,6 +1214,8 @@ function setSelection(ids, { keepInspector = false, refreshLayers = true } = {})
   const valid = ids.filter(id => findNode(state.document, id));
   const previousSelectedIds = state.selectedIds;
   const nextSelectedIds = [...new Set(valid)];
+  if (state.shapeBuilder && (nextSelectedIds.length !== state.shapeBuilder.sourceIds.length
+    || state.shapeBuilder.sourceIds.some(id => !nextSelectedIds.includes(id)))) exitShapeBuilderMode();
   if (state.imageEraseMode && (nextSelectedIds.length !== 1 || nextSelectedIds[0] !== previousSelectedIds[0])) {
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageEraseMode = false;
@@ -1194,6 +1303,7 @@ function installDesignToolToolbarKeyboard() {
   });
 }
 function setTool(tool) {
+  if (state.shapeBuilder) exitShapeBuilderMode();
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
@@ -2916,7 +3026,10 @@ function renderInspector() {
     const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 0.01, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 0.01, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
     const deleteSelection = `<button class="delete-layer-button" type="button" data-action="delete-selected-layers" data-layer-ids="${escapeHtml(JSON.stringify(state.selectedIds))}" aria-label="Delete ${entries.length} selected layers">Delete ${entries.length} layers</button>`;
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
+    const shapeBuilderControl = canStartShapeBuilder(shapeBuilderEntries(state.selectedIds))
+      ? section('Vector tools', `<button class="add-fill" type="button" data-action="shape-builder-start">Shape Builder</button><div class="image-properties-note">Tap a filled region to extract it, drag across regions to merge, or choose Subtract in the canvas bar. Source layers stay editable.</div>`)
+      : '';
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${shapeBuilderControl}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
     if (activeImageBatchSelected) {
       const note = document.createElement('div');
       note.className = 'image-properties-note image-batch-edit-lock';
@@ -2928,11 +3041,14 @@ function renderInspector() {
   }
   const node = entries[0].node;
   const deleteLayerControl = section('Layer actions', `<button class="delete-layer-button" type="button" data-action="delete-layer" data-layer-id="${escapeHtml(node.id)}" aria-label="Delete layer ${escapeHtml(node.name)}">Delete layer</button>`);
+  const shapeBuilderControl = canStartShapeBuilder(shapeBuilderEntries([node.id]))
+    ? section('Vector tools', `<button class="add-fill" type="button" data-action="shape-builder-start">Shape Builder</button><div class="image-properties-note">Tap a filled region to extract it, drag across regions to merge, or choose Subtract in the canvas bar.</div>`)
+    : '';
   if (node.type === 'slice') {
     content.innerHTML = `${slicePositionSection(node)}${exportSettingsSection(node)}${deleteLayerControl}`;
     return;
   }
-  let body = `${deleteLayerControl}${componentSection(node)}${transformSection(node)}${blendingSection(node)}`;
+  let body = `${deleteLayerControl}${shapeBuilderControl}${componentSection(node)}${transformSection(node)}${blendingSection(node)}`;
   if (node.type === 'image' && isActiveImageRecipeTarget(node.id)) {
     body = `<div class="image-properties-note image-batch-edit-lock">This image is in the active recipe batch. Manual edits remain available, and newer edits replace stale batch previews.</div>${body}`;
   }
@@ -4348,6 +4464,12 @@ function onCanvasPointerDown(event) {
       // Hold a touch selection until pointer-up so a second finger can take
       // over for pinch navigation without toggling an unintended layer.
       state.interaction = null;
+    } else if (shouldCancelShapeBuilderOnPinch(interruptedInteraction)) {
+      // A second finger navigates the canvas; it must never commit the
+      // in-progress region selection as an accidental Shape Builder edit.
+      state.interaction = null;
+      if (state.shapeBuilder) state.shapeBuilder.previewContours = [];
+      renderer.invalidate();
     } else if (interruptedInteraction) {
       // Finish edits at the last one-finger position before switching gesture
       // ownership. The ordinary pointer-up path records overrides and saves
@@ -4380,6 +4502,18 @@ function onCanvasPointerDown(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (state.shapeBuilder && event.button === 0) {
+    const interaction = {
+      kind: 'shape-builder', pointerId: event.pointerId,
+      startClient: { x: event.clientX, y: event.clientY },
+      points: [], moved: false, regions: new Map(), mode: state.shapeBuilder.mode
+    };
+    state.interaction = interaction;
+    const first = previewShapeBuilderPoint(world, interaction);
+    interaction.points.push(first?.point || pageToParentLocal(world, state.shapeBuilder.ancestors));
+    event.preventDefault();
+    return;
+  }
   // Crop mode owns ordinary canvas taps regardless of the active drawing or
   // prototype tool. Space/middle-button pan and two-finger pinch remain usable.
   if (state.imageCropMode) { beginImageCropInteraction(event, world); return; }
@@ -4625,6 +4759,11 @@ function onCanvasPointerMove(event) {
   const interaction = state.interaction;
   if (!interaction) {
     if (state.penDraft && state.tool === 'pen') { state.penHover = screenToWorld(event, canvas, state); renderer.invalidate(); }
+    if (state.shapeBuilder) {
+      try { previewShapeBuilderPoint(screenToWorld(event, canvas, state)); }
+      catch { state.shapeBuilder.previewContours = []; renderer.invalidate(); }
+      return;
+    }
     if (state.tool === 'select' && !state.imageCropMode) {
       const handle = gridTrackResizeHandleAt(screenToWorld(event, canvas, state), event.pointerType);
       canvas.style.cursor = handle ? (handle.axis === 'columnTracks' ? 'col-resize' : 'row-resize') : '';
@@ -4668,6 +4807,20 @@ function onCanvasPointerMove(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'shape-builder') {
+    if (interaction.pointerId !== event.pointerId) return;
+    interaction.moved ||= Math.hypot(event.clientX - interaction.startClient.x, event.clientY - interaction.startClient.y) > 4;
+    try {
+      const result = previewShapeBuilderPoint(world, interaction);
+      const point = result?.point || pageToParentLocal(world, state.shapeBuilder.ancestors);
+      if (interaction.points.length < 2048
+        && checkPointDistance(interaction.points.at(-1), point) >= 2 / Math.max(.08, state.zoom)) interaction.points.push(point);
+    } catch {
+      state.shapeBuilder.previewContours = [...interaction.regions.values()];
+      renderer.invalidate();
+    }
+    return;
+  }
   if (interaction.kind === 'grid-track-resize') {
     if (interaction.pointerId !== event.pointerId) return;
     const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
@@ -4919,6 +5072,50 @@ function onCanvasPointerUp(event) {
   state.pointerMap.delete(event.pointerId);
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'shape-builder') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    const builder = state.shapeBuilder;
+    if (!builder || builder.pageId !== activePage()?.id) {
+      exitShapeBuilderMode();
+      return;
+    }
+    try {
+      if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+        const pagePoint = screenToWorld(event, canvas, state);
+        const finalPoint = previewShapeBuilderPoint(pagePoint, interaction)?.point;
+        if (finalPoint && interaction.points.length < 2048
+          && checkPointDistance(interaction.points.at(-1), finalPoint) >= 0.25 / Math.max(.08, state.zoom)) interaction.points.push(finalPoint);
+      }
+      const currentSignatures = builder.sourceIds.map(id => {
+        const node = findNode(state.document, id, builder.pageId)?.node;
+        return node ? JSON.stringify(node) : null;
+      });
+      if (currentSignatures.some((signature, index) => signature !== builder.sourceSignatures[index])) {
+        exitShapeBuilderMode();
+        showToast('A selected vector changed while Shape Builder was open. Re-enter the tool and try again.');
+        return;
+      }
+      const mode = interaction.moved ? 'merge' : interaction.mode;
+      const result = applyShapeBuilderEdit(state.document, builder.sourceIds, interaction.points, {
+        mode, pageId: builder.pageId
+      });
+      checkpoint(`Shape Builder ${mode}`);
+      state.document = result.document;
+      exitShapeBuilderMode();
+      clearVectorAnchorSelection();
+      reconcileImagePreviewRuntime();
+      setSelection(result.resultPath ? [result.resultPath.id] : result.changedIds);
+      renderUI();
+      queueSave();
+      showToast(mode === 'subtract' ? 'Vector region subtracted.' : mode === 'merge' ? 'Vector regions merged into an editable path.' : 'Vector region extracted as an editable path.');
+    } catch (error) {
+      showToast(error.message || 'Could not apply Shape Builder to these vectors.');
+      if (state.shapeBuilder) syncShapeBuilderBar();
+    }
+    renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'layer-selection-tap') {
     if (interaction.pointerId !== event.pointerId) return;
     state.interaction = null;
@@ -8958,6 +9155,11 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
     { separator: true },
     { label: 'Delete', shortcut: '⌫', action: () => deleteSelected(deleteTargetIds) }
   ];
+  const shapeEntries = shapeBuilderEntries(rootSelectedIds());
+  if (canStartShapeBuilder(shapeEntries)) items.unshift({
+    label: 'Shape Builder',
+    action: () => { if (enterShapeBuilder(shapeEntries.map(entry => entry.node.id))) $('#context-menu')._focusAfterAction = canvas; }
+  }, { separator: true });
   const selectedMainComponents = selectedNodes().filter(item => item.isComponent);
   const canCombine = canCombineBoolean(state.document, state.selectedIds);
   const selectedBoolean = selectedNodes().length === 1 && selectedNodes()[0].type === 'boolean' ? selectedNodes()[0] : null;
@@ -13040,6 +13242,7 @@ async function copyInspectText(kind) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'shape-builder-start') { enterShapeBuilder(rootSelectedIds()); return; }
   if (action === 'delete-layer') {
     const layerId = typeof details.layerId === 'string' ? details.layerId : '';
     if (!layerId || !findNode(state.document, layerId)) {
@@ -14015,6 +14218,7 @@ function initEvents() {
   canvas.addEventListener('contextmenu', event => {
     event.preventDefault();
     if (isLiveHostViewOnly()) return;
+    if (state.shapeBuilder) exitShapeBuilderMode();
     const world = screenToWorld(event, canvas, state);
     const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
     const page = activePage();
@@ -14135,6 +14339,7 @@ function initEvents() {
     if (!selection) return;
     const pageId = selection.dataset.pageSelect;
     if (pageId === state.document.activePageId) return;
+    exitShapeBuilderMode();
     pauseGuestViewFollowing();
     clearPrototypeConnectPrompt(); state.document.activePageId = pageId; state.selectedIds = []; clearVectorAnchorSelection(); state.pendingCommentAnchor = null; state.activeCommentId = null; renderUI();
   });
@@ -14554,6 +14759,15 @@ function initEvents() {
     const form = event.target.closest('[data-comment-form]');
     if (!form) return;
     event.preventDefault(); submitCommentForm(form);
+  });
+  $('#shape-builder-bar').addEventListener('click', event => {
+    const modeButton = event.target.closest('[data-shape-builder-mode]');
+    if (modeButton && state.shapeBuilder) {
+      state.shapeBuilder.mode = modeButton.dataset.shapeBuilderMode;
+      syncShapeBuilderBar();
+      return;
+    }
+    if (event.target.closest('[data-action="shape-builder-done"]')) exitShapeBuilderMode({ focusCanvas: true });
   });
   $('#layers-section').addEventListener('dblclick', event => { if (event.target.id === 'empty-layers') setTool('frame'); });
   $('#search-layers').addEventListener('click', () => { $('#layer-search-wrap').hidden = !$('#layer-search-wrap').hidden; if (!$('#layer-search-wrap').hidden) $('#layer-search').focus(); });
@@ -14980,6 +15194,11 @@ function onKeyDown(event) {
     return;
   }
   const editing = event.target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && state.shapeBuilder && !editing && !document.querySelector('dialog[open]')) {
+    exitShapeBuilderMode({ focusCanvas: true });
+    event.preventDefault();
+    return;
+  }
   if (event.key === 'Escape' && state.imageEraseMode && !editing && !document.querySelector('dialog[open]')) {
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageEraseMode = false;

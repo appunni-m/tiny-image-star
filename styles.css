@@ -301,6 +301,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .canvas-scroll { position: absolute; inset: 40px 0 0; overflow: hidden; touch-action: none; }
 .canvas-scroll.is-text-editing { touch-action: auto; }
 #scene-canvas { display: block; width: 100%; height: 100%; cursor: default; touch-action: none; }
+#shape-builder-bar[hidden] { display: none; }
+.shape-builder-bar { position: absolute; z-index: 4; left: 50%; bottom: 16px; display: flex; align-items: center; gap: 14px; max-width: calc(100% - 24px); padding: 8px 10px; transform: translateX(-50%); border: 1px solid rgba(20,25,32,.12); border-radius: 12px; background: var(--floating-panel-background); box-shadow: var(--toolbar-shadow); }
+.shape-builder-copy { min-width: 0; display: grid; gap: 3px; }
+.shape-builder-copy strong { color: var(--ink); font-size: 11px; font-weight: 650; }
+.shape-builder-copy span { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.shape-builder-actions { display: flex; gap: 5px; }
+.shape-builder-actions button { min-height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--ink); font-size: 10px; font-weight: 550; white-space: nowrap; }
+.shape-builder-actions button.is-selected { border-color: #a9d7f8; background: #e9f5ff; color: #0569ac; }
+.shape-builder-actions .shape-builder-done { border-color: var(--primary-action-border); background: var(--primary-action-bg); color: #fff; }
+.shape-builder-actions .shape-builder-done:hover { background: var(--primary-action-hover); }
 #scene-canvas.tool-hand, #scene-canvas.is-panning { cursor: grab; }
 #scene-canvas.is-panning { cursor: grabbing; }
 #scene-canvas.tool-frame, #scene-canvas.tool-section, #scene-canvas.tool-rectangle, #scene-canvas.tool-ellipse, #scene-canvas.tool-line, #scene-canvas.tool-polygon, #scene-canvas.tool-star, #scene-canvas.tool-pen, #scene-canvas.tool-pencil { cursor: crosshair; }
@@ -938,6 +948,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .bulk-bar { grid-template-columns: minmax(160px,1fr) minmax(120px,.7fr) minmax(190px,1fr) auto; gap: 10px; }
 }
 @media (max-width: 820px) {
+  .shape-builder-bar { left: 8px; right: 8px; bottom: 8px; display: grid; gap: 8px; max-width: none; padding: 8px; transform: none; }
+  .shape-builder-copy { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px; }
+  .shape-builder-copy span { overflow: hidden; text-overflow: ellipsis; }
+  .shape-builder-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .shape-builder-actions button { min-height: 44px; }
   .app-shell { grid-template-rows: 45px minmax(0, 1fr); }
   .topbar { height: 45px; padding: 0 7px; gap: 3px; }
   .topbar-leading, .topbar-trailing { flex: 0 0 auto; gap: 2px; }

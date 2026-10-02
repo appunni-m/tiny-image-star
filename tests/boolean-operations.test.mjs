@@ -10,7 +10,7 @@ import {
   vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkGeometryFromAnchors,
   vectorNetworkVertexPoint, vectorNodePoint
 } from '../src/vector-path.js';
-import { booleanSourceTransform, flattenBooleanContours, flattenBooleanPathContours, polygonBoolean } from '../src/boolean-geometry.js';
+import { booleanSourceTransform, flattenBooleanContours, flattenBooleanPathContours, polygonBoolean, shapeBuilderRegionAtPoint } from '../src/boolean-geometry.js';
 import { containsPointInRoundedRect } from '../src/corner-radii.js';
 import { exportNodeToSvg } from '../src/svg-export.js';
 
@@ -69,6 +69,55 @@ test('Boolean combine requires unlocked closed vector siblings in one container'
   assert.throws(() => combineBoolean(document, [first.id, second.id], 'merge'), /supported Boolean/);
   assert.throws(() => combineBoolean(document, [first.id, frame.children[0].id]), /same container/);
   assert.equal(canCombineBoolean(document, [first.id, second.id]), true);
+});
+
+test('Shape Builder resolves the exact overlap and source-only face of crossing vector layers', () => {
+  const first = createNode('rectangle', { x: 0, y: 0, width: 100, height: 100 });
+  const second = createNode('rectangle', { x: 50, y: 0, width: 100, height: 100 });
+  const boundsOf = result => result.contours.flat().flatMap(curve => [curve.p0, curve.p1, curve.p2, curve.p3])
+    .reduce((bounds, point) => ({
+      left: Math.min(bounds.left, point.x), top: Math.min(bounds.top, point.y),
+      right: Math.max(bounds.right, point.x), bottom: Math.max(bounds.bottom, point.y)
+    }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+  const assertBoundsNear = (actual, expected) => {
+    for (const key of Object.keys(expected)) assert.ok(Math.abs(actual[key] - expected[key]) < 1e-6, `${key}: ${actual[key]} ≈ ${expected[key]}`);
+  };
+
+  const overlap = shapeBuilderRegionAtPoint([first, second], { x: 75, y: 50 });
+  assert.deepEqual(overlap.membership, [true, true]);
+  assertBoundsNear(boundsOf(overlap), { left: 50, top: 0, right: 100, bottom: 100 });
+
+  const firstOnly = shapeBuilderRegionAtPoint([first, second], { x: 25, y: 50 });
+  assert.deepEqual(firstOnly.membership, [true, false]);
+  assertBoundsNear(boundsOf(firstOnly), { left: 0, top: 0, right: 50, bottom: 100 });
+  assert.equal(shapeBuilderRegionAtPoint([first, second], { x: 125, y: 50 }).signature, '01');
+  assert.equal(shapeBuilderRegionAtPoint([first, second], { x: 200, y: 50 }), null,
+    'points outside the selected geometry do not invent a face');
+});
+
+test('Shape Builder keeps disconnected faces separate and includes holes in the selected face', () => {
+  const compound = createNode('path', {
+    name: 'Two islands', x: 0, y: 0, width: 100, height: 40, closed: true, fillRule: 'evenodd',
+    points: [{ x: 0, y: 0 }, { x: .2, y: 0 }, { x: .2, y: 1 }, { x: 0, y: 1 }],
+    subpaths: [{ closed: true, points: [
+      { x: .8, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: .8, y: 1 }
+    ] }]
+  });
+  const enclosing = createNode('rectangle', { x: -10, y: -10, width: 120, height: 60 });
+  const left = shapeBuilderRegionAtPoint([compound, enclosing], { x: 10, y: 20 });
+  const right = shapeBuilderRegionAtPoint([compound, enclosing], { x: 90, y: 20 });
+  assert.equal(left.contours.length, 1);
+  assert.equal(right.contours.length, 1);
+  assert.notEqual(left.contours[0][0].p0.x, right.contours[0][0].p0.x,
+    'clicking equal-membership islands must return only the component under the pointer');
+
+  const outer = createNode('rectangle', { x: 0, y: 60, width: 100, height: 100 });
+  const hole = createNode('rectangle', { x: 25, y: 85, width: 50, height: 50 });
+  const ring = shapeBuilderRegionAtPoint([outer, hole], { x: 10, y: 110 });
+  assert.deepEqual(ring.membership, [true, false]);
+  assert.equal(ring.contours.length, 2, 'the extracted annulus needs both its outer and hole contours');
+  const center = shapeBuilderRegionAtPoint([outer, hole], { x: 50, y: 110 });
+  assert.equal(center.contours.length, 1, 'the face inside the hole stays separately selectable');
 });
 
 test('separate restores source geometry through Boolean group scale and rotation', () => {

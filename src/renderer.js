@@ -30,6 +30,28 @@ const MAX_BOOLEAN_SURFACE_AXIS = 4096;
 const MAX_BACKGROUND_BLUR_PIXELS = 4_000_000;
 const MAX_BACKGROUND_BLUR_AXIS = 4096;
 
+function drawShapeBuilderRegions(ctx, regions, zoom = 1) {
+  if (!Array.isArray(regions) || !regions.length) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(13,153,255,.24)';
+  ctx.strokeStyle = '#0879cb';
+  ctx.lineWidth = 1.5 / Math.max(.08, zoom);
+  ctx.setLineDash([4 / Math.max(.08, zoom), 2 / Math.max(.08, zoom)]);
+  for (const contours of regions) {
+    if (!Array.isArray(contours) || !contours.length) continue;
+    ctx.beginPath();
+    for (const contour of contours) {
+      if (!Array.isArray(contour) || !contour.length) continue;
+      ctx.moveTo(contour[0].p0.x, contour[0].p0.y);
+      for (const curve of contour) ctx.bezierCurveTo(curve.p1.x, curve.p1.y, curve.p2.x, curve.p2.y, curve.p3.x, curve.p3.y);
+      ctx.closePath();
+    }
+    ctx.fill('evenodd');
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function booleanSurfaceDimensions(logicalWidth, logicalHeight, requestedScale) {
   const width = Number.isFinite(logicalWidth) && logicalWidth > 0 ? logicalWidth : 1;
   const height = Number.isFinite(logicalHeight) && logicalHeight > 0 ? logicalHeight : 1;
@@ -1066,7 +1088,8 @@ export class SceneRenderer {
     if (!page) { this.onDraw?.(state, { cssWidth, cssHeight, dpr }); return; }
     ctx.setTransform(dpr * state.zoom, 0, 0, dpr * state.zoom, dpr * state.panX, dpr * state.panY);
     for (const node of page.children) this.drawNode(ctx, node, 0, 0, state.assets);
-    this.drawSelection(ctx, page.children, state.selectedIds, 0, 0);
+    if (state.shapeBuilder) drawShapeBuilderRegions(ctx, state.shapeBuilder.previewContours, state.zoom);
+    this.drawSelection(ctx, page.children, state.shapeBuilder ? [] : state.selectedIds, 0, 0);
     drawAlignmentGuides(ctx, state.smartGuides, state.zoom);
     if (!state.presenting) this.drawCommentPins(ctx, page, state, cssWidth, cssHeight);
     if (state.inspectorTab === 'prototype') this.drawPrototypeConnections(ctx, page, state);

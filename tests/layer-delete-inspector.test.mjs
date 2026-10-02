@@ -13,7 +13,7 @@ test('the inspector exposes an explicit delete-layer action for a single selecte
     'the destructive action should name and identify the exact layer instead of relying on point-edit mode');
   assert.match(source, /content\.innerHTML = `\$\{slicePositionSection\(node\)\}\$\{exportSettingsSection\(node\)\}\$\{deleteLayerControl\}`/,
     'slice layers should also expose the direct layer deletion action');
-  assert.match(source, /let body = `\$\{deleteLayerControl\}\$\{componentSection\(node\)\}/,
+  assert.match(source, /let body = `\$\{deleteLayerControl\}\$\{shapeBuilderControl\}\$\{componentSection\(node\)\}/,
     'all other single-layer inspector views should include the same direct action');
 });
 

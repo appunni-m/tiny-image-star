@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from '../src/canvas-pointer-lifecycle.js';
+import { shouldCancelShapeBuilderOnPinch, shouldRecoverCanvasInteractionForDelete, shouldRouteCanvasPointerCompletion } from '../src/canvas-pointer-lifecycle.js';
 
 const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
@@ -40,4 +40,20 @@ test('Delete and Backspace recover a stale canvas interaction even when pointer 
   assert.ok(recovery >= 0 && interactionGate > recovery,
     'a stale gesture must be cancelled before the global key handler suppresses Delete/Backspace');
   assert.match(keyHandler, /shouldRecoverCanvasInteractionForDelete\(event\.key, state\.interaction, editing\)[\s\S]*?cancelCanvasInteraction\(\{ pointerId: state\.interaction\.pointerId \}\)/);
+});
+
+test('a second touch cancels an unfinished Shape Builder sample without committing it', () => {
+  assert.equal(shouldCancelShapeBuilderOnPinch({ kind: 'shape-builder', pointerId: 4 }), true);
+  assert.equal(shouldCancelShapeBuilderOnPinch({ kind: 'move', pointerId: 4 }), false);
+  assert.equal(shouldCancelShapeBuilderOnPinch(null), false);
+
+  const pointerDownStart = source.indexOf('function onCanvasPointerDown(event) {');
+  const pointerDownEnd = source.indexOf('\nfunction updateDraftShapeGeometry', pointerDownStart);
+  const pointerDown = source.slice(pointerDownStart, pointerDownEnd);
+  const takeover = pointerDown.indexOf('shouldCancelShapeBuilderOnPinch(interruptedInteraction)');
+  const genericFinish = pointerDown.indexOf('onCanvasPointerUp({ pointerId, type: \'pointerup\' })', takeover);
+  assert.ok(takeover >= 0 && genericFinish > takeover,
+    'pinch takeover must discard Shape Builder before the generic gesture-finish path');
+  assert.match(pointerDown.slice(takeover, genericFinish), /state\.interaction = null;[\s\S]*?state\.shapeBuilder\.previewContours = \[\]/,
+    'the in-progress region samples and preview must be cleared without calling the commit handler');
 });

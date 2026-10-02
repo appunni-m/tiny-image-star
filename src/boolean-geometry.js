@@ -607,13 +607,14 @@ function combineCurveMembership(shapes, point, operation) {
   return result;
 }
 
-function classifyCurveSides(shapes, midpoint, normal, operation, initialOffset, minimumOffset) {
+function classifyCurveSides(shapes, midpoint, normal, operation, initialOffset, minimumOffset, insidePredicate = null) {
   let previous = null;
   let stableSteps = 0;
+  const contains = insidePredicate || (point => combineCurveMembership(shapes, point, operation));
   for (let offset = initialOffset; offset >= minimumOffset; offset /= 2) {
     const pair = [
-      combineCurveMembership(shapes, add(midpoint, scale(normal, offset)), operation),
-      combineCurveMembership(shapes, subtract(midpoint, scale(normal, offset)), operation)
+      contains(add(midpoint, scale(normal, offset))),
+      contains(subtract(midpoint, scale(normal, offset)))
     ];
     if (previous && pair[0] === previous[0] && pair[1] === previous[1]) stableSteps += 1;
     else stableSteps = 0;
@@ -746,7 +747,7 @@ function shapesMeetOnlyAtBounds(shapeA, shapeB, tolerance) {
     || (Math.abs(overlapY) <= tolerance && overlapX >= -tolerance);
 }
 
-function curveBoolean(shapes, operation) {
+function curveBoolean(shapes, operation, insidePredicate = null) {
   if (!operations.has(operation) || !Array.isArray(shapes) || !shapes.length
     || shapes.some(shape => !Array.isArray(shape?.contours))) throw new TypeError('Boolean geometry needs one or more cubic contour sets.');
   const segments = [];
@@ -811,7 +812,7 @@ function curveBoolean(shapes, operation) {
       const offset = Math.max(minimumOffset * 4, Math.min(length * 1e-7, extent * 1e-8));
       const normal = vector(-tangent.y / tangentLength * offset, tangent.x / tangentLength * offset);
       const [onLeft, onRight] = classifyCurveSides(shapes, midpoint,
-        vector(normal.x / offset, normal.y / offset), operation, offset, minimumOffset);
+        vector(normal.x / offset, normal.y / offset), operation, offset, minimumOffset, insidePredicate);
       if (onLeft === onRight) continue;
       const oriented = onLeft ? fragment : reverseCubic(fragment);
       const key = `${pointKey(oriented.p0, epsilon * 8)}>${pointKey(oriented.p3, epsilon * 8)}`;
@@ -854,6 +855,260 @@ function curveBoolean(shapes, operation) {
   return contours;
 }
 
+/**
+ * A bounded geometry failure while resolving a Shape Builder region.
+ * Tangencies and other topologies that the local cubic arrangement cannot
+ * separate are rejected instead of returning a visually plausible wrong face.
+ */
+export class ShapeBuilderGeometryError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ShapeBuilderGeometryError';
+    this.code = 'UNSUPPORTED_SHAPE_BUILDER_GEOMETRY';
+  }
+}
+
+function curveContourArea(contour) {
+  // Four-point Gauss–Legendre integration is exact for the degree-five
+  // polynomial cross(P(t), P'(t)) of a cubic Bézier segment.
+  const nodes = [
+    -0.8611363115940526, -0.3399810435848563,
+    0.3399810435848563, 0.8611363115940526
+  ];
+  const weights = [
+    0.3478548451374538, 0.6521451548625461,
+    0.6521451548625461, 0.3478548451374538
+  ];
+  let twiceArea = 0;
+  for (const curve of contour) {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const t = (nodes[index] + 1) / 2;
+      twiceArea += weights[index] * cross(cubicPoint(curve, t), cubicDerivative(curve, t)) / 2;
+    }
+  }
+  return twiceArea / 2;
+}
+
+function curveContourInteriorSample(contour, areaValue, epsilon) {
+  const candidates = contour.map(curve => ({
+    curve,
+    length: Math.max(distance(curve.p0, curve.p3), distance(curve.p0, curve.p1), distance(curve.p0, curve.p2))
+  })).sort((left, right) => right.length - left.length);
+  for (const { curve, length } of candidates) {
+    if (!(length > epsilon * 4)) continue;
+    const middle = cubicPoint(curve, .5);
+    const tangent = cubicDerivative(curve, .5);
+    const tangentLength = Math.hypot(tangent.x, tangent.y);
+    if (!(tangentLength > epsilon)) continue;
+    const side = areaValue >= 0 ? 1 : -1;
+    const offset = Math.max(epsilon * 8, Math.min(length * 1e-6, epsilon * 128));
+    const sample = vector(
+      middle.x - tangent.y / tangentLength * offset * side,
+      middle.y + tangent.x / tangentLength * offset * side
+    );
+    if (pointInCurveContours(sample, [contour])) return sample;
+  }
+  throw new ShapeBuilderGeometryError('A region boundary could not be sampled safely. Move or simplify the touching vector edges, then try again.');
+}
+
+function curveContourBounds(contour) {
+  return contour.reduce((bounds, curve) => {
+    for (const point of [curve.p0, curve.p1, curve.p2, curve.p3]) {
+      bounds.left = Math.min(bounds.left, point.x);
+      bounds.top = Math.min(bounds.top, point.y);
+      bounds.right = Math.max(bounds.right, point.x);
+      bounds.bottom = Math.max(bounds.bottom, point.y);
+    }
+    return bounds;
+  }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+}
+
+function separateCurveRegionComponent(contours, point) {
+  if (!contours.length || !pointInCurveContours(point, contours)) return [];
+  const allPoints = contours.flatMap(contour => contour.flatMap(curve => [curve.p0, curve.p1, curve.p2, curve.p3]));
+  const coordinateScale = Math.max(1, ...allPoints.map(item => Math.max(Math.abs(item.x), Math.abs(item.y))));
+  const bounds = allPoints.reduce((result, item) => ({
+    left: Math.min(result.left, item.x), top: Math.min(result.top, item.y),
+    right: Math.max(result.right, item.x), bottom: Math.max(result.bottom, item.y)
+  }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+  const extent = Math.max(bounds.right - bounds.left, bounds.bottom - bounds.top, 1);
+  const epsilon = Math.max(extent * 1e-10, coordinateScale * Number.EPSILON * 64, 1e-10);
+  const rings = contours.map(curves => {
+    const areaValue = curveContourArea(curves);
+    if (!Number.isFinite(areaValue) || Math.abs(areaValue) <= epsilon * epsilon) {
+      throw new ShapeBuilderGeometryError('The selected vector arrangement contains a zero-area boundary. Simplify the source geometry and try again.');
+    }
+    return { curves, area: areaValue, magnitude: Math.abs(areaValue), sample: curveContourInteriorSample(curves, areaValue, epsilon), parent: null, depth: 0 };
+  });
+  for (const ring of rings) {
+    const parents = rings.filter(candidate => candidate !== ring
+      && candidate.magnitude > ring.magnitude + epsilon * epsilon
+      && pointInCurveContours(ring.sample, [candidate.curves]));
+    parents.sort((left, right) => left.magnitude - right.magnitude);
+    ring.parent = parents[0] || null;
+  }
+  const depthOf = ring => {
+    let depth = 0;
+    let current = ring.parent;
+    const visited = new Set([ring]);
+    while (current) {
+      if (visited.has(current)) throw new ShapeBuilderGeometryError('The selected vectors have ambiguous nested boundaries.');
+      visited.add(current);
+      depth += 1;
+      current = current.parent;
+    }
+    return depth;
+  };
+  for (const ring of rings) ring.depth = depthOf(ring);
+  const outers = rings.filter(ring => ring.depth % 2 === 0 && pointInCurveContours(point, [ring.curves]));
+  outers.sort((left, right) => left.magnitude - right.magnitude);
+  const selectedOuter = outers[0];
+  if (!selectedOuter) return [];
+  return [selectedOuter.curves, ...rings
+    .filter(ring => ring.parent === selectedOuter && ring.depth === selectedOuter.depth + 1)
+    .map(ring => ring.curves)];
+}
+
+/**
+ * Resolve the exact editable cubic boundary of the arrangement region under
+ * a point. `membership` records which source layers cover that region; the
+ * renderer/model use it to subtract the extracted face from only its sources.
+ */
+export function createShapeBuilderSession(nodes) {
+  if (!Array.isArray(nodes) || !nodes.length || nodes.length > 128
+    || nodes.some(node => !node || !['rectangle', 'ellipse', 'polygon', 'star', 'path', 'network', 'boolean'].includes(node.type))) {
+    throw new ShapeBuilderGeometryError('Select one or more closed vector layers before using Shape Builder.');
+  }
+  const regionCache = new Map();
+  try {
+    const inputShapes = nodes.map(node => {
+      validateSimpleOperand(node, { root: true });
+      const contours = shapeCurvesInParent(node);
+      if (!contours.length || contours.some(contour => !contour.length)) {
+        throw new ShapeBuilderGeometryError(`“${node.name || 'Vector layer'}” has no fillable region.`);
+      }
+      return { contours, fillRule: node.type === 'path' ? node.fillRule || 'nonzero' : 'nonzero' };
+    });
+    // Resolve each source's own fill rule before splitting overlaps. This also
+    // turns a self-intersecting path into the same filled arrangement that the
+    // editor paints, while keeping every surviving cubic fragment editable.
+    const shapes = inputShapes.map(shape => ({ ...shape, contours: curveBoolean([shape], 'union') }));
+    const regionAtPoint = point => {
+      if (!finite(point?.x) || !finite(point?.y)) throw new ShapeBuilderGeometryError('Move over a point inside the selected vector layers.');
+      const membership = shapes.map(shape => pointInCurveContours(point, shape.contours, shape.fillRule));
+      const seedIndex = membership.findIndex(Boolean);
+      if (seedIndex < 0) return null;
+      const signature = membership.map(value => value ? '1' : '0').join('');
+      let regionContours = regionCache.get(signature);
+      if (!regionContours) {
+        let region = shapes[seedIndex];
+        for (let index = 0; index < shapes.length; index += 1) {
+          if (index === seedIndex) continue;
+          if (!region.contours.length) break;
+          region = {
+            contours: curveBoolean([region, shapes[index]], membership[index] ? 'intersect' : 'subtract'),
+            fillRule: 'evenodd'
+          };
+        }
+        regionContours = region.contours;
+        if (regionCache.size >= 64) regionCache.delete(regionCache.keys().next().value);
+        regionCache.set(signature, regionContours);
+      }
+      const selectedContours = separateCurveRegionComponent(regionContours, point);
+      if (!selectedContours.length) return null;
+      const faceKey = selectedContours.map(contour => contour.map(curve =>
+        `${curve.p0.x.toPrecision(12)},${curve.p0.y.toPrecision(12)}>${curve.p3.x.toPrecision(12)},${curve.p3.y.toPrecision(12)}`
+      ).join(';')).join('|');
+      return { contours: selectedContours, membership, signature, faceKey };
+    };
+    const remainderForSource = (sourceIndex, regions) => {
+      if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= shapes.length
+        || !Array.isArray(regions) || !regions.length || regions.some(contours => !Array.isArray(contours) || !contours.length)) {
+        throw new ShapeBuilderGeometryError('A selected source and at least one region are required to calculate the remaining vectors.');
+      }
+      try {
+        // Reclassify the original arrangement's split edges with an arbitrary
+        // region predicate. This preserves every untouched face and avoids
+        // intersecting a region contour back against coincident source curves.
+        return curveBoolean(shapes, 'union', point => pointInCurveContours(point,
+          shapes[sourceIndex].contours, shapes[sourceIndex].fillRule)
+          && !regions.some(contours => pointInCurveContours(point, contours, 'evenodd')));
+      } catch (error) {
+        if (error instanceof ShapeBuilderGeometryError) throw error;
+        if (error instanceof BooleanBakeError) {
+          const reason = error.message.replace(/^Cannot bake this Boolean group:\s*/, '');
+          throw new ShapeBuilderGeometryError(`Shape Builder cannot preserve the remaining faces: ${reason}`);
+        }
+        throw error;
+      }
+    };
+    const unionRegions = regions => {
+      if (!Array.isArray(regions) || !regions.length || regions.some(contours => !Array.isArray(contours) || !contours.length)) {
+        throw new ShapeBuilderGeometryError('Select at least one visible vector region.');
+      }
+      try {
+        return curveBoolean(shapes, 'union', point => regions.some(contours => pointInCurveContours(point, contours, 'evenodd')));
+      } catch (error) {
+        if (error instanceof ShapeBuilderGeometryError) throw error;
+        if (error instanceof BooleanBakeError) {
+          const reason = error.message.replace(/^Cannot bake this Boolean group:\s*/, '');
+          throw new ShapeBuilderGeometryError(`Shape Builder cannot merge these regions: ${reason}`);
+        }
+        throw error;
+      }
+    };
+    return Object.freeze({
+      sourceCount: shapes.length,
+      regionAtPoint,
+      remainderForSource,
+      unionRegions
+    });
+  } catch (error) {
+    if (error instanceof ShapeBuilderGeometryError) throw error;
+    if (error instanceof BooleanBakeError) {
+      const reason = error.message.replace(/^Cannot bake this Boolean group:\s*/, '');
+      throw new ShapeBuilderGeometryError(`Shape Builder cannot resolve this geometry: ${reason}`);
+    }
+    throw error;
+  }
+}
+
+/** Resolve one point without retaining an interactive region cache. */
+export function shapeBuilderRegionAtPoint(nodes, point) {
+  return createShapeBuilderSession(nodes).regionAtPoint(point);
+}
+
+/** Merge the selected face boundaries into one exact editable contour set. */
+export function unionShapeBuilderRegions(regions) {
+  if (!Array.isArray(regions) || !regions.length || regions.some(contours => !Array.isArray(contours) || !contours.length)) {
+    throw new ShapeBuilderGeometryError('Select at least one visible vector region.');
+  }
+  try {
+    return curveBoolean(regions.map(contours => ({ contours, fillRule: 'evenodd' })), 'union');
+  } catch (error) {
+    if (error instanceof BooleanBakeError) {
+      throw new ShapeBuilderGeometryError(`Shape Builder cannot merge these regions: ${error.message.replace(/^Cannot bake this Boolean group:\s*/, '')}`);
+    }
+    throw error;
+  }
+}
+
+/** Remove a selected arrangement region from one filled vector source. */
+export function subtractShapeBuilderRegionsFromNode(node, regionContours) {
+  try {
+    validateSimpleOperand(node, { root: true });
+    const source = { contours: shapeCurvesInParent(node), fillRule: node.type === 'path' ? node.fillRule || 'nonzero' : 'nonzero' };
+    const region = { contours: unionShapeBuilderRegions([regionContours]), fillRule: 'evenodd' };
+    return curveBoolean([source, region], 'subtract');
+  } catch (error) {
+    if (error instanceof ShapeBuilderGeometryError) throw error;
+    if (error instanceof BooleanBakeError) {
+      throw new ShapeBuilderGeometryError(`Shape Builder cannot update “${node?.name || 'Vector layer'}”: ${error.message.replace(/^Cannot bake this Boolean group:\s*/, '')}`);
+    }
+    throw error;
+  }
+}
+
 function transformContours(contours, node) {
   const cx = node.x + node.width / 2;
   const cy = node.y + node.height / 2;
@@ -865,6 +1120,19 @@ function transformCurves(contours, node) {
   const cy = node.y + node.height / 2;
   const transform = point => rotate(add(point, vector(node.x, node.y)), cx, cy, node.rotation || 0);
   return contours.map(contour => contour.map(curve => cubic(transform(curve.p0), transform(curve.p1), transform(curve.p2), transform(curve.p3))));
+}
+
+function transformCurvesByNodeAffine(contours, node) {
+  const affine = node.affineTransform;
+  if (!affine) return contours;
+  const { a, b, c, d } = affine;
+  const transform = point => vector(
+    node.x + a * (point.x - node.x) + c * (point.y - node.y),
+    node.y + b * (point.x - node.x) + d * (point.y - node.y)
+  );
+  return contours.map(contour => contour.map(curve => cubic(
+    transform(curve.p0), transform(curve.p1), transform(curve.p2), transform(curve.p3)
+  )));
 }
 
 function linearCurvesFromContours(contours) {
@@ -1065,8 +1333,10 @@ function booleanContentCurves(node) {
 }
 
 function shapeCurvesInParent(node) {
-  if (node.type === 'boolean') return transformCurves(booleanContentCurves(node), node);
-  return primitiveCurves(node);
+  const contours = node.type === 'boolean'
+    ? transformCurves(booleanContentCurves(node), node)
+    : primitiveCurves(node);
+  return transformCurvesByNodeAffine(contours, node);
 }
 
 function containsCurvedPath(node) {
@@ -1081,6 +1351,23 @@ function containsCurvedPath(node) {
 }
 
 function visualBounds(node) {
+  if (node.affineTransform) {
+    const { a, b, c, d } = node.affineTransform;
+    const cx = node.x + node.width / 2;
+    const cy = node.y + node.height / 2;
+    const angle = node.rotation || 0;
+    const corners = [
+      vector(node.x, node.y), vector(node.x + node.width, node.y),
+      vector(node.x + node.width, node.y + node.height), vector(node.x, node.y + node.height)
+    ].map(point => rotate(vector(
+      node.x + a * (point.x - node.x) + c * (point.y - node.y),
+      node.y + b * (point.x - node.x) + d * (point.y - node.y)
+    ), cx, cy, angle));
+    return corners.reduce((bounds, point) => ({
+      left: Math.min(bounds.left, point.x), top: Math.min(bounds.top, point.y),
+      right: Math.max(bounds.right, point.x), bottom: Math.max(bounds.bottom, point.y)
+    }), { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
+  }
   const angle = (node.rotation || 0) * Math.PI / 180;
   const extentX = Math.abs(node.width * Math.cos(angle)) / 2 + Math.abs(node.height * Math.sin(angle)) / 2;
   const extentY = Math.abs(node.width * Math.sin(angle)) / 2 + Math.abs(node.height * Math.cos(angle)) / 2;
@@ -1205,4 +1492,26 @@ export function normalizedPathGeometryFromCurveContours(contours, width, height)
     ...(contours.length > 1 ? { subpaths: contours.slice(1).map(contour => ({ closed: true, points: convert(contour) })) } : {}),
     fillRule: 'evenodd'
   };
+}
+
+/** Compute tight parent-local bounds and editable path data for Shape Builder curves. */
+export function shapeBuilderPathGeometryFromCurves(contours) {
+  if (!Array.isArray(contours) || !contours.length || contours.some(contour => !Array.isArray(contour) || !contour.length)) {
+    throw new ShapeBuilderGeometryError('A Shape Builder result needs at least one closed contour.');
+  }
+  const boxes = contours.flatMap(contour => contour.map(cubicTightBounds));
+  const left = Math.min(...boxes.map(bounds => bounds.left));
+  const top = Math.min(...boxes.map(bounds => bounds.top));
+  const right = Math.max(...boxes.map(bounds => bounds.right));
+  const bottom = Math.max(...boxes.map(bounds => bounds.bottom));
+  const width = right - left;
+  const height = bottom - top;
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    throw new ShapeBuilderGeometryError('The selected region has no positive editable bounds.');
+  }
+  const local = contours.map(contour => contour.map(curve => {
+    const translate = point => vector(point.x - left, point.y - top);
+    return cubic(translate(curve.p0), translate(curve.p1), translate(curve.p2), translate(curve.p3));
+  }));
+  return { x: left, y: top, width, height, ...normalizedPathGeometryFromCurveContours(local, width, height) };
 }
