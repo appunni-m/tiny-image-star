@@ -48,7 +48,7 @@ assert.doesNotMatch(index, /(?:src|href)="\/(?!\/)/, 'the deployed page must not
 assertBalancedCssBlocks(await readFile(resolve(root, 'styles.css'), 'utf8'));
 
 for (const path of [
-  'styles.css', 'src/main.js', 'src/boolean-geometry.js', 'src/shape-builder-edit.js', 'src/design-token-interop.js', 'src/appearance-clipboard.js', 'src/image-fills.js', 'src/image-output.js', 'src/layer-blend.js', 'src/layout-guides.js', 'src/inspect.js', 'src/smart-animate.js', 'src/image-worker.js', 'src/pdf-vector-export.js', 'src/tab-list-keyboard.js', 'src/variable-stroke-geometry.js', 'src/vector-anchor-selection.js', 'src/slice-export-plan.js', 'src/prepared-inpaint-cache.js', 'wasm/pillow_rs_js.js',
+  'styles.css', 'src/main.js', 'src/comment-selection.js', 'src/boolean-geometry.js', 'src/shape-builder-edit.js', 'src/design-token-interop.js', 'src/appearance-clipboard.js', 'src/image-fills.js', 'src/image-output.js', 'src/layer-blend.js', 'src/layout-guides.js', 'src/inspect.js', 'src/smart-animate.js', 'src/image-worker.js', 'src/pdf-vector-export.js', 'src/tab-list-keyboard.js', 'src/variable-stroke-geometry.js', 'src/vector-anchor-selection.js', 'src/slice-export-plan.js', 'src/prepared-inpaint-cache.js', 'wasm/pillow_rs_js.js',
   'src/fig-import-worker-client.js', 'src/fig-import-preflight.js', 'src/fig-import.js', 'src/workers/fig-import.worker.js', 'src/workers/fig-import-worker.bundle.js',
   'src/inpaint-mask.js', 'src/workers/inpaint.worker.js', 'src/workers/inpaint-worker.bundle.js',
   'THIRD_PARTY_NOTICES.md',

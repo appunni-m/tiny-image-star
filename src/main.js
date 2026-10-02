@@ -89,6 +89,7 @@ import {
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
+import { commentSelectionTarget } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { nearestScreenHandle } from './selection-hit-testing.js';
@@ -1263,7 +1264,8 @@ function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
+    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · use Layers or Shift-click to select a frame or component' : `Tool · ${state.tool}`
+      : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
     $('#position-status').textContent = `${formatInspectorNumber(geometry.x)}, ${formatInspectorNumber(geometry.y)} · ${formatInspectorNumber(geometry.width)} × ${formatInspectorNumber(geometry.height)}`;
@@ -1308,6 +1310,7 @@ function setTool(tool) {
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
   state.tool = tool;
+  if (tool === 'comment' && state.inspectorTab !== 'comments') setInspectorTab('comments');
   $$('.tool-button').forEach(button => {
     const selected = button.dataset.tool === tool;
     button.classList.toggle('is-selected', selected);
@@ -1315,6 +1318,8 @@ function setTool(tool) {
     if (selected) setDesignToolTabStop(button);
   });
   canvas.className = `tool-${tool}`;
+  if (tool === 'comment') syncInspectorTabAccessibility('comments');
+  if (tool === 'comment') syncLayerSelectionModeControl();
   updateSelectionStatus();
   renderInspector();
 }
@@ -1413,7 +1418,9 @@ function syncLayerSelectionModeControl() {
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
-    : 'Design canvas');
+    : state.tool === 'comment'
+      ? 'Design canvas. Click to add a comment. Shift-click to select a frame or component, or select it from Layers.'
+      : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
   const previous = new Set(previousIds);
@@ -4087,6 +4094,17 @@ function commentPinAt(world) {
   }
   return null;
 }
+function selectCommentTargetAt(world) {
+  const hit = hitTestPage(activePage(), world,
+    (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
+    state.document, null, state.zoom, { allowAnyClippedNodes: true });
+  if (!hit) return null;
+  const entry = findNode(state.document, hit.id, activePage()?.id);
+  const target = commentSelectionTarget(entry);
+  if (!target) return null;
+  setSelection([target.id]);
+  return target;
+}
 function resizeHandleAt(event) {
   const entries = transformEntriesForSelection();
   if (!entries.length) return null;
@@ -4525,6 +4543,14 @@ function onCanvasPointerDown(event) {
   }
   if (state.tool === 'eyedropper') {
     sampleEyedropperAt(event);
+    event.preventDefault();
+    return;
+  }
+  if (state.tool === 'comment' && event.shiftKey) {
+    const target = selectCommentTargetAt(world);
+    showToast(target
+      ? `Selected “${target.name}”. Click or tap the canvas to add a comment; use Layers to select on touch.`
+      : 'No layer under the pointer. Select a component or frame from Layers.');
     event.preventDefault();
     return;
   }

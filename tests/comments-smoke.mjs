@@ -1,4 +1,4 @@
-import { createDocument, createNode } from '../src/model.js';
+import { addNode, createDocument, createNode } from '../src/model.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -47,8 +47,9 @@ try {
   assert(app.title === 'Tiny Image Star', 'The public product name must stay Tiny Image Star.');
   assert(!app.body.innerText.toLowerCase().includes('figma'), 'The user-facing editor must not display its internal reference name.');
   const design = createDocument();
-  const shape = createNode('rectangle', { name: 'Review target', x: -70, y: -50, width: 140, height: 100, fill: '#ffffff' });
-  design.pages[0].children.push(shape);
+  const reviewFrame = createNode('frame', { name: 'Review frame', x: -70, y: -50, width: 140, height: 100, fill: '#ffffff' });
+  const shape = createNode('rectangle', { name: 'Review target', x: 20, y: 20, width: 100, height: 60, fill: '#ffffff' });
+  addNode(design, reviewFrame); addNode(design, shape, { parentId: reviewFrame.id });
   const input = app.querySelector('#open-file-input'); const transfer = new app.defaultView.DataTransfer();
   transfer.items.add(new app.defaultView.File([packageFile(design)], 'comments-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(input, 'files', { configurable: true, value: transfer.files });
@@ -59,9 +60,15 @@ try {
   const canvas = app.querySelector('#scene-canvas');
   canvas.setPointerCapture = () => {};
   const rect = canvas.getBoundingClientRect();
-  const point = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 77, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
-  canvas.dispatchEvent(point);
+  const shiftPoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, shiftKey: true, pointerId: 77, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  canvas.dispatchEvent(shiftPoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 77, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'), 'Shift-click in Comment mode should select the containing frame.');
+  assert(!app.querySelector('#comment-draft'), 'Selecting a frame should not create a comment draft.');
+  assert(app.querySelector('[data-tool="comment"]')?.classList.contains('is-selected'), 'Selecting a frame should keep Comment mode active.');
+  const point = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 78, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  canvas.dispatchEvent(point);
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 78, pointerType: 'mouse' }));
   await waitFor(() => app.querySelector('#comment-draft'), 'new comment composer');
   const draft = app.querySelector('#comment-draft'); draft.value = 'Increase the space above this label.';
   draft.form.requestSubmit();
@@ -91,7 +98,7 @@ try {
   await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'mobile comments panel');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose textarea')).minHeight) >= 88, 'The phone comment composer should provide a comfortable touch target.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose .primary-button')).minHeight) >= 40, 'The phone reply button should remain finger-sized.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, touchSizedActions: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, commentModeFrameSelection: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, touchSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

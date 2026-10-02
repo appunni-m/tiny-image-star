@@ -1,9 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import {
   addCommentReply, createCommentThread, createDocument, parseDocument,
   removeCommentThread, serializeDocument, setCommentResolved, validateDocument
 } from '../src/model.js';
+import { commentSelectionTarget } from '../src/comment-selection.js';
+
+const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+
+test('comment-mode canvas selection resolves a child to its nearest frame or component', () => {
+  const component = { id: 'component', type: 'frame', isComponent: true };
+  const frame = { id: 'frame', type: 'frame' };
+  const group = { id: 'group', type: 'group' };
+  const child = { id: 'child', type: 'rectangle' };
+  assert.equal(commentSelectionTarget({ node: child, parents: [frame, group] }), frame);
+  assert.equal(commentSelectionTarget({ node: child, parents: [component, frame] }), frame);
+  assert.equal(commentSelectionTarget({ node: component, parents: [] }), component);
+  assert.equal(commentSelectionTarget({ node: group, parents: [] }), group);
+  assert.equal(commentSelectionTarget({ node: child, parents: [] }), child);
+  assert.equal(commentSelectionTarget(null), null);
+});
+
+test('Comment mode keeps regular click-to-comment and adds Shift-click canvas selection', () => {
+  const selection = editorSource.indexOf("if (state.tool === 'comment' && event.shiftKey)");
+  const pin = editorSource.indexOf('const commentPin = commentPinAt(world);', selection);
+  const placement = editorSource.indexOf("if (state.tool === 'comment') { beginCommentAt(world);", pin);
+  assert.ok(selection >= 0 && pin > selection && placement > pin,
+    'Shift-click selection must precede comment-pin opening and normal comment placement');
+  assert.match(editorSource.slice(selection, pin), /selectCommentTargetAt\(world\)/,
+    'the modifier path must resolve the hit to a selection target');
+  assert.match(editorSource, /function selectCommentTargetAt\(world\)[\s\S]*?commentSelectionTarget\(entry\)[\s\S]*?setSelection\(\[target\.id\]\)/,
+    'the modifier path must hit-test and select the containing frame or component');
+});
 
 test('local review threads support replies, resolution, deletion, and package round trips', () => {
   const document = createDocument();
