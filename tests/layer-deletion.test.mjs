@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
+import { addNode, combineBoolean, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically } from '../src/layer-deletion.js';
 import { hitTestPage } from '../src/renderer.js';
 import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
@@ -103,6 +103,70 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.equal(findNode(result.document, second.id), null);
   assert.ok(findNode(document, first.id), 'the active document is left untouched until deletion succeeds');
   assert.deepEqual(result.removedIds, [first.id, second.id]);
+});
+
+test('deleting one of the final two Boolean operands preserves the survivor and leaves a valid document', () => {
+  const document = createDocument();
+  const frame = createNode('frame', { x: 80, y: 40, width: 300, height: 240 });
+  const removeMe = createNode('rectangle', { x: 12, y: 28, width: 90, height: 70, rotation: 14, name: 'Remove operand' });
+  const keepMe = createNode('ellipse', { x: 138, y: 76, width: 52, height: 48, rotation: -9, name: 'Keep operand' });
+  addNode(document, frame);
+  addNode(document, removeMe, { parentId: frame.id });
+  addNode(document, keepMe, { parentId: frame.id });
+  const booleanGroup = combineBoolean(document, [removeMe.id, keepMe.id]);
+  booleanGroup.rotation = 27;
+
+  const result = removeLayersAtomically(document, [removeMe.id]);
+  const remaining = findNode(result.document, keepMe.id);
+
+  assert.equal(findNode(result.document, removeMe.id), null, 'the selected Boolean operand is removed');
+  assert.ok(remaining, 'the unselected Boolean source remains as a layer');
+  assert.equal(remaining.parent.id, frame.id, 'separating the Boolean restores source layers to their parent');
+  assert.equal(remaining.node.type, 'ellipse');
+  assert.equal(findNode(result.document, booleanGroup.id), null, 'an invalid one-operand Boolean wrapper is not left behind');
+  assert.equal(validateDocument(parseDocument(serializeDocument(result.document))), true);
+  assert.ok(findNode(document, booleanGroup.id), 'the original document stays untouched before commit');
+});
+
+test('deleting a Boolean operand in a component master updates its instances', () => {
+  const document = createDocument();
+  const componentFrame = createNode('frame', { name: 'Card component' });
+  const removeMe = createNode('rectangle', { name: 'Remove operand' });
+  const keepMe = createNode('ellipse', { name: 'Keep operand' });
+  addNode(document, componentFrame);
+  addNode(document, removeMe, { parentId: componentFrame.id });
+  addNode(document, keepMe, { parentId: componentFrame.id });
+  const booleanGroup = combineBoolean(document, [removeMe.id, keepMe.id]);
+  const component = createComponent(document, componentFrame.id, 'Card component');
+  const instance = createComponentInstance(document, component.id);
+
+  const result = removeLayersAtomically(document, [removeMe.id]);
+  const updatedInstance = findNode(result.document, instance.id).node;
+
+  assert.equal(findNode(result.document, removeMe.id), null);
+  assert.equal(findNode(result.document, booleanGroup.id), null);
+  assert.equal(findNode(result.document, keepMe.id).parent.id, componentFrame.id);
+  assert.equal(updatedInstance.children.length, 1);
+  assert.equal(updatedInstance.children[0].type, 'ellipse');
+  assert.equal(validateDocument(parseDocument(serializeDocument(result.document))), true);
+});
+
+test('deleting a final Boolean operand inside a component instance reports how to proceed', () => {
+  const document = createDocument();
+  const componentFrame = createNode('frame', { name: 'Card component' });
+  const removeMe = createNode('rectangle', { name: 'Remove operand' });
+  const keepMe = createNode('ellipse', { name: 'Keep operand' });
+  addNode(document, componentFrame);
+  addNode(document, removeMe, { parentId: componentFrame.id });
+  addNode(document, keepMe, { parentId: componentFrame.id });
+  combineBoolean(document, [removeMe.id, keepMe.id]);
+  const component = createComponent(document, componentFrame.id, 'Card component');
+  const instance = createComponentInstance(document, component.id);
+  const instanceOperand = findNode(document, instance.id).node.children[0].children[0];
+
+  assert.throws(() => removeLayersAtomically(document, [instanceOperand.id]),
+    /Detach this component instance before deleting one of the final two Boolean operands/);
+  assert.ok(findNode(document, instanceOperand.id), 'a refused structural edit leaves the source instance intact');
 });
 
 test('the editor does not rerun component sync after installing the validated delete candidate', () => {

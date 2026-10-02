@@ -1,4 +1,4 @@
-import { cloneDocument, findNode, removeInheritedSlotNodes, removeNode, syncAllComponentInstances, validateDocument } from './model.js';
+import { cloneDocument, findNode, removeInheritedSlotNodes, removeNode, separateBoolean, syncAllComponentInstances, validateDocument } from './model.js';
 import { captureAutoLayoutAncestors, reflowAutoLayoutAncestors } from './layer-auto-layout.js';
 
 /** Prefer the focused layer when keyboard focus moved away from the current selection. */
@@ -20,6 +20,22 @@ export function removeLayersAtomically(document, nodeIds, pageId = document.acti
 
   const autoLayoutAncestors = captureAutoLayoutAncestors(document, ids, pageId);
   const nextDocument = cloneDocument(document);
+
+  // Boolean groups require at least two operands. Separate the group first
+  // when deleting one of its final two children, so the surviving source stays
+  // editable and the atomic candidate remains a valid document.
+  const booleanGroupsToSeparate = new Set();
+  for (const nodeId of ids) {
+    const entry = findNode(nextDocument, nodeId, pageId);
+    const parent = entry?.parent;
+    if (parent?.type !== 'boolean' || parent.children?.length !== 2) continue;
+    if (entry.parents.some(ancestor => ancestor.isInstance)) {
+      throw new Error('Detach this component instance before deleting one of the final two Boolean operands.');
+    }
+    booleanGroupsToSeparate.add(parent.id);
+  }
+  for (const booleanId of booleanGroupsToSeparate) separateBoolean(nextDocument, booleanId, pageId);
+
   const slotRemovedIds = removeInheritedSlotNodes(nextDocument, ids, pageId);
   for (const nodeId of ids) {
     if (slotRemovedIds.has(nodeId)) continue;
