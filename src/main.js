@@ -1264,7 +1264,7 @@ function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · use Layers or Shift-click to select a frame or component' : `Tool · ${state.tool}`
+    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click a frame or component to select; click again to comment' : `Tool · ${state.tool}`
       : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
@@ -1419,7 +1419,7 @@ function syncLayerSelectionModeControl() {
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
-      ? 'Design canvas. Click to add a comment. Shift-click to select a frame or component, or select it from Layers.'
+      ? 'Design canvas. Click a frame or component to select it; click it again or click empty canvas to add a comment. Shift-click also selects.'
       : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
@@ -4094,15 +4094,17 @@ function commentPinAt(world) {
   }
   return null;
 }
-function selectCommentTargetAt(world) {
+function commentTargetAt(world) {
   const hit = hitTestPage(activePage(), world,
     (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
     state.document, null, state.zoom, { allowAnyClippedNodes: true });
   if (!hit) return null;
   const entry = findNode(state.document, hit.id, activePage()?.id);
-  const target = commentSelectionTarget(entry);
-  if (!target) return null;
-  setSelection([target.id]);
+  return commentSelectionTarget(entry);
+}
+function selectCommentTargetAt(world) {
+  const target = commentTargetAt(world);
+  if (target) setSelection([target.id]);
   return target;
 }
 function resizeHandleAt(event) {
@@ -4549,14 +4551,21 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'comment' && event.shiftKey) {
     const target = selectCommentTargetAt(world);
     showToast(target
-      ? `Selected “${target.name}”. Click or tap the canvas to add a comment; use Layers to select on touch.`
+      ? `Selected “${target.name}”. Click it again to add a comment here.`
       : 'No layer under the pointer. Select a component or frame from Layers.');
     event.preventDefault();
     return;
   }
   const commentPin = commentPinAt(world);
   if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
-  if (state.tool === 'comment') { beginCommentAt(world); event.preventDefault(); return; }
+  if (state.tool === 'comment') {
+    const target = commentTargetAt(world);
+    if (target && !state.selectedIds.includes(target.id)) {
+      setSelection([target.id]);
+      showToast(`Selected “${target.name}”. Click again to add a comment here.`);
+    } else beginCommentAt(world);
+    event.preventDefault(); return;
+  }
   if (clearPrototypeConnectPromptIfSourceMissing()) {
     renderInspector();
     showToast('The prototype source is unavailable. Select a supported layer to start a new connection.');

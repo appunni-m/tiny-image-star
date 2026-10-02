@@ -22,16 +22,19 @@ test('comment-mode canvas selection resolves a child to its nearest frame or com
   assert.equal(commentSelectionTarget(null), null);
 });
 
-test('Comment mode keeps regular click-to-comment and adds Shift-click canvas selection', () => {
+test('Comment mode selects a frame or component on first click and places a comment on the next click', () => {
   const selection = editorSource.indexOf("if (state.tool === 'comment' && event.shiftKey)");
   const pin = editorSource.indexOf('const commentPin = commentPinAt(world);', selection);
-  const placement = editorSource.indexOf("if (state.tool === 'comment') { beginCommentAt(world);", pin);
+  const placement = editorSource.indexOf("if (state.tool === 'comment') {\n    const target = commentTargetAt(world);", pin);
   assert.ok(selection >= 0 && pin > selection && placement > pin,
-    'Shift-click selection must precede comment-pin opening and normal comment placement');
-  assert.match(editorSource.slice(selection, pin), /selectCommentTargetAt\(world\)/,
-    'the modifier path must resolve the hit to a selection target');
-  assert.match(editorSource, /function selectCommentTargetAt\(world\)[\s\S]*?commentSelectionTarget\(entry\)[\s\S]*?setSelection\(\[target\.id\]\)/,
-    'the modifier path must hit-test and select the containing frame or component');
+    'modifier selection and existing comment pins must be handled before the ordinary comment-mode path');
+  assert.match(editorSource.slice(placement, editorSource.indexOf('if (clearPrototypeConnectPromptIfSourceMissing())', placement)),
+    /target && !state\.selectedIds\.includes\(target\.id\)[\s\S]*?setSelection\(\[target\.id\]\)[\s\S]*?else beginCommentAt\(world\)/,
+    'the first click selects an unselected frame/component and a subsequent click places a comment');
+  assert.match(editorSource, /function commentTargetAt\(world\)[\s\S]*?commentSelectionTarget\(entry\)/,
+    'canvas hits must resolve to the containing frame or component');
+  assert.match(editorSource, /function selectCommentTargetAt\(world\)[\s\S]*?setSelection\(\[target\.id\]\)/,
+    'Shift-click must remain an explicit selection gesture');
 });
 
 test('local review threads support replies, resolution, deletion, and package round trips', () => {
