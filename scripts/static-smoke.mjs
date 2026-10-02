@@ -65,11 +65,12 @@ const readme = await readFile(resolve(root, 'README.md'), 'utf8');
 assert.equal(runtime.package, 'pillow-rs');
 assert.equal(runtime.version, '12.2.0-alpha.5');
 assert.match(runtime.sourceCommit, /^[a-f0-9]{40}$/);
-assert.equal(runtime.sourceRef, 'v12.2.0-alpha.5');
+assert.equal(runtime.sourceRef, 'main');
 assert.equal(runtime.sourceRef, runtimeBuilder.match(/const sourceRef = '([^']+)';/)?.[1],
-  'the vendored runtime must name the exact upstream Pillow-RS tag pinned by the build script');
+  'the vendored runtime must name the upstream Pillow-RS ref pinned by the build script');
 assert.equal(runtime.sourceCommit, runtimeBuilder.match(/const sourceCommit = '([a-f0-9]{40})';/)?.[1],
   'the vendored runtime must be built from the exact Pillow-RS commit pinned by the build script');
+assert.equal(runtime.artifactSource, `Release-profile WASM compiled from upstream ${runtime.sourceRef} at commit ${runtime.sourceCommit} with the local JPEG/WebP quality patch and fixed build toolchain.`);
 assert.ok(readme.includes(`https://github.com/appunni-m/pillow-rs/commit/${runtime.sourceCommit}`),
   'README provenance must match the pinned Pillow-RS runtime commit');
 assert.equal(runtime.sourcePatch.path, 'patches/pillow-rs/encode-quality.patch');
