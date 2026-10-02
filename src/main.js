@@ -1453,6 +1453,21 @@ function installDesignToolToolbarKeyboard() {
 function setTool(tool) {
   if (state.shapeBuilder) exitShapeBuilderMode();
   if (state.objectIsolationMode || state.objectIsolationController || state.objectIsolationSourceId) resetObjectIsolationSession();
+  if (tool === 'comment') {
+    // Image crop and erase capture canvas taps ahead of the ordinary tool
+    // handler. Leaving either active made the Comment button look selected
+    // while preventing component/frame selection and comment placement.
+    if (state.interaction && ['image-crop', 'image-fill-crop', 'image-erase'].includes(state.interaction.kind)) {
+      cancelCanvasInteraction();
+    }
+    state.imageCropMode = false;
+    state.imageFillCropTarget = null;
+    state.imageCropDraftSelection = null;
+    syncImageCropOverlay();
+    state.imageEraseMode = false;
+    state.imageEraseDraft = null;
+    canvas.classList.remove('tool-image-erase');
+  }
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
   if (tool !== 'comment') {

@@ -163,6 +163,20 @@ test('Comment mode keeps object clicks for selection and uses explicit gestures 
     'a second click can still open the inactive pin thread after selecting its target');
 });
 
+test('entering Comment mode releases image-edit modes that otherwise capture canvas taps', () => {
+  const start = editorSource.indexOf('function setTool(tool) {');
+  const end = editorSource.indexOf('\nfunction applyEyedropperColor', start);
+  assert.ok(start >= 0 && end > start, 'the tool transition should be available for interaction');
+  const transition = editorSource.slice(start, end);
+  const commentEntry = transition.slice(transition.indexOf("if (tool === 'comment') {"), transition.indexOf("if (tool !== 'comment') {"));
+  assert.match(commentEntry, /\['image-crop', 'image-fill-crop', 'image-erase'\][\s\S]*?cancelCanvasInteraction\(\)/,
+    'an in-flight crop or erase gesture must be cancelled before Comment receives canvas taps');
+  assert.match(commentEntry, /state\.imageCropMode = false;[\s\S]*?state\.imageFillCropTarget = null;[\s\S]*?state\.imageCropDraftSelection = null;[\s\S]*?syncImageCropOverlay\(\)[\s\S]*?state\.imageEraseMode = false;[\s\S]*?state\.imageEraseDraft = null;[\s\S]*?canvas\.classList\.remove\('tool-image-erase'\)/,
+    'crop and erase modes should be fully released without changing committed image edits');
+  assert.ok(commentEntry.length && transition.indexOf('state.tool = tool;') > transition.indexOf("if (tool === 'comment') {"),
+    'Comment should take ownership only after conflicting canvas modes have been released');
+});
+
 test('local review threads support replies, resolution, deletion, and package round trips', () => {
   const document = createDocument();
   const thread = createCommentThread(document, { x: 24.5, y: -12, text: 'Check this spacing.' });
