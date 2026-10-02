@@ -9811,10 +9811,9 @@ function cutSelected() {
     return;
   }
   try {
-    const clipboard = createLayerClipboard(state.document, entries, { mode: 'cut', pageId: activePage().id });
-    const nextDocument = cloneDocument(state.document);
-    for (const entry of entries) if (!removeNode(nextDocument, entry.node.id, activePage().id)) throw new Error('One of the selected layers no longer exists.');
-    validateDocument(nextDocument);
+    const pageId = activePage().id;
+    const clipboard = createLayerClipboard(state.document, entries, { mode: 'cut', pageId });
+    const nextDocument = removeLayersAtomically(state.document, entries.map(entry => entry.node.id), pageId).document;
     checkpoint('Cut layers');
     state.document = nextDocument;
     clearPrototypeConnectPromptIfSourceMissing();

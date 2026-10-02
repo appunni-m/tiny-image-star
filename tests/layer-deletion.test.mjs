@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { addNode, createComponent, createComponentInstance, createComponentProperty, createDocument, createMaskGroup, createNode, findNode, parseDocument, releaseMaskGroup, serializeDocument, setComponentSlotContent, syncAllComponentInstances, validateDocument } from '../src/model.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from '../src/layer-deletion.js';
 import { hitTestPage } from '../src/renderer.js';
+import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
@@ -90,6 +91,51 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.equal(findNode(result.document, second.id), null);
   assert.ok(findNode(document, first.id), 'the active document is left untouched until deletion succeeds');
   assert.deepEqual(result.removedIds, [first.id, second.id]);
+});
+
+test('deleting from an auto-layout frame closes the gap and updates hug-content size', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    name: 'Hugging row', width: 300, height: 120,
+    autoLayout: createAutoLayout({ axis: 'horizontal', columnGap: 8, padding: 16, mainSizing: 'hug', crossSizing: 'hug' })
+  });
+  const first = createNode('rectangle', { name: 'Delete me', width: 40, height: 20 });
+  const second = createNode('rectangle', { name: 'Keep me', width: 40, height: 20 });
+  addNode(document, frame);
+  addNode(document, first, { parentId: frame.id });
+  addNode(document, second, { parentId: frame.id });
+  applyAutoLayout(frame);
+  assert.deepEqual({ width: frame.width, height: frame.height, firstX: first.x, secondX: second.x }, {
+    width: 120, height: 52, firstX: 16, secondX: 64
+  });
+
+  const result = removeLayersAtomically(document, [first.id]);
+  const updatedFrame = findNode(result.document, frame.id).node;
+  const remaining = findNode(result.document, second.id).node;
+  assert.equal(findNode(result.document, first.id), null);
+  assert.deepEqual({ width: updatedFrame.width, height: updatedFrame.height, remainingX: remaining.x }, {
+    width: 72, height: 52, remainingX: 16
+  }, 'the remaining child moves into place and the auto-layout frame hugs it');
+  assert.equal(validateDocument(parseDocument(serializeDocument(result.document))), true);
+});
+
+test('deleting the last child shrinks a hug-content auto-layout frame to its padding', () => {
+  const document = createDocument();
+  const frame = createNode('frame', {
+    width: 200, height: 100,
+    autoLayout: createAutoLayout({ axis: 'horizontal', padding: 12, mainSizing: 'hug', crossSizing: 'hug' })
+  });
+  const child = createNode('rectangle', { width: 30, height: 18 });
+  addNode(document, frame);
+  addNode(document, child, { parentId: frame.id });
+  applyAutoLayout(frame);
+  assert.deepEqual({ width: frame.width, height: frame.height }, { width: 54, height: 42 });
+
+  const result = removeLayersAtomically(document, [child.id]);
+  const updatedFrame = findNode(result.document, frame.id).node;
+  assert.deepEqual(updatedFrame.children, []);
+  assert.deepEqual({ width: updatedFrame.width, height: updatedFrame.height }, { width: 24, height: 24 });
+  assert.equal(validateDocument(result.document), true);
 });
 
 test('a deselected overflow child can be picked and deleted without removing its clipping frame', () => {

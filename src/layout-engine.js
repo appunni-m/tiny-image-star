@@ -321,6 +321,22 @@ export function applyAutoLayout(frame, resolvedSettings = null) {
   const persistNormalizedSettings = !resolvedSettings;
   const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
   for (const item of frame.children || []) constrainNodeSize(item);
+  if (settings.axis !== 'grid' && !flowItems.length) {
+    const horizontal = settings.axis === 'horizontal';
+    const padding = settings.padding;
+    if (settings.mainSizing === 'hug') {
+      const axis = horizontal ? 'Width' : 'Height';
+      frame[axis.toLowerCase()] = constrainSize(frame, axis, horizontal
+        ? padding.left + padding.right : padding.top + padding.bottom);
+    }
+    if (settings.crossSizing === 'hug') {
+      const axis = horizontal ? 'Height' : 'Width';
+      frame[axis.toLowerCase()] = constrainSize(frame, axis, horizontal
+        ? padding.top + padding.bottom : padding.left + padding.right);
+    }
+    if (persistNormalizedSettings) frame.autoLayout = settings;
+    return frame;
+  }
   if (settings.axis === 'grid') {
     applyGridAutoLayout(frame, settings);
     if (persistNormalizedSettings) frame.autoLayout = settings;
