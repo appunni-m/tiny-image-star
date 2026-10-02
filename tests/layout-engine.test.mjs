@@ -168,6 +168,30 @@ test('grid fixed, hug, and weighted fill columns reflow when the frame resizes',
   assert.deepEqual([fillOne.x, fillOne.width, fillTwo.x, fillTwo.width], [200, 113.33333333333333, 323.3333333333333, 226.66666666666666]);
 });
 
+test('grid fill tracks honor fixed and content-based minimum bounds before distributing remaining space', () => {
+  const frame = createNode('frame', {
+    width: 400, height: 100,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 2, rows: 1, padding: 0, columnGap: 0,
+      columnTracks: [
+        { mode: 'fill', weight: 1, minSize: 240 },
+        { mode: 'fill', weight: 1, minContent: true }
+      ] })
+  });
+  const fixedMinimum = createNode('rectangle', { width: 20, height: 20, layoutSizingX: 'fill', gridCell: { row: 1, column: 1 } });
+  const contentMinimum = createNode('rectangle', { width: 350, height: 20, layoutSizingX: 'fill', gridCell: { row: 1, column: 2 } });
+  frame.children.push(fixedMinimum, contentMinimum);
+
+  applyAutoLayout(frame);
+
+  assert.deepEqual([fixedMinimum.x, fixedMinimum.width, contentMinimum.x, contentMinimum.width], [0, 240, 240, 350],
+    'minimums that exceed the fair share are honored even when their combined extent overflows the frame');
+
+  frame.width = 600;
+  applyAutoLayout(frame);
+  assert.deepEqual([fixedMinimum.width, contentMinimum.width], [250, 350],
+    'after the minimum floors are satisfied, remaining space is distributed by fill weight');
+});
+
 test('grid track measurements match the laid out fixed, hug, and fill columns', () => {
   const frame = createNode('frame', {
     width: 400, height: 140,
@@ -369,8 +393,8 @@ test('grid auto layout and cell placement validate and survive document reload',
 test('grid track sizing validates, serializes, and remains optional for older documents', () => {
   const document = createDocument();
   const frame = createNode('frame', { autoLayout: createAutoLayout({ axis: 'grid', columns: 3, rows: 2,
-    columnTracks: [{ mode: 'fixed', value: 96 }, { mode: 'hug' }, { mode: 'fill', weight: 1.5 }],
-    rowTracks: [{ mode: 'hug' }, { mode: 'fill', weight: 2 }] }) });
+    columnTracks: [{ mode: 'fixed', value: 96, minSize: 72 }, { mode: 'hug' }, { mode: 'fill', weight: 1.5 }],
+    rowTracks: [{ mode: 'hug' }, { mode: 'fill', weight: 2, minContent: true }] }) });
   addNode(document, frame);
   assert.equal(validateDocument(parseDocument(serializeDocument(document))), true);
 
@@ -385,6 +409,15 @@ test('grid track sizing validates, serializes, and remains optional for older do
   const invalidWeight = structuredClone(document);
   invalidWeight.pages[0].children[0].autoLayout.rowTracks[1].weight = 0;
   assert.throws(() => validateDocument(invalidWeight), /Invalid auto layout/);
+
+  const invalidMinimum = structuredClone(document);
+  invalidMinimum.pages[0].children[0].autoLayout.columnTracks[0].minSize = -1;
+  assert.throws(() => validateDocument(invalidMinimum), /Invalid auto layout/);
+
+  const conflictingMinimums = structuredClone(document);
+  conflictingMinimums.pages[0].children[0].autoLayout.columnTracks[0].minContent = true;
+  conflictingMinimums.pages[0].children[0].autoLayout.columnTracks[0].minSize = 20;
+  assert.throws(() => validateDocument(conflictingMinimums), /Invalid auto layout/);
 
   const legacy = structuredClone(document);
   delete legacy.pages[0].children[0].autoLayout.columnTracks;

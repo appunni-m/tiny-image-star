@@ -14,12 +14,48 @@ const boundedTrackValue = (value, fallback = 0) => {
 function normalizedGridTrack(track, fallbackMode = 'fill') {
   const source = track && typeof track === 'object' && !Array.isArray(track) ? track : {};
   const mode = gridTrackModes.has(source.mode) ? source.mode : fallbackMode;
-  if (mode === 'fixed') return { mode, value: boundedTrackValue(source.value, 120) };
-  if (mode === 'fill') {
-    const weight = Number(source.weight);
-    return { mode, weight: Number.isFinite(weight) ? Math.max(0.01, Math.min(100_000, weight)) : 1 };
+  const normalized = mode === 'fixed'
+    ? { mode, value: boundedTrackValue(source.value, 120) }
+    : mode === 'fill'
+      ? { mode, weight: Number.isFinite(Number(source.weight)) ? Math.max(0.01, Math.min(100_000, Number(source.weight))) : 1 }
+      : { mode: 'hug' };
+  if (source.minContent === true) normalized.minContent = true;
+  else if (source.minSize != null) normalized.minSize = boundedTrackValue(source.minSize);
+  return normalized;
+}
+
+/*
+ * Imported grid tracks can have an intrinsic-content or fixed lower bound in
+ * addition to their fixed, hug, or fill sizing function. Keep that floor in
+ * the normalized model so layout, editing, and serialization use one value.
+ */
+function gridTrackMinimum(track, intrinsicSize) {
+  if (track.minContent) return intrinsicSize;
+  if (Number.isFinite(track.minSize)) return track.minSize;
+  return 0;
+}
+
+function allocateGridFillTracks(tracks, indices, sizes, minimums, available) {
+  const pending = new Set(indices);
+  let remaining = Math.max(0, available);
+  while (pending.size) {
+    const totalWeight = [...pending].reduce((sum, index) => sum + (tracks[index].weight || 1), 0);
+    const capped = [...pending].filter(index => {
+      const share = totalWeight > 0 ? remaining * (tracks[index].weight || 1) / totalWeight : 0;
+      return share < minimums[index];
+    });
+    if (!capped.length) {
+      for (const index of pending) {
+        sizes[index] = totalWeight > 0 ? remaining * (tracks[index].weight || 1) / totalWeight : 0;
+      }
+      break;
+    }
+    for (const index of capped) {
+      sizes[index] = minimums[index];
+      remaining = Math.max(0, remaining - minimums[index]);
+      pending.delete(index);
+    }
   }
-  return { mode: 'hug' };
 }
 
 export function normalizeGridTracks(value, count, fallbackMode = 'fill') {
@@ -178,7 +214,7 @@ function preferredTrackSize(item, axis) {
 
 function gridTrackSizes(definitions, count, available, gap, flowItems, placements, axis, fallbackMode = 'fill') {
   const tracks = Array.from({ length: count }, (_, index) => definitions[index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: fallbackMode }));
-  const sizes = tracks.map(track => track.mode === 'fixed' ? track.value : 0);
+  const intrinsicSizes = Array(count).fill(0);
 
   // Hug tracks first take the largest non-spanning child in each track.
   for (const item of flowItems) {
@@ -186,8 +222,9 @@ function gridTrackSizes(definitions, count, available, gap, flowItems, placement
     const span = axis === 'Width' ? cell.columnSpan : cell.rowSpan;
     if (span !== 1) continue;
     const trackIndex = (axis === 'Width' ? cell.column : cell.row) - 1;
-    if (tracks[trackIndex]?.mode !== 'hug') continue;
-    sizes[trackIndex] = Math.max(sizes[trackIndex], preferredTrackSize(item, axis));
+    const track = tracks[trackIndex];
+    if (track?.mode !== 'hug' && !track?.minContent) continue;
+    intrinsicSizes[trackIndex] = Math.max(intrinsicSizes[trackIndex], preferredTrackSize(item, axis));
   }
 
   // A spanning child can enlarge the hug tracks it crosses; fixed tracks stay fixed.
@@ -198,17 +235,25 @@ function gridTrackSizes(definitions, count, available, gap, flowItems, placement
     const start = (axis === 'Width' ? cell.column : cell.row) - 1;
     const end = Math.min(count, start + span);
     const indices = [];
-    for (let index = start; index < end; index += 1) if (tracks[index]?.mode === 'hug') indices.push(index);
+    for (let index = start; index < end; index += 1) {
+      if (tracks[index]?.mode === 'hug' || tracks[index]?.minContent) indices.push(index);
+    }
     if (!indices.length) continue;
-    const current = sizes.slice(start, end).reduce((sum, size) => sum + size, 0) + gap * Math.max(0, end - start - 1);
+    const current = intrinsicSizes.slice(start, end).reduce((sum, size) => sum + size, 0) + gap * Math.max(0, end - start - 1);
     const extra = Math.max(0, preferredTrackSize(item, axis) - current) / indices.length;
-    for (const index of indices) sizes[index] += extra;
+    for (const index of indices) intrinsicSizes[index] += extra;
   }
 
+  const sizes = tracks.map((track, index) => track.mode === 'fixed' ? track.value
+    : track.mode === 'hug' ? intrinsicSizes[index] : 0);
+  const minimums = tracks.map((track, index) => gridTrackMinimum(track, intrinsicSizes[index]));
+  for (let index = 0; index < tracks.length; index += 1) {
+    if (tracks[index].mode !== 'fill') sizes[index] = Math.max(sizes[index], minimums[index]);
+  }
   const fillIndices = tracks.map((track, index) => track.mode === 'fill' ? index : -1).filter(index => index >= 0);
-  const remaining = Math.max(0, available - gap * Math.max(0, count - 1) - sizes.reduce((sum, size) => sum + size, 0));
-  const totalWeight = fillIndices.reduce((sum, index) => sum + (tracks[index].weight || 1), 0);
-  if (totalWeight > 0) for (const index of fillIndices) sizes[index] = remaining * (tracks[index].weight || 1) / totalWeight;
+  const nonFillExtent = sizes.reduce((sum, size, index) => sum + (tracks[index].mode === 'fill' ? 0 : size), 0);
+  const fillAvailable = Math.max(0, available - gap * Math.max(0, count - 1) - nonFillExtent);
+  allocateGridFillTracks(tracks, fillIndices, sizes, minimums, fillAvailable);
   return sizes;
 }
 

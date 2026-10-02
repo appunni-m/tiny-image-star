@@ -1894,6 +1894,34 @@ try {
   assert(JSON.stringify(savedTrackFrame.autoLayout.columnTracks.map(track => track.value)) === JSON.stringify([95, 95, 90, 100]),
     'dragging a grid divider should resize both adjacent fixed tracks and persist the exact sizes');
 
+  let trackMinimum = app.querySelector('[data-prop="autoLayout.columnTracks.0.minimum"]');
+  assert(trackMinimum, 'grid track Inspector did not expose a minimum-size control');
+  trackMinimum.closest('.grid-track-minimum').open = true;
+  trackMinimum.value = 'fixed';
+  trackMinimum.dispatchEvent(new Event('input', { bubbles: true }));
+  trackMinimum.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'add a fixed-pixel grid track minimum');
+  let trackMinimumValue = app.querySelector('[data-prop="autoLayout.columnTracks.0.minimumValue"]');
+  assert(trackMinimumValue, 'fixed-pixel grid track minimum did not expose a pixel value field');
+  trackMinimumValue.value = '72';
+  trackMinimumValue.dispatchEvent(new Event('input', { bubbles: true }));
+  trackMinimumValue.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'set a fixed-pixel grid track minimum');
+  gridTrackRecords = await readStore('documents'); gridTrackRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedTrackFrame = flattenNodes(gridTrackRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === gridTrackFrame.id);
+  assert(savedTrackFrame.autoLayout.columnTracks[0].minSize === 72,
+    'the grid Inspector did not save the fixed-pixel track minimum');
+  trackMinimum = app.querySelector('[data-prop="autoLayout.columnTracks.0.minimum"]');
+  trackMinimum.value = 'hug';
+  trackMinimum.dispatchEvent(new Event('input', { bubbles: true }));
+  trackMinimum.dispatchEvent(new Event('change', { bubbles: true }));
+  await waitForSaveCycle(app, 'set a content-based grid track minimum');
+  gridTrackRecords = await readStore('documents'); gridTrackRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedTrackFrame = flattenNodes(gridTrackRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === gridTrackFrame.id);
+  assert(savedTrackFrame.autoLayout.columnTracks[0].minContent === true
+    && savedTrackFrame.autoLayout.columnTracks[0].minSize === undefined,
+  'the grid Inspector did not persist an exclusive content-based lower bound');
+
   dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
   frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);
   frameModeControl.value = lightMode.id; frameModeControl.dispatchEvent(new Event('change', { bubbles: true }));

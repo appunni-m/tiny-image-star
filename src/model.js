@@ -3504,9 +3504,14 @@ export function validateDocument(document) {
         const validFlowGap = value => Number.isFinite(Number(value)) && Number(value) >= (layout.axis === 'grid' ? 0 : -100_000) && Number(value) <= 100_000;
         const validGridTracks = tracks => tracks === undefined || (Array.isArray(tracks) && tracks.length <= 64 && tracks.every(track => {
           if (!track || typeof track !== 'object' || Array.isArray(track) || !['fixed', 'hug', 'fill'].includes(track.mode)) return false;
-          if (track.mode === 'fixed') return Number.isFinite(track.value) && track.value >= 0 && track.value <= 100_000 && track.weight === undefined;
-          if (track.mode === 'fill') return track.value === undefined && (track.weight === undefined || (Number.isFinite(track.weight) && track.weight > 0 && track.weight <= 100_000));
-          return track.value === undefined && track.weight === undefined;
+          const validMode = track.mode === 'fixed'
+            ? Number.isFinite(track.value) && track.value >= 0 && track.value <= 100_000 && track.weight === undefined
+            : track.mode === 'fill'
+              ? track.value === undefined && (track.weight === undefined || (Number.isFinite(track.weight) && track.weight > 0 && track.weight <= 100_000))
+              : track.value === undefined && track.weight === undefined;
+          const validMinimum = track.minSize === undefined || (Number.isFinite(track.minSize) && track.minSize >= 0 && track.minSize <= 100_000);
+          const validContentMinimum = track.minContent === undefined || track.minContent === true;
+          return validMode && validMinimum && validContentMinimum && !(track.minSize !== undefined && track.minContent === true);
         }));
         const padding = layout.padding == null ? {} : typeof layout.padding === 'object' ? layout.padding : { top: layout.padding, right: layout.padding, bottom: layout.padding, left: layout.padding };
         if (node.type !== 'frame' || !['horizontal', 'vertical', 'grid'].includes(layout.axis)

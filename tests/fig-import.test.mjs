@@ -1033,6 +1033,50 @@ test('imports editable manual grid tracks, placements, spans, gaps, padding, and
   assert.deepEqual([frame.children[1].x, frame.children[1].y], [340, 187], 'manual anchors use ordered track IDs and fill track weights');
 });
 
+test('imports fixed and hug grid track minimum bounds and applies them during reflow', () => {
+  const pageGuid = { sessionID: 8, localID: 1 };
+  const frameGuid = { sessionID: 8, localID: 2 };
+  const column1 = { sessionID: 8, localID: 10 };
+  const column2 = { sessionID: 8, localID: 11 };
+  const row1 = { sessionID: 8, localID: 12 };
+  const parsed = {
+    nodes: [
+      node('CANVAS', 1, null, '', { guid: pageGuid }),
+      node('FRAME', 2, pageGuid, '!', {
+        guid: frameGuid, name: 'Bounded grid', size: { x: 600, y: 100 }, stackMode: 'GRID',
+        gridRowGap: 0, gridColumnGap: 0, gridAutoTracks: 0, gridReflowEnabled: false,
+        gridColumns: { entries: [{ id: column1, position: 'a' }, { id: column2, position: 'b' }] },
+        gridRows: { entries: [{ id: row1, position: 'a' }] },
+        gridColumnsSizing: { entries: [
+          { id: column1, trackSize: { minSizing: { type: 'FIXED', value: 240 }, maxSizing: { type: 'FLEX', value: 1 } } },
+          { id: column2, trackSize: { minSizing: { type: 'HUG' }, maxSizing: { type: 'FLEX', value: 1 } } }
+        ] },
+        gridRowsSizing: { entries: [{ id: row1, trackSize: { minSizing: { type: 'HUG' }, maxSizing: { type: 'HUG' } } }] }
+      }),
+      node('RECTANGLE', 3, frameGuid, 'a', {
+        name: 'Fixed minimum cell', size: { x: 20, y: 20 }, gridRowAnchor: row1, gridColumnAnchor: column1
+      }),
+      node('RECTANGLE', 4, frameGuid, 'b', {
+        name: 'Content minimum cell', size: { x: 350, y: 20 }, gridRowAnchor: row1, gridColumnAnchor: column2
+      })
+    ],
+    images: new Map(), message: { blobs: [] }
+  };
+  const imported = convertFigDocument(parsed, { fileName: 'bounded-grid.fig' });
+  const frame = imported.document.pages[0].children[0];
+
+  assert.deepEqual(frame.autoLayout.columnTracks, [
+    { mode: 'fill', weight: 1, minSize: 240 },
+    { mode: 'fill', weight: 1, minContent: true }
+  ]);
+  assert.equal(imported.report.flattenedTypes.AUTO_LAYOUT_GRID_TRACK_BOUNDS, undefined,
+    'supported fixed-pixel and intrinsic-content bounds should not be reported as approximations');
+
+  applyAutoLayout(frame);
+  assert.deepEqual(frame.children.map(child => [child.x, child.width]), [[0, 20], [250, 350]],
+    'the minimum-constrained track freezes at its content floor and the other fill track receives the remainder');
+});
+
 test('imports row-major grid flow and automatic hug rows', () => {
   const pageGuid = { sessionID: 5, localID: 1 };
   const frameGuid = { sessionID: 5, localID: 2 };

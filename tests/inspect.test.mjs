@@ -295,6 +295,24 @@ test('Inspect output preserves authored fixed, hug, and weighted grid tracks and
   assert.match(output.css, /max-width: 320px;/);
 });
 
+test('Inspect output preserves fixed and content-based grid track minimum bounds', () => {
+  const document = createDocument();
+  const grid = createNode('frame', {
+    name: 'Bounded grid', width: 600, height: 200,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 3, rows: 1, padding: 0,
+      columnTracks: [
+        { mode: 'fill', weight: 1, minSize: 120 },
+        { mode: 'fill', weight: 2, minContent: true },
+        { mode: 'fixed', value: 200, minSize: 80 }
+      ] })
+  });
+  addNode(document, grid);
+
+  const output = buildInspectOutput(document, [findNode(document, grid.id)]);
+
+  assert.match(output.css, /grid-template-columns: minmax\(120px, 1fr\) minmax\(max-content, 2fr\) minmax\(80px, 200px\);/);
+});
+
 test('Inspect auto rows ignore hidden and absolute children when choosing explicit CSS tracks', () => {
   const document = createDocument();
   const grid = createNode('frame', { width: 300, height: 200, autoLayout: { axis: 'grid', columns: 2, rows: 'auto', rowTracks: [{ mode: 'hug' }] } });

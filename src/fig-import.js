@@ -914,12 +914,27 @@ function mapGridTrackSize(source, report, name) {
   if (Boolean(minimum) !== Boolean(maximum)) {
     warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This grid track has only one valid min/max sizing function; the available value was used.');
   }
-  if (minimum && maximum && (minimum.mode !== maximum.mode
-    || (minimum.mode === 'fixed' && minimum.value !== maximum.value)
-    || (minimum.mode === 'fill' && minimum.weight !== maximum.weight))) {
-    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This min/max grid track bound cannot be represented locally; it was approximated with the maximum sizing function.');
+  if (!minimum || !maximum) return maximum || minimum;
+  const sameSizing = minimum.mode === maximum.mode
+    && (minimum.mode === 'fixed' ? minimum.value === maximum.value
+      : minimum.mode === 'fill' ? minimum.weight === maximum.weight : true);
+  if (sameSizing) return maximum;
+
+  // Local tracks can preserve fixed-pixel and content-based lower bounds
+  // alongside the maximum sizing function. A flexible lower bound with a
+  // different maximum is not yet modeled as a fractional interval.
+  if (minimum.mode === 'fill') {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This flexible minimum track bound cannot be represented locally; it was approximated with the maximum sizing function.');
+    return maximum;
   }
-  return maximum || minimum;
+  if (minimum.mode === 'fixed' && maximum.mode === 'fixed' && minimum.value > maximum.value) {
+    warn(report, 'flattened', 'AUTO_LAYOUT_GRID_TRACK_BOUNDS', name, 'This grid track minimum exceeds its fixed maximum; the maximum sizing function was used.');
+    return maximum;
+  }
+  return {
+    ...maximum,
+    ...(minimum.mode === 'fixed' ? { minSize: minimum.value } : { minContent: true })
+  };
 }
 
 function gridTrackDefinitions(source, property, orderedTracks, report, name) {

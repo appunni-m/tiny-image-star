@@ -99,9 +99,13 @@ function autoLayoutDeclarations(layout, children = []) {
   if (layout.axis === 'grid') {
     const trackCss = (track, fallback = 'fill') => {
       const mode = ['fixed', 'hug', 'fill'].includes(track?.mode) ? track.mode : fallback;
-      if (mode === 'fixed') return `${number(track.value)}px`;
-      if (mode === 'hug') return 'max-content';
-      return `minmax(0, ${number(track.weight || 1)}fr)`;
+      const maximum = mode === 'fixed' ? `${number(track.value)}px`
+        : mode === 'hug' ? 'max-content' : `${number(track.weight || 1)}fr`;
+      if (track?.minContent) return `minmax(max-content, ${maximum})`;
+      if (Number.isFinite(track?.minSize)) return `minmax(${number(track.minSize)}px, ${maximum})`;
+      if (mode === 'fixed') return maximum;
+      if (mode === 'hug') return maximum;
+      return `minmax(0, ${maximum})`;
     };
     const columnCount = Math.max(1, Math.min(64, Math.floor(Number(layout.columns) || 1)));
     const columns = Array.isArray(layout.columnTracks)

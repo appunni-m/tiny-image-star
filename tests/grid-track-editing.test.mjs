@@ -151,6 +151,31 @@ test('reordering row tracks remaps manual cells and rejects moves beyond the gri
   assert.deepEqual([first.gridCell.row, second.gridCell.row, third.gridCell.row], [2, 1, 3]);
 });
 
+test('track insertion and reordering preserve imported minimum bounds', () => {
+  const frame = createNode('frame', {
+    width: 400, height: 100,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 2, rows: 1, autoPositioning: false, padding: 0,
+      columnTracks: [
+        { mode: 'fill', weight: 1, minSize: 120 },
+        { mode: 'fill', weight: 1, minContent: true }
+      ] })
+  });
+
+  assert.deepEqual(moveGridTrack(frame, 'columnTracks', 0, 1), {
+    changed: true, movedTrackCount: 1, fromIndex: 0, toIndex: 1
+  });
+  assert.deepEqual(frame.autoLayout.columnTracks, [
+    { mode: 'fill', weight: 1, minContent: true },
+    { mode: 'fill', weight: 1, minSize: 120 }
+  ]);
+  assert.equal(addGridTrack(frame, 'columnTracks'), true);
+  assert.deepEqual(frame.autoLayout.columnTracks, [
+    { mode: 'fill', weight: 1, minContent: true },
+    { mode: 'fill', weight: 1, minSize: 120 },
+    { mode: 'fill', weight: 1 }
+  ]);
+});
+
 test('resizing adjacent fixed tracks preserves their combined size and rounds to hundredths', () => {
   const frame = createNode('frame', {
     width: 320, height: 100,
@@ -331,4 +356,15 @@ test('grid track controls disable when the frame or any ancestor is locked', () 
   assert.match(autoLayout, /const trackLocked = node\.locked \|\| Boolean\(entry\?\.parents\.some\(parent => parent\.locked\)\)/);
   assert.match(autoLayout, /gridTrackEditor\(node, 'columnTracks',[\s\S]*?trackLocked\)/);
   assert.match(autoLayout, /gridTrackEditor\(node, 'rowTracks',[\s\S]*?trackLocked\)/);
+});
+
+test('grid track Inspector exposes a touch-sized editable lower bound', () => {
+  const editorStart = editorSource.indexOf('function gridTrackEditor(');
+  const editorEnd = editorSource.indexOf('\nfunction visibleGridRowCount', editorStart);
+  const editor = editorSource.slice(editorStart, editorEnd);
+  assert.match(editor, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.minimum"/);
+  assert.match(editor, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.minimumValue"/);
+  assert.match(editorSource, /function updateAutoLayoutGridTrack\(node, key, value\)[\s\S]*?minimumValue/);
+  assert.match(editorSource, /track\.minContent \? \{ minContent: true \}[\s\S]*?track\.minSize/,
+    'changing a track sizing function should preserve its imported lower bound');
 });

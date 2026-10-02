@@ -565,6 +565,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .grid-track-editor { margin-top: 8px; border-top: 1px solid var(--line); }
 .grid-track-editor > summary { min-height: 36px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .grid-track-list { display: grid; gap: 6px; }
+.grid-track-entry { min-width: 0; display: grid; gap: 3px; }
 .grid-track-row { min-width: 0; display: grid; grid-template-columns: minmax(40px, .6fr) minmax(80px, 1.1fr) minmax(68px, .9fr) 34px 34px; align-items: center; gap: 4px; }
 .grid-track-name { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .grid-track-row .select-field { width: 100%; height: 34px; padding-inline: 5px; }
@@ -574,6 +575,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .grid-track-value { min-width: 0; height: 34px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9px; }
 .grid-track-value input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; text-align: right; }
 .grid-track-content { grid-column: 3; overflow: hidden; color: var(--muted); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.grid-track-minimum { min-width: 0; margin-left: 7px; padding-left: 7px; border-left: 2px solid var(--line); }
+.grid-track-minimum > summary { min-height: 24px; display: flex; align-items: center; color: var(--muted); cursor: pointer; font-size: 9px; user-select: none; }
+.grid-track-minimum-controls { max-width: 260px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; padding: 2px 0 5px; }
+.grid-track-minimum-controls label { min-width: 0; display: grid; gap: 3px; color: var(--muted); font-size: 9px; }
+.grid-track-minimum-controls .select-field { width: 100%; height: 32px; }
+.grid-track-bound-value { min-width: 0; height: 32px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px; padding: 0 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 9px; }
+.grid-track-bound-value input { width: 100%; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; text-align: right; }
 .fill-row { display: flex; align-items: center; gap: 7px; height: 29px; }
 .color-swatch { position: relative; width: 24px; height: 24px; overflow: hidden; border: 1px solid #d9d9d9; border-radius: 5px; background: conic-gradient(#fff 25%, #ddd 0 50%, #fff 0 75%, #ddd 0) 0 0/8px 8px; }
 .color-swatch input { position: absolute; inset: -5px; width: 34px; height: 34px; opacity: 0; cursor: pointer; }
@@ -1083,6 +1091,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .grid-track-value { grid-template-columns: auto minmax(0, 1fr); padding-inline: 4px; }
   .grid-track-value input { min-height: 38px; font-size: 16px; }
   .grid-track-content { font-size: 10px; }
+  .grid-track-minimum > summary { min-height: 36px; font-size: 11px; }
+  .grid-track-minimum-controls .select-field, .grid-track-bound-value { height: 42px; min-height: 42px; font-size: 12px; }
+  .grid-track-bound-value input { min-height: 38px; font-size: 16px; }
   .inspect-panel { gap: 10px; padding: 10px; }
   .inspector-tabs { justify-content: space-between; }
   .inspector-tab { min-width: 0; padding: 0 4px; font-size: 10px; }
@@ -1414,6 +1425,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .grid-track-row .select-field, .grid-track-value { min-height: 44px; height: 44px; }
   .grid-track-delete, .grid-track-move-menu-button { box-sizing: border-box; width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .grid-track-value input { min-height: 42px; font-size: 16px; }
+  .grid-track-minimum > summary { min-height: 44px; }
+  .grid-track-minimum-controls .select-field, .grid-track-bound-value { min-height: 44px; height: 44px; }
+  .grid-track-bound-value input { min-height: 42px; font-size: 16px; }
   .corner-radius-controls .property-field { height: 44px; min-height: 44px; }
   .corner-radius-controls .property-field input { min-height: 42px; font-size: 16px; }
   .property-section :where(button:not(.tiny-icon-button)) { min-height: 44px; }
@@ -1973,6 +1987,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .design-file-actions button { min-height: 44px; }
   .grid-track-row .select-field, .grid-track-value { min-height: 44px; height: 44px; }
   .grid-track-value input { min-height: 42px; font-size: 16px; }
+  .grid-track-minimum > summary { min-height: 44px; }
+  .grid-track-minimum-controls .select-field, .grid-track-bound-value { min-height: 44px; height: 44px; }
+  .grid-track-bound-value input { min-height: 42px; font-size: 16px; }
   .component-slot-reset,
   .local-font-remove,
   .variable-remove,

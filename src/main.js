@@ -2014,15 +2014,22 @@ function gridTrackEditor(node, axis, count, tracks, fallbackMode, locked = node.
   const rows = Array.from({ length: Math.max(1, Math.min(64, count)) }, (_, index) => {
     const track = tracks[index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: fallbackMode });
     const mode = ['fixed', 'hug', 'fill'].includes(track.mode) ? track.mode : fallbackMode;
+    const minimum = track.minContent ? 'hug' : Number.isFinite(track.minSize) ? 'fixed' : 'none';
     const modeOptions = [['fixed', 'Fixed'], ['hug', 'Hug content'], ['fill', 'Fill available']]
       .map(([value, label]) => `<option value="${value}"${mode === value ? ' selected' : ''}>${label}</option>`).join('');
     const valueControl = mode === 'hug'
       ? '<span class="grid-track-content">Content size</span>'
-      : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${node.locked ? ' disabled' : ''}/></label>`;
+      : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${locked ? ' disabled' : ''}/></label>`;
+    const minimumOptions = [['none', 'None'], ['fixed', 'Pixels'], ['hug', 'Hug content']]
+      .map(([value, label]) => `<option value="${value}"${minimum === value ? ' selected' : ''}>${label}</option>`).join('');
+    const minimumValue = minimum === 'fixed'
+      ? `<label class="grid-track-bound-value"><span>Minimum px</span><input type="number" min="0" max="100000" step="0.01" value="${formatInspectorNumber(track.minSize)}" data-prop="autoLayout.${axis}.${index}.minimumValue" aria-label="${shortTitle} ${index + 1} minimum size in pixels"${locked ? ' disabled' : ''}/></label>`
+      : '';
+    const minimumControl = `<details class="grid-track-minimum"><summary>${minimum === 'fixed' ? `Minimum · ${formatInspectorNumber(track.minSize)} px` : minimum === 'hug' ? 'Minimum · Hug content' : 'Add minimum size'}</summary><div class="grid-track-minimum-controls"><label><span>Minimum</span><select class="select-field" data-prop="autoLayout.${axis}.${index}.minimum" aria-label="${shortTitle} ${index + 1} minimum sizing"${locked ? ' disabled' : ''}>${minimumOptions}</select></label>${minimumValue}</div></details>`;
     const deleteButton = `<button class="tiny-icon-button grid-track-delete" type="button" data-action="delete-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Delete ${shortTitle.toLowerCase()} ${index + 1} and its contents" title="Delete ${shortTitle.toLowerCase()} and its contents"${locked || count <= 1 ? ' disabled' : ''}>×</button>`;
     const moveRange = gridTrackMoveRange(node, axis, index);
     const moveButton = `<button class="tiny-icon-button grid-track-move-menu-button" type="button" data-action="grid-track-move-menu" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Reorder ${shortTitle.toLowerCase()} ${index + 1}${moveRange?.end > moveRange?.start ? ' with its spanning tracks' : ''}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="Reorder track"${locked ? ' disabled' : ''}>↕</button>`;
-    return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}${moveButton}${deleteButton}</div>`;
+    return `<div class="grid-track-entry"><div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}${moveButton}${deleteButton}</div>${minimumControl}</div>`;
   }).join('');
   const addButton = `<button class="add-fill grid-track-add" type="button" data-action="add-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" aria-label="Add ${trackKind}"${locked || count >= 64 ? ' disabled' : ''}>＋ Add ${trackKind}</button>`;
   return `<details class="grid-track-editor"><summary>${title} sizing</summary><div class="grid-track-list">${rows}</div>${addButton}</details>`;
@@ -2033,7 +2040,7 @@ function visibleGridRowCount(node, layout) {
     .reduce((max, child) => Math.max(max, (child.gridCell?.row || 1) + (child.gridCell?.rowSpan || 1) - 1), 1);
 }
 function updateAutoLayoutGridTrack(node, key, value) {
-  const match = /^(columnTracks|rowTracks)\.(\d+)\.(mode|value|weight)$/.exec(key);
+  const match = /^(columnTracks|rowTracks)\.(\d+)\.(mode|value|weight|minimum|minimumValue)$/.exec(key);
   if (!match) return false;
   const [, axis, rawIndex, field] = match;
   const index = Number(rawIndex);
@@ -2042,15 +2049,25 @@ function updateAutoLayoutGridTrack(node, key, value) {
   node.autoLayout[axis] ||= [];
   let track = node.autoLayout[axis][index] || (fallbackMode === 'fill' ? { mode: 'fill', weight: 1 } : { mode: 'hug' });
   if (field === 'mode') {
+    const minimum = track.minContent ? { minContent: true }
+      : Number.isFinite(track.minSize) ? { minSize: track.minSize } : {};
     track = value === 'fixed'
-      ? { mode: 'fixed', value: track.mode === 'fixed' ? track.value : 120 }
+      ? { mode: 'fixed', value: track.mode === 'fixed' ? track.value : 120, ...minimum }
       : value === 'fill'
-        ? { mode: 'fill', weight: track.mode === 'fill' ? track.weight : 1 }
-        : { mode: 'hug' };
+        ? { mode: 'fill', weight: track.mode === 'fill' ? track.weight : 1, ...minimum }
+        : { mode: 'hug', ...minimum };
   } else if (field === 'value' && track.mode === 'fixed') {
     track.value = Math.max(0, Math.min(100_000, Number.isFinite(Number(value)) ? Number(value) : 120));
   } else if (field === 'weight' && track.mode === 'fill') {
     track.weight = Math.max(0.01, Math.min(100_000, Number.isFinite(Number(value)) ? Number(value) : 1));
+  } else if (field === 'minimum') {
+    delete track.minContent;
+    delete track.minSize;
+    if (value === 'hug') track.minContent = true;
+    else if (value === 'fixed') track.minSize = 0;
+  } else if (field === 'minimumValue' && Number.isFinite(Number(value))) {
+    delete track.minContent;
+    track.minSize = Math.max(0, Math.min(100_000, Number(value)));
   }
   node.autoLayout[axis][index] = track;
   return true;
