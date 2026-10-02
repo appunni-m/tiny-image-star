@@ -4830,6 +4830,23 @@ function onCanvasPointerDown(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  // The Comments inspector is a review context, even when another canvas
+  // tool remains selected. Resolve an object hit before drawing tools consume
+  // the click; keep pins available for opening their threads.
+  if (event.button === 0 && state.inspectorTab === 'comments' && !state.pendingCommentAnchor) {
+    const commentPin = commentPinAt(world);
+    const target = commentPin ? null : commentTargetAt(world, { preferComponent: !event.shiftKey });
+    if (target) {
+      state.activeCommentId = null;
+      state.commentPlacementArmed = false;
+      setSelection([target.id]);
+      if (innerWidth <= 820) closeMobilePanels({ restoreFocus: false });
+      setInspectorTab('design');
+      showToast(`Selected “${target.name}”.`);
+      event.preventDefault();
+      return;
+    }
+  }
   if (state.shapeBuilder && event.button === 0) {
     const interaction = {
       kind: 'shape-builder', pointerId: event.pointerId,

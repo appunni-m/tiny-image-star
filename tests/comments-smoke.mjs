@@ -69,6 +69,26 @@ try {
   assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'), 'Selecting an object should expose its Design properties while leaving Comment mode active.');
   assert(!app.querySelector('#comment-draft'), 'Selecting a component should not create a comment draft.');
   assert(app.querySelector('[data-tool="comment"]')?.classList.contains('is-selected'), 'Selecting a frame should keep Comment mode active.');
+  click(app.querySelector('[data-inspector-tab="comments"]'));
+  click(app.querySelector('[data-tool="frame"]'));
+  const reviewClick = (pointerId, shiftKey = false) => new app.defaultView.PointerEvent('pointerdown', {
+    bubbles: true, cancelable: true, button: 0, pointerId, pointerType: 'mouse', shiftKey,
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+  });
+  canvas.dispatchEvent(reviewClick(75));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 75, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'),
+    'With Comments open and Frame active, clicking artwork should select its component instead of drawing a frame.');
+  assert(app.querySelector('[data-tool="frame"]')?.classList.contains('is-selected'),
+    'Review selection should preserve the active canvas tool.');
+  assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'),
+    'Review selection should reveal the selected component properties.');
+  click(app.querySelector('[data-inspector-tab="comments"]'));
+  canvas.dispatchEvent(reviewClick(76, true));
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 76, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${nestedFrame.id}"]`)?.classList.contains('is-selected'),
+    'Shift-click from the Comments panel should select a nested frame under the same artwork.');
+  assert(!app.querySelector('#comment-draft'), 'Selecting artwork while reviewing comments should not start a new comment.');
   const initialZoom = Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100;
   const emptyFramePoint = new app.defaultView.PointerEvent('pointerdown', {
     bubbles: true, cancelable: true, button: 0, pointerId: 94, pointerType: 'mouse',
