@@ -156,11 +156,13 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
     else ctx.strokeStyle = rgba(color, fillOpacity);
     const fontSize = getNodePropertyValue(document, node, 'fontSize') || 24;
     const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing') || 0;
-    return drawTextAlongPath(ctx, transformTextCase(text, node.textCase || 'none'), node, x, y,
-      value => measureTrackedText(ctx, value, letterSpacing), {
+    return drawTextAlongPath(ctx, text, node, x, y,
+      value => measureTrackedText(ctx, value), {
         fillOpacity, paintMode, fontSize, letterSpacing,
         fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
-        fontFamily: node.fontFamily || 'Arial, sans-serif'
+        fontFamily: node.fontFamily || 'Arial, sans-serif', color,
+        overrideRunColors: overrideRunColors || colorOverride !== undefined,
+        includeDecorations
       });
   }
   const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;

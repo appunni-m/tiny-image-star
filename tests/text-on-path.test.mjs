@@ -96,6 +96,37 @@ test('canvas rendering positions editable graphemes on the path and reverses ori
   assert.equal(calls.filter(call => call[0] === 'text').length, 8, 'open paths stop at their endpoint instead of piling glyphs there');
 });
 
+test('text on a path keeps rich-run type, color, tracking, baseline, and text-case styles', () => {
+  const draws = [];
+  const measured = [];
+  let decorationStrokes = 0;
+  const ctx = {
+    font: '', fillStyle: '', strokeStyle: '', lineWidth: 0, globalAlpha: 1, textBaseline: '', textAlign: '',
+    save() {}, restore() {}, translate() {}, rotate() {}, scale() {}, beginPath() {}, moveTo() {}, lineTo() {},
+    stroke() { decorationStrokes += 1; },
+    fillText(text, _x, y) { draws.push({ text, font: this.font, fillStyle: this.fillStyle, y }); }
+  };
+  const node = createNode('text', {
+    text: 'Bold italic', textCase: 'uppercase', width: 160, height: 32,
+    textRuns: [
+      { text: 'Bold', fontFamily: 'Alpha', fontSize: 18, fontWeight: 700, color: '#ff0000', letterSpacing: 2, baselineShift: 3, textDecoration: 'underline' },
+      { text: ' italic', fontFamily: 'Beta', fontSize: 12, fontStyle: 'italic', color: '#0000ff' }
+    ],
+    textPath: { width: 300, height: 20, points: [{ x: 0, y: .5 }, { x: 1, y: .5 }], closed: false, startOffset: 0, flipped: false }
+  });
+  assert.equal(drawTextAlongPath(ctx, node.text, node, 0, 0, (value, style) => {
+    measured.push({ value, family: style.fontFamily, tracking: style.letterSpacing });
+    return 8;
+  }, { fillOpacity: .5, color: '#111111' }), true);
+
+  assert.equal(draws.map(item => item.text).join(''), 'BOLD ITALIC');
+  assert.ok(draws.slice(0, 4).every(item => item.font === '700 18px Alpha' && item.fillStyle === '#ff0000' && item.y === -3));
+  assert.ok(draws.slice(4).every(item => item.font === 'italic 400 12px Beta' && item.fillStyle === '#0000ff'));
+  assert.equal(measured[0].tracking, 2);
+  assert.equal(measured[0].family, 'Alpha');
+  assert.equal(decorationStrokes, 4, 'the underline follows each styled grapheme on its local path tangent');
+});
+
 test('SVG exports editable textPath markup with a stable geometry reference and flip control', () => {
   const text = createNode('text', {
     id: 'curve-label', text: 'A & B', width: 100, height: 40, fontSize: 16,
@@ -107,4 +138,25 @@ test('SVG exports editable textPath markup with a stable geometry reference and 
   assert.match(svg, /startOffset="14"/);
   assert.match(svg, /A &amp; B/);
   assert.match(svg, /d="M 0 20 C 25 -?0 25 -?0 50 20/);
+});
+
+test('SVG textPath exports preserve rich spans and measure their independent styles', () => {
+  const text = createNode('text', {
+    id: 'rich-curve-label', text: 'Bold & light', width: 160, height: 40,
+    textRuns: [
+      { text: 'Bold & ', fontFamily: 'Alpha', fontSize: 18, fontWeight: 700, color: '#ff0000', textDecoration: 'underline' },
+      { text: 'light', fontFamily: 'Beta', fontSize: 12, fontStyle: 'italic', color: '#0000ff', baselineShift: 2 }
+    ],
+    textPath: { ...createTextPathGeometry(pathNode()), startOffset: 4 }
+  });
+  const measuredFamilies = [];
+  const svg = exportNodeToSvg(text, {
+    measureText: (value, node) => {
+      measuredFamilies.push(node.textPathRunStyle?.fontFamily || 'base');
+      return [...String(value)].length * (node.textPathRunStyle?.fontSize || 8);
+    }
+  });
+  assert.match(svg, /<textPath[^>]*><tspan font-family="Alpha" font-size="18" font-weight="700"[^>]*fill="#ff0000" text-decoration="underline">Bold &amp; <\/tspan>/);
+  assert.match(svg, /<tspan font-family="Beta" font-size="12"[^>]*fill="#0000ff" baseline-shift="2px">light<\/tspan>/);
+  assert.deepEqual([...new Set(measuredFamilies.filter(family => family !== 'base'))], ['Alpha', 'Beta']);
 });

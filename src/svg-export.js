@@ -14,7 +14,7 @@ import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
-import { flattenTextPath, textPathSvgData } from './text-on-path.js';
+import { flattenTextPath, textPathCharacters, textPathSvgData } from './text-on-path.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -1017,12 +1017,42 @@ function textMarkup(node, document, measureText, {
       : '') : ' stroke="none"';
     const transform = ['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? ` text-transform="${node.textCase}"` : '';
     const side = node.textPath.flipped ? ' side="right"' : '';
-    const text = transformTextCase(getNodePropertyValue(document, node, 'text'), node.textCase || 'none');
+    const sourceText = String(getNodePropertyValue(document, node, 'text') ?? '');
+    const text = transformTextCase(sourceText, node.textCase || 'none');
     const length = flattenTextPath(node.textPath).at(-1)?.distance || 0;
-    const measured = typeof measureText === 'function' ? Number(measureText(text, node)) : [...text].length * fontSize * .6;
+    const currentRuns = Array.isArray(node.textRuns)
+      && node.textRuns.map(run => run.text).join('') === sourceText;
+    const measured = typeof measureText === 'function'
+      ? currentRuns
+        ? textPathCharacters(sourceText, { ...node, fontSize, fontWeight, letterSpacing }).reduce((width, item) => {
+          const glyphWidth = Number(measureText(item.text, { ...node, textPathRunStyle: item.style }));
+          return width + glyphWidth + item.style.letterSpacing;
+        }, 0)
+        : Number(measureText(text, node))
+      : [...text].length * fontSize * .6;
     const alignmentOffset = node.align === 'center' ? (length - measured) / 2 : node.align === 'right' ? length - measured : 0;
     const startOffset = number((Number(node.textPath.startOffset) || 0) + alignmentOffset);
-    return `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(node.fontFamily || 'Arial, sans-serif')}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle || 'normal'}" letter-spacing="${number(letterSpacing)}" fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${escapeXml(text)}</textPath></text>`;
+    const pathText = currentRuns ? node.textRuns.map(run => {
+      const runFamily = run.fontFamily || node.fontFamily || 'Arial, sans-serif';
+      const runSize = Number(run.fontSize ?? fontSize);
+      const runWeight = run.fontWeight ?? fontWeight;
+      const runStyle = run.fontStyle === 'italic' || (!Object.hasOwn(run, 'fontStyle') && node.fontStyle === 'italic') ? 'italic' : 'normal';
+      const runSpacing = Number(run.letterSpacing ?? letterSpacing);
+      const rawColor = fillValue === undefined ? (run.color || getNodeColor(document, node, 'text')) : fillValue;
+      const runColor = rawColor === 'transparent' ? 'none' : rawColor;
+      if (runColor !== 'none' && !isSvgPaintValue(runColor)) {
+        throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
+      }
+      const runDecoration = ['underline', 'line-through'].includes(run.textDecoration)
+        ? ` text-decoration="${run.textDecoration}"` : '';
+      const baselineShift = Number(run.baselineShift || 0);
+      if (!Number.isFinite(baselineShift) || Math.abs(baselineShift) > MAX_TEXT_RUN_BASELINE_SHIFT) {
+        throw new TypeError(`SVG export requires a bounded baseline shift on layer ${node.name || node.id || '(unnamed)'}.`);
+      }
+      const baseline = baselineShift ? ` baseline-shift="${number(baselineShift)}px"` : '';
+      return `<tspan font-family="${escapeXml(runFamily)}" font-size="${number(runSize)}" font-weight="${escapeXml(runWeight)}" font-style="${runStyle}" letter-spacing="${number(runSpacing)}" fill="${escapeXml(runColor)}"${runDecoration}${baseline}>${escapeXml(run.text)}</tspan>`;
+    }).join('') : escapeXml(text);
+    return `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(node.fontFamily || 'Arial, sans-serif')}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle || 'normal'}" letter-spacing="${number(letterSpacing)}" fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${pathText}</textPath></text>`;
   }
   const align = node.align === 'center' ? 'middle' : node.align === 'right' ? 'end' : 'start';
   const anchorX = node.align === 'center' ? Number(node.width) / 2 : node.align === 'right' ? Number(node.width) : 0;

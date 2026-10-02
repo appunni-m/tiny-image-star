@@ -12275,10 +12275,13 @@ function createSvgTextMeasurer() {
   const context = document.createElement('canvas').getContext('2d');
   if (!context) return undefined;
   return (text, node) => {
-    const fontSize = getNodePropertyValue(state.document, node, 'fontSize') || 24;
-    const fontWeight = getNodePropertyValue(state.document, node, 'fontWeight') || 400;
-    const letterSpacing = getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
-    context.font = `${node.fontStyle === 'italic' ? 'italic ' : ''}${fontWeight} ${fontSize}px ${node.fontFamily || 'Arial, sans-serif'}`;
+    const run = node.textPathRunStyle || null;
+    const fontSize = run?.fontSize ?? getNodePropertyValue(state.document, node, 'fontSize') ?? 24;
+    const fontWeight = run?.fontWeight ?? getNodePropertyValue(state.document, node, 'fontWeight') ?? 400;
+    const letterSpacing = run?.letterSpacing ?? getNodePropertyValue(state.document, node, 'letterSpacing') ?? 0;
+    const fontStyle = run?.fontStyle ?? node.fontStyle;
+    const fontFamily = run?.fontFamily ?? node.fontFamily;
+    context.font = `${fontStyle === 'italic' ? 'italic ' : ''}${fontWeight} ${fontSize}px ${fontFamily || 'Arial, sans-serif'}`;
     return measureTrackedText(context, text, letterSpacing);
   };
 }

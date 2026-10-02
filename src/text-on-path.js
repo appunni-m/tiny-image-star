@@ -132,6 +132,50 @@ export function pointAtTextPathDistance(path, distance, tolerance = 1) {
   return createTextPathSampler(path, tolerance)?.at(distance) || null;
 }
 
+function pathRunStyle(node, run, baseColor) {
+  return {
+    fontFamily: run?.fontFamily || node.fontFamily || 'Arial, sans-serif',
+    fontSize: Math.max(1, Number(run?.fontSize ?? node.fontSize) || 24),
+    fontWeight: Number(run?.fontWeight ?? node.fontWeight) || 400,
+    fontStyle: (run?.fontStyle ?? node.fontStyle) === 'italic' ? 'italic' : 'normal',
+    letterSpacing: Number(run?.letterSpacing ?? node.letterSpacing) || 0,
+    color: run?.color || baseColor || node.color || '#1e1e1e',
+    textDecoration: run?.textDecoration || node.textDecoration || 'none',
+    baselineShift: Number(run?.baselineShift) || 0
+  };
+}
+
+export function textPathCharacters(text, node, {
+  color = node.color || '#1e1e1e', overrideRunColors = false
+} = {}) {
+  const value = String(text ?? '');
+  const currentRuns = Array.isArray(node.textRuns)
+    && node.textRuns.map(run => run.text).join('') === value;
+  const runs = currentRuns ? node.textRuns : [{ text: value }];
+  const characters = [];
+  for (const run of runs) {
+    const style = pathRunStyle(node, run, color);
+    const runText = String(run.text).replace(/[\r\n]+/gu, ' ');
+    const effectiveStyle = overrideRunColors ? { ...style, color } : style;
+    for (const grapheme of textGraphemes(runText)) {
+      characters.push({ text: grapheme, style: effectiveStyle });
+    }
+  }
+  if (node.textCase === 'uppercase' || node.textCase === 'lowercase') {
+    return characters.flatMap(item => textGraphemes(node.textCase === 'uppercase' ? item.text.toUpperCase() : item.text.toLowerCase())
+      .map(character => ({ text: character, style: item.style })));
+  }
+  if (node.textCase !== 'capitalize') return characters;
+  let inWord = false;
+  for (const item of characters) {
+    if (/^[\p{L}\p{N}]/u.test(item.text)) {
+      if (!inWord) item.text = item.text.toUpperCase();
+      inWord = true;
+    } else if (!/^['’]$/u.test(item.text)) inWord = false;
+  }
+  return characters;
+}
+
 export function textPathSvgData(path) {
   if (!isValidTextPathGeometry(path)) return '';
   const n = value => Number(Number(value).toFixed(6));
@@ -155,38 +199,62 @@ export function textPathSvgData(path) {
 /** Draw editable graphemes along the vector path using the active canvas text style. */
 export function drawTextAlongPath(ctx, text, node, x, y, measure, {
   fillOpacity = 1, paintMode = 'fill', fontSize: fontSizeOverride,
-  letterSpacing: letterSpacingOverride, fontWeight, fontStyle, fontFamily
+  letterSpacing: letterSpacingOverride, fontWeight, fontStyle, fontFamily,
+  color, overrideRunColors = false, includeDecorations = true
 } = {}) {
   const path = node.textPath;
   const sampler = createTextPathSampler(path, 0.5);
   if (!sampler) return false;
-  const fontSize = Number(fontSizeOverride ?? node.fontSize) || 24;
-  const letterSpacing = Number(letterSpacingOverride ?? node.letterSpacing) || 0;
-  const source = String(text ?? '').replace(/[\r\n]+/gu, ' ');
-  const graphemes = textGraphemes(source);
-  ctx.font = `${(fontStyle ?? node.fontStyle) === 'italic' ? 'italic ' : ''}${fontWeight ?? node.fontWeight ?? 400} ${fontSize}px ${fontFamily ?? node.fontFamily ?? 'Arial, sans-serif'}`;
+  const baseStyle = {
+    fontSize: fontSizeOverride ?? node.fontSize,
+    fontWeight: fontWeight ?? node.fontWeight,
+    fontStyle: fontStyle ?? node.fontStyle,
+    fontFamily: fontFamily ?? node.fontFamily,
+    letterSpacing: letterSpacingOverride ?? node.letterSpacing,
+    color: color ?? node.color
+  };
+  const styledCharacters = textPathCharacters(text, { ...node, ...baseStyle }, { color, overrideRunColors });
   ctx.textBaseline = 'alphabetic';
-  const advances = graphemes.map(grapheme => Number(measure(grapheme)) + letterSpacing);
+  const advances = styledCharacters.map(({ text: grapheme, style }) => {
+    ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+    return Number(measure(grapheme, style)) + style.letterSpacing;
+  });
   let cursor = Number(path.startOffset) || 0;
   if (node.align === 'center' || node.align === 'right') {
     const total = advances.reduce((sum, value) => sum + value, 0);
     cursor += node.align === 'center' ? (sampler.length - total) / 2 : sampler.length - total;
   }
-  for (let index = 0; index < graphemes.length; index += 1) {
+  for (let index = 0; index < styledCharacters.length; index += 1) {
     const advance = advances[index];
     if (!path.closed && cursor + advance / 2 > sampler.length) break;
     const sample = sampler.at(cursor + advance / 2);
     if (!sample) break;
     const angle = sample.angle + (path.flipped ? Math.PI : 0);
+    const character = styledCharacters[index];
+    const { style } = character;
+    ctx.font = `${style.fontStyle === 'italic' ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
     ctx.save();
     ctx.translate(x + sample.x, y + sample.y);
     ctx.rotate(angle);
     if (path.flipped) ctx.scale(1, -1);
     ctx.textAlign = 'center';
-    if (paintMode === 'stroke') ctx.strokeText(graphemes[index], 0, 0);
+    const baseline = -style.baselineShift;
+    if (paintMode === 'stroke') ctx.strokeText(character.text, 0, baseline);
     else {
+      ctx.fillStyle = style.color;
       ctx.globalAlpha *= fillOpacity;
-      ctx.fillText(graphemes[index], 0, 0);
+      ctx.fillText(character.text, 0, baseline);
+      if (includeDecorations && ['underline', 'line-through'].includes(style.textDecoration)) {
+        const decorationY = baseline + style.fontSize * (style.textDecoration === 'underline' ? 0.08 : -0.3);
+        const textWidth = Math.max(0, advance - style.letterSpacing);
+        const decorationWidth = Math.max(1, style.fontSize / 16);
+        ctx.strokeStyle = style.color;
+        ctx.lineWidth = decorationWidth;
+        ctx.beginPath();
+        ctx.moveTo(-textWidth / 2, decorationY);
+        ctx.lineTo(textWidth / 2, decorationY);
+        ctx.stroke();
+      }
     }
     ctx.restore();
     cursor += advance;
