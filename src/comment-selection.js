@@ -1,5 +1,3 @@
-const commentContainerTypes = new Set(['frame', 'group']);
-
 /** Resolve a canvas hit to the nearest frame/component, then a group or leaf. */
 export function commentSelectionTarget(entry) {
   if (!entry?.node) return null;
@@ -7,4 +5,9 @@ export function commentSelectionTarget(entry) {
   return candidates.find(node => node.type === 'frame' || node.isComponent || node.isInstance)
     || candidates.find(node => node.type === 'group')
     || entry.node;
+}
+
+/** Resolve whether a Comment-tool canvas click selects an object or places a pin. */
+export function commentCanvasAction(target, { addCommentShortcut = false, placementArmed = false } = {}) {
+  return addCommentShortcut || placementArmed || !target ? 'place-comment' : 'select';
 }

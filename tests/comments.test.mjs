@@ -5,7 +5,7 @@ import {
   addCommentReply, createCommentThread, createDocument, parseDocument,
   removeCommentThread, serializeDocument, setCommentResolved, validateDocument
 } from '../src/model.js';
-import { commentSelectionTarget } from '../src/comment-selection.js';
+import { commentCanvasAction, commentSelectionTarget } from '../src/comment-selection.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
@@ -22,15 +22,20 @@ test('comment-mode canvas selection resolves a child to its nearest frame or com
   assert.equal(commentSelectionTarget(null), null);
 });
 
-test('Comment mode selects a frame or component on first click and places a comment on the next click', () => {
+test('Comment mode keeps object clicks for selection and uses explicit gestures to place comments', () => {
   const selection = editorSource.indexOf("if (state.tool === 'comment' && event.shiftKey)");
-  const pin = editorSource.indexOf('const commentPin = commentPinAt(world);', selection);
+  const pin = editorSource.indexOf('const commentPin = state.commentPlacementArmed ? null : commentPinAt(world);', selection);
   const placement = editorSource.indexOf("if (state.tool === 'comment') {\n    const target = commentTargetAt(world);", pin);
   assert.ok(selection >= 0 && pin > selection && placement > pin,
     'modifier selection and existing comment pins must be handled before the ordinary comment-mode path');
   assert.match(editorSource.slice(placement, editorSource.indexOf('if (clearPrototypeConnectPromptIfSourceMissing())', placement)),
-    /target && !state\.selectedIds\.includes\(target\.id\)[\s\S]*?setSelection\(\[target\.id\]\)[\s\S]*?else beginCommentAt\(world\)/,
-    'the first click selects an unselected frame/component and a subsequent click places a comment');
+    /commentCanvasAction\(target,[\s\S]*?addCommentShortcut: event\.altKey[\s\S]*?if \(action === 'select'\)[\s\S]*?setSelection\(\[target\.id\]\)[\s\S]*?else beginCommentAt\(world\)/,
+    'object clicks must select even an already-selected frame/component; explicit placement gestures add comments');
+  assert.equal(commentCanvasAction({ id: 'frame' }), 'select');
+  assert.equal(commentCanvasAction({ id: 'component' }), 'select');
+  assert.equal(commentCanvasAction({ id: 'frame' }, { addCommentShortcut: true }), 'place-comment');
+  assert.equal(commentCanvasAction({ id: 'frame' }, { placementArmed: true }), 'place-comment');
+  assert.equal(commentCanvasAction(null), 'place-comment');
   assert.match(editorSource, /function commentTargetAt\(world\)[\s\S]*?commentSelectionTarget\(entry\)/,
     'canvas hits must resolve to the containing frame or component');
   assert.match(editorSource, /function selectCommentTargetAt\(world\)[\s\S]*?setSelection\(\[target\.id\]\)/,

@@ -64,11 +64,16 @@ try {
   canvas.dispatchEvent(selectPoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 77, pointerType: 'mouse' }));
   assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'), 'A normal first click in Comment mode should select the containing frame.');
+  assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'), 'Selecting an object should expose its Design properties while leaving Comment mode active.');
   assert(!app.querySelector('#comment-draft'), 'Selecting a frame should not create a comment draft.');
   assert(app.querySelector('[data-tool="comment"]')?.classList.contains('is-selected'), 'Selecting a frame should keep Comment mode active.');
   const point = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 78, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
   canvas.dispatchEvent(point);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 78, pointerType: 'mouse' }));
+  assert(!app.querySelector('#comment-draft'), 'Repeated clicks on an already-selected frame must not hijack selection to start a comment.');
+  const commentPoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 79, pointerType: 'mouse', altKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  canvas.dispatchEvent(commentPoint);
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 79, pointerType: 'mouse' }));
   await waitFor(() => app.querySelector('#comment-draft'), 'new comment composer');
   const draft = app.querySelector('#comment-draft'); draft.value = 'Increase the space above this label.';
   draft.form.requestSubmit();
@@ -98,7 +103,7 @@ try {
   await waitFor(() => app.querySelector('#right-panel').classList.contains('is-open'), 'mobile comments panel');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose textarea')).minHeight) >= 88, 'The phone comment composer should provide a comfortable touch target.');
   assert(Number.parseFloat(app.defaultView.getComputedStyle(app.querySelector('.comment-compose .primary-button')).minHeight) >= 40, 'The phone reply button should remain finger-sized.');
-  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, commentModeCanvasClickSelectsBeforeComment: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, touchSizedActions: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ productName: 'Tiny Image Star', noPublicReferenceName: true, canvasAnchors: true, commentModeCanvasClicksSelectObjects: true, optionClickPlacesCommentOnObject: true, reply: true, resolveAndReopen: true, localPersistence: true, mobileComposer: true, touchSizedActions: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 }

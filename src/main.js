@@ -89,7 +89,7 @@ import {
 import { snapToAlignmentGuides } from './smart-guides.js';
 import { clientToPageGuidePosition, findNearestGuideWithinCssTolerance } from './ruler-guide-geometry.js';
 import { generateRulerTicks } from './ruler-scale.js';
-import { commentSelectionTarget } from './comment-selection.js';
+import { commentCanvasAction, commentSelectionTarget } from './comment-selection.js';
 import { createShapeBuilderSession } from './boolean-geometry.js';
 import { applyShapeBuilderEdit, shapeBuilderSourceBlockReason } from './shape-builder-edit.js';
 import { offsetVectorPath, VectorOffsetError } from './vector-offset.js';
@@ -140,7 +140,7 @@ const state = {
   localPackageBuilding: false,
   pendingLocalShare: null,
   pendingLocalShareTimer: 0,
-  pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null,
+  pendingVariableDialog: null, pendingCommentAnchor: null, activeCommentId: null, commentPlacementArmed: false,
   layoutGuideControlEdit: false,
   prototypeSourceId: null, prototypeEditingInteractionId: null, prototypeDestinationId: null,
   prototypeAction: 'navigate', prototypeUrl: 'https://', prototypeTrigger: 'on-click', prototypeTransition: 'instant', prototypeEasing: 'ease-in-out', prototypeEasingBezier: [...DEFAULT_PROTOTYPE_BEZIER], prototypeDuration: 300, prototypeDelay: 1000,
@@ -1266,7 +1266,7 @@ function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click a frame or component to select; click again to comment' : `Tool · ${state.tool}`
+    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click an object to select; click empty canvas to comment' : `Tool · ${state.tool}`
       : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
@@ -1310,7 +1310,10 @@ function setTool(tool) {
   if (state.shapeBuilder) exitShapeBuilderMode();
   if (state.penDraft && tool !== 'pen' && !finishPenPath(false, { selectAfter: false })) cancelPenPath();
   if (state.pencilDraft && tool !== 'pencil') cancelPencilStroke();
-  if (tool !== 'comment' && state.pendingCommentAnchor) state.pendingCommentAnchor = null;
+  if (tool !== 'comment') {
+    if (state.pendingCommentAnchor) state.pendingCommentAnchor = null;
+    state.commentPlacementArmed = false;
+  }
   state.tool = tool;
   if (tool === 'comment' && state.inspectorTab !== 'comments') setInspectorTab('comments');
   $$('.tool-button').forEach(button => {
@@ -1421,7 +1424,7 @@ function syncLayerSelectionModeControl() {
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
-      ? 'Design canvas. Click a frame or component to select it; click it again or click empty canvas to add a comment. Shift-click also selects.'
+      ? 'Design canvas. Click an object to select it; click empty canvas to add a comment. Alt/Option-click or use the layer menu to comment on an object.'
       : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
@@ -2923,6 +2926,7 @@ function beginCommentAt(point) {
   const page = activePage();
   if (!page) return;
   state.pendingCommentAnchor = { pageId: page.id, x: point.x, y: point.y };
+  state.commentPlacementArmed = false;
   state.activeCommentId = null;
   setInspectorTab('comments');
   if (innerWidth <= 820 && !$('#right-panel').classList.contains('is-open')) toggleMobilePanel('right');
@@ -2933,6 +2937,7 @@ function openCommentThread(threadId) {
   const comment = pageComments().find(item => item.id === threadId);
   if (!comment) return;
   state.pendingCommentAnchor = null;
+  state.commentPlacementArmed = false;
   state.activeCommentId = threadId;
   state.panX = canvas.clientWidth / 2 - comment.x * state.zoom;
   state.panY = canvas.clientHeight / 2 - comment.y * state.zoom;
@@ -2946,12 +2951,13 @@ function handleCommentAction(button) {
   if (action === 'new') {
     state.pendingCommentAnchor = null;
     state.activeCommentId = null;
+    state.commentPlacementArmed = true;
     setTool('comment');
     setInspectorTab('comments');
-    showToast('Tap a point on the canvas to add a comment.');
+    showToast('Tap anywhere on the canvas to place your comment.');
   } else if (action === 'open') openCommentThread(threadId);
-  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; renderInspector(); }
-  else if (action === 'cancel') { state.pendingCommentAnchor = null; renderInspector(); }
+  else if (action === 'back') { state.activeCommentId = null; state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
+  else if (action === 'cancel') { state.pendingCommentAnchor = null; state.commentPlacementArmed = false; renderInspector(); }
   else if (action === 'resolve') {
     const comment = pageComments().find(item => item.id === threadId);
     if (!comment) return;
@@ -4559,19 +4565,27 @@ function onCanvasPointerDown(event) {
   }
   if (state.tool === 'comment' && event.shiftKey) {
     const target = selectCommentTargetAt(world);
+    state.commentPlacementArmed = false;
+    if (target && state.inspectorTab === 'comments') setInspectorTab('design');
     showToast(target
-      ? `Selected “${target.name}”. Click it again to add a comment here.`
-      : 'No layer under the pointer. Select a component or frame from Layers.');
+      ? `Selected “${target.name}”.`
+      : 'No layer under the pointer.');
     event.preventDefault();
     return;
   }
-  const commentPin = commentPinAt(world);
+  const commentPin = state.commentPlacementArmed ? null : commentPinAt(world);
   if (commentPin) { openCommentThread(commentPin.id); event.preventDefault(); return; }
   if (state.tool === 'comment') {
     const target = commentTargetAt(world);
-    if (target && !state.selectedIds.includes(target.id)) {
+    const action = commentCanvasAction(target, {
+      addCommentShortcut: event.altKey,
+      placementArmed: state.commentPlacementArmed
+    });
+    if (action === 'select') {
+      const wasSelected = state.selectedIds.length === 1 && state.selectedIds[0] === target.id;
       setSelection([target.id]);
-      showToast(`Selected “${target.name}”. Click again to add a comment here.`);
+      if (state.inspectorTab === 'comments') setInspectorTab('design');
+      if (!wasSelected) showToast(`Selected “${target.name}”.`);
     } else beginCommentAt(world);
     event.preventDefault(); return;
   }
