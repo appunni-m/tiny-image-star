@@ -36,7 +36,7 @@ test('layer-row drops reorder siblings using the reversed visual stack order', (
   assert.equal(validateDocument(document), true);
 });
 
-test('layer-row drops reject cross-container, locked, invalid, and no-op moves', () => {
+test('layer-row drops reorder siblings and reparent across containers using row edges', () => {
   const document = createDocument();
   const firstFrame = createNode('frame', { name: 'First frame' });
   const secondFrame = createNode('frame', { name: 'Second frame' });
@@ -46,17 +46,64 @@ test('layer-row drops reject cross-container, locked, invalid, and no-op moves',
   addNode(document, first, { parentId: firstFrame.id });
   addNode(document, second, { parentId: secondFrame.id });
 
-  assert.equal(layerDropReorder(document, first.id, second.id, 'before'), null);
+  assert.deepEqual(layerDropReorder(document, first.id, second.id, 'before'), {
+    nodeId: first.id, parentId: secondFrame.id, index: 1, pageId: document.activePageId, reparent: true
+  });
+  assert.equal(reorderLayerForDrop(document, first.id, second.id, 'before'), true);
+  assert.deepEqual(firstFrame.children, []);
+  assert.deepEqual(secondFrame.children.map(node => node.id), [second.id, first.id]);
+  assert.equal(findNode(document, first.id).parent.id, secondFrame.id);
+  assert.equal(validateDocument(document), true);
+
   assert.equal(layerDropReorder(document, first.id, first.id, 'before'), null);
   assert.equal(layerDropReorder(document, first.id, second.id, 'sideways'), null);
-  assert.equal(layerDropReorder(document, first.id, first.id, 'after'), null);
+
+  // Drop inside a container appends to its layer stack, including when it is
+  // already the source parent (a useful way to move an item to the bottom).
+  assert.deepEqual(layerDropReorder(document, second.id, secondFrame.id, 'inside'), {
+    nodeId: second.id, index: 1, pageId: document.activePageId
+  });
+  assert.equal(reorderLayerForDrop(document, second.id, secondFrame.id, 'inside'), true);
+  assert.deepEqual(secondFrame.children.map(node => node.id), [first.id, second.id]);
+
+  // A row edge can also move a child back out to the page-level stack.
+  const rootTarget = createNode('ellipse', { name: 'Page target' });
+  addNode(document, rootTarget);
+  assert.equal(reorderLayerForDrop(document, first.id, rootTarget.id, 'before'), true);
+  assert.equal(findNode(document, first.id).parent, null);
 
   const sibling = createNode('ellipse', { name: 'Sibling', locked: true });
-  addNode(document, sibling, { parentId: firstFrame.id });
-  assert.equal(layerDropReorder(document, first.id, sibling.id, 'before'), null);
-  firstFrame.locked = true;
-  assert.equal(layerDropReorder(document, first.id, sibling.id, 'before'), null);
-  assert.equal(findNode(document, first.id).parent.id, firstFrame.id);
+  addNode(document, sibling, { parentId: secondFrame.id });
+  assert.equal(layerDropReorder(document, second.id, sibling.id, 'before'), null);
+  secondFrame.locked = true;
+  assert.equal(layerDropReorder(document, second.id, sibling.id, 'before'), null);
+  assert.equal(findNode(document, first.id).parent, null);
+});
+
+test('layer-row drops enter frames, groups, and sections but reject invalid or cyclic containers', () => {
+  const document = createDocument();
+  const source = createNode('frame', { name: 'Source', x: 300, y: 80 });
+  const group = createNode('group', { name: 'Group', x: 40, y: 30 });
+  const section = createNode('section', { name: 'Section', x: 500, y: 50 });
+  const child = createNode('rectangle', { name: 'Child', x: 16, y: 24 });
+  const nested = createNode('ellipse', { name: 'Nested', x: 8, y: 10 });
+  const nestedContainer = createNode('frame', { name: 'Nested container' });
+  const leaf = createNode('ellipse', { name: 'Leaf' });
+  addNode(document, source); addNode(document, group); addNode(document, section);
+  addNode(document, child, { parentId: source.id });
+  addNode(document, nested, { parentId: group.id });
+  addNode(document, nestedContainer, { parentId: group.id });
+  addNode(document, leaf);
+
+  assert.equal(reorderLayerForDrop(document, child.id, group.id, 'inside'), true);
+  assert.equal(findNode(document, child.id).parent.id, group.id);
+  assert.equal(reorderLayerForDrop(document, leaf.id, source.id, 'inside'), true);
+  assert.equal(findNode(document, leaf.id).parent.id, source.id);
+  assert.equal(reorderLayerForDrop(document, nested.id, section.id, 'inside'), true);
+  assert.equal(findNode(document, nested.id).parent.id, section.id);
+  assert.equal(layerDropReorder(document, group.id, nestedContainer.id, 'inside'), null, 'descendant containers cannot accept their ancestors');
+  assert.equal(layerDropReorder(document, child.id, leaf.id, 'inside'), null, 'leaf nodes are not drop containers');
+  assert.equal(validateDocument(document), true);
 });
 
 test('layer-row drops reject descendants of any locked ancestor', () => {

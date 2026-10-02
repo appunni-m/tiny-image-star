@@ -26,6 +26,7 @@ import { calculateTextBox, measureTrackedText, normalizeTextParagraphStyles, pre
 import { summarizeTextRunRange } from './text-run-selection.js';
 import { EDITOR_NUMBER_STEP, formatEditorNumber } from './editor-number-format.js';
 import { assertSafeRasterDimensions, IMAGE_HEADER_SCAN_BYTES, inspectRasterDimensions, LocalImageEngine, MAX_IMAGE_SOURCE_PIXELS } from './image-engine.js';
+import { imagePreviewDimensions } from './image-processing.js';
 import { LocalInpaintEngine } from './inpaint-engine.js';
 import { PreparedInpaintCache } from './prepared-inpaint-cache.js';
 import { normalizeImageEraseStrokes, validateInpaintDimensions } from './inpaint-mask.js';
@@ -51,6 +52,7 @@ import { createMultipagePdf, PDF_PACKAGER_LIMITS } from './pdf-packager.js';
 import { orderedVisibleFrameIds } from './pdf-export-plan.js';
 import { installHorizontalTabListKeyboard } from './tab-list-keyboard.js';
 import { layerDeleteTargets, layerMenuDeleteTargets, removeLayersAtomically, shouldDeleteSelectedVectorAnchor } from './layer-deletion.js';
+import { isLayerSelectionTap, toggleLayerSelection } from './layer-selection.js';
 import { assertVectorPdfEffectsSupported, createMultipageVectorPdf, PdfVectorExportError } from './pdf-vector-export.js';
 import { addVectorPdfEmbeddedImageBytes, hasRasterImageEdits, planVectorPdfRasterSource, VectorPdfImageBudgetError } from './pdf-raster-plan.js';
 import { importSvgToLayers } from './svg-import.js';
@@ -1025,8 +1027,8 @@ function queueSave({ refreshLayerTree = true } = {}) {
         proposalSnapshot.id = live.hostDesignId;
         if (proposalSnapshot.settings) delete proposalSnapshot.settings.collaborationSource;
         try {
-          live.controller.proposeSnapshot(proposalSnapshot);
-          awaitingHost = true;
+          const proposal = live.controller.proposeSnapshot(proposalSnapshot);
+          awaitingHost = Boolean(proposal) || live.controller.state === 'pending';
         } catch (error) {
           // The local folder checkpoint is already durable. Freeze the old
           // session and let fork recovery preserve this copy if its pending
@@ -1147,7 +1149,9 @@ function syncActiveImageSource() { imageEngine.setActiveSource(selectedImageAsse
 function formatInspectorNumber(value) { return formatEditorNumber(value); }
 function updateSelectionStatus() {
   const nodes = selectedNodes();
-  $('#selection-status').textContent = nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
+  $('#selection-status').textContent = state.layerSelectionMode
+    ? `${nodes.length} selected · tap to add/remove`
+    : nodes.length === 0 ? `Tool · ${state.tool}` : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
     $('#position-status').textContent = `${formatInspectorNumber(geometry.x)}, ${formatInspectorNumber(geometry.y)} · ${formatInspectorNumber(geometry.width)} × ${formatInspectorNumber(geometry.height)}`;
@@ -1289,8 +1293,14 @@ function syncLayerSelectionModeControl() {
   if (!selectMode) return;
   selectMode.textContent = state.layerSelectionMode ? 'Done' : 'Select';
   selectMode.setAttribute('aria-label', state.layerSelectionMode ? 'Finish selecting layers' : 'Select multiple layers');
+  selectMode.title = state.layerSelectionMode
+    ? 'Tap canvas objects or layer rows to add or remove them from the selection.'
+    : 'Select multiple layers from the canvas or Layers list.';
   selectMode.setAttribute('aria-pressed', String(state.layerSelectionMode));
   selectMode.classList.toggle('is-active', state.layerSelectionMode);
+  canvas?.setAttribute('aria-label', state.layerSelectionMode
+    ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
+    : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
   const previous = new Set(previousIds);
@@ -1736,11 +1746,12 @@ function imageAdjustmentsSection(node) {
 function isActiveImageRecipeTarget(nodeId) {
   return isImageRecipeBatchActive(state.bulk) && state.bulk.targets.includes(nodeId);
 }
-function imageRecipeOptions(selectedId = '') {
+function imageRecipeOptions(selectedId = '', { placeholder = '' } = {}) {
   const recipes = state.document.recipes || [];
-  return recipes.length
+  const options = recipes.length
     ? recipes.map(recipe => `<option value="${escapeHtml(recipe.id)}"${recipe.id === selectedId ? ' selected' : ''}>${escapeHtml(recipe.name)}</option>`).join('')
     : '<option value="">No saved recipes yet</option>';
+  return placeholder ? `<option value="">${escapeHtml(placeholder)}</option>${options}` : options;
 }
 function imageRecipeManagementControls({ nodeId = null } = {}) {
   const recipes = state.document.recipes || [];
@@ -3743,7 +3754,7 @@ function deleteSelectedPathAnchors(node, anchors) {
   clearVectorAnchorSelection();
   recordNodeComponentOverrides(node, [...new Set(selected.map(anchor => anchor.contourIndex === 0 ? 'points' : 'subpaths'))]);
   renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
-  showToast(`${removed} vector anchors deleted.`);
+  showToast(`${removed} vector anchors deleted; the layer remains. Use Layers → ⋯ → Delete to remove the full layer.`, 5000);
   return true;
 }
 
@@ -3775,7 +3786,7 @@ function deleteSelectedVectorPoint(nodeId = state.selectedVectorPoint?.nodeId) {
     recordNodeComponentOverrides(node, contourIndex === 0 ? ['points'] : ['subpaths']);
   } else return false;
   renderInspector(); renderLayers(); renderer.invalidate(); queueSave();
-  showToast('Vector point deleted.');
+  showToast('Vector point deleted; the layer remains. Use Layers → ⋯ → Delete to remove the full layer.', 5000);
   return true;
 }
 
@@ -4298,6 +4309,10 @@ function onCanvasPointerDown(event) {
       // selection instead of completing an accidental selection on pointer-up.
       state.interaction = null;
       renderer.invalidate();
+    } else if (interruptedInteraction?.kind === 'layer-selection-tap') {
+      // Hold a touch selection until pointer-up so a second finger can take
+      // over for pinch navigation without toggling an unintended layer.
+      state.interaction = null;
     } else if (interruptedInteraction) {
       // Finish edits at the last one-finger position before switching gesture
       // ownership. The ordinary pointer-up path records overrides and saves
@@ -4385,6 +4400,20 @@ function onCanvasPointerDown(event) {
   if (state.tool === 'pen') { startPenPath(world, event.pointerType); event.preventDefault(); return; }
   if (state.tool === 'pencil') { startPencilStroke(world, event); event.preventDefault(); return; }
   if (state.tool === 'select') {
+    if (state.layerSelectionMode) {
+      const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
+      const hit = hitTestPage(activePage(), world, hitTester, state.document, null, state.zoom, { allowAnyClippedNodes: true });
+      if (hit) {
+        state.interaction = {
+          kind: 'layer-selection-tap', pointerId: event.pointerId, nodeId: hit.id,
+          startClient: { x: event.clientX, y: event.clientY }, moved: false
+        };
+      }
+      // Selection mode is tap-only: no transform handles, anchor editing,
+      // dragging, or empty-space marquee can steal a layer-selection tap.
+      event.preventDefault();
+      return;
+    }
     if (state.showRulers && !state.presenting) {
       const guide = guideAtClientPoint(event);
       if (guide) {
@@ -4535,6 +4564,13 @@ function onCanvasPointerMove(event) {
   const interaction = state.interaction;
   if (!interaction) {
     if (state.penDraft && state.tool === 'pen') { state.penHover = screenToWorld(event, canvas, state); renderer.invalidate(); }
+    return;
+  }
+  if (interaction.kind === 'layer-selection-tap') {
+    if (interaction.pointerId === event.pointerId
+      && Math.hypot(event.clientX - interaction.startClient.x, event.clientY - interaction.startClient.y) > 8) {
+      interaction.moved = true;
+    }
     return;
   }
   if (interaction.kind === 'ruler-guide-move') { updateRulerGuideGesture(event); return; }
@@ -4798,6 +4834,18 @@ function onCanvasPointerUp(event) {
   state.pointerMap.delete(event.pointerId);
   const interaction = state.interaction;
   if (!interaction) return;
+  if (interaction.kind === 'layer-selection-tap') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    if (isLayerSelectionTap({
+      ...interaction,
+      endClient: { x: event.clientX, y: event.clientY }
+    }, 8) && findNode(state.document, interaction.nodeId)) {
+      clearVectorAnchorSelection();
+      setSelection(toggleLayerSelection(state.selectedIds, interaction.nodeId));
+    }
+    return;
+  }
   if (interaction.kind === 'ruler-guide-move') { finishRulerGuideGesture(event); return; }
   if (interaction.kind === 'image-erase') {
     if (interaction.pointerId !== event.pointerId) return;
@@ -7226,7 +7274,13 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
   updateSelectedImageStatus(nodeId, previewKey, fillId);
   const sourceDimensions = inspectRasterDimensions(asset.sourceBytes);
   if (!sourceDimensions) throw new Error('Tiny Image Star could not verify this image size before rendering.');
-  const outputDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
+  const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);
+  const canvasBounds = canvas.getBoundingClientRect();
+  const pixelRatio = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const desiredPreviewEdge = Math.ceil(Math.max(canvasBounds.width, canvasBounds.height) * pixelRatio * Math.max(.5, state.zoom));
+  const previewDimensionCeiling = innerWidth <= 820 || Number(navigator.deviceMemory) > 0 && navigator.deviceMemory <= 4 ? 2048 : 4096;
+  const previewMaxDimension = Math.max(1024, Math.min(previewDimensionCeiling, desiredPreviewEdge));
+  const outputDimensions = imagePreviewDimensions(transformedDimensions.width, transformedDimensions.height, previewMaxDimension);
   const previewAdmission = estimatePreviewMemoryReservationBytes(outputDimensions);
   if (previewAdmission.retainedBytes > imageMemoryBudget.limitBytes) throw retainedImageLimitMessage();
   let reservation = null;
@@ -7252,7 +7306,7 @@ async function renderImagePreview(nodeId, assetId, adjustments, transforms = {},
       const outputQuality = imageNode?.type === 'image' ? imageNode.outputQuality ?? 90 : 90;
       const result = await renderImageWithEdits(imageNode, { assetId, sourceBytes: asset.sourceBytes }, adjustments, transforms, {
         replaceKey: `preview:${previewKey}`, format: outputFormat, quality: outputQuality,
-        queueGroup,
+        queueGroup, previewMaxDimension,
       }, {
         signal: inpaintController?.signal,
         inpaintStrokes: fillId ? [] : undefined,
@@ -8236,23 +8290,35 @@ function retryFailedRecipeTargets() {
 }
 
 function openImageRecipeDialog(type, { nodeId = null, recipeId = null } = {}) {
-  const node = type === 'save' ? findNode(state.document, nodeId)?.node : null;
+  const node = ['save', 'update'].includes(type) ? findNode(state.document, nodeId)?.node : null;
   const recipe = type === 'rename' ? state.document.recipes?.find(item => item.id === recipeId) : null;
   if (type === 'save' && node?.type !== 'image') return;
+  if (type === 'update' && node?.type !== 'image') { showToast('Select one image layer to refresh a recipe from.'); return; }
+  if (type === 'update' && !state.document.recipes?.length) { showToast('Save an image recipe first.'); return; }
   if (type === 'rename' && !recipe) { showToast('This saved image recipe no longer exists.'); return; }
-  if (!['save', 'rename'].includes(type)) return;
+  if (!['save', 'rename', 'update'].includes(type)) return;
   pendingRecipeAction = { type, nodeId, recipeId };
   const renaming = type === 'rename';
-  $('#recipe-dialog-title').textContent = renaming ? 'Rename recipe' : 'Save recipe';
+  const updating = type === 'update';
+  $('#recipe-dialog-title').textContent = renaming ? 'Rename recipe' : updating ? 'Refresh saved recipe' : 'Save recipe';
   $('#recipe-dialog-copy').textContent = renaming
     ? 'Change the name shown in the recipe picker. Existing image edits stay the same.'
-    : 'Save this image’s current look, then apply it to selected images from the canvas or Layers panel.';
-  $('#recipe-name-fields').hidden = false;
-  $('#recipe-output-controls').hidden = renaming;
-  $('#recipe-preview').hidden = renaming;
-  $('#save-recipe-confirm').textContent = renaming ? 'Save name' : 'Save recipe';
+    : updating
+      ? `Choose one saved recipe to replace with “${node.name}”’s current look. Existing images will not change; future applications will use the refreshed recipe.`
+      : 'Save this image’s current look, then apply it to selected images from the canvas or Layers panel.';
+  $('#recipe-name-fields').hidden = updating;
+  $('#recipe-name').disabled = updating;
+  $('#recipe-update-fields').hidden = !updating;
+  $('#recipe-update-target').disabled = !updating;
+  $('#recipe-output-controls').hidden = renaming || updating;
+  $('#recipe-preview').hidden = renaming || updating;
+  $('#save-recipe-confirm').textContent = renaming ? 'Save name' : updating ? 'Refresh recipe' : 'Save recipe';
+  $('#save-recipe-confirm').disabled = updating;
   if (renaming) $('#recipe-name').value = recipe.name;
-  else {
+  else if (updating) {
+    $('#recipe-update-target').innerHTML = imageRecipeOptions('', { placeholder: 'Choose a saved recipe' });
+    $('#recipe-update-target').value = '';
+  } else {
     const adjustments = node.adjustments || {};
     const active = ['exposure', 'temperature', 'tint', 'brightness', 'contrast', 'highlights', 'shadows', 'saturation', 'sharpness', 'blur'].filter(key => Number(adjustments[key] || 0) !== 0)
       .map(key => `${key[0].toUpperCase()}${key.slice(1)} ${adjustments[key]}`);
@@ -8273,7 +8339,9 @@ function openImageRecipeDialog(type, { nodeId = null, recipeId = null } = {}) {
   }
   const dialog = $('#recipe-dialog');
   dialog.returnValue = '';
-  dialog.showModal(); $('#recipe-name').focus(); $('#recipe-name').select();
+  dialog.showModal();
+  if (updating) $('#recipe-update-target').focus();
+  else { $('#recipe-name').focus(); $('#recipe-name').select(); }
 }
 
 function saveRecipeFor(nodeId) {
@@ -8780,6 +8848,7 @@ function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = n
   else if (node && node.type !== 'slice') items.splice(0, 0, { label: 'Create component', action: () => makeComponent(node.id) }, { separator: true });
   if (node?.type === 'slice') items.splice(0, 0, { label: 'Export slice', action: () => exportSliceById(nodeId) }, { separator: true });
   if (node?.type === 'image') {
+    if (state.document.recipes?.length) items.splice(0, 0, { label: 'Refresh saved recipe from this image…', action: () => openImageRecipeDialog('update', { nodeId: node.id }) }, { separator: true });
     items.splice(0, 0, { label: 'Save image recipe…', action: () => saveRecipeFor(nodeId) }, { separator: true });
   }
   if (node?.type === 'text') {
@@ -9673,16 +9742,27 @@ function toggleOutlineMode() {
 }
 
 function deleteSelected(selectionIds = state.selectedIds) {
-  const ids = rootSelectedIds(selectionIds); if (!ids.length) return;
+  const pageId = activePage()?.id;
+  const ids = pageId ? rootSelectedIds(selectionIds) : [];
+  if (!ids.length) {
+    showToast('Select a layer to delete.');
+    return false;
+  }
   try {
-    const result = removeLayersAtomically(state.document, ids, activePage().id);
+    const result = removeLayersAtomically(state.document, ids, pageId);
+    if (ids.some(id => findNode(result.document, id, pageId))) {
+      throw new Error('A selected layer is still in the design. Nothing was deleted.');
+    }
     checkpoint('Delete layers');
     state.document = result.document;
     clearPrototypeConnectPromptIfSourceMissing();
     reconcileImagePreviewRuntime();
     state.selectedIds = []; clearVectorAnchorSelection(); renderUI(); queueSave();
+    showToast(`Deleted ${ids.length} layer${ids.length === 1 ? '' : 's'}.`);
+    return true;
   } catch (error) {
     showToast(error.message || 'Could not delete the selected layers.');
+    return false;
   }
 }
 function copySelected() {
@@ -13771,8 +13851,25 @@ function initEvents() {
   });
   $('#pages-list').addEventListener('dblclick', event => { const row = event.target.closest('[data-page-id]'); if (row && !event.target.closest('.page-row-menu')) renamePage(row.dataset.pageId); });
   $('#layer-select-mode').addEventListener('click', () => {
-    state.layerSelectionMode = !state.layerSelectionMode;
+    const enabled = !state.layerSelectionMode;
+    if (enabled) {
+      if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+      state.imageEraseMode = false;
+      state.imageEraseDraft = null;
+      canvas.classList.remove('tool-image-erase');
+      if (['image-crop', 'image-fill-crop'].includes(state.interaction?.kind)) cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
+      state.imageCropMode = false;
+      state.imageFillCropTarget = null;
+      state.imageCropDraftSelection = null;
+      syncImageCropOverlay();
+      setTool('select');
+    }
+    state.layerSelectionMode = enabled;
     renderLayers();
+    updateSelectionStatus();
+    showToast(state.layerSelectionMode
+      ? 'Select mode: tap canvas objects or layer rows to add or remove them.'
+      : 'Select mode finished.');
   });
   $('#layers-list').addEventListener('focusin', event => {
     const row = event.target.closest('[data-layer-id]');
@@ -13822,9 +13919,7 @@ function initEvents() {
     if (event.key === ' ') {
       event.preventDefault(); event.stopPropagation();
       const id = row.dataset.layerId;
-      setSelection(state.selectedIds.includes(id)
-        ? state.selectedIds.filter(selectedId => selectedId !== id)
-        : [...state.selectedIds, id], { refreshLayers: false });
+      setSelection(toggleLayerSelection(state.selectedIds, id), { refreshLayers: false });
       state.lastLayerSelection = id;
       return;
     }
@@ -14402,6 +14497,10 @@ function initEvents() {
       renameImageRecipeInAssets(pending.recipeId);
       return;
     }
+    if (pending.type === 'update') {
+      updateImageRecipeFromAssets($('#recipe-update-target').value, pending.nodeId);
+      return;
+    }
     const node = pending.type === 'save' ? findNode(state.document, pending.nodeId)?.node : null;
     if (node?.type !== 'image') { showToast('The source image no longer exists.'); return; }
     try {
@@ -14419,6 +14518,9 @@ function initEvents() {
   });
   $('#recipe-format').addEventListener('change', syncRecipeOutputControls);
   $('#recipe-quality').addEventListener('input', syncRecipeOutputControls);
+  $('#recipe-update-target').addEventListener('change', event => {
+    $('#save-recipe-confirm').disabled = !event.currentTarget.value;
+  });
   $('#recipe-form').addEventListener('submit', event => { if (event.submitter?.value === 'save') $('#recipe-dialog').returnValue = 'save'; });
   $('#component-slot-search').addEventListener('input', event => {
     if (!state.componentSlotDialog) return;

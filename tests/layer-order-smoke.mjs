@@ -147,16 +147,20 @@ try {
   await waitFor(() => names(app).join(',') === 'Container,Top,Locked,Bottom,Middle', 'sibling reordering');
   assert(!app.querySelector('.layer-row.is-dragging, .layer-row.is-drop-before, .layer-row.is-drop-after'), 'drag styling should clear after the drop.');
 
-  // Cross-container moves are ignored; this increment reorders only siblings.
+  // Row edges reparent across containers; undo keeps the fixture deterministic.
   row(app, 'Container').querySelector('[data-action="layer-toggle"]').click();
   row(app, 'Unlocked nested group').querySelector('[data-action="layer-toggle"]').click();
   const source = row(app, 'Bottom'); const target = row(app, 'Nested top'); const transfer = new app.defaultView.DataTransfer();
   source.dispatchEvent(new app.defaultView.DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
   const targetBounds = target.getBoundingClientRect();
-  const invalidDrop = new app.defaultView.DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer, clientY: targetBounds.top + 1 });
-  target.dispatchEvent(invalidDrop);
-  assert(!invalidDrop.defaultPrevented && !target.classList.contains('is-drop-before'), 'a layer from another container must not be offered as a reorder target.');
-  source.dispatchEvent(new app.defaultView.DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  const crossContainerDrag = new app.defaultView.DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer, clientY: targetBounds.top + 1 });
+  target.dispatchEvent(crossContainerDrag);
+  assert(crossContainerDrag.defaultPrevented && target.classList.contains('is-drop-before'), 'a row edge should offer a cross-container sibling drop.');
+  const destinationGroupId = target.parentElement?.id;
+  target.dispatchEvent(new app.defaultView.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer, clientY: targetBounds.top + 1 }));
+  await waitFor(() => row(app, 'Bottom')?.parentElement?.id === destinationGroupId, 'cross-container layer reparent');
+  key(app, 'z', { ctrlKey: true });
+  await waitFor(() => row(app, 'Bottom')?.style.paddingLeft === '7px', 'undo cross-container reparent');
 
   const nestedSource = row(app, 'Nested top');
   const lockedAncestorTransfer = new app.defaultView.DataTransfer();
@@ -170,7 +174,7 @@ try {
   key(app, 'z', { ctrlKey: true, shiftKey: true });
   await waitFor(() => names(app).join(',') === 'Container,Top,Locked,Bottom,Middle', 'redo of layer reorder');
   await waitFor(async () => (await loadDocumentById(designId))?.pages[0].children.map(node => node.name).join(',') === 'Middle,Bottom,Locked,Top,Container', 'saved layer order');
-  outcome = `PASS\n${JSON.stringify({ phoneViewport: '390x844', rowMoveUpDown: true, touchSizedControls: true, lockedLayerAndNeighborDisabled: true, siblingBoundariesDisabled: true, buttonMoveUndoRedo: true, siblingDragReorder: true, reversedStackOrder: true, crossContainerRejected: true, lockedAncestorDragRejected: true, lockedAncestorButtonsDisabled: true, undo: true, redo: true, savedLayerOrder: true })}`;
+  outcome = `PASS\n${JSON.stringify({ phoneViewport: '390x844', rowMoveUpDown: true, touchSizedControls: true, lockedLayerAndNeighborDisabled: true, siblingBoundariesDisabled: true, buttonMoveUndoRedo: true, siblingDragReorder: true, reversedStackOrder: true, crossContainerMoveReparented: true, crossContainerUndo: true, lockedAncestorDragRejected: true, lockedAncestorButtonsDisabled: true, undo: true, redo: true, savedLayerOrder: true })}`;
 } catch (error) {
   outcome = `FAIL\n${error?.stack || error}`;
 } finally {

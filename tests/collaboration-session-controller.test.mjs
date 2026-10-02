@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  addCommentReply, addNode, createCommentThread, createDocument, createNode,
-  parseDocument, removeCommentThread, serializeDocument, setCommentResolved
+  addCommentReply, addNode, createCommentThread, createDocument, createNode, findNode,
+  parseDocument, removeCommentThread, removeNode, serializeDocument, setCommentResolved
 } from '../src/model.js';
 import { decodeCollaborationMessage, encodeCollaborationMessage } from '../src/collaboration/protocol.js';
 import { createGuestSessionController, createHostSessionController } from '../src/collaboration/session-controller.js';
@@ -623,6 +623,83 @@ test('guest sends edits with a revision fence, advances only on ACK, and saves a
   assert.equal(forks.length, 1);
   assert.equal(forks[0].snapshot.name, 'Optimistic edit');
   assert.equal(closed, 1);
+});
+
+test('guest layer deletion uses a typed DeleteNode and adopts its exact durable ACK snapshot', async () => {
+  const channel = new FakeChannel();
+  const initial = fakeDesign().document;
+  const layer = createNode('rectangle', { id: 'layer-delete-a', name: 'Remove me' });
+  addNode(initial, layer);
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async () => true
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({ v: 1, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', revision: 2, headHash: 'a'.repeat(64), snapshot: initial });
+  await settle();
+
+  const changed = controller.snapshot;
+  assert.ok(removeNode(changed, layer.id));
+  const opId = controller.proposeSnapshot(changed);
+  const message = decodeCollaborationMessage(channel.sent.at(-1), { direction: 'guest-to-host' });
+  assert.equal(message.kind, 'OPERATION');
+  assert.equal(message.operation.type, 'DeleteNode');
+  assert.equal(message.operation.nodeId, layer.id);
+  assert.equal(message.operation.baseRevision, 2);
+
+  channel.receive({ v: 1, kind: 'ACK', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', opId, revision: 3, headHash: 'b'.repeat(64) });
+  await settle();
+  assert.equal(controller.revision, 3);
+  assert.equal(findNode(controller.snapshot, layer.id), null);
+  controller.close();
+});
+
+test('guest stages and sends every operation in a multi-property edit with ordered revision fences', async () => {
+  const channel = new FakeChannel();
+  const initial = fakeDesign().document;
+  const layer = createNode('rectangle', { id: 'layer-props-a', name: 'Before' });
+  addNode(initial, layer);
+  const controller = await createGuestSessionController({
+    expectedInvite: { designId: 'design-a' }, offerCapsule: 'offer-a',
+    createTransport: async () => ({
+      answerCapsule: 'answer-a', dataChannel: channel, session: { sessionId: 'session-a' },
+      waitForOpen: async () => true, close: () => channel.close()
+    }),
+    persistFork: async () => true
+  });
+  await controller.ready;
+  channel.receive(context('WELCOME', { actorId: 'host-a', hostActorId: 'host-a', revision: 2, headHash: 'a'.repeat(64) }));
+  channel.receive({ v: 1, kind: 'SNAPSHOT', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', revision: 2, headHash: 'a'.repeat(64), snapshot: initial });
+  await settle();
+
+  const changed = controller.snapshot;
+  findNode(changed, layer.id).node.name = 'After';
+  findNode(changed, layer.id).node.x = 18;
+  const opId = controller.proposeSnapshot(changed);
+  const operations = channel.sent
+    .map(raw => decodeCollaborationMessage(raw, { direction: 'guest-to-host' }))
+    .filter(message => message.kind === 'OPERATION');
+  assert.equal(operations.length, 2);
+  assert.deepEqual(operations.map(message => message.operation.type), ['SetProperty', 'SetProperty']);
+  assert.deepEqual(operations.map(message => message.operation.baseRevision), [2, 3]);
+
+  channel.receive({ v: 1, kind: 'ACK', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', opId: operations[0].operation.opId, revision: 3, headHash: 'b'.repeat(64) });
+  await settle();
+  assert.equal(controller.revision, 3);
+  assert.equal(controller.snapshot.name, initial.name);
+  assert.equal(findNode(controller.snapshot, layer.id).node.name, 'After');
+  assert.equal(findNode(controller.snapshot, layer.id).node.x, layer.x);
+
+  channel.receive({ v: 1, kind: 'ACK', designId: 'design-a', sessionId: 'session-a', actorId: 'host-a', opId: operations[1].operation.opId, revision: 4, headHash: 'c'.repeat(64) });
+  await settle();
+  assert.equal(controller.revision, 4);
+  assert.equal(findNode(controller.snapshot, layer.id).node.x, 18);
+  controller.close();
 });
 
 test('guest controller exposes a retry after the automatic local fork save initially fails', async () => {

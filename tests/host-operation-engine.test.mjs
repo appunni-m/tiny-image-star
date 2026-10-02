@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, validateDocument } from '../src/model.js';
-import { createHostOperationEngine } from '../src/collaboration/host-operation-engine.js';
+import { applyHostTypedOperation, createHostOperationEngine } from '../src/collaboration/host-operation-engine.js';
 
 function fixture() {
   const document = createDocument();
@@ -52,6 +52,28 @@ function request(engine, operation, context = {}) {
     }
   });
 }
+
+test('local typed-operation projection uses the exact host reducer without mutating its base', () => {
+  const { document, pageId } = fixture();
+  const changed = applyHostTypedOperation(document, {
+    type: 'SetProperty', opId: 'local-op', baseRevision: 0,
+    pageId, targetId: 'rectangle-a', property: 'x', value: 72
+  });
+
+  assert.notEqual(changed, document);
+  assert.equal(changed.pages[0].children.find(node => node.id === 'rectangle-a').x, 72);
+  assert.equal(document.pages[0].children.find(node => node.id === 'rectangle-a').x, 0,
+    'planning an expected ACK snapshot must not mutate the guest document');
+  assert.throws(() => applyHostTypedOperation(document, {
+    type: 'SetProperty', opId: 'local-bad-op', baseRevision: 0,
+    pageId, targetId: 'rectangle-a', property: 'children.0.id', value: 'injected'
+  }));
+  assert.throws(() => applyHostTypedOperation(document, {
+    type: 'ReplaceSnapshot', opId: 'local-snapshot-op', baseRevision: 0,
+    snapshot: document
+  }), /typed collaboration operation/);
+  assert.equal(document.pages[0].children.find(node => node.id === 'rectangle-a').x, 0);
+});
 
 test('applies all typed node operations on a validated candidate', async () => {
   const { document, pageId } = fixture();

@@ -17,7 +17,7 @@ test('layer rows expose a named, keyboard-focusable action-menu button', () => {
     'the keyboard-opened menu should restore focus and expose its expanded state');
   assert.match(source, /if \(event\.key === 'Enter'\)[\s\S]*?setSelection\(\[row\.dataset\.layerId\]/,
     'Enter should select the focused tree row');
-  assert.match(source, /if \(event\.key === ' '\)[\s\S]*?setSelection\(state\.selectedIds\.includes\(id\)/,
+  assert.match(source, /if \(event\.key === ' '\)[\s\S]*?setSelection\(toggleLayerSelection\(state\.selectedIds, id\)/,
     'Space should toggle the focused row in the multi-selection');
   assert.match(source, /openNodeMenu\(node\.id, bounds\.right, bounds\.top\)/);
   assert.match(source, /currentButton\.setAttribute\('aria-expanded', 'true'\)/);
@@ -40,6 +40,19 @@ test('Delete and Backspace on a layer row directly delete that row or its active
     'focused layer rows should take the direct delete path before other tree shortcuts');
   assert.match(source, /document\.activeElement\?\.closest\?\.\('#layers-list \[data-layer-id\]'\)/,
     'the document keyboard fallback should also resolve the active layer row');
+});
+
+test('the shared delete command reports an empty target and confirms the exact removed count', () => {
+  const start = source.indexOf('function deleteSelected(selectionIds = state.selectedIds) {');
+  const end = source.indexOf('\nfunction copySelected()', start);
+  assert.ok(start >= 0 && end > start, 'the shared layer delete command should have a bounded function body');
+  const command = source.slice(start, end);
+  assert.match(command, /if \(!ids\.length\)\s*\{\s*showToast\('Select a layer to delete\.'\);\s*return false;/,
+    'a stale or empty target must be visible instead of silently doing nothing');
+  assert.match(command, /if \(ids\.some\(id => findNode\(result\.document, id, pageId\)\)\)[\s\S]*?throw new Error\(/,
+    'the command must verify every requested top-level layer is absent before installing the result');
+  assert.match(command, /showToast\(`Deleted \$\{ids\.length\} layer\$\{ids\.length === 1 \? '' : 's'\}\.`\);\s*return true;/,
+    'successful deletion should confirm the number of layers actually removed');
 });
 
 test('canvas pointer selection takes keyboard focus away from a stale layer row', () => {

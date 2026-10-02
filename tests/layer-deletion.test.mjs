@@ -40,6 +40,17 @@ test('only an anchor belonging to the selected path intercepts the Delete key', 
   assert.equal(shouldDeleteSelectedVectorAnchor(['path-1'], null), false);
 });
 
+test('vector point deletion tells users that the layer remains and where to delete it', () => {
+  const start = editorSource.indexOf('function deleteSelectedPathAnchors(');
+  const end = editorSource.indexOf('\nfunction unrotateForPath', start);
+  assert.ok(start >= 0 && end > start, 'vector point deletion should have a bounded implementation');
+  const command = editorSource.slice(start, end);
+  assert.match(command, /Vector point deleted; the layer remains\. Use Layers → ⋯ → Delete to remove the full layer/,
+    'single-anchor deletion must distinguish point removal from deleting its layer');
+  assert.match(command, /vector anchors deleted; the layer remains\. Use Layers → ⋯ → Delete to remove the full layer/,
+    'multi-anchor deletion must also make the retained layer explicit');
+});
+
 test('a canvas body hit exits vector-anchor editing before the next Delete key', () => {
   const start = editorSource.indexOf('function onCanvasPointerDown(event) {');
   const end = editorSource.indexOf('\nfunction updateDraftShapeGeometry', start);

@@ -53,12 +53,12 @@ test('local image worker returns full-resolution Pillow-RS export bytes in the r
     const resultPromise = waitFor(message => message.type === 'rendered' && message.requestId === 1);
     selfMock.onmessage({ data: {
       type: 'render', requestId: 1, assetId: 'original', sourceBytes: twoPixelBmp().buffer,
-      adjustments: { brightness: 20 }, transforms: { crop: { left: 0, top: 0, right: 0.5, bottom: 1 }, rotation: 90 },
+      adjustments: { brightness: 20 }, transforms: {}, previewMaxDimension: 1,
       format: 'webp', quality: 73, outputMode: 'export',
     } });
     const rendered = await resultPromise;
     assert.equal(rendered.mimeType, 'image/webp');
-    assert.deepEqual([rendered.width, rendered.height], [1, 1]);
+    assert.deepEqual([rendered.width, rendered.height], [2, 1], 'the worker ignores preview bounds for export jobs');
     assert.deepEqual([...rendered.bytes.slice(0, 4)], [82, 73, 70, 70]);
     assert.equal(rendered.mode, 'export');
     assert.equal(rendered.qualityApplied, true, 'the worker applies codec quality inside Pillow-RS WASM');
@@ -112,18 +112,20 @@ test('consecutive worker previews reuse the retained original instead of compoun
     const firstResult = waitFor(message => message.type === 'rendered' && message.requestId === 1);
     selfMock.onmessage({ data: {
       type: 'render', requestId: 1, assetId: 'same-original', sourceBytes: sourceBytes.buffer,
-      adjustments: { invert: true }, transforms: {}, outputMode: 'preview',
+      adjustments: { invert: true }, transforms: {}, previewMaxDimension: 1, outputMode: 'preview',
     } });
     const first = await firstResult;
     assert.equal(first.sourceRetained, true, 'the worker keeps its decoded original available for the next edit');
+    assert.deepEqual([first.width, first.height, first.sourceWidth, first.sourceHeight], [1, 1, 2, 1]);
 
     const expectedOriginal = decodeOriginal(pillow, sourceBytes);
     try {
-      const expected = renderImage(expectedOriginal, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow);
+      const expected = renderImage(expectedOriginal, { brightness: 24, saturation: -15 }, { rotation: 90 }, pillow, { previewMaxDimension: 1 });
       const secondResult = waitFor(message => message.type === 'rendered' && message.requestId === 2);
       selfMock.onmessage({ data: {
         type: 'render', requestId: 2, assetId: 'same-original', sourceBytes: null,
-        adjustments: { brightness: 24, saturation: -15 }, transforms: { rotation: 90 }, outputMode: 'preview',
+        adjustments: { brightness: 24, saturation: -15 }, transforms: { rotation: 90 },
+        previewMaxDimension: 1, outputMode: 'preview',
       } });
       const second = await secondResult;
 

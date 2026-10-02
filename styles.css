@@ -102,6 +102,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .layer-row.is-dragging { opacity: .38; }
 .layer-row.is-drop-before { box-shadow: inset 0 2px #0d99ff; }
 .layer-row.is-drop-after { box-shadow: inset 0 -2px #0d99ff; }
+.layer-row.is-drop-inside { outline: 2px solid #0d99ff; outline-offset: -2px; background: color-mix(in srgb, #0d99ff 12%, transparent); }
 .layer-row:hover { background: #f4f4f4; }
 .layer-row.is-selected { color: #137ed0; background: #e5f3ff; }
 .layer-chevron, .layer-chevron-placeholder { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; padding: 0; border-radius: 5px; color: #777; font-size: 15px; line-height: 1; touch-action: manipulation; }
@@ -851,6 +852,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .live-view-dock button { min-height: 40px; padding: 0 8px; }
   .live-peer-row { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .live-peer-row .secondary-button { width: 100%; }
+  #recipe-dialog .recipe-update-picker { min-height: 44px; }
+  #recipe-dialog .dialog-actions > button { min-height: 44px; }
 }
 .modal-title-row { display: flex; align-items: flex-start; justify-content: space-between; }
 .modal-eyebrow { color: #888; font-size: 9px; font-weight: 650; letter-spacing: .12em; }
@@ -860,6 +863,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .variable-type-field { display: grid; gap: 6px; margin-top: 12px; }
 .variable-type-field[hidden] { display: none; }
 .text-field { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #dedede; border-radius: 6px; font-size: 11px; }
+.recipe-update-fields { display: grid; gap: 6px; }
+.recipe-update-fields[hidden] { display: none; }
+.recipe-update-picker { width: 100%; min-height: 38px; }
 .recipe-preview { display: flex; align-items: center; gap: 9px; min-height: 43px; margin-top: 13px; padding: 0 10px; border: 1px solid #ece7f8; border-radius: 7px; background: #faf8ff; color: #6e5a99; font-size: 10px; }
 .recipe-output-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; align-items: center; margin-top: 14px; }
 .recipe-output-controls .field-label { margin: 0; }

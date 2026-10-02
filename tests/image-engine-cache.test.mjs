@@ -55,6 +55,7 @@ class CacheWorkerMock {
       format: message.format,
       quality: message.quality,
       outputMode: message.outputMode,
+      previewMaxDimension: message.previewMaxDimension,
     });
     this.pendingRenderMessages.push(message);
     if (!CacheWorkerMock.deferRenders) queueMicrotask(() => this.completeRender(message.requestId));
@@ -411,6 +412,17 @@ test('LocalImageEngine snapshots recipe format and quality into each worker job'
   });
 });
 
+test('LocalImageEngine forwards preview dimensions only to interactive preview workers', async () => {
+  await withEngine(async engine => {
+    await engine.render('asset', bytesFor(2), {}, {}, { previewMaxDimension: 2048 });
+    assert.equal(engine.workers[0].worker.renderRequests[0].previewMaxDimension, 2048);
+
+    await engine.renderOutput('asset', bytesFor(2), {}, {}, { previewMaxDimension: 2048 });
+    assert.equal(engine.workers[0].worker.renderRequests[1].previewMaxDimension, undefined,
+      'export always renders at full source resolution even when a preview cap is accidentally present');
+  });
+});
+
 test('LocalImageEngine queues a full-resolution export job separately from lossless preview renders', async () => {
   await withEngine(async engine => {
     const source = bytesFor(3);
@@ -433,6 +445,7 @@ test('LocalImageEngine rejects unsupported recipe output options before admittin
     await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { format: 'gif' }), /PNG, JPEG, or WebP/);
     await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { format: 'jpeg', quality: 0 }), /1 to 100/);
     await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { queueGroup: '' }), /group must be a nonempty string or null/);
+    await assert.rejects(engine.render('asset', bytesFor(2), {}, {}, { previewMaxDimension: 0 }), /positive safe integer/);
     assert.equal(engine.metrics().queued, 0);
   });
 });

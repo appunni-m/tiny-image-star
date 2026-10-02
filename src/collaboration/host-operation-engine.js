@@ -258,6 +258,25 @@ function applyOperation(document, operation) {
   return document;
 }
 
+/** Apply one validated typed edit with the exact reducer used by the host. */
+export function applyHostTypedOperation(document, operation) {
+  if (!document || operation?.type === 'ReplaceSnapshot') {
+    throw operationError('UNSUPPORTED_OPERATION', 'A typed collaboration operation is required.');
+  }
+  const message = validateCollaborationMessage({
+    v: PROTOCOL_VERSION,
+    kind: 'OPERATION',
+    designId: document.id,
+    sessionId: 'local-reducer',
+    actorId: 'local-reducer',
+    operation
+  }, { direction: 'guest-to-host' });
+  const candidate = clone(document);
+  applyOperation(candidate, message.operation);
+  validateDocument(candidate);
+  return candidate;
+}
+
 function resultCopy(result) {
   return { ...result };
 }

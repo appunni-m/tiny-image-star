@@ -258,7 +258,8 @@ test('preview memory is reserved before worker dispatch and held through decode 
   assert.notEqual(renderStart, -1);
   assert.notEqual(renderEnd, -1);
   const body = source.slice(renderStart, renderEnd);
-  const dimensions = body.indexOf('const outputDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);');
+  const dimensions = body.indexOf('const transformedDimensions = transformedImageDimensions(sourceDimensions.width, sourceDimensions.height, transforms);');
+  const cappedDimensions = body.indexOf('const outputDimensions = imagePreviewDimensions(transformedDimensions.width, transformedDimensions.height, previewMaxDimension);');
   const estimate = body.indexOf('estimatePreviewMemoryReservationBytes(outputDimensions)');
   const reserve = body.indexOf('imageMemoryBudget.reserve(previewAdmission.retainedBytes');
   const reservationScope = body.indexOf('withImageMemoryReservation(imageMemoryBudget, reservation, async () => {');
@@ -267,13 +268,26 @@ test('preview memory is reserved before worker dispatch and held through decode 
   const commit = body.indexOf('imageMemoryBudget.commit(reservation, currentMemoryKey, { bytes: retainedBytes');
   const publish = body.indexOf('state.previews.set(previewKey, bitmap);');
 
-  assert.ok(dimensions >= 0 && estimate > dimensions && reserve > estimate && reservationScope > reserve && dispatch > reservationScope,
-    'the exact crop/rotation output dimensions must reserve the conservative preview budget before worker dispatch');
+  assert.ok(dimensions >= 0 && cappedDimensions > dimensions && estimate > cappedDimensions && reserve > estimate && reservationScope > reserve && dispatch > reservationScope,
+    'the bounded crop/rotation preview dimensions must reserve the conservative preview budget before worker dispatch');
   assert.ok(decode > dispatch && commit > decode && publish > commit,
     'the reservation stays in force through bitmap decoding and is committed before preview publication');
   assert.ok(body.indexOf('result.bytes.byteLength > previewAdmission.encodedByteLength') > dispatch
     && body.indexOf('result.bytes.byteLength > previewAdmission.encodedByteLength') < decode,
   'the returned PNG must fit the conservative encoded-output reservation before bitmap allocation');
+});
+
+test('interactive preview resolution follows visible canvas demand within memory-friendly phone and desktop caps', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const renderStart = source.indexOf('async function renderImagePreview(');
+  const renderEnd = source.indexOf('function reconcileImagePreviewRuntime', renderStart);
+  const body = source.slice(renderStart, renderEnd);
+  assert.match(body, /const desiredPreviewEdge = Math\.ceil\(Math\.max\(canvasBounds\.width, canvasBounds\.height\) \* pixelRatio \* Math\.max\(\.5, state\.zoom\)\)/,
+    'preview size should cover the visible canvas scale and account for device pixels and zoom');
+  assert.match(body, /const previewDimensionCeiling = innerWidth <= 820 \|\| Number\(navigator\.deviceMemory\) > 0 && navigator\.deviceMemory <= 4 \? 2048 : 4096/,
+    'phone and low-memory devices should use a lower hard ceiling than desktop');
+  assert.match(body, /queueGroup, previewMaxDimension/,
+    'each interactive render should pass its bound through the local worker queue');
 });
 
 test('pruning deleted nodes cancels timers and releases only orphan preview resources', () => {

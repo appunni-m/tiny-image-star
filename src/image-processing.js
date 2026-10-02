@@ -171,6 +171,47 @@ function normalizePreviewDepth(image) {
 }
 
 /**
+ * Return the dimensions Pillow-RS will use to fit an image inside a square
+ * preview bound without enlarging it. The constrained axis is kept exact;
+ * the other axis chooses the integer size with the least aspect-ratio error.
+ * The same aspect-error calculation as Pillow-RS preserves its choices at
+ * half-pixel ties, where ordinary Math.round can produce a different shape.
+ */
+export function imagePreviewDimensions(width, height, maxDimension) {
+  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
+    throw new TypeError('Image preview dimensions must be positive safe integers.');
+  }
+  if (maxDimension == null) return { width, height };
+  if (!Number.isSafeInteger(maxDimension) || maxDimension < 1) {
+    throw new TypeError('Image preview maximum dimension must be a positive safe integer.');
+  }
+  if (width <= maxDimension && height <= maxDimension) return { width, height };
+
+  const boundedWidth = Math.min(width, maxDimension);
+  const boundedHeight = Math.min(height, maxDimension);
+  // Mirror Pillow-RS thumbnail_dimensions/round_aspect directly. In addition
+  // to the documented floor-on-exact-tie rule, using the same IEEE-754
+  // operations preserves its choice for ratios whose two errors differ only
+  // by floating-point rounding.
+  const aspect = width / height;
+  if (boundedWidth / boundedHeight >= aspect) {
+    const ideal = boundedHeight * aspect;
+    const floor = Math.floor(ideal);
+    const ceil = Math.ceil(ideal);
+    const selected = Math.abs(aspect - floor / boundedHeight) <= Math.abs(aspect - ceil / boundedHeight)
+      ? floor : ceil;
+    return { width: Math.max(1, selected), height: boundedHeight };
+  }
+
+  const ideal = boundedWidth / aspect;
+  const floor = Math.floor(ideal);
+  const ceil = Math.ceil(ideal);
+  const error = candidate => candidate === 0 ? 0 : Math.abs(aspect - boundedWidth / candidate);
+  const selected = error(floor) <= error(ceil) ? floor : ceil;
+  return { width: boundedWidth, height: Math.max(1, selected) };
+}
+
+/**
  * Resolve an optional normalized crop, clockwise quarter-turn rotation, and
  * visible-axis flips against the original source dimensions. Normalized crop
  * edges make saved recipes portable across sources with different dimensions.
@@ -243,6 +284,16 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     }
     if (normalizedTransforms.flipHorizontal) image = replaceImage(image, image.transpose('FLIP_LEFT_RIGHT'));
     if (normalizedTransforms.flipVertical) image = replaceImage(image, image.transpose('FLIP_TOP_BOTTOM'));
+    let previewScale = 1;
+    if (mode === 'preview' && output.previewMaxDimension != null) {
+      const previewSize = imagePreviewDimensions(image.width, image.height, output.previewMaxDimension);
+      if (previewSize.width !== image.width || previewSize.height !== image.height) {
+        previewScale = Math.min(previewSize.width / image.width, previewSize.height / image.height);
+        // Keep the immutable original decoded in the worker cache. Only this
+        // per-render copy is reduced, before filters and preview encoding.
+        image.thumbnail(output.previewMaxDimension, output.previewMaxDimension);
+      }
+    }
     if (settings.autoContrast) image = replaceImage(image, applyToneEffect(api, image, 'autoContrast'));
     if (settings.exposure || settings.temperature || settings.tint || settings.highlights || settings.shadows) {
       image = replaceImage(image, applyPhotographicAdjustments(image, settings));
@@ -254,7 +305,7 @@ export function renderImage(source, adjustments = {}, transforms = {}, api = nul
     if (settings.posterizeBits > 0) image = replaceImage(image, applyToneEffect(api, image, 'posterize', settings.posterizeBits));
     if (settings.solarize) image = replaceImage(image, applyToneEffect(api, image, 'solarize', settings.solarizeThreshold));
     if (settings.invert) image = replaceImage(image, applyToneEffect(api, image, 'invert'));
-    if (blur) image = replaceImage(image, image.gaussianBlur(blur));
+    if (blur) image = replaceImage(image, image.gaussianBlur(blur * previewScale));
     // Keep editor previews lossless PNG so the chosen export codec never
     // compounds across edits. Standalone exports run their final codec and
     // JPEG/WebP quality settings inside the local Pillow-RS WASM worker.

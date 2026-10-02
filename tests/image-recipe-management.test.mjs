@@ -32,13 +32,48 @@ test('recipe management actions operate on the picker choice and remain within l
     'refreshing a recipe snapshots the current image layer through the document model');
 });
 
+test('an image context menu opens one recipe chooser to refresh the chosen recipe from that image', () => {
+  const menuStart = source.indexOf('function openNodeMenu(');
+  const menuEnd = source.indexOf('\nfunction combineSelectedBoolean', menuStart);
+  assert.ok(menuStart >= 0 && menuEnd > menuStart, 'image context menu should have a bounded builder');
+  const menu = source.slice(menuStart, menuEnd);
+  assert.match(menu, /if \(node\?\.type === 'image'\)[\s\S]*?Refresh saved recipe from this image…/,
+    'right-clicking an image should expose the recipe refresh action');
+  assert.match(menu, /openImageRecipeDialog\('update', \{ nodeId: node\.id \}\)/,
+    'refresh should be tied to the image that opened the menu');
+
+  const dialogStart = source.indexOf('function openImageRecipeDialog(');
+  const dialogEnd = source.indexOf('\nfunction saveRecipeFor', dialogStart);
+  const dialog = source.slice(dialogStart, dialogEnd);
+  assert.match(dialog, /imageRecipeOptions\('', \{ placeholder: 'Choose a saved recipe' \}\)/,
+    'the dialog should offer one named selector instead of duplicating every refresh action in the menu');
+  assert.match(dialog, /\$\('#recipe-name-fields'\)\.hidden = updating/,
+    'the rename dialog must keep its name field while refresh uses the recipe selector');
+  assert.match(dialog, /\$\('#recipe-update-fields'\)\.hidden = !updating/);
+  assert.match(dialog, /\$\('#save-recipe-confirm'\)\.disabled = updating/);
+
+  const closeStart = source.indexOf("$('#recipe-dialog').addEventListener('close'");
+  const closeEnd = source.indexOf("$('#recipe-format').addEventListener", closeStart);
+  const closeHandler = source.slice(closeStart, closeEnd);
+  assert.match(closeHandler, /pending\.type === 'update'[\s\S]*?updateImageRecipeFromAssets\(\$\('#recipe-update-target'\)\.value, pending\.nodeId\)/,
+    'confirming refresh should call the existing validated recipe update flow');
+});
+
 test('the recipe rename dialog exposes a labeled mobile-friendly save flow', () => {
   assert.match(html, /<p class="modal-copy" id="recipe-dialog-copy">/);
   assert.match(html, /<div id="recipe-name-fields"><label class="field-label" for="recipe-name">Recipe name/);
   assert.match(html, /<div class="recipe-output-controls" id="recipe-output-controls">/);
-  assert.match(source, /\$\('#recipe-dialog-title'\)\.textContent = renaming \? 'Rename recipe' : 'Save recipe'/);
-  assert.match(source, /\$\('#recipe-output-controls'\)\.hidden = renaming/);
+  assert.match(source, /\$\('#recipe-dialog-title'\)\.textContent = renaming \? 'Rename recipe' : updating \? 'Refresh saved recipe' : 'Save recipe'/);
+  assert.match(source, /\$\('#recipe-output-controls'\)\.hidden = renaming \|\| updating/);
   assert.match(source, /dialog\.returnValue = ''/);
   assert.match(stylesheet, /\.recipe-management-actions \.add-fill \{ min-height: 44px; \}/,
     'recipe maintenance controls keep touch-sized targets on narrow phones');
+});
+
+test('the recipe refresh chooser and confirmation remain touch-sized on phones', () => {
+  assert.match(html, /<div class="recipe-update-fields" id="recipe-update-fields" hidden><label[^>]*for="recipe-update-target">Saved recipe to refresh<\/label><select id="recipe-update-target"[^>]*aria-label="Choose a saved recipe to refresh" required disabled><\/select><\/div>/);
+  assert.match(stylesheet, /#recipe-dialog \.recipe-update-picker \{ min-height: 44px; \}/,
+    'the recipe chooser provides a 44px phone tap target');
+  assert.match(stylesheet, /#recipe-dialog \.dialog-actions > button \{ min-height: 44px; \}/,
+    'the refresh confirmation provides a 44px phone tap target');
 });

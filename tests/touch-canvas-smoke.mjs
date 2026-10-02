@@ -94,8 +94,8 @@ try {
   design.id = documentId;
   design.name = documentId;
   const rectangle = createNode('rectangle', { name: 'Touch target', x: -50, y: -50, width: 100, height: 100, fill: '#d9d9d9' });
-  const ellipse = createNode('ellipse', { name: 'Touch ellipse', x: 170, y: 120, width: 36, height: 28 });
-  const text = createNode('text', { name: 'Touch text', text: 'Select me too', x: 190, y: -90, width: 150, height: 32 });
+  const ellipse = createNode('ellipse', { name: 'Touch ellipse', x: 80, y: 80, width: 36, height: 28 });
+  const text = createNode('text', { name: 'Touch text', text: 'Select me too', x: 70, y: 120, width: 90, height: 32 });
   addNode(design, rectangle);
   addNode(design, ellipse);
   addNode(design, text);
@@ -120,8 +120,31 @@ try {
   tap(app, app.querySelector('#layer-select-mode'), 518);
   tap(app, layerRow(rectangle.id), 519);
   assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 1, 'Finishing touch multi-select should restore ordinary single-layer selection.');
+  tap(app, app.querySelector('#layer-select-mode'), 521);
   tap(app, app.querySelector('#sidebar-toggle'), 512);
   await waitFor(() => !app.querySelector('#left-panel').classList.contains('is-open'), 'closed phone Layers panel');
+  assert(app.querySelector('#scene-canvas').getAttribute('aria-label').includes('Select mode is active'), 'canvas selection mode should remain announced after closing Layers.');
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 98, 94), 522);
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 98, 94), 522);
+  assert(layerRow(ellipse.id).classList.contains('is-selected') && layerRow(rectangle.id).classList.contains('is-selected'),
+    'a phone canvas tap should add a second layer without starting a drag.');
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 115, 136), 523);
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 115, 136), 523);
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 3,
+    'a second canvas tap should add another layer to the selection.');
+  dispatchPointer(app, canvas, 'pointerdown', worldScreenPoint(canvas, 0, 0), 524);
+  dispatchPointer(app, canvas, 'pointerup', worldScreenPoint(canvas, 0, 0), 524);
+  assert(!layerRow(rectangle.id).classList.contains('is-selected')
+    && app.querySelectorAll('#layers-list .layer-row.is-selected').length === 2,
+  'tapping an already selected canvas layer should remove only that layer from the selection.');
+  tap(app, app.querySelector('#sidebar-toggle'), 525);
+  await waitFor(() => app.querySelector('#left-panel').classList.contains('is-open'), 'phone Layers after canvas selection');
+  tap(app, app.querySelector('#layer-select-mode'), 526);
+  tap(app, layerRow(rectangle.id), 527);
+  assert(app.querySelectorAll('#layers-list .layer-row.is-selected').length === 1,
+    'leaving canvas Select mode should restore regular single-selection behavior.');
+  tap(app, app.querySelector('#sidebar-toggle'), 528);
+  await waitFor(() => !app.querySelector('#left-panel').classList.contains('is-open'), 'closed phone Layers after canvas selection');
 
   // The touch target sits exactly between the top resize and rotate handles.
   // The deterministic tie rule gives resize priority so this gesture changes
@@ -190,7 +213,7 @@ try {
   assert(savedRectangle?.x > -50 && savedRectangle?.y > -50,
     `The active move was not finalized and saved before pinch takeover (x ${savedRectangle?.x}, y ${savedRectangle?.y}).`);
 
-  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchLayerTypesMultiSelect: true, nearestOverlappingTouchHandle: true, touchResizeHitRegion: true, touchRotateHitRegion: true, interruptedDrawDraftCleared: true, interruptedMoveSaved: true })}`;
+  result.textContent = `PASS\n${JSON.stringify({ viewport: '390x844', touchLayerTypesMultiSelect: true, canvasLayerMultiSelect: true, nearestOverlappingTouchHandle: true, touchResizeHitRegion: true, touchRotateHitRegion: true, interruptedDrawDraftCleared: true, interruptedMoveSaved: true })}`;
 } catch (error) {
   result.textContent = `FAIL\n${error?.stack || error}`;
 } finally {

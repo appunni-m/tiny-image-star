@@ -43,6 +43,7 @@ self.onmessage = async event => {
     }, source => (message.outputMode === 'export' ? renderImageOutput : renderImage)(source, message.adjustments, message.transforms, pillow, {
       format: message.format ?? 'png',
       quality: message.quality ?? 90,
+      previewMaxDimension: message.outputMode === 'export' ? undefined : message.previewMaxDimension,
     }), { retain: !render.invalidated });
     const { result, retained, evictedAssetIds } = cachedRender;
     self.postMessage({ type: 'rendered', requestId: message.requestId, assetId: message.assetId, sourceRetained: retained, evictedAssetIds, ...result }, [result.bytes.buffer]);

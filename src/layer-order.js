@@ -1,32 +1,55 @@
 import { findNode, reorderNode } from './model.js';
+import { canReparentLayer, reparentLayer } from './layer-reparent.js';
+
+const layerContainerTypes = new Set(['frame', 'section', 'group', 'boolean']);
 
 /** Translate a visual layer-row drop into a final sibling index.
  * Layer rows display sibling arrays in reverse paint order, so dropping above
  * a row means inserting after it in the model's bottom-to-top array.
  */
 export function layerDropReorder(document, sourceId, targetId, position, pageId = document.activePageId) {
-  if (!['before', 'after'].includes(position) || sourceId === targetId) return null;
+  if (!['before', 'after', 'inside'].includes(position) || sourceId === targetId) return null;
   const source = findNode(document, sourceId, pageId);
   const target = findNode(document, targetId, pageId);
-  if (!source || !target || source.parent !== target.parent) return null;
+  if (!source || !target) return null;
   if (source.node.locked || target.node.locked
     || source.parents.some(parent => parent.locked)
     || target.parents.some(parent => parent.locked)) return null;
 
-  const siblings = source.parent?.children || document.pages.find(page => page.id === pageId)?.children;
-  if (!siblings) return null;
-  const firstCrossedIndex = Math.min(source.index, target.index) + 1;
-  const lastCrossedIndex = Math.max(source.index, target.index);
-  if (siblings.slice(firstCrossedIndex, lastCrossedIndex).some(node => node.locked)) return null;
+  let parentId;
+  let boundary;
+  if (position === 'inside') {
+    if (!layerContainerTypes.has(target.node.type)) return null;
+    parentId = target.node.id;
+    boundary = target.node.children?.length || 0;
+  } else {
+    parentId = target.parent?.id ?? null;
+    boundary = target.index + (position === 'before' ? 1 : 0);
+  }
 
-  const boundary = target.index + (position === 'before' ? 1 : 0);
-  const index = boundary - (source.index < boundary ? 1 : 0);
-  return index === source.index ? null : { nodeId: sourceId, index, pageId };
+  const sourceParentId = source.parent?.id ?? null;
+  if (sourceParentId === parentId) {
+    const siblings = source.parent?.children || document.pages.find(page => page.id === pageId)?.children;
+    if (!siblings) return null;
+    const index = Math.max(0, Math.min(boundary - (source.index < boundary ? 1 : 0), siblings.length - 1));
+    if (position !== 'inside') {
+      const firstCrossedIndex = Math.min(source.index, target.index) + 1;
+      const lastCrossedIndex = Math.max(source.index, target.index);
+      if (siblings.slice(firstCrossedIndex, lastCrossedIndex).some(node => node.locked)) return null;
+    }
+    return index === source.index ? null : { nodeId: sourceId, index, pageId };
+  }
+
+  if (!canReparentLayer(document, sourceId, { parentId, index: boundary, pageId })) return null;
+  return { nodeId: sourceId, parentId, index: boundary, pageId, reparent: true };
 }
 
 export function reorderLayerForDrop(document, sourceId, targetId, position, pageId = document.activePageId) {
   const operation = layerDropReorder(document, sourceId, targetId, position, pageId);
-  return operation ? reorderNode(document, operation.nodeId, operation.index, operation.pageId) : false;
+  if (!operation) return false;
+  return operation.reparent
+    ? reparentLayer(document, operation.nodeId, operation)
+    : reorderNode(document, operation.nodeId, operation.index, operation.pageId);
 }
 
 /** Whether a layer can move by one visible row within its current sibling list. */
@@ -70,8 +93,14 @@ export function pointerDragThresholdExceeded(startX, startY, x, y, threshold = L
     && Math.hypot(x - startX, y - startY) > threshold;
 }
 
-export function layerDropPositionAt(clientY, rect) {
+export function layerDropPositionAt(clientY, rect, canDropInside = false) {
   if (!Number.isFinite(clientY) || !rect || !Number.isFinite(rect.top) || !Number.isFinite(rect.height) || rect.height <= 0) return null;
+  if (canDropInside) {
+    const fraction = (clientY - rect.top) / rect.height;
+    if (fraction < .25) return 'before';
+    if (fraction > .75) return 'after';
+    return 'inside';
+  }
   return clientY < rect.top + rect.height / 2 ? 'before' : 'after';
 }
 
@@ -116,7 +145,7 @@ export function installLayerReorder(list, {
   };
 
   const clearDropTarget = () => {
-    if (dropRow) dropRow.classList.remove('is-drop-before', 'is-drop-after');
+    if (dropRow) dropRow.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
     dropRow = null;
   };
   const clearDrag = () => {
@@ -175,7 +204,12 @@ export function installLayerReorder(list, {
     dropRow = row;
     row.classList.toggle('is-drop-before', position === 'before');
     row.classList.toggle('is-drop-after', position === 'after');
+    row.classList.toggle('is-drop-inside', position === 'inside');
     return { targetId: row.dataset.layerId, position };
+  };
+  const dropPositionForRow = (y, row, document, pageId) => {
+    const type = row?.dataset.layerType || findNode(document, row?.dataset.layerId, pageId)?.node.type;
+    return layerDropPositionAt(y, row?.getBoundingClientRect?.(), layerContainerTypes.has(type));
   };
   const updatePointerTarget = (drag, fallbackTarget = null) => {
     if (getDocument() !== drag.document) {
@@ -185,7 +219,7 @@ export function installLayerReorder(list, {
       return;
     }
     const row = targetRowAtPoint(drag.lastX, drag.lastY, fallbackTarget);
-    const position = row && layerDropPositionAt(drag.lastY, row.getBoundingClientRect());
+    const position = row && dropPositionForRow(drag.lastY, row, drag.document, drag.pageId);
     const target = position && setDropTarget(row, position, drag.document, drag.pageId, drag.sourceId);
     drag.targetId = target?.targetId ?? null;
     drag.position = target?.position ?? null;
@@ -309,7 +343,7 @@ export function installLayerReorder(list, {
   list.addEventListener('dragover', event => {
     const row = rowFromTarget(event.target);
     if (!sourceId || !row || row.dataset.layerId === sourceId) return;
-    const position = layerDropPositionAt(event.clientY, row.getBoundingClientRect());
+    const position = dropPositionForRow(event.clientY, row, getDocument(), getPageId());
     if (!position) return;
     const operation = layerDropReorder(getDocument(), sourceId, row.dataset.layerId, position, getPageId());
     if (!operation) { clearDropTarget(); return; }
@@ -319,6 +353,7 @@ export function installLayerReorder(list, {
     dropRow = row;
     row.classList.toggle('is-drop-before', position === 'before');
     row.classList.toggle('is-drop-after', position === 'after');
+    row.classList.toggle('is-drop-inside', position === 'inside');
   });
 
   list.addEventListener('drop', event => {
@@ -326,7 +361,8 @@ export function installLayerReorder(list, {
     if (!sourceId || !row) return;
     event.preventDefault();
     const position = row.classList.contains('is-drop-before') ? 'before'
-      : row.classList.contains('is-drop-after') ? 'after' : null;
+      : row.classList.contains('is-drop-after') ? 'after'
+        : row.classList.contains('is-drop-inside') ? 'inside' : null;
     if (position) commitDrop(sourceId, row.dataset.layerId, position, getPageId());
     clearDrag();
   });

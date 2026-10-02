@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
 import * as pillow from '../wasm/pillow_rs_js.js';
-import { decodeOriginal, renderImage, renderImageOutput } from '../src/image-processing.js';
+import { decodeOriginal, imagePreviewDimensions, renderImage, renderImageOutput } from '../src/image-processing.js';
 import { createImageFill } from '../src/image-fills.js';
 import { rotateImageTransforms } from '../src/image-transforms.js';
 import { estimatePreviewMemoryReservationBytes } from '../src/image-memory-budget.js';
@@ -114,6 +114,65 @@ function fourPixelRgbaPng() {
 }
 
 function pixel(image, x, y) { return [...image.getpixel(x, y)].slice(0, 3); }
+
+test('preview dimension planning matches Pillow-RS thumbnail bounds including aspect-ratio ties', () => {
+  assert.deepEqual(imagePreviewDimensions(4000, 2000, 1000), { width: 1000, height: 500 });
+  assert.deepEqual(imagePreviewDimensions(16, 9, 8), { width: 8, height: 5 });
+  assert.deepEqual(imagePreviewDimensions(2, 4, 3), { width: 2, height: 3 }, 'floating-point-equivalent ratio choices match Pillow-RS');
+  assert.deepEqual(imagePreviewDimensions(3, 4, 2), { width: 1, height: 2 }, 'exact aspect-error ties choose the lower dimension');
+  assert.deepEqual(imagePreviewDimensions(4, 3, 2), { width: 2, height: 2 });
+  assert.deepEqual(imagePreviewDimensions(384, 257), { width: 384, height: 257 }, 'omitting the optional cap preserves legacy full-size previews');
+  assert.deepEqual(imagePreviewDimensions(384, 257, 512), { width: 384, height: 257 }, 'preview bounds never upscale small images');
+  assert.throws(() => imagePreviewDimensions(0, 1, 10), /positive safe integers/);
+  assert.throws(() => imagePreviewDimensions(1, 1, 0), /positive safe integer/);
+});
+
+test('bounded Pillow-RS previews scale blur after geometry while exports stay full resolution', async () => {
+  const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));
+  await pillow.default({ module_or_path: wasm });
+  const original = decodeOriginal(pillow, memoryBoundPngFixture('RGB', 128, 64));
+  try {
+    const preview = renderImage(original, { blur: 8 }, {}, pillow, { previewMaxDimension: 32 });
+    assert.deepEqual([preview.width, preview.height], [32, 16]);
+    assert.deepEqual([preview.sourceWidth, preview.sourceHeight], [128, 64], 'preview bounds do not replace original source metadata');
+    assert.deepEqual([original.width, original.height], [128, 64], 'preview rendering leaves the retained decoded source unchanged');
+
+    // Compare against Pillow-RS's exact operation order: thumbnail the render
+    // copy, then apply blur radius 8 * (32 / 128) = 2 in preview pixels.
+    let reduced = original.copy();
+    let expected;
+    try {
+      reduced.thumbnail(32, 32);
+      expected = reduced.gaussianBlur(2);
+      assert.deepEqual(preview.bytes, new Uint8Array(expected.saveWithInput('PNG', null)),
+        'blur radius follows the preview scale and filters run after thumbnailing');
+    } finally {
+      expected?.free();
+      reduced.free();
+    }
+
+    const uncappedPreview = renderImage(original, {}, {}, pillow);
+    assert.deepEqual([uncappedPreview.width, uncappedPreview.height], [128, 64]);
+
+    const rotated = renderImage(original, { blur: 4 }, { rotation: 90 }, pillow, { previewMaxDimension: 32 });
+    assert.deepEqual([rotated.width, rotated.height], [16, 32], 'the cap applies after rotation');
+    assert.deepEqual([rotated.sourceWidth, rotated.sourceHeight, rotated.rotation], [128, 64, 90]);
+
+    const crop = { left: 0.125, top: 0.125, right: 0.75, bottom: 0.75 };
+    const cropped = renderImage(original, {}, { crop, rotation: 90 }, pillow, { previewMaxDimension: 32 });
+    assert.deepEqual([cropped.width, cropped.height], [16, 32]);
+    assert.deepEqual(cropped.crop, crop, 'preview bounds leave normalized recipe crop metadata intact');
+    assert.deepEqual(cropped.cropPixels, { left: 16, top: 8, right: 96, bottom: 48 });
+
+    const exported = renderImageOutput(original, {}, { rotation: 90 }, pillow, {
+      format: 'png', previewMaxDimension: 32,
+    });
+    assert.deepEqual([exported.width, exported.height], [64, 128], 'standalone export ignores the interactive preview cap');
+    const reopened = decodeOriginal(pillow, exported.bytes);
+    try { assert.deepEqual([reopened.width, reopened.height], [64, 128]); }
+    finally { reopened.free(); }
+  } finally { original.free(); }
+});
 
 test('vendored Pillow-RS WebAssembly opens a local source and emits adjusted PNG bytes', async () => {
   const wasm = await readFile(new URL('../wasm/pillow_rs_js_bg.wasm', import.meta.url));

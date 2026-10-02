@@ -7,6 +7,7 @@ import {
   validateCollaborationMessage
 } from './protocol.js';
 import { verifyAnswerCapsule } from './session-capsules.js';
+import { planGuestOperationSnapshots } from './guest-operation-planner.js';
 import { createHostWebRtcSession, createGuestWebRtcSession } from './webrtc-session-transport.js';
 import {
   consumeAnswerSessionOnce,
@@ -722,6 +723,7 @@ export async function createGuestSessionController({
   let lastViewSequence = 0;
   let recovery = null;
   let lastSnapshot = null;
+  let lastProposedSnapshot = null;
   let assetReceiver = null;
   let receivedAssetCount = 0;
   let receivedAssetBytes = 0;
@@ -828,6 +830,7 @@ export async function createGuestSessionController({
       }
       if (!recovery) {
         lastSnapshot = safeSnapshot(message.snapshot);
+        lastProposedSnapshot = safeSnapshot(message.snapshot);
         const requirements = collectDesignAssetRequirements(lastSnapshot);
         const missingImages = requirements.imageAssetIds.filter(assetId => !receivedAssetIds.has(assetId));
         if (missingImages.length) throw new Error(`The host snapshot is missing ${missingImages.length} referenced image assets.`);
@@ -881,6 +884,7 @@ export async function createGuestSessionController({
         return;
       }
       lastSnapshot = safeSnapshot(adopted.state.acknowledgedSnapshot);
+      lastProposedSnapshot = safeSnapshot(lastSnapshot);
       hostRevision = adopted.state.acknowledgedRevision;
       hostHeadHash = adopted.state.hostHead.commitHash;
       emit('connected');
@@ -888,9 +892,9 @@ export async function createGuestSessionController({
       return;
     }
     if (message.kind === 'ACK') {
-      const operation = pendingByOp.get(message.opId);
-      if (!operation) throw new Error('The host acknowledged an unknown operation.');
-      const acknowledgedSnapshot = safeSnapshot(operation.snapshot);
+      const pending = pendingByOp.get(message.opId);
+      if (!pending) throw new Error('The host acknowledged an unknown operation.');
+      const acknowledgedSnapshot = safeSnapshot(pending.snapshot);
       if (lastViewState && acknowledgedSnapshot.pages.some(page => page.id === lastViewState.pageId)) {
         acknowledgedSnapshot.activePageId = lastViewState.pageId;
       }
@@ -904,6 +908,7 @@ export async function createGuestSessionController({
       hostRevision = message.revision;
       hostHeadHash = message.headHash;
       emit(recovery.state.pendingOperations.length ? 'pending' : 'connected');
+      if (!recovery.state.pendingOperations.length) lastProposedSnapshot = safeSnapshot(acknowledgedSnapshot);
       await onSnapshot(safeSnapshot(lastSnapshot), hostRevision, recovery.state.hostHead, { source: 'ack' });
       return;
     }
@@ -989,17 +994,45 @@ export async function createGuestSessionController({
     proposeSnapshot(snapshot) {
       if (!recovery || !['connected', 'pending'].includes(state)) throw new Error('The host snapshot is not ready for editing.');
       if (outgoingAssetInProgress) throw new Error('Wait for the current asset transfer to finish before applying its design changes.');
-      const operation = {
-        type: 'ReplaceSnapshot',
-        opId: makeActorId(crypto, `op${++operationCounter}`),
-        baseRevision: recovery.state.acknowledgedRevision + recovery.state.pendingOperations.length,
-        snapshot: safeSnapshot(snapshot)
-      };
-      const proposal = recovery.propose(operation);
-      pendingByOp.set(proposal.opId, proposal);
-      sendMessage(channel, { ...context(), kind: 'OPERATION', operation: proposal }, 'guest-to-host');
+      const targetSnapshot = safeSnapshot(snapshot);
+      const baseSnapshot = lastProposedSnapshot || recovery.state.acknowledgedSnapshot;
+      const plan = planGuestOperationSnapshots(baseSnapshot, targetSnapshot);
+      if (plan?.length === 0) return null;
+      const planned = plan?.length ? plan : [{
+        operation: { type: 'ReplaceSnapshot', snapshot: targetSnapshot },
+        snapshot: targetSnapshot
+      }];
+      const firstBaseRevision = recovery.state.acknowledgedRevision + recovery.state.pendingOperations.length;
+      const proposals = planned.map(({ operation, snapshot: expectedSnapshot }, index) => ({
+        operation: {
+          ...operation,
+          opId: makeActorId(crypto, `op${++operationCounter}`),
+          baseRevision: firstBaseRevision + index
+        },
+        snapshot: safeSnapshot(expectedSnapshot)
+      }));
+      const pendingState = recovery.state;
+      const plannedBytes = proposals.reduce((sum, { operation }) => (
+        sum + new TextEncoder().encode(JSON.stringify(operation)).byteLength
+      ), 0);
+      if (pendingState.pendingOperations.length + proposals.length > maxPendingOperations
+        || pendingState.pendingBytes + plannedBytes > maxPendingBytes) {
+        throw new Error('Pending guest edits reached the safe session limit; save your local copy before continuing.');
+      }
+      // Stage the whole deterministic plan before sending. If admission fails,
+      // no partial wire sequence is emitted; the existing local checkpoint can
+      // then be preserved as a fork by the caller.
+      const accepted = proposals.map(({ operation, snapshot: expectedSnapshot }) => {
+        const proposal = recovery.propose(operation);
+        pendingByOp.set(proposal.opId, { snapshot: expectedSnapshot });
+        return proposal;
+      });
+      lastProposedSnapshot = targetSnapshot;
+      for (const proposal of accepted) {
+        sendMessage(channel, { ...context(), kind: 'OPERATION', operation: proposal }, 'guest-to-host');
+      }
       emit('pending');
-      return proposal.opId;
+      return accepted.at(-1).opId;
     },
     async retryForkSave() {
       if (!recovery) throw new Error('There is no local fork to retry yet.');

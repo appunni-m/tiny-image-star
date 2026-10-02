@@ -467,7 +467,7 @@ export class LocalImageEngine {
     return this.#enqueueRender(assetId, sourceBytes, adjustments, transforms, options, 'export');
   }
 
-  #enqueueRender(assetId, sourceBytes, adjustments, transforms, { replaceKey, format = 'png', quality = 90, queueGroup = null } = {}, outputMode) {
+  #enqueueRender(assetId, sourceBytes, adjustments, transforms, { replaceKey, format = 'png', quality = 90, queueGroup = null, previewMaxDimension } = {}, outputMode) {
     if (this.dead) return Promise.reject(new Error('The local image engine is closed.'));
     if (replaceKey !== undefined && (typeof replaceKey !== 'string' || !replaceKey)) {
       return Promise.reject(new TypeError('A queued render replacement key must be a nonempty string.'));
@@ -477,6 +477,9 @@ export class LocalImageEngine {
     }
     if (!['png', 'jpeg', 'webp'].includes(format)) return Promise.reject(new TypeError('Image output format must be PNG, JPEG, or WebP.'));
     if (!Number.isInteger(quality) || quality < 1 || quality > 100) return Promise.reject(new TypeError('Image output quality must be an integer from 1 to 100.'));
+    if (previewMaxDimension !== undefined && (!Number.isSafeInteger(previewMaxDimension) || previewMaxDimension < 1 || previewMaxDimension > 16_384)) {
+      return Promise.reject(new TypeError('An interactive preview dimension cap must be a positive safe integer no greater than 16384.'));
+    }
     if (queueGroup && this.exhaustedQueueGroups.has(queueGroup)) {
       return Promise.reject(new Error('All local image workers stopped unexpectedly. Start a new batch to retry.'));
     }
@@ -511,6 +514,7 @@ export class LocalImageEngine {
         format,
         quality,
         outputMode,
+        previewMaxDimension: outputMode === 'preview' ? previewMaxDimension : undefined,
         resolve,
         reject,
         replaceKey,
@@ -686,6 +690,7 @@ export class LocalImageEngine {
         format: job.format,
         quality: job.quality,
         outputMode: job.outputMode,
+        ...(job.previewMaxDimension === undefined ? {} : { previewMaxDimension: job.previewMaxDimension }),
       }, bytes ? [bytes.buffer] : []);
       if (blockedJobs) {
         for (const blockedJob of blockedJobs) blockedJob.memoryBypasses = (blockedJob.memoryBypasses || 0) + 1;

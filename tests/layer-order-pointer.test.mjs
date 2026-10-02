@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode } from '../src/model.js';
+import { addNode, createDocument, createNode, findNode } from '../src/model.js';
 import {
   installLayerReorder,
   layerDropPositionAt,
@@ -232,12 +232,33 @@ test('drop positioning uses the row midpoint and rejects malformed bounds', () =
   const rect = { top: 20, height: 40 };
   assert.equal(layerDropPositionAt(39, rect), 'before');
   assert.equal(layerDropPositionAt(40, rect), 'after');
+  assert.equal(layerDropPositionAt(29, rect, true), 'before');
+  assert.equal(layerDropPositionAt(40, rect, true), 'inside');
+  assert.equal(layerDropPositionAt(51, rect, true), 'after');
   assert.equal(layerDropPositionAt(10, rect), 'before');
   assert.equal(layerDropPositionAt(40, { top: 0, height: 0 }), null);
   assert.equal(layerDropPositionAt(Number.NaN, rect), null);
   assert.equal(pointerDragThresholdExceeded(0, 0, 6, 0), false);
   assert.equal(pointerDragThresholdExceeded(0, 0, 6.01, 0), true);
   assert.equal(pointerDragThresholdExceeded(0, 0, 0, 6.01), true);
+});
+
+test('dropping in a container row center nests the layer or moves it to the end of its stack', () => {
+  const { document, container, bottom, list, ownerDocument, handles, callbacks } = fixture();
+  const containerRow = list.append(new FakeElement('div', { layerId: container.id }));
+  containerRow.rect = { top: 120, height: 40 };
+  ownerDocument.elementFromPoint = (_x, y) => y >= 120 ? containerRow : null;
+  const handle = handles.get('Bottom');
+
+  dispatch(handle, 'pointerdown', { clientX: 8, clientY: 100, pointerId: 30 });
+  dispatch(handle, 'pointermove', { clientX: 8, clientY: 140, pointerId: 30 });
+  assert.equal(containerRow.classList.contains('is-drop-inside'), true);
+  dispatch(handle, 'pointerup', { clientX: 8, clientY: 140, pointerId: 30 });
+
+  assert.deepEqual(container.children.map(node => node.name), ['Middle', 'Top', 'Bottom']);
+  assert.equal(findNode(document, bottom.id)?.parent, container);
+  assert.equal(callbacks.before, 1);
+  assert.equal(callbacks.changed, 1);
 });
 
 test('pointer reorder ignores controls and leaves their tap/click behavior intact', () => {
@@ -269,8 +290,8 @@ test('a canceled pointer gesture clears drag state without suppressing the next 
   assert.equal(callbacks.changed, 0);
 });
 
-test('invalid cross-parent and locked-sibling drops are cleared without a commit', () => {
-  const { document, container, top, list, ownerDocument, rows, handles, callbacks } = fixture({ lockedMiddle: true });
+test('locked sibling drops are cleared while a valid cross-parent drop reparents the layer', () => {
+  const { document, container, bottom, top, list, ownerDocument, rows, handles, callbacks } = fixture({ lockedMiddle: true });
   const source = rows.get('Bottom');
   const handle = handles.get('Bottom');
   const target = rows.get('Top');
@@ -292,11 +313,12 @@ test('invalid cross-parent and locked-sibling drops are cleared without a commit
   list.append(nestedRow);
   ownerDocument.elementFromPoint = (_x, y) => y >= 120 ? nestedRow : rows.get('Bottom');
   dispatch(handle, 'pointerdown', { clientX: 8, clientY: 100, pointerId: 16 });
-  dispatch(handle, 'pointermove', { clientX: 8, clientY: 130, pointerId: 16 });
-  assert.equal(nestedRow.classList.contains('is-drop-before'), false, 'a different parent cannot be a drop target');
-  dispatch(handle, 'pointerup', { clientX: 8, clientY: 130, pointerId: 16 });
-  assert.equal(callbacks.before, 0);
-  assert.equal(callbacks.changed, 0);
-  assert.deepEqual(container.children.map(node => node.name), ['Bottom', 'Middle', 'Top']);
+  dispatch(handle, 'pointermove', { clientX: 8, clientY: 150, pointerId: 16 });
+  assert.equal(nestedRow.classList.contains('is-drop-after'), true, 'a row edge can target another container’s sibling stack');
+  dispatch(handle, 'pointerup', { clientX: 8, clientY: 150, pointerId: 16 });
+  assert.equal(callbacks.before, 1);
+  assert.equal(callbacks.changed, 1);
+  assert.equal(findNode(document, bottom.id)?.parent, otherContainer);
+  assert.deepEqual(container.children.map(node => node.name), ['Middle', 'Top']);
   assert.equal(top.name, 'Top');
 });
