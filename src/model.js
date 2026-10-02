@@ -13,6 +13,7 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 import { isValidPrototypeEasing } from './prototype-easing.js';
+import { isValidTextPathGeometry } from './text-on-path.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -395,7 +396,7 @@ const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 
 const componentOverrideProperties = new Set([
   'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit',
-  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
+  'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
   'variableBindings',
   'effects',
@@ -3305,6 +3306,7 @@ export function validateDocument(document) {
         || (node.minHeight != null && node.maxHeight != null && node.minHeight > node.maxHeight)) throw new TypeError(`Invalid size limits on layer ${node.name || node.id}.`);
       if (node.type === 'boolean' && (!booleanOperations.has(node.operation) || !Array.isArray(node.children) || node.children.length < 2 || node.children.some(child => !isBooleanOperand(child)))) throw new TypeError(`Invalid Boolean group on layer ${node.name || node.id}.`);
       if (node.textFit != null && (node.type !== 'text' || !['fixed', 'auto-height', 'auto-width'].includes(node.textFit))) throw new TypeError(`Invalid text resize mode on layer ${node.name || node.id}.`);
+      if (node.textPath != null && (node.type !== 'text' || !isValidTextPathGeometry(node.textPath))) throw new TypeError(`Invalid text path on layer ${node.name || node.id}.`);
       if (node.lineHeightUnit != null && (node.type !== 'text' || !lineHeightUnits.has(node.lineHeightUnit) || node.lineHeight == null)) throw new TypeError(`Invalid line-height unit on layer ${node.name || node.id}.`);
       if (node.lineHeight != null && (node.type !== 'text' || !isValidLineHeight(node.lineHeight, node.lineHeightUnit || 'ratio'))) throw new TypeError(`Invalid line height on layer ${node.name || node.id}.`);
       if (node.textCase != null && (node.type !== 'text' || !textCases.has(node.textCase))) throw new TypeError(`Invalid text case on layer ${node.name || node.id}.`);

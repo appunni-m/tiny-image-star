@@ -75,6 +75,7 @@ import { getTransformHandles, nodeLocalToPage, pageToNodeLocal, pageToNodeParent
 import { shapeCreationGeometry } from './shape-creation-geometry.js';
 import { appendLassoPoint, clipMarqueePolygonThroughAncestors, createLassoSelectionTest, isMarqueeLayerVisible, marqueeSelectsPolygon } from './marquee-selection.js';
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
+import { createTextPathGeometry } from './text-on-path.js';
 import { normalizeVectorAnchorSelection, removeVectorPathAnchors, setVectorPathAnchorTranslation, toggleVectorAnchorSelection, vectorAnchorKey } from './vector-anchor-selection.js';
 import { resizeSelection, rotateSelection, selectionAspectRatio, selectionBounds, selectionMoveBlockReason, translateSelection } from './group-transform.js';
 import {
@@ -2157,7 +2158,8 @@ function textSection(node) {
   const textColorNote = Array.isArray(node.fills)
     ? '<div class="image-properties-note">Appearance fills control the visible text paint; this legacy color and its style or variable binding are preserved for compatibility.</div>'
     : '';
-  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div><div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
+  const pathControls = node.textPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(node.textPath.width) * 4 + Number(node.textPath.height) * 4)}" step="1" value="${Number(node.textPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${node.textPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>` : '';
+  const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
   const verticalAlign = ['top', 'middle', 'bottom'].includes(node.verticalAlign) ? node.verticalAlign : 'top';
@@ -2901,7 +2903,8 @@ function renderInspector() {
               : 'Position and size use page-space visual bounds. Mixed angle or opacity displays as Mixed; editing either sets that value on every selected layer.';
     const selectionFields = `${selectionNumberField('X', 'x', bounds.x, { disabled: Boolean(movementBlock) })}${selectionNumberField('Y', 'y', bounds.y, { disabled: Boolean(movementBlock) })}${selectionNumberField('W', 'width', bounds.width, { min: 0.01, max: 100_000, disabled: !canTransform || hugWidth || bounds.width <= 0 })}${selectionNumberField('H', 'height', bounds.height, { min: 0.01, max: 100_000, disabled: !canTransform || hugHeight || bounds.height <= 0 })}${selectionNumberField('Angle', 'rotation', rotation, { disabled: !canTransform, mixed: rotation == null })}${selectionNumberField('Opacity', 'opacity', opacity, { min: 0, max: 100, disabled: isLocked || containsSlice, mixed: opacity == null })}`;
     const alignNote = entries.some(entry => entry.parent?.autoLayout) ? 'Auto layout controls child positions; change spacing or alignment in the parent frame.' : 'Align uses visual bounds. Distribute needs at least three sibling layers.';
-    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>`)}`;
+    const deleteSelection = `<button class="delete-layer-button" type="button" data-action="delete-selected-layers" data-layer-ids="${escapeHtml(JSON.stringify(state.selectedIds))}" aria-label="Delete ${entries.length} selected layers">Delete ${entries.length} layers</button>`;
+    content.innerHTML = `<div class="multi-selection-card"><strong>${entries.length} layers selected</strong><span>${imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} in selection. Saved recipes apply to image layers only.` : 'Use the Layers panel to change their order.'}</span></div>${imageCount ? selectionImageRecipesSection(imageCount) : ''}${containsSlice ? '' : effectStylesSection({ canSave: false })}${section('Align & distribute', `<div class="multi-align-controls">${controls}</div><div class="image-properties-note">${alignNote}</div>`)}${section('Selection', `<div class="property-grid multi-selection-property-grid">${selectionFields}</div><div class="image-properties-note">${containsSlice ? 'Slice position can move with alignment, but resize and angle edits are available only when the slice is selected by itself.' : transformNote}</div>${deleteSelection}`)}`;
     if (activeImageBatchSelected) {
       const note = document.createElement('div');
       note.className = 'image-properties-note image-batch-edit-lock';
@@ -2912,11 +2915,12 @@ function renderInspector() {
     return;
   }
   const node = entries[0].node;
+  const deleteLayerControl = section('Layer actions', `<button class="delete-layer-button" type="button" data-action="delete-layer" data-layer-id="${escapeHtml(node.id)}" aria-label="Delete layer ${escapeHtml(node.name)}">Delete layer</button>`);
   if (node.type === 'slice') {
-    content.innerHTML = `${slicePositionSection(node)}${exportSettingsSection(node)}`;
+    content.innerHTML = `${slicePositionSection(node)}${exportSettingsSection(node)}${deleteLayerControl}`;
     return;
   }
-  let body = componentSection(node) + transformSection(node) + blendingSection(node);
+  let body = `${deleteLayerControl}${componentSection(node)}${transformSection(node)}${blendingSection(node)}`;
   if (node.type === 'image' && isActiveImageRecipeTarget(node.id)) {
     body = `<div class="image-properties-note image-batch-edit-lock">This image is in the active recipe batch. Manual edits remain available, and newer edits replace stale batch previews.</div>${body}`;
   }
@@ -4532,7 +4536,13 @@ function onCanvasPointerDown(event) {
     renderer.invalidate(); return;
   }
   if (state.tool === 'image') { $('#image-input').click(); return; }
-  if (state.tool === 'text') { createTextAt(world); return; }
+  if (state.tool === 'text') {
+    const hitTester = (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true;
+    const hit = hitTestPage(activePage(), world, hitTester, state.document, null, state.zoom, { allowAnyClippedNodes: true });
+    if (hit && ['path', 'ellipse', 'rectangle', 'line'].includes(hit.type) && createTextOnPathAt(world, hit)) return;
+    createTextAt(world);
+    return;
+  }
   const typeByTool = { frame: 'frame', section: 'section', slice: 'slice', rectangle: 'rectangle', ellipse: 'ellipse', line: 'line', polygon: 'polygon', star: 'star' };
   const type = typeByTool[state.tool];
   if (!type) return;
@@ -5714,6 +5724,25 @@ function createTextAt(world) {
   setSelection([node.id]);
   queueSave();
   editTextNode(node.id);
+}
+
+function createTextOnPathAt(world, source) {
+  const entry = findNode(state.document, source.id);
+  const textPath = createTextPathGeometry(source);
+  if (!entry || !textPath) return false;
+  const node = createNode('text', {
+    name: `${source.name || 'Vector'} text`,
+    x: source.x, y: source.y, width: Math.max(1, source.width), height: Math.max(1, source.height),
+    rotation: source.rotation || 0, text: '', textFit: 'fixed', textPath,
+    ...Object.fromEntries(['fill', 'fillOpacity', 'fills', 'fillGradient', 'effects'].filter(key => source[key] != null)
+      .map(key => [key, structuredClone(source[key])]))
+  });
+  checkpoint('Create text on path');
+  addNode(state.document, node, { parentId: entry.parent?.id ?? null });
+  setSelection([node.id]);
+  queueSave();
+  editTextNode(node.id);
+  return true;
 }
 
 function editTextNode(nodeId) {
@@ -12879,6 +12908,28 @@ async function copyInspectText(kind) {
 
 function applyInspectorAction(action, details = {}) {
   const node = selectedNodes()[0];
+  if (action === 'delete-layer') {
+    const layerId = typeof details.layerId === 'string' ? details.layerId : '';
+    if (!layerId || !findNode(state.document, layerId)) {
+      showToast('That layer is no longer available to delete.');
+      return;
+    }
+    deleteSelected([layerId]);
+    return;
+  }
+  if (action === 'delete-selected-layers') {
+    let layerIds = [];
+    try {
+      const parsed = JSON.parse(details.layerIds || '[]');
+      if (Array.isArray(parsed)) layerIds = parsed.filter(id => typeof id === 'string');
+    } catch { /* A malformed stale control cannot delete an ambiguous selection. */ }
+    if (!layerIds.length) {
+      showToast('Those selected layers are no longer available to delete.');
+      return;
+    }
+    deleteSelected(layerIds);
+    return;
+  }
   if (node?.type === 'slice' && ['edit-prototype-interaction', 'prototype-connect', 'prototype-start', 'present'].includes(action)) {
     showToast('Slices are export regions and cannot trigger prototype actions.');
     return;
@@ -13367,6 +13418,12 @@ function applyInspectorAction(action, details = {}) {
     detachTypographyStyleFromSelection();
   }
   else if (action === 'edit-text' && node?.type === 'text') { closeMobilePanels(); editTextNode(node.id); }
+  else if (action === 'flip-text-path' && node?.type === 'text' && node.textPath) {
+    checkpoint('Flip text path orientation');
+    node.textPath.flipped = !node.textPath.flipped;
+    recordNodeComponentOverrides(node, ['textPath']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  }
   else if (action === 'reset-image' && node?.type === 'image') {
     if (state.interaction?.kind === 'image-erase') cancelCanvasInteraction({ pointerId: state.interaction.pointerId });
     state.imageEraseMode = false;
@@ -14007,6 +14064,7 @@ function initEvents() {
   $('#layers-list').addEventListener('contextmenu', event => { const row = event.target.closest('[data-layer-id]'); if (!row) return; event.preventDefault(); openNodeMenu(row.dataset.layerId, event.clientX, event.clientY, null, row); });
   $('#inspector-content').addEventListener('input', event => {
     if (state.documentTransitioning) return;
+    if (event.target.matches('[data-text-path-offset]')) return;
     const eraseBrush = event.target.closest('[data-image-erase-brush]');
     if (eraseBrush) {
       state.imageEraseBrushDiameter = Math.max(8, Math.min(96, Number(eraseBrush.value) || 32));
@@ -14065,6 +14123,17 @@ function initEvents() {
   });
   $('#inspector-content').addEventListener('change', event => {
     if (state.documentTransitioning) return;
+    if (event.target.matches('[data-text-path-offset]')) {
+      const node = findNode(state.document, event.target.dataset.textPathOffset)?.node;
+      if (!node?.textPath) return;
+      const next = Math.max(0, Math.min(100_000, Number(event.target.value) || 0));
+      if (next === node.textPath.startOffset) return;
+      checkpoint('Move text path start');
+      node.textPath.startOffset = next;
+      recordNodeComponentOverrides(node, ['textPath']);
+      renderInspector(); queueSave(); renderer.invalidate();
+      return;
+    }
     const motionField = event.target.closest('[data-motion-field]');
     if (motionField) { updateMotionKeyframeField(motionField); return; }
     if (event.target.id === 'motion-duration') { updateMotionDuration(event.target); return; }

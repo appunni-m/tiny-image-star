@@ -21,6 +21,7 @@ import { booleanSourceTransform } from './boolean-geometry.js';
 import { hitTestVisibleGeometry } from './shape-hit-testing.js';
 import { canvasPixelFromClientPoint, resizeCanvasSurface, sampleColorAt } from './eyedropper.js';
 import { variableStrokeOutlineFromSamples } from './variable-stroke-geometry.js';
+import { drawTextAlongPath } from './text-on-path.js';
 export { measureTrackedText, wrapText } from './text-layout.js';
 
 const MAX_BOOLEAN_SURFACE_PIXELS = 4_000_000;
@@ -149,6 +150,19 @@ function drawTextLayerContent(ctx, node, document, x, y, width, height, {
   paintMode = 'fill', includeDecorations = true, overrideRunColors = false
 } = {}) {
   const text = getNodePropertyValue(document, node, 'text');
+  if (node.textPath) {
+    const color = colorOverride ?? getNodeColor(document, node, 'text');
+    if (paintMode !== 'stroke') ctx.fillStyle = rgba(color, fillOpacity);
+    else ctx.strokeStyle = rgba(color, fillOpacity);
+    const fontSize = getNodePropertyValue(document, node, 'fontSize') || 24;
+    const letterSpacing = getNodePropertyValue(document, node, 'letterSpacing') || 0;
+    return drawTextAlongPath(ctx, transformTextCase(text, node.textCase || 'none'), node, x, y,
+      value => measureTrackedText(ctx, value, letterSpacing), {
+        fillOpacity, paintMode, fontSize, letterSpacing,
+        fontWeight: node.fontWeight || 400, fontStyle: node.fontStyle || 'normal',
+        fontFamily: node.fontFamily || 'Arial, sans-serif'
+      });
+  }
   const currentRuns = Array.isArray(node.textRuns) && node.textRuns.map(run => run.text).join('') === text;
   if (!currentRuns) {
     return drawPlainText(ctx, node, document, x, y, width, height, colorOverride, {

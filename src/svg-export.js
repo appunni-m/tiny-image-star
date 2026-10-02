@@ -14,6 +14,7 @@ import { imagePreviewKey } from './image-preview-runtime.js';
 import { clampCornerRadii, cornerRadiusKeys, isValidCornerRadii, roundedRectSvgPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
 import { MAX_TEXT_RUN_BASELINE_SHIFT } from './text-run-editing.js';
+import { flattenTextPath, textPathSvgData } from './text-on-path.js';
 
 /** An SVG export cannot preserve an editor feature that the SVG serializer does not implement. */
 export class SvgExportError extends TypeError {
@@ -1002,6 +1003,26 @@ function textMarkup(node, document, measureText, {
   const fontWeight = getNodePropertyValue(document, node, 'fontWeight') || 400;
   if (![fontSize, lineHeight, letterSpacing, Number(fontWeight)].every(Number.isFinite) || fontSize <= 0 || lineHeight <= 0) {
     throw new TypeError(`SVG export requires valid text metrics on layer ${node.name || node.id || '(unnamed)'}.`);
+  }
+  if (node.textPath) {
+    const data = textPathSvgData(node.textPath);
+    if (!data) throw new TypeError(`SVG export requires valid text path geometry on layer ${node.name || node.id || '(unnamed)'}.`);
+    const safeId = String(node.id || 'text').replace(/[^a-zA-Z0-9_-]/gu, '-');
+    const pathId = `tis-text-path-${safeId}-${strokeIndex}-${strokeItem?.id ? String(strokeItem.id).replace(/[^a-zA-Z0-9_-]/gu, '-') : 'fill'}`;
+    const color = fillValue === undefined ? getNodeColor(document, node, 'text') : fillValue;
+    const paint = color === 'transparent' ? 'none' : color;
+    if (paint !== 'none' && !isSvgPaintValue(paint)) throw new TypeError(`SVG export supports solid hexadecimal text colors only on layer ${node.name || node.id || '(unnamed)'}.`);
+    const strokeMarkup = includeStroke ? (strokeItem
+      ? ` stroke="${escapeXml(strokeItem.color)}" stroke-opacity="${number(strokeItem.opacity)}" stroke-width="${number(strokeItem.width)}"`
+      : '') : ' stroke="none"';
+    const transform = ['uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? ` text-transform="${node.textCase}"` : '';
+    const side = node.textPath.flipped ? ' side="right"' : '';
+    const text = transformTextCase(getNodePropertyValue(document, node, 'text'), node.textCase || 'none');
+    const length = flattenTextPath(node.textPath).at(-1)?.distance || 0;
+    const measured = typeof measureText === 'function' ? Number(measureText(text, node)) : [...text].length * fontSize * .6;
+    const alignmentOffset = node.align === 'center' ? (length - measured) / 2 : node.align === 'right' ? length - measured : 0;
+    const startOffset = number((Number(node.textPath.startOffset) || 0) + alignmentOffset);
+    return `<defs><path id="${pathId}" d="${data}"/></defs><text font-family="${escapeXml(node.fontFamily || 'Arial, sans-serif')}" font-size="${number(fontSize)}" font-weight="${escapeXml(fontWeight)}" font-style="${node.fontStyle || 'normal'}" letter-spacing="${number(letterSpacing)}" fill="${escapeXml(paint)}" fill-opacity="${number(fillOpacity ?? node.fillOpacity ?? 1)}"${strokeMarkup}${transform}><textPath href="#${pathId}" xlink:href="#${pathId}" startOffset="${startOffset}"${side}>${escapeXml(text)}</textPath></text>`;
   }
   const align = node.align === 'center' ? 'middle' : node.align === 'right' ? 'end' : 'start';
   const anchorX = node.align === 'center' ? Number(node.width) / 2 : node.align === 'right' ? Number(node.width) : 0;

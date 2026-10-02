@@ -453,6 +453,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .inspector-empty strong { color: #666; font-weight: 550; }
 .inspector-empty span { font-size: 10px; line-height: 1.5; }
 .property-section { border-bottom: 1px solid var(--border); padding: 12px 15px 13px; }
+.delete-layer-button { width: 100%; min-height: 38px; margin-top: 7px; padding: 0 12px; border: 1px solid #e5b8b4; border-radius: 6px; background: transparent; color: #a43a33; font-size: 11px; font-weight: 550; text-align: center; }
+.delete-layer-button:hover { border-color: #d78f88; background: #fff5f4; }
+.delete-layer-button:focus-visible { outline: 2px solid #d94b45; outline-offset: 2px; }
 .property-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 11px; color: #444; font-size: 11px; font-weight: 550; }
 .property-heading .tiny-icon-button { margin: -5px -5px -5px 0; }
 .property-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
@@ -963,6 +966,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .layers-heading .tiny-icon-button { width: 40px; height: 40px; }
   .layer-select-mode { min-width: 52px; min-height: 40px; padding: 0 8px; font-size: 11px; }
   .add-fill { height: auto; min-height: 40px; font-size: 12px; }
+  .delete-layer-button { min-height: 44px; }
   .vector-point-actions .add-fill { min-height: 44px; }
   .recipe-picker { box-sizing: border-box; min-height: 44px; font-size: 16px; }
   .recipe-save-button, .recipe-apply-button { min-height: 44px; font-size: 12px; }
@@ -1856,6 +1860,24 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .crumb-file { max-width: 24vw; }
   .canvas-top-actions .canvas-action-button { width: 40px; min-width: 40px; }
   .canvas-status { max-width: calc(100% - 142px); }
+  /* Keep storage visible while giving the editable document name room. */
+  .storage-mode-chip {
+    width: 36px;
+    max-width: 36px;
+    height: 24px;
+    flex: 0 0 36px;
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+    font-weight: 700;
+  }
+  .storage-mode-chip::before { font-size: 8px; }
+  .storage-mode-chip:not([data-mode])::before,
+  .storage-mode-chip[data-mode="browser"]::before { content: "WEB"; }
+  .storage-mode-chip[data-mode="folder"]::before { content: "DIR"; }
+  .storage-mode-chip[data-mode="reconnect"]::before { content: "FIX"; }
+  .document-title-wrap { flex: 1 1 0; }
+  .document-name { min-width: 0; max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2279,7 +2301,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
     background: #263d50;
   }
   :root[data-theme="dark"] .layout-guide-visibility[aria-pressed="true"],
-  :root[data-theme="dark"] .comment-delete-button { color: #ff9b91; }
+  :root[data-theme="dark"] .comment-delete-button,
+  :root[data-theme="dark"] .delete-layer-button { color: #ff9b91; }
+  :root[data-theme="dark"] .delete-layer-button { border-color: #704541; }
+  :root[data-theme="dark"] .delete-layer-button:hover { border-color: #a55f57; background: #382321; }
   :root[data-theme="dark"] .device-icon,
   :root[data-theme="dark"] .image-engine-status { color: #50d49c; }
   :root[data-theme="dark"] .variable-type-badge,
