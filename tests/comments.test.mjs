@@ -2,24 +2,46 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  addCommentReply, createCommentThread, createDocument, parseDocument,
+  addCommentReply, addNode, createCommentThread, createComponent, createDocument, createNode, findNode, parseDocument,
   removeCommentThread, serializeDocument, setCommentResolved, validateDocument
 } from '../src/model.js';
 import { commentCanvasAction, commentSelectionTarget } from '../src/comment-selection.js';
+import { hitTestPage } from '../src/renderer.js';
 
 const editorSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 
-test('comment-mode canvas selection resolves a child to its nearest frame or component', () => {
+test('comment-mode canvas selection resolves a child to its component or nearest frame', () => {
   const component = { id: 'component', type: 'frame', isComponent: true };
   const frame = { id: 'frame', type: 'frame' };
   const group = { id: 'group', type: 'group' };
   const child = { id: 'child', type: 'rectangle' };
   assert.equal(commentSelectionTarget({ node: child, parents: [frame, group] }), frame);
-  assert.equal(commentSelectionTarget({ node: child, parents: [component, frame] }), frame);
+  assert.equal(commentSelectionTarget({ node: child, parents: [component, frame] }), component,
+    'a component containing a nested frame must remain selectable from the canvas');
+  assert.equal(commentSelectionTarget({ node: child, parents: [component, frame] }, { preferComponent: false }), frame,
+    'Shift-click should provide an explicit way to select the nearest frame inside a component');
   assert.equal(commentSelectionTarget({ node: component, parents: [] }), component);
   assert.equal(commentSelectionTarget({ node: group, parents: [] }), group);
   assert.equal(commentSelectionTarget({ node: child, parents: [] }), child);
   assert.equal(commentSelectionTarget(null), null);
+});
+
+test('Comment-mode hit testing can select both a component and a nested frame', () => {
+  const document = createDocument();
+  const component = createNode('frame', { name: 'Component', x: 0, y: 0, width: 300, height: 200, fill: 'transparent' });
+  addNode(document, component);
+  createComponent(document, component.id, component.name);
+  const frame = createNode('frame', { name: 'Nested frame', x: 10, y: 10, width: 260, height: 160, fill: 'transparent' });
+  addNode(document, frame, { parentId: component.id });
+  const child = createNode('rectangle', { name: 'Nested content', x: 5, y: 5, width: 230, height: 130, fill: '#ff0000' });
+  addNode(document, child, { parentId: frame.id });
+
+  const hit = hitTestPage(document.pages[0], { x: 60, y: 60 }, null, document, null, 1, { allowAnyClippedNodes: true });
+  assert.equal(hit?.id, child.id, 'the hit should be the visible nested content before container resolution');
+  const entry = findNode(document, hit.id, document.activePageId);
+  assert.equal(commentSelectionTarget(entry)?.id, component.id, 'ordinary Comment-mode click should select the component');
+  assert.equal(commentSelectionTarget(entry, { preferComponent: false })?.id, frame.id,
+    'Shift-click should select the nearest frame');
 });
 
 test('Comment mode keeps object clicks for selection and uses explicit gestures to place comments', () => {
@@ -36,10 +58,10 @@ test('Comment mode keeps object clicks for selection and uses explicit gestures 
   assert.equal(commentCanvasAction({ id: 'frame' }, { addCommentShortcut: true }), 'place-comment');
   assert.equal(commentCanvasAction({ id: 'frame' }, { placementArmed: true }), 'place-comment');
   assert.equal(commentCanvasAction(null), 'place-comment');
-  assert.match(editorSource, /function commentTargetAt\(world\)[\s\S]*?commentSelectionTarget\(entry\)/,
-    'canvas hits must resolve to the containing frame or component');
-  assert.match(editorSource, /function selectCommentTargetAt\(world\)[\s\S]*?setSelection\(\[target\.id\]\)/,
-    'Shift-click must remain an explicit selection gesture');
+  assert.match(editorSource, /function commentTargetAt\(world, options\)[\s\S]*?commentSelectionTarget\(entry, options\)/,
+    'canvas hits must resolve to an eligible frame or component');
+  assert.match(editorSource, /state\.tool === 'comment' && event\.shiftKey\)[\s\S]*?selectCommentTargetAt\(world, \{ preferComponent: false \}\)/,
+    'Shift-click must allow selecting a nested frame inside a component');
 });
 
 test('local review threads support replies, resolution, deletion, and package round trips', () => {

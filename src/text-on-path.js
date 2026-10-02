@@ -37,13 +37,15 @@ export function createTextPathGeometry(source, { startOffset = 0, flipped = fals
 
 export function isValidTextPathGeometry(path) {
   if (!path || typeof path !== 'object' || Array.isArray(path)
-    || Object.keys(path).some(key => !['width', 'height', 'points', 'closed', 'startOffset', 'flipped'].includes(key))) return false;
+    || Object.keys(path).some(key => !['width', 'height', 'points', 'closed', 'startOffset', 'flipped', 'sourceId'].includes(key))) return false;
   if (!Number.isFinite(path.width) || path.width <= 0 || path.width > 100_000
     || !Number.isFinite(path.height) || path.height <= 0 || path.height > 100_000
     || !Array.isArray(path.points) || path.points.length < 2 || path.points.length > 20_000
     || typeof path.closed !== 'boolean'
     || (path.startOffset != null && (!Number.isFinite(path.startOffset) || Math.abs(path.startOffset) > 100_000))
-    || (path.flipped != null && typeof path.flipped !== 'boolean')) return false;
+    || (path.flipped != null && typeof path.flipped !== 'boolean')
+    || (path.sourceId != null && (typeof path.sourceId !== 'string' || !path.sourceId.trim()
+      || path.sourceId.trim() !== path.sourceId || path.sourceId.length > 160 || /[\x00-\x1f\x7f]/u.test(path.sourceId)))) return false;
   const coordinate = value => Number.isFinite(value) && Math.abs(value) <= 1_000_000;
   return path.points.every(point => point && coordinate(point.x) && coordinate(point.y)
     && ['in', 'out'].every(part => point[part] == null || coordinate(point[part].x) && coordinate(point[part].y)));

@@ -1,4 +1,4 @@
-import { addNode, createDocument, createNode } from '../src/model.js';
+import { addNode, createComponent, createDocument, createNode } from '../src/model.js';
 
 const result = document.querySelector('#result');
 const frame = document.querySelector('#app-frame');
@@ -47,9 +47,11 @@ try {
   assert(app.title === 'Tiny Image Star', 'The public product name must stay Tiny Image Star.');
   assert(!app.body.innerText.toLowerCase().includes('figma'), 'The user-facing editor must not display its internal reference name.');
   const design = createDocument();
-  const reviewFrame = createNode('frame', { name: 'Review frame', x: -70, y: -50, width: 140, height: 100, fill: '#ffffff' });
+  const reviewFrame = createNode('frame', { name: 'Review component', x: -70, y: -50, width: 140, height: 100, fill: '#ffffff' });
+  const nestedFrame = createNode('frame', { name: 'Review frame', x: 0, y: 0, width: 140, height: 100, fill: 'transparent' });
   const shape = createNode('rectangle', { name: 'Review target', x: 20, y: 20, width: 100, height: 60, fill: '#ffffff' });
-  addNode(design, reviewFrame); addNode(design, shape, { parentId: reviewFrame.id });
+  addNode(design, reviewFrame); createComponent(design, reviewFrame.id, reviewFrame.name);
+  addNode(design, nestedFrame, { parentId: reviewFrame.id }); addNode(design, shape, { parentId: nestedFrame.id });
   const input = app.querySelector('#open-file-input'); const transfer = new app.defaultView.DataTransfer();
   transfer.items.add(new app.defaultView.File([packageFile(design)], 'comments-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(input, 'files', { configurable: true, value: transfer.files });
@@ -63,13 +65,17 @@ try {
   const selectPoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 77, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
   canvas.dispatchEvent(selectPoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 77, pointerType: 'mouse' }));
-  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'), 'A normal first click in Comment mode should select the containing frame.');
+  assert(app.querySelector(`[data-layer-id="${reviewFrame.id}"]`)?.classList.contains('is-selected'), 'A normal first click in Comment mode should select the containing component.');
   assert(app.querySelector('[data-inspector-tab="design"]')?.classList.contains('is-active'), 'Selecting an object should expose its Design properties while leaving Comment mode active.');
-  assert(!app.querySelector('#comment-draft'), 'Selecting a frame should not create a comment draft.');
+  assert(!app.querySelector('#comment-draft'), 'Selecting a component should not create a comment draft.');
   assert(app.querySelector('[data-tool="comment"]')?.classList.contains('is-selected'), 'Selecting a frame should keep Comment mode active.');
-  const point = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 78, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
-  canvas.dispatchEvent(point);
+  const framePoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 78, pointerType: 'mouse', shiftKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  canvas.dispatchEvent(framePoint);
   canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 78, pointerType: 'mouse' }));
+  assert(app.querySelector(`[data-layer-id="${nestedFrame.id}"]`)?.classList.contains('is-selected'), 'Shift-click should select the nearest nested frame inside a component.');
+  const point = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 80, pointerType: 'mouse', clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  canvas.dispatchEvent(point);
+  canvas.dispatchEvent(new app.defaultView.PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 80, pointerType: 'mouse' }));
   assert(!app.querySelector('#comment-draft'), 'Repeated clicks on an already-selected frame must not hijack selection to start a comment.');
   const commentPoint = new app.defaultView.PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 79, pointerType: 'mouse', altKey: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
   canvas.dispatchEvent(commentPoint);

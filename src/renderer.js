@@ -1,4 +1,4 @@
-import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
+import { findNode, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
 import { layoutGuideGridLines, layoutGuideRegions } from './layout-guides.js';
 import { vectorNetworkEdgeForPair, vectorNetworkEdgePairIndex, vectorNetworkEdgePoints, vectorNetworkVertexPoint, vectorNodePoint, vectorPathContours } from './vector-path.js';
 import { layoutPlainText, layoutTextRuns, measureTrackedText, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
@@ -1173,7 +1173,13 @@ export class SceneRenderer {
     if (!getNodePropertyValue(document, node, 'visible')) return;
     if (node.type === 'slice' && (state.presenting || renderOptions.includeSlices === false)) return;
     const motionValues = renderOptions.ignoreMotionPreview ? null : state.motionPreview?.get(node.id);
-    node = { ...node, ...getNodeGeometry(document, node), ...(motionValues || {}), ...(node.type === 'slice' ? { rotation: 0 } : {}) };
+    node = {
+      ...node,
+      ...getNodeGeometry(document, node),
+      ...(node.textPath ? { textPath: getNodeTextPath(document, node) } : {}),
+      ...(motionValues || {}),
+      ...(node.type === 'slice' ? { rotation: 0 } : {})
+    };
     if (node.type === 'slice') {
       const x = parentX + node.x; const y = parentY + node.y;
       const width = node.width; const height = node.height;

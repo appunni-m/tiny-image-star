@@ -1,7 +1,7 @@
 import {
   addNode, addVariableMode, addCommentReply, alignLayers, applyColorStyle, applyTypographyStyle, applyEffectStyle, bindColorVariable, bindVariable, canAlignLayers, canBindVariable, applyImageRecipe, canCombineBoolean, canGroupLayers, canUngroupLayers, canSwapComponentTo, cloneDocument, combineBoolean, createColorStyle, createColorVariable, createTypographyStyle, createEffectStyle, createVariable, createComponent, createComponentInstance, createComponentSet, createCommentThread,
-  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteVariable, deleteVariableCollection, detachComponentInstance, duplicateNode, findNode,
-  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
+  addComponentVariantFromMaster, createComponentProperty, createDocument, createExportSetting, createFillLayer, createGradientFill, createId, createImageRecipe, createLayoutGuide, createLayerEffect, createNode, createVariableCollection, deleteColorStyle, deleteEffectStyle, deleteImageRecipe, deleteVariable, deleteVariableCollection, detachComponentInstance, detachNodeTextPath, duplicateNode, findNode,
+  findNodeAcrossPages, getActivePage, getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath, listPrototypeExpressionVariables, parseDocument, reconcilePrototypeScrollInteractions, removeNode, reorderNode, renameColorStyle, renameImageRecipe, renameTypographyStyle, resolvePrototypeExpressionVariables, resolveVariableValue, resolveVariableValueWithModeOverrides, serializeDocument, setColorVariableValue, setVariableAlias, setVariableValue, setComponentVariantProperty, setFrameVariableMode, updateColorStyle, updateImageRecipe, updateTypographyStyle, updateEffectStyle, deleteTypographyStyle, validateDocument, variableModeForNode,
   canCreateMaskGroup, createMaskGroup, groupLayers, releaseMaskGroup, removeCommentThread, setCommentResolved, separateBoolean, prepareBooleanBake, applyBooleanBake, switchComponentInstanceVariant, syncAllComponentInstances, syncComponentInstances, ungroupLayers,
   removeComponentVariantFromSet, resetComponentSlotContent, setComponentPropertyValue, setComponentSlotContent, updateNode, walkNodes
 } from './model.js';
@@ -1266,7 +1266,7 @@ function updateSelectionStatus() {
   const nodes = selectedNodes();
   $('#selection-status').textContent = state.layerSelectionMode
     ? `${nodes.length} selected · tap to add/remove`
-    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click an object to select; click empty canvas to comment' : `Tool · ${state.tool}`
+    : nodes.length === 0 ? state.tool === 'comment' ? 'Comment · click to select a containing component or frame; Shift-click to select the nearest frame; click empty canvas to comment' : `Tool · ${state.tool}`
       : nodes.length === 1 ? `${nodes[0].name} · ${nodes[0].type}` : `${nodes.length} layers selected`;
   if (nodes.length === 1) {
     const geometry = resolvedGeometry(nodes[0]);
@@ -1424,7 +1424,7 @@ function syncLayerSelectionModeControl() {
   canvas?.setAttribute('aria-label', state.layerSelectionMode
     ? 'Design canvas. Select mode is active. Tap layers to add or remove them from the selection.'
     : state.tool === 'comment'
-      ? 'Design canvas. Click an object to select it; click empty canvas to add a comment. Alt/Option-click or use the layer menu to comment on an object.'
+      ? 'Design canvas. Click to select a component or frame; Shift-click to select the nearest frame. Click empty canvas to add a comment; Alt/Option-click or use the layer menu to comment on an object.'
       : 'Design canvas');
 }
 function syncRenderedLayerSelection(previousIds, nextIds) {
@@ -2292,7 +2292,12 @@ function textSection(node) {
   const textColorNote = Array.isArray(node.fills)
     ? '<div class="image-properties-note">Appearance fills control the visible text paint; this legacy color and its style or variable binding are preserved for compatibility.</div>'
     : '';
-  const pathControls = node.textPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(node.textPath.width) * 4 + Number(node.textPath.height) * 4)}" step="1" value="${Number(node.textPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${node.textPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>` : '';
+  const currentTextPath = node.textPath ? getNodeTextPath(state.document, node) : null;
+  const pathSource = node.textPath?.sourceId ? findNodeAcrossPages(state.document, node.textPath.sourceId)?.node : null;
+  const pathLinkStatus = node.textPath?.sourceId
+    ? `<div class="image-properties-note">Linked to ${escapeHtml(pathSource?.name || 'source path')}. Geometry edits update this text path.</div><button class="add-fill" type="button" data-action="detach-text-path">Detach from source path</button>`
+    : '<div class="image-properties-note">This text keeps its own path snapshot.</div>';
+  const pathControls = currentTextPath ? `<div class="property-grid"><label class="property-label" for="text-path-offset">Path start</label><input id="text-path-offset" class="prop-input" type="number" min="0" max="${Math.max(0, Number(currentTextPath.width) * 4 + Number(currentTextPath.height) * 4)}" step="1" value="${Number(currentTextPath.startOffset) || 0}" data-text-path-offset="${escapeHtml(node.id)}" aria-label="Text path start offset"/><button class="add-fill" type="button" data-action="flip-text-path">${currentTextPath.flipped ? 'Flip text orientation back' : 'Flip text orientation'}</button></div>${pathLinkStatus}` : '';
   const body = `<div class="property-grid"><input class="prop-input select-field typography-font-family" data-prop="fontFamily" type="text" maxlength="160" list="font-family-options" value="${escapeHtml(node.fontFamily || '')}" placeholder="Font family" aria-label="Font family"/><select class="prop-input select-field" data-prop="textFit" aria-label="Text resize mode" style="grid-column:span 2"><option value="fixed"${textFit === 'fixed' ? ' selected' : ''}>Fixed size</option><option value="auto-height"${textFit === 'auto-height' ? ' selected' : ''}>Auto height</option><option value="auto-width"${textFit === 'auto-width' ? ' selected' : ''}>Auto width</option></select>${numberField('Size', 'fontSize', fontSize, 0.01)}<select class="prop-input select-field" data-prop="fontWeight" aria-label="Font weight">${weightOptions}</select>${numberField('Line', 'lineHeight', lineHeight, 0.01)}<select class="prop-input select-field" data-prop="lineHeightUnit" aria-label="Line height unit">${unitOptions}</select>${numberField('↔', 'letterSpacing', letterSpacing || 0, 0.01)}${numberField('Para', 'paragraphSpacing', paragraphSpacing, 0.01, 0, 10000, false, 'Paragraph spacing')}${numberField('List gap', 'listSpacing', listSpacing, 0.01, 0, 10000, false, 'List item spacing')}${numberField('Indent', 'firstLineIndent', firstLineIndent, 0.01, 0, 10000, false, 'First-line indent')}<select class="prop-input select-field" data-prop="fontStyle" aria-label="Font style">${styleOptions}</select><select class="prop-input select-field" data-prop="align" aria-label="Text align"><option value="left"${node.align === 'left' ? ' selected' : ''}>Left</option><option value="center"${node.align === 'center' ? ' selected' : ''}>Center</option><option value="right"${node.align === 'right' ? ' selected' : ''}>Right</option><option value="justify"${node.align === 'justify' ? ' selected' : ''}>Justify</option></select></div>${pathControls}<div class="image-properties-note">Use a system or locally added font; choose a family or type a name. Auto height wraps to the box width.</div>${variablePropertyBindingControl(node, 'fontSize', 'Font size')}${variablePropertyBindingControl(node, 'lineHeight', 'Line height')}${variablePropertyBindingControl(node, 'letterSpacing', 'Letter spacing')}<div style="margin-top:9px">${textColorNote}${colorField(textColorLabel, 'color', getNodeColor(state.document, node, 'text'), 100)}${variableBindingControl(node, 'text')}</div>${variablePropertyBindingControl(node, 'text', 'Text content')}<button class="add-fill" data-action="edit-text">Edit text content</button><button class="add-fill" data-action="create-typography-style">＋ Save text style</button>${styleStatus}<button class="add-fill" data-action="create-color-style">${node.textStyleId ? '✦ Linked text color' : '＋ Create text color style'}</button><button class="add-fill" data-action="create-color-variable" data-kind="text">＋ Create color variable</button>`;
   const textCase = ['none', 'uppercase', 'lowercase', 'capitalize'].includes(node.textCase) ? node.textCase : 'none';
   const textDecoration = ['none', 'underline', 'line-through'].includes(node.textDecoration) ? node.textDecoration : 'none';
@@ -4109,16 +4114,16 @@ function commentPinAt(world) {
   }
   return null;
 }
-function commentTargetAt(world) {
+function commentTargetAt(world, options) {
   const hit = hitTestPage(activePage(), world,
     (node, point, x, y) => renderer?.hitTestBoolean(node, point, x, y) ?? true,
     state.document, null, state.zoom, { allowAnyClippedNodes: true });
   if (!hit) return null;
   const entry = findNode(state.document, hit.id, activePage()?.id);
-  return commentSelectionTarget(entry);
+  return commentSelectionTarget(entry, options);
 }
-function selectCommentTargetAt(world) {
-  const target = commentTargetAt(world);
+function selectCommentTargetAt(world, options) {
+  const target = commentTargetAt(world, options);
   if (target) setSelection([target.id]);
   return target;
 }
@@ -4564,7 +4569,7 @@ function onCanvasPointerDown(event) {
     return;
   }
   if (state.tool === 'comment' && event.shiftKey) {
-    const target = selectCommentTargetAt(world);
+    const target = selectCommentTargetAt(world, { preferComponent: false });
     state.commentPlacementArmed = false;
     if (target && state.inspectorTab === 'comments') setInspectorTab('design');
     showToast(target
@@ -6075,6 +6080,9 @@ function createTextOnPathAt(world, source) {
   const entry = findNode(state.document, source.id);
   const textPath = createTextPathGeometry(source);
   if (!entry || !textPath) return false;
+  if (!entry.parent?.autoLayout && !entry.parent?.mask && entry.parent?.type !== 'boolean') {
+    textPath.sourceId = source.id;
+  }
   const node = createNode('text', {
     name: `${source.name || 'Vector'} text`,
     x: source.x, y: source.y, width: Math.max(1, source.width), height: Math.max(1, source.height),
@@ -13935,6 +13943,11 @@ function applyInspectorAction(action, details = {}) {
     checkpoint('Flip text path orientation');
     node.textPath.flipped = !node.textPath.flipped;
     recordNodeComponentOverrides(node, ['textPath']);
+    renderInspector(); queueSave(); renderer.invalidate();
+  } else if (action === 'detach-text-path' && node?.type === 'text' && node.textPath?.sourceId) {
+    checkpoint('Detach text from source path');
+    if (!detachNodeTextPath(state.document, node.id)) return;
+    recordNodeComponentOverrides(node, ['textPath', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform']);
     renderInspector(); queueSave(); renderer.invalidate();
   }
   else if (action === 'reset-image' && node?.type === 'image') {

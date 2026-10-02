@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addNode, createDocument, createNode, validateDocument } from '../src/model.js';
-import { exportNodeToSvg } from '../src/svg-export.js';
-import { createTextPathGeometry, createTextPathSampler, drawTextAlongPath, flattenTextPath, isValidTextPathGeometry, pointAtTextPathDistance } from '../src/text-on-path.js';
+import {
+  addNode, createComponent, createComponentInstance, createDocument, createNode, duplicateNode,
+  detachNodeTextPath, getNodeGeometry, getNodeTextPath, moveNode, removeNode, syncComponentInstances, validateDocument
+} from '../src/model.js';
+import { exportNodeToSvg, exportPageToSvg } from '../src/svg-export.js';
+import { createTextPathGeometry, createTextPathSampler, drawTextAlongPath, flattenTextPath, isValidTextPathGeometry, pointAtTextPathDistance, textPathSvgData } from '../src/text-on-path.js';
 
 function pathNode() {
   return createNode('path', {
@@ -63,9 +66,149 @@ test('text path geometry and orientation round-trip through the saved document m
   assert.deepEqual(loaded.pages[0].children[0].textPath, node.textPath);
   loaded.pages[0].children[0].textPath.flipped = 1;
   assert.throws(() => validateDocument(loaded), /text path/i);
+  loaded.pages[0].children[0].textPath.flipped = true;
+  loaded.pages[0].children[0].textPath.sourceId = 'missing-source';
+  assert.throws(() => validateDocument(loaded), /text path source/i,
+    'a linked path must refer to an existing same-page source');
+  loaded.pages[0].children[0].textPath.sourceId = 'invalid\nsource';
+  assert.throws(() => validateDocument(loaded), /text path/i,
+    'source identifiers are bounded printable IDs');
   const invalidType = createDocument();
   addNode(invalidType, createNode('rectangle', { textPath: node.textPath }));
   assert.throws(() => validateDocument(invalidType), /text path/i);
+});
+
+test('linked text follows live path geometry and exports the current source shape', () => {
+  const document = createDocument();
+  const source = pathNode();
+  const text = createNode('text', {
+    name: 'Live curve label', text: 'Along the curve', x: source.x, y: source.y,
+    width: source.width, height: source.height, rotation: source.rotation,
+    textPath: { ...createTextPathGeometry(source), sourceId: source.id }
+  });
+  addNode(document, source);
+  addNode(document, text);
+  assert.doesNotThrow(() => validateDocument(document));
+
+  const initialLength = flattenTextPath(getNodeTextPath(document, text)).at(-1).distance;
+  source.x = 42;
+  source.y = 61;
+  source.width = 240;
+  source.height = 70;
+  source.rotation = 27;
+  source.points[1].out.y = 1;
+
+  assert.deepEqual(getNodeGeometry(document, text), {
+    x: source.x, y: source.y, width: source.width, height: source.height,
+    rotation: source.rotation, affineTransform: null
+  });
+  const currentPath = getNodeTextPath(document, text);
+  assert.equal(currentPath.sourceId, source.id);
+  assert.equal(currentPath.width, source.width);
+  assert.equal(currentPath.height, source.height);
+  assert.notEqual(flattenTextPath(currentPath).at(-1).distance, initialLength,
+    'anchor and source-size edits change the path used by the label');
+  const svg = exportPageToSvg(document.pages[0], { document, measureText: value => [...String(value)].length * 8 });
+  assert.ok(svg.includes(`d="${textPathSvgData(currentPath)}"`), 'SVG export uses the current source path rather than the saved snapshot');
+});
+
+test('deleting or reparenting a linked path detaches the label at its latest geometry', () => {
+  const removedDocument = createDocument();
+  const removedSource = pathNode();
+  const removedText = createNode('text', {
+    text: 'Keep appearance', x: removedSource.x, y: removedSource.y,
+    width: removedSource.width, height: removedSource.height,
+    textPath: { ...createTextPathGeometry(removedSource), sourceId: removedSource.id }
+  });
+  addNode(removedDocument, removedSource);
+  addNode(removedDocument, removedText);
+  removedSource.width = 260;
+  removedSource.points[1].in.y = -1;
+  const expectedPath = getNodeTextPath(removedDocument, removedText);
+  removeNode(removedDocument, removedSource.id);
+  assert.equal(removedText.textPath.sourceId, undefined);
+  const { sourceId: _removedSourceId, ...expectedDetachedPath } = expectedPath;
+  assert.deepEqual(removedText.textPath, expectedDetachedPath);
+  assert.doesNotThrow(() => validateDocument(removedDocument));
+
+  const movedDocument = createDocument();
+  const frame = createNode('frame', { x: 180, y: 120, width: 400, height: 300 });
+  const movedSource = pathNode();
+  const movedText = createNode('text', {
+    text: 'Keep position', x: movedSource.x, y: movedSource.y,
+    width: movedSource.width, height: movedSource.height,
+    textPath: { ...createTextPathGeometry(movedSource), sourceId: movedSource.id }
+  });
+  addNode(movedDocument, frame);
+  addNode(movedDocument, movedSource);
+  addNode(movedDocument, movedText);
+  movedSource.width = 220;
+  movedSource.y = 34;
+  const movedSnapshot = getNodeTextPath(movedDocument, movedText);
+  assert.equal(moveNode(movedDocument, movedSource.id, { parentId: frame.id }), true);
+  assert.equal(movedText.textPath.sourceId, undefined);
+  assert.equal(movedText.textPath.width, movedSnapshot.width);
+  assert.equal(movedText.y, 34);
+  assert.equal(movedText.width, 220);
+  assert.doesNotThrow(() => validateDocument(movedDocument));
+});
+
+test('manual text-path detachment freezes current source geometry and transform', () => {
+  const document = createDocument();
+  const source = pathNode();
+  const text = createNode('text', {
+    text: 'Independent label',
+    textPath: { ...createTextPathGeometry(source), sourceId: source.id }
+  });
+  addNode(document, source);
+  addNode(document, text);
+  source.x = 80;
+  source.y = 40;
+  source.width = 240;
+  source.rotation = 18;
+  const expectedPath = getNodeTextPath(document, text);
+  const { sourceId: _sourceId, ...expectedSnapshot } = expectedPath;
+
+  assert.equal(detachNodeTextPath(document, text.id), true);
+  assert.deepEqual(text.textPath, expectedSnapshot);
+  assert.deepEqual([text.x, text.y, text.width, text.height, text.rotation], [80, 40, 240, source.height, 18]);
+  source.width = 400;
+  assert.deepEqual(getNodeTextPath(document, text), expectedSnapshot,
+    'later source edits no longer move detached text');
+  assert.doesNotThrow(() => validateDocument(document));
+});
+
+test('linked source IDs remap with duplicated subtrees and component instances', () => {
+  const document = createDocument();
+  const source = pathNode();
+  const text = createNode('text', {
+    text: 'Reusable curve', x: source.x, y: source.y,
+    width: source.width, height: source.height,
+    textPath: { ...createTextPathGeometry(source), sourceId: source.id }
+  });
+  const componentRoot = createNode('frame', {
+    name: 'Linked text component', width: 240, height: 100, children: [source, text]
+  });
+  const masterSource = componentRoot.children.find(node => node.type === 'path');
+  addNode(document, componentRoot);
+  const duplicate = duplicateNode(document, componentRoot.id);
+  const duplicateSource = duplicate.children.find(node => node.type === 'path');
+  const duplicateText = duplicate.children.find(node => node.type === 'text');
+  assert.equal(duplicateText.textPath.sourceId, duplicateSource.id);
+
+  const component = createComponent(document, componentRoot.id);
+  const instance = createComponentInstance(document, component.id);
+  const instanceSource = instance.children.find(node => node.type === 'path');
+  const instanceText = instance.children.find(node => node.type === 'text');
+  assert.equal(instanceText.textPath.sourceId, instanceSource.id);
+  instanceSource.width = 300;
+  assert.equal(getNodeTextPath(document, instanceText).width, 300);
+
+  masterSource.width = 350;
+  syncComponentInstances(document, component.id);
+  assert.equal(instanceText.textPath.sourceId, instanceSource.id);
+  assert.equal(getNodeTextPath(document, instanceText).width, masterSource.width);
+  assert.doesNotThrow(() => validateDocument(document));
 });
 
 test('canvas rendering positions editable graphemes on the path and reverses orientation when flipped', () => {

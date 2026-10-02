@@ -1,4 +1,4 @@
-import { getNodeColor, getNodeGeometry, getNodePropertyValue } from './model.js';
+import { getNodeColor, getNodeGeometry, getNodePropertyValue, getNodeTextPath } from './model.js';
 import { layoutPlainText, layoutTextRuns, resolvedLineHeight, textGraphemes, transformTextCase } from './text-layout.js';
 import { fillStackForNode, gradientTypes, isValidFillStack, isValidGradientBasis, isValidGradientFill } from './fills.js';
 import { glassVectorExportBlockReason } from './glass-effect.js';
@@ -1387,7 +1387,11 @@ function renderTree(nodes, document, context, includePosition = true, measureTex
   for (const sourceNode of nodes || []) {
     if (sourceNode?.type === 'slice') continue;
     if (!isNodeVisible(document, sourceNode)) continue;
-    const node = { ...sourceNode, ...getNodeGeometry(document, sourceNode) };
+    const node = {
+      ...sourceNode,
+      ...getNodeGeometry(document, sourceNode),
+      ...(sourceNode.textPath ? { textPath: getNodeTextPath(document, sourceNode) } : {})
+    };
     const index = context.nextIndex++;
     const transform = nodeMatrix(node, { includePosition });
     const opacity = Number(getNodePropertyValue(document, node, 'opacity') ?? 1);

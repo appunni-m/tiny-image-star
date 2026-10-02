@@ -13,7 +13,7 @@ import { isValidImageLibraryManifest } from './image-asset-library.js';
 import { createMotionDocument, validateMotion } from './motion.js';
 import { evaluatePrototypeExpression, PROTOTYPE_EXPRESSION_LIMITS, prototypeExpressionIdentifier, prototypeExpressionReferences } from './prototype-expressions.js';
 import { isValidPrototypeEasing } from './prototype-easing.js';
-import { isValidTextPathGeometry } from './text-on-path.js';
+import { createTextPathGeometry, isValidTextPathGeometry } from './text-on-path.js';
 
 const clone = value => structuredClone(value);
 /** Persisted layer trees allow at most 256 levels (root layer counts as 1). */
@@ -394,7 +394,7 @@ const vectorFillRules = new Set(['nonzero', 'evenodd']);
 const frameOverflowBehaviors = new Set(['none', 'vertical', 'horizontal', 'both']);
 const booleanOperandTypes = new Set(['rectangle', 'ellipse', 'star', 'polygon', 'path', 'network', 'text', 'boolean']);
 const componentOverrideProperties = new Set([
-  'name', 'x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
+  'name', 'x', 'y', 'width', 'height', 'rotation', 'affineTransform', 'opacity', 'visible', 'locked', 'fill', 'fills', 'fillOpacity', 'fillStyleId',
   'stroke', 'strokeWidth', 'strokeOpacity', 'strokeCap', 'strokeJoin', 'strokePattern', 'strokeMiterLimit', 'strokes', 'radius', 'cornerRadii', 'clip', 'mask', 'text', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'lineHeightUnit',
   'letterSpacing', 'paragraphSpacing', 'firstLineIndent', 'listSpacing', 'paragraphStyles', 'fontStyle', 'color', 'textRuns', 'textStyleId', 'typographyStyleId', 'align', 'verticalAlign', 'textFit', 'textCase', 'textDecoration', 'textPath', 'fit', 'adjustments', 'transforms', 'constraints', 'autoLayout',
   'fillVariableId', 'textVariableId', 'strokeVariableId', 'variableModes',
@@ -614,6 +614,90 @@ export function findNodeAcrossPages(document, nodeId) {
   return null;
 }
 
+const textPathSourceTypes = new Set(['path', 'ellipse', 'rectangle', 'line']);
+
+function liveTextPathSourceEntry(document, node) {
+  const sourceId = node?.type === 'text' ? node.textPath?.sourceId : null;
+  if (typeof sourceId !== 'string' || !sourceId) return null;
+  const textEntry = findNodeAcrossPages(document, node.id);
+  const sourceEntry = findNodeAcrossPages(document, sourceId);
+  if (!textEntry || !sourceEntry || sourceEntry.page.id !== textEntry.page.id
+    || sourceEntry.parent !== textEntry.parent || sourceEntry.parent?.autoLayout
+    || sourceEntry.parent?.mask || sourceEntry.parent?.type === 'boolean'
+    || !textPathSourceTypes.has(sourceEntry.node.type)) return null;
+  return sourceEntry;
+}
+
+/** Return the source geometry currently linked to a text-on-path layer. */
+export function getNodeTextPath(document, node) {
+  if (!node?.textPath) return null;
+  const sourceEntry = liveTextPathSourceEntry(document, node);
+  if (!sourceEntry) return node.textPath;
+  const sourceGeometry = getNodeGeometry(document, sourceEntry.node);
+  const current = createTextPathGeometry({ ...sourceEntry.node, ...sourceGeometry }, {
+    startOffset: node.textPath.startOffset,
+    flipped: node.textPath.flipped
+  });
+  return current ? { ...current, sourceId: node.textPath.sourceId } : node.textPath;
+}
+
+function detachTextPathLink(document, textNode, sourceNode) {
+  if (!textNode?.textPath?.sourceId || !sourceNode) return false;
+  const sourceGeometry = getNodeGeometry(document, sourceNode);
+  const current = createTextPathGeometry({ ...sourceNode, ...sourceGeometry }, {
+    startOffset: textNode.textPath.startOffset,
+    flipped: textNode.textPath.flipped
+  });
+  if (current) textNode.textPath = current;
+  else {
+    const snapshot = { ...textNode.textPath };
+    delete snapshot.sourceId;
+    textNode.textPath = snapshot;
+  }
+  Object.assign(textNode, {
+    x: sourceGeometry.x,
+    y: sourceGeometry.y,
+    width: Math.max(1, sourceGeometry.width),
+    height: Math.max(1, sourceGeometry.height),
+    rotation: sourceGeometry.rotation
+  });
+  if (sourceNode.affineTransform) textNode.affineTransform = clone(sourceNode.affineTransform);
+  else delete textNode.affineTransform;
+  return true;
+}
+
+/** Detach a linked text layer while keeping its current path and transform. */
+export function detachNodeTextPath(document, nodeId, pageId = document.activePageId) {
+  const entry = findNode(document, nodeId, pageId);
+  if (!entry?.node.textPath?.sourceId) return false;
+  const source = findNode(document, entry.node.textPath.sourceId, pageId);
+  if (!source || source.parent !== entry.parent || !textPathSourceTypes.has(source.node.type)) return false;
+  return detachTextPathLink(document, entry.node, source.node);
+}
+
+function detachTextPathLinksCrossingNodes(document, nodeIds) {
+  const movingIds = new Set();
+  for (const nodeId of nodeIds || []) {
+    const entry = findNodeAcrossPages(document, nodeId);
+    if (entry) walkNodes([entry.node], ({ node }) => movingIds.add(node.id));
+  }
+  if (!movingIds.size) return;
+  for (const page of document.pages || []) walkNodes(page.children || [], ({ node, parent }) => {
+    const sourceId = node.type === 'text' ? node.textPath?.sourceId : null;
+    if (!sourceId) return;
+    const textMoves = movingIds.has(node.id);
+    const sourceMoves = movingIds.has(sourceId);
+    if (textMoves === sourceMoves) return;
+    const sourceEntry = findNode(document, sourceId, page.id);
+    if (sourceEntry && sourceEntry.parent === parent) detachTextPathLink(document, node, sourceEntry.node);
+    else {
+      const snapshot = { ...node.textPath };
+      delete snapshot.sourceId;
+      node.textPath = snapshot;
+    }
+  });
+}
+
 function componentSlotMutationContext(document, entry) {
   if (!entry?.node) return null;
   const ancestry = [...(entry.parents || []), entry.node];
@@ -681,6 +765,7 @@ export function removeNode(document, nodeId, pageId = document.activePageId) {
   const slotContext = componentSlotMutationContext(document, entry);
   requireOverriddenSlotForMutation(slotContext, 'remove');
   if (slotContext && entry.node === slotContext.target) throw new Error('Cannot remove a component slot target from its instance.');
+  detachTextPathLinksCrossingNodes(document, [nodeId]);
   const removesMaskSource = Boolean(entry.parent?.mask && entry.parent.maskSourceId === entry.node.id);
   if (entry.parent && entry.parent !== slotContext?.target && entry.node.componentSourceId && entry.parent.componentSourceId) {
     const instanceRoot = [...entry.parents].reverse().find(parent => parent.isInstance);
@@ -807,6 +892,10 @@ export function duplicateNode(document, nodeId, pageId = document.activePageId) 
   };
   renew(duplicate);
   walkNodes([duplicate], ({ node }) => {
+    if (node.textPath?.sourceId) {
+      if (idMap.has(node.textPath.sourceId)) node.textPath.sourceId = idMap.get(node.textPath.sourceId);
+      else delete node.textPath.sourceId;
+    }
     for (const interaction of node.interactions || []) {
       if (idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
       if (idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
@@ -848,6 +937,7 @@ export function moveNode(document, nodeId, { parentId = null, index, pageId = do
   const numericIndex = index == null ? targetList.length : Number(index);
   if (!Number.isInteger(numericIndex)) throw new TypeError('The layer order index must be an integer.');
   const insertAt = Math.max(0, Math.min(numericIndex, targetList.length));
+  detachTextPathLinksCrossingNodes(document, [nodeId]);
   const [moving] = sourceList.splice(entry.index, 1);
   targetList.splice(insertAt, 0, moving);
   if (entry.parent === sourceContext?.target) syncSlotChildOrder(sourceContext, sourceList);
@@ -897,6 +987,7 @@ export function canGroupLayers(document, nodeIds, pageId = document.activePageId
 export function groupLayers(document, nodeIds, pageId = document.activePageId) {
   if (!canGroupLayers(document, nodeIds, pageId)) throw new Error('Select at least two unlocked sibling layers in the same container.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
+  detachTextPathLinksCrossingNodes(document, nodeIds);
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
   const list = parent ? parent.children : page.children;
@@ -1036,6 +1127,7 @@ export function combineBoolean(document, nodeIds, operation = 'union', pageId = 
   if (!booleanOperations.has(operation)) throw new TypeError('Choose a supported Boolean operation.');
   if (!canCombineBoolean(document, nodeIds, pageId)) throw new Error('Select at least two unlocked, supported shape or text layers in the same container.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
+  detachTextPathLinksCrossingNodes(document, nodeIds);
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
   const list = parent ? parent.children : page.children;
@@ -1090,6 +1182,7 @@ export function canCreateMaskGroup(document, nodeIds, pageId = document.activePa
 export function createMaskGroup(document, nodeIds, pageId = document.activePageId) {
   if (!canCreateMaskGroup(document, nodeIds, pageId)) throw new Error('Select at least two unlocked sibling layers and place a supported mask source at the front.');
   const entries = nodeIds.map(id => findNode(document, id, pageId));
+  detachTextPathLinksCrossingNodes(document, nodeIds);
   const page = document.pages.find(item => item.id === pageId);
   const parent = entries[0].parent;
   const list = parent ? parent.children : page.children;
@@ -1534,6 +1627,16 @@ export function getNodePropertyValue(document, node, property) {
 /** Return the current mode-resolved transform fields for a layer. */
 export function getNodeGeometry(document, node) {
   if (!node) return undefined;
+  const sourceEntry = liveTextPathSourceEntry(document, node);
+  if (sourceEntry) {
+    const sourceGeometry = getNodeGeometry(document, sourceEntry.node);
+    return {
+      ...sourceGeometry,
+      width: Math.max(1, sourceGeometry.width),
+      height: Math.max(1, sourceGeometry.height),
+      affineTransform: sourceEntry.node.affineTransform ? clone(sourceEntry.node.affineTransform) : null
+    };
+  }
   return Object.fromEntries(['x', 'y', 'width', 'height', 'rotation'].map(property => [
     property, getNodePropertyValue(document, node, property)
   ]));
@@ -2305,6 +2408,10 @@ function cloneSlotContentTrees(document, nodes) {
       delete node.variantNodeKey;
     }
     if (node.maskSourceId && idMap.has(node.maskSourceId)) node.maskSourceId = idMap.get(node.maskSourceId);
+    if (node.textPath?.sourceId) {
+      if (idMap.has(node.textPath.sourceId)) node.textPath.sourceId = idMap.get(node.textPath.sourceId);
+      else delete node.textPath.sourceId;
+    }
     for (const interaction of node.interactions || []) {
       if (interaction.destinationId && idMap.has(interaction.destinationId)) interaction.destinationId = idMap.get(interaction.destinationId);
       if (interaction.scrollTargetId && idMap.has(interaction.scrollTargetId)) interaction.scrollTargetId = idMap.get(interaction.scrollTargetId);
@@ -2881,6 +2988,11 @@ export function createComponentInstance(document, componentId, { pageId = docume
   walkNodes([instance], ({ node }) => {
     const copiedMaskId = cloneByOriginalId.get(node.maskSourceId) || cloneBySourceId.get(node.maskSourceId);
     if (copiedMaskId) node.maskSourceId = copiedMaskId;
+    if (node.textPath?.sourceId) {
+      const copiedTextPathSource = cloneByOriginalId.get(node.textPath.sourceId);
+      if (copiedTextPathSource) node.textPath.sourceId = copiedTextPathSource;
+      else delete node.textPath.sourceId;
+    }
     for (const interaction of node.interactions || []) {
       if (interaction.action === 'change-variant') {
         const copiedInstanceId = cloneByOriginalId.get(interaction.instanceId) || cloneBySourceId.get(interaction.instanceId);
@@ -3067,6 +3179,11 @@ function remapComponentInstanceReferences(document, instance) {
 
   let changed = false;
   walkNodes([instance], ({ node, parents }) => {
+    if (node.textPath?.sourceId) {
+      const copiedTextPathSource = sourceToInstanceId.get(node.textPath.sourceId);
+      if (copiedTextPathSource) node.textPath.sourceId = copiedTextPathSource;
+      else delete node.textPath.sourceId;
+    }
     const copiedMaskId = sourceToInstanceId.get(node.maskSourceId);
     if (copiedMaskId && copiedMaskId !== node.maskSourceId) {
       node.maskSourceId = copiedMaskId;
@@ -3247,6 +3364,7 @@ export function validateDocument(document) {
   assertDocumentTreeBounds(document);
   const pageIds = new Set();
   const nodeIds = new Set();
+  const nodeEntries = new Map();
   for (const page of document.pages) {
     if (!page.id || pageIds.has(page.id) || !Array.isArray(page.children)) throw new TypeError('Invalid or duplicate page.');
     pageIds.add(page.id);
@@ -3265,6 +3383,7 @@ export function validateDocument(document) {
     walkNodes(page.children, ({ node, parent }) => {
       if (!node.id || nodeIds.has(node.id)) throw new TypeError('Invalid or duplicate layer.');
       nodeIds.add(node.id);
+      nodeEntries.set(node.id, { node, parent, page });
       if (!defaults[node.type] || ![node.x, node.y, node.width, node.height, node.rotation, node.opacity].every(Number.isFinite) || node.width < 0 || node.height < 0 || node.opacity < 0 || node.opacity > 1) throw new TypeError(`Invalid geometry or type on layer ${node.name || node.id}.`);
       if (node.affineTransform != null) {
         const matrix = node.affineTransform;
@@ -3854,6 +3973,14 @@ export function validateDocument(document) {
         || typeof style.name !== 'string' || !style.name.trim() || style.name.length > 120 || /[\x00-\x1f\x7f]/.test(style.name)
         || !isValidLayerEffects(style.effects)) throw new TypeError('Invalid or duplicate effect style.');
       styleIds.add(style.id);
+    }
+  }
+  for (const { node, parent, page } of nodeEntries.values()) {
+    const sourceId = node.type === 'text' ? node.textPath?.sourceId : null;
+    if (sourceId == null) continue;
+    const source = nodeEntries.get(sourceId);
+    if (!source || source.page !== page || source.parent !== parent || !textPathSourceTypes.has(source.node.type)) {
+      throw new TypeError(`Invalid text path source on layer ${node.name || node.id}.`);
     }
   }
   return true;
