@@ -97,6 +97,8 @@ test('grid track controls expose sizing and weighted fill with phone-sized contr
   assert.match(mainSource, /\['fixed', 'Fixed'\], \['hug', 'Hug content'\], \['fill', 'Fill available'\]/);
   assert.match(mainSource, /data-prop="autoLayout\.\$\{axis\}\.\$\{index\}\.\$\{mode === 'fixed' \? 'value' : 'weight'\}"/);
   assert.match(coarsePhone, /\.grid-track-row \.select-field, \.grid-track-value\s*\{[^}]*min-height:\s*44px[^}]*height:\s*44px/);
+  assert.match(coarsePhone, /\.grid-track-delete, \.grid-track-move-menu-button\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/,
+    'grid track delete and reorder controls stay finger-sized on phones');
 });
 
 test('coarse-pointer checkbox settings expose a 44px row target and retain usable checkboxes', () => {

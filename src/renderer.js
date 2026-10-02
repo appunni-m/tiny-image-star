@@ -15,6 +15,7 @@ import { getTransformHandles, nodeLocalToPage, nodeLocalToPageTransform, pageToN
 import { selectionBounds } from './group-transform.js';
 import { drawAlignmentGuides } from './smart-guides.js';
 import { imagePreviewKey } from './image-preview-runtime.js';
+import { gridTrackResizeHandles } from './grid-track-editing.js';
 import { imageCropPixels, normalizeImageTransforms } from './image-transforms.js';
 import { clampCornerRadii, containsPointInRoundedRect, cornerRadiusKeys, traceRoundedRectPath } from './corner-radii.js';
 import { booleanSourceTransform } from './boolean-geometry.js';
@@ -2461,6 +2462,23 @@ export class SceneRenderer {
 
       const nodeTransform = nodeLocalToPageTransform(node, ancestors);
       const pagePoint = point => transformPoint(nodeTransform, point);
+      if (selected.length === 1 && state.tool === 'select' && !state.layerSelectionMode && !state.presenting
+        && !(state.inspectorTab === 'motion' && state.motionPreview) && node.type === 'frame'
+        && node.autoLayout?.axis === 'grid' && !node.locked && !ancestors.some(parent => parent.locked)) {
+        for (const handle of gridTrackResizeHandles(node)) {
+          const point = pagePoint(handle.point);
+          const vertical = handle.axis === 'columnTracks';
+          const width = (vertical ? 6 : 18) / zoom;
+          const height = (vertical ? 18 : 6) / zoom;
+          ctx.beginPath();
+          ctx.rect(point.x - width / 2, point.y - height / 2, width, height);
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = BLUE;
+          ctx.lineWidth = 1 / zoom;
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
       if (selected.length === 1 && node.type === 'path') {
         const selection = this.getState().selectedVectorPoint;
         const selectedPointIndex = selection?.nodeId === node.id ? selection.index : -1;

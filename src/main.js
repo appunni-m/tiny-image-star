@@ -43,8 +43,8 @@ import { defaultLocalFontFamily, inspectLocalFontFormat, loadLocalFontFace, mapL
 import { icon } from './icons.js';
 import { cornerRadiusKeys } from './corner-radii.js';
 import { strokeDecorationTypes } from './stroke-decorations.js';
-import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout } from './layout-engine.js';
-import { addGridTrack, deleteGridTrack, gridTrackCount } from './grid-track-editing.js';
+import { applyAutoLayout as applyAutoLayoutEngine, createAutoLayout, gridTrackLayout } from './layout-engine.js';
+import { addGridTrack, deleteGridTrack, gridTrackCount, gridTrackMoveRange, gridTrackResizeHandles, moveGridTrack, resizeGridTrack } from './grid-track-editing.js';
 import { applyAutoLayoutSuggestion, suggestAutoLayout } from './layout-inference.js';
 import { interpolateSmartFrame } from './smart-animate.js';
 import { buildInspectOutput } from './inspect.js';
@@ -1893,7 +1893,9 @@ function gridTrackEditor(node, axis, count, tracks, fallbackMode, locked = node.
       ? '<span class="grid-track-content">Content size</span>'
       : `<label class="grid-track-value"><span>${mode === 'fixed' ? 'Pixels' : 'Weight'}</span><input type="number" min="${mode === 'fixed' ? 0 : 0.01}" max="100000" step="0.01" value="${formatInspectorNumber(mode === 'fixed' ? track.value : track.weight ?? 1)}" data-prop="autoLayout.${axis}.${index}.${mode === 'fixed' ? 'value' : 'weight'}" aria-label="${shortTitle} ${index + 1} ${mode === 'fixed' ? 'size in pixels' : 'fill weight'}"${node.locked ? ' disabled' : ''}/></label>`;
     const deleteButton = `<button class="tiny-icon-button grid-track-delete" type="button" data-action="delete-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Delete ${shortTitle.toLowerCase()} ${index + 1} and its contents" title="Delete ${shortTitle.toLowerCase()} and its contents"${locked || count <= 1 ? ' disabled' : ''}>×</button>`;
-    return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}${deleteButton}</div>`;
+    const moveRange = gridTrackMoveRange(node, axis, index);
+    const moveButton = `<button class="tiny-icon-button grid-track-move-menu-button" type="button" data-action="grid-track-move-menu" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" data-track-index="${index}" aria-label="Reorder ${shortTitle.toLowerCase()} ${index + 1}${moveRange?.end > moveRange?.start ? ' with its spanning tracks' : ''}" aria-haspopup="menu" aria-expanded="false" aria-controls="context-menu" title="Reorder track"${locked ? ' disabled' : ''}>↕</button>`;
+    return `<div class="grid-track-row"><span class="grid-track-name">${shortTitle} ${index + 1}</span><select class="prop-input select-field" data-prop="autoLayout.${axis}.${index}.mode" aria-label="${shortTitle} ${index + 1} sizing"${node.locked ? ' disabled' : ''}>${modeOptions}</select>${valueControl}${moveButton}${deleteButton}</div>`;
   }).join('');
   const addButton = `<button class="add-fill grid-track-add" type="button" data-action="add-grid-track" data-frame-id="${escapeHtml(node.id)}" data-axis="${axis}" aria-label="Add ${trackKind}"${locked || count >= 64 ? ' disabled' : ''}>＋ Add ${trackKind}</button>`;
   return `<details class="grid-track-editor"><summary>${title} sizing</summary><div class="grid-track-list">${rows}</div>${addButton}</details>`;
@@ -1978,8 +1980,11 @@ function autoLayoutSection(node) {
   const padding = `<div class="property-grid">${numberField('Top', 'autoLayout.padding.top', layout.padding.top, 0.01, 0)}${numberField('Right', 'autoLayout.padding.right', layout.padding.right, 0.01, 0)}${numberField('Bottom', 'autoLayout.padding.bottom', layout.padding.bottom, 0.01, 0)}${numberField('Left', 'autoLayout.padding.left', layout.padding.left, 0.01, 0)}</div>`;
   const variableProperties = autoLayoutBindingProperties.map(([property, label]) => variablePropertyBindingControl(node, property, label)).filter(Boolean).join('');
   const variableBindings = variableProperties ? `<details class="auto-layout-variable-bindings"><summary>Bind layout properties</summary>${variableProperties}</details>` : '';
+  const gridTrackHint = trackLocked
+    ? 'Unlock this frame and its parent frames to resize grid tracks on the canvas.'
+    : 'Drag the blue handles on the selected frame to resize tracks.';
   const body = layout.axis === 'grid'
-    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill', trackLocked)}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill', trackLocked)}${padding}<div class="image-properties-note">Each track can stay fixed, hug its contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
+    ? `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Columns', 'autoLayout.columns', layout.columns, 1, 1, 64)}<span class="field-caption">Rows</span>${select('rows', layout.rows, [['auto','Auto'], ...Array.from({ length: 64 }, (_, index) => [String(index + 1), String(index + 1)])])}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, 0, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, 0, 100_000)}<label class="field-caption" for="auto-layout-auto-positioning">Auto position</label><input class="prop-input" data-prop="autoLayout.autoPositioning" type="checkbox" id="auto-layout-auto-positioning" ${layout.autoPositioning ? 'checked' : ''}/></div>${gridTrackEditor(node, 'columnTracks', layout.columns, layout.columnTracks, 'fill', trackLocked)}${gridTrackEditor(node, 'rowTracks', visibleGridRowCount(node, layout), layout.rowTracks, layout.rows === 'auto' ? 'hug' : 'fill', trackLocked)}${padding}<div class="image-properties-note">${gridTrackHint} Tracks can stay fixed, hug their contents, or share remaining space by weight. Grid cells flow in layer order; turn off Auto position to edit a layer’s row and column.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`
     : `<div class="property-grid"><span class="field-caption">Flow</span>${axis}${numberField('Horizontal gap', 'autoLayout.columnGap', layout.columnGap, 0.01, minimumGap, 100_000)}${numberField('Vertical gap', 'autoLayout.rowGap', layout.rowGap, 0.01, minimumGap, 100_000)}<span class="field-caption">Align</span>${select('align', layout.align, [['start','Start'],['center','Center'],['end','End'],['stretch','Stretch']])}<span class="field-caption">Distribute</span>${select('justify', layout.justify, [['start','Packed'],['center','Center'],['end','End'],['space-between','Space between'],['space-around','Space around'],['space-evenly','Space evenly']])}${layout.wrap ? `<span class="field-caption">Line distribution</span>${select('wrapDistribution', layout.wrapDistribution, [['start','Start'],['center','Center'],['end','End'],['space-between','Space between']])}` : ''}<span class="field-caption">Main size</span>${select('mainSizing', layout.mainSizing, [['fixed','Fixed'],['hug','Hug contents']])}<span class="field-caption">Cross size</span>${select('crossSizing', layout.crossSizing, [['fixed','Fixed'],['hug','Hug contents']])}<label class="field-caption" for="auto-layout-wrap">Wrap</label><input class="prop-input" data-prop="autoLayout.wrap" type="checkbox" id="auto-layout-wrap" ${layout.wrap ? 'checked' : ''}/></div>${padding}<div class="image-properties-note">Negative gaps overlap adjacent layers.</div>${variableBindings}<button class="add-fill" data-action="auto-layout-toggle">− Remove auto layout</button>`;
   return section('Auto layout', body);
 }
@@ -4011,6 +4016,25 @@ function resizeHandleAt(event) {
   if (hit.kind === 'rotate') return { kind: 'rotate', node, entry, geometry, ancestors, center: nodeLocalToPage(geometry, { x: geometry.width / 2, y: geometry.height / 2 }, ancestors) };
   return { kind: 'resize', name: hit.name, node, entry, geometry, ancestors };
 }
+function gridTrackResizeHandleAt(world, pointerType = 'mouse') {
+  if (state.selectedIds.length !== 1 || state.imageCropMode || state.layerSelectionMode || state.tool !== 'select'
+    || state.documentTransitioning || state.presenting || isLiveHostViewOnly()
+    || (state.inspectorTab === 'motion' && state.motionPreview) || isImageRecipeBatchActive(state.bulk)) return null;
+  const entry = findNode(state.document, state.selectedIds[0]);
+  const node = entry?.node;
+  if (!node || node.type !== 'frame' || node.autoLayout?.axis !== 'grid'
+    || node.locked || entry.parents.some(parent => parent.locked)) return null;
+  const geometry = { ...node, ...resolvedGeometry(node) };
+  const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
+  const tolerance = (pointerType === 'touch' ? 22 : pointerType === 'pen' ? 14 : 9) / Math.max(.08, state.zoom);
+  let nearest = null;
+  for (const handle of gridTrackResizeHandles(geometry)) {
+    const point = nodeLocalToPage(geometry, handle.point, ancestors);
+    const distance = checkPointDistance(world, point);
+    if (distance <= tolerance && (!nearest || distance < nearest.distance)) nearest = { ...handle, node, entry, geometry, ancestors, point, distance };
+  }
+  return nearest;
+}
 function pageBoundsForEntry(entry) {
   const geometry = { ...entry.node, ...resolvedGeometry(entry.node) };
   const ancestors = entry.parents.map(parent => ({ ...parent, ...resolvedGeometry(parent) }));
@@ -4491,6 +4515,26 @@ function onCanvasPointerDown(event) {
       }
       event.preventDefault(); return;
     }
+    const gridHandle = gridTrackResizeHandleAt(world, event.pointerType);
+    if (gridHandle) {
+      const measured = gridTrackLayout(gridHandle.node);
+      const tracks = measured?.[gridHandle.axis === 'columnTracks' ? 'columns' : 'rows'];
+      const currentTrack = tracks?.[gridHandle.trackIndex];
+      const adjacentTrack = tracks?.[gridHandle.adjacentIndex];
+      if (!currentTrack || !adjacentTrack) return;
+      const localStart = pageToNodeLocal(gridHandle.geometry, world, gridHandle.ancestors);
+      state.interaction = {
+        kind: 'grid-track-resize', pointerId: event.pointerId, frame: gridHandle.node,
+        geometry: gridHandle.geometry, ancestors: gridHandle.ancestors,
+        axis: gridHandle.axis, trackIndex: gridHandle.trackIndex, adjacentIndex: gridHandle.adjacentIndex,
+        startCoordinate: gridHandle.axis === 'columnTracks' ? localStart.x : localStart.y,
+        initialTrackSize: currentTrack.size, initialAdjacentSize: adjacentTrack.size,
+        adjacentIsFixed: gridHandle.node.autoLayout?.[gridHandle.axis]?.[gridHandle.adjacentIndex]?.mode === 'fixed',
+        measured, autoLayout: structuredClone(gridHandle.node.autoLayout), changed: false,
+        historyTransaction: beginCanvasHistoryTransaction('Resize grid track')
+      };
+      event.preventDefault(); return;
+    }
     const handle = resizeHandleAt(event);
     if (handle) {
       if (handle.kind === 'rotate') {
@@ -4580,6 +4624,10 @@ function onCanvasPointerMove(event) {
   const interaction = state.interaction;
   if (!interaction) {
     if (state.penDraft && state.tool === 'pen') { state.penHover = screenToWorld(event, canvas, state); renderer.invalidate(); }
+    if (state.tool === 'select' && !state.imageCropMode) {
+      const handle = gridTrackResizeHandleAt(screenToWorld(event, canvas, state), event.pointerType);
+      canvas.style.cursor = handle ? (handle.axis === 'columnTracks' ? 'col-resize' : 'row-resize') : '';
+    }
     return;
   }
   if (interaction.kind === 'layer-selection-tap') {
@@ -4619,6 +4667,26 @@ function onCanvasPointerMove(event) {
     return;
   }
   const world = screenToWorld(event, canvas, state);
+  if (interaction.kind === 'grid-track-resize') {
+    if (interaction.pointerId !== event.pointerId) return;
+    const local = pageToNodeLocal(interaction.geometry, world, interaction.ancestors);
+    const currentCoordinate = interaction.axis === 'columnTracks' ? local.x : local.y;
+    const delta = currentCoordinate - interaction.startCoordinate;
+    const maximum = interaction.adjacentIsFixed
+      ? interaction.initialTrackSize + interaction.initialAdjacentSize
+      : 100_000;
+    const size = Math.max(0, Math.min(maximum, interaction.initialTrackSize + delta));
+    const adjacentSize = interaction.adjacentIsFixed ? Math.max(0, maximum - size) : null;
+    interaction.frame.autoLayout = structuredClone(interaction.autoLayout);
+    interaction.changed = Math.abs(size - interaction.initialTrackSize) >= 0.005;
+    resizeGridTrack(interaction.frame, interaction.axis, interaction.trackIndex, size, {
+      adjacentIndex: interaction.adjacentIsFixed ? interaction.adjacentIndex : null,
+      adjacentSize
+    });
+    applyAutoLayout(interaction.frame);
+    renderer.invalidate();
+    return;
+  }
   if (interaction.kind === 'image-erase') {
     if (interaction.pointerId !== event.pointerId) return;
     if (appendImageErasePointer(interaction, world)) renderer.invalidate();
@@ -4945,6 +5013,21 @@ function onCanvasPointerUp(event) {
   if (interaction.kind === 'pan') {
     canvas.classList.remove('is-panning'); state.interaction = null;
     if (isLiveHostViewOnly()) queueLiveHostViewSync();
+    return;
+  }
+  if (interaction.kind === 'grid-track-resize') {
+    if (interaction.pointerId !== event.pointerId) return;
+    state.interaction = null;
+    if (!interaction.changed || !commitCanvasHistoryTransaction(interaction)) {
+      renderer.invalidate();
+      return;
+    }
+    const frame = findNode(state.document, interaction.frame.id)?.node;
+    const instanceRoot = frame && componentInstanceRoot(frame.id);
+    if (instanceRoot) recordComponentOverride(instanceRoot, frame, 'autoLayout');
+    renderInspector();
+    queueSave();
+    renderer.invalidate();
     return;
   }
   if (interaction.kind === 'lasso') {
@@ -8809,6 +8892,34 @@ function closeMenu() {
   menu._returnFocusElement?.setAttribute('aria-expanded', 'false');
   menu.hidden = true;
   menu._returnFocusElement = null;
+}
+
+function openGridTrackMoveMenu(button) {
+  const frameId = button?.dataset.frameId || '';
+  const axis = button?.dataset.axis;
+  const trackIndex = Number(button?.dataset.trackIndex);
+  const pageId = activePage()?.id;
+  if (!frameId || !pageId || !['columnTracks', 'rowTracks'].includes(axis) || !Number.isInteger(trackIndex)) return;
+  const entry = findNode(state.document, frameId, pageId);
+  if (!entry || entry.node.type !== 'frame' || entry.node.autoLayout?.axis !== 'grid') return;
+  const range = gridTrackMoveRange(entry.node, axis, trackIndex);
+  if (!range) return;
+  const locked = entry.node.locked || entry.parents.some(parent => parent.locked);
+  const name = axis === 'columnTracks' ? 'column' : 'row';
+  const directions = axis === 'columnTracks'
+    ? [{ value: -1, label: 'left', shortcut: '←' }, { value: 1, label: 'right', shortcut: '→' }]
+    : [{ value: -1, label: 'up', shortcut: '↑' }, { value: 1, label: 'down', shortcut: '↓' }];
+  const trackLabel = range.start === range.end ? `${name} ${trackIndex + 1}` : `${name}s ${range.start + 1}–${range.end + 1}`;
+  const items = directions.map(({ value, label, shortcut }) => ({
+    label: `Move ${trackLabel} ${label}`,
+    shortcut,
+    disabled: locked || (value < 0 ? range.start === 0 : range.end >= gridTrackCount(entry.node, axis) - 1),
+    action: () => applyInspectorAction('move-grid-track', {
+      frameId, axis, trackIndex: String(trackIndex), direction: String(value)
+    })
+  }));
+  const bounds = button.getBoundingClientRect();
+  showMenu(items, bounds.right, bounds.bottom, button, 'Grid track actions');
 }
 
 function openNodeMenu(nodeId, x, y, commentAnchor = null, returnFocusElement = null) {
@@ -12942,7 +13053,7 @@ function applyInspectorAction(action, details = {}) {
     deleteSelected(layerIds);
     return;
   }
-  if (action === 'add-grid-track' || action === 'delete-grid-track') {
+  if (action === 'add-grid-track' || action === 'delete-grid-track' || action === 'move-grid-track') {
     if (state.documentTransitioning) return;
     const frameId = typeof details.frameId === 'string' ? details.frameId : '';
     const axis = details.axis;
@@ -12959,17 +13070,28 @@ function applyInspectorAction(action, details = {}) {
       let removedNodeIds = [];
       let changed = false;
       let trackIndex = previousCount;
+      let movedTrackCount = 1;
       if (action === 'add-grid-track') {
         changed = addGridTrack(frame, axis);
-      } else {
+      } else if (action === 'delete-grid-track') {
         trackIndex = Number(details.trackIndex);
         if (!Number.isInteger(trackIndex)) return;
         const result = deleteGridTrack(frame, axis, trackIndex);
         changed = result.changed;
         removedNodeIds = result.removedNodeIds;
+      } else {
+        trackIndex = Number(details.trackIndex);
+        const direction = Number(details.direction);
+        if (!Number.isInteger(trackIndex) || ![-1, 1].includes(direction)) return;
+        const result = moveGridTrack(frame, axis, trackIndex, direction);
+        changed = result.changed;
+        movedTrackCount = result.movedTrackCount;
       }
       if (!changed) {
-        showToast(action === 'add-grid-track' ? 'A grid can have up to 64 tracks in each direction.' : 'A grid must keep at least one track in each direction.');
+        const message = action === 'add-grid-track' ? 'A grid can have up to 64 tracks in each direction.'
+          : action === 'delete-grid-track' ? 'A grid must keep at least one track in each direction.'
+            : 'That track and any tracks linked by a spanning layer cannot move farther in that direction.';
+        showToast(message);
         return;
       }
       const instanceRoot = [...entry.parents, frame].reverse().find(parent => parent.isInstance || isLocalLinkedComponent(parent));
@@ -12997,9 +13119,14 @@ function applyInspectorAction(action, details = {}) {
       queueSave({ syncComponents: removedNodeIds.length === 0 });
       renderer.invalidate();
       const trackName = axis === 'columnTracks' ? 'column' : 'row';
+      const movementName = axis === 'columnTracks'
+        ? (Number(details.direction) < 0 ? 'left' : 'right')
+        : (Number(details.direction) < 0 ? 'up' : 'down');
       const message = action === 'add-grid-track'
         ? `Added ${trackName} ${previousCount + 1}.`
-        : `Deleted ${trackName} ${trackIndex + 1}${removedNodeIds.length ? ` and ${removedNodeIds.length} layer${removedNodeIds.length === 1 ? '' : 's'}` : ''}.`;
+        : action === 'delete-grid-track'
+          ? `Deleted ${trackName} ${trackIndex + 1}${removedNodeIds.length ? ` and ${removedNodeIds.length} layer${removedNodeIds.length === 1 ? '' : 's'}` : ''}.`
+          : `Moved ${movedTrackCount} ${trackName}${movedTrackCount === 1 ? '' : 's'} ${movementName}.`;
       showToast(message);
     } catch (error) { showToast(error.message || 'Could not update the grid tracks.'); }
     return;
@@ -14391,6 +14518,8 @@ function initEvents() {
     if (copy) { copyInspectText(copy.dataset.inspectCopy); return; }
     const effectStyleAction = event.target.closest('[data-effect-style-action]');
     if (effectStyleAction) { handleEffectStyleAction(effectStyleAction.dataset.effectStyleAction); return; }
+    const gridTrackMenu = event.target.closest('[data-action="grid-track-move-menu"]');
+    if (gridTrackMenu) { openGridTrackMoveMenu(gridTrackMenu); return; }
     const button = event.target.closest('[data-action]');
     if (button) applyInspectorAction(button.dataset.action, button.dataset);
   });

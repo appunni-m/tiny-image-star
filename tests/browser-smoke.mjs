@@ -1668,6 +1668,14 @@ try {
   setVariableValue(variablesDocument, cardWidthVariable.id, 210, darkMode.id);
   const layoutGapVariable = createVariable(variablesDocument, brandColors.id, 'Layout gap', 'number', 8);
   setVariableValue(variablesDocument, layoutGapVariable.id, 24, darkMode.id);
+  const gridTrackFrame = createNode('frame', {
+    name: 'Grid track reorder', x: 650, y: 20, width: 420, height: 120,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 4, rows: 1, autoPositioning: false, padding: 0,
+      columnTracks: [80, 90, 100, 110].map(value => ({ mode: 'fixed', value })), rowTracks: [{ mode: 'fixed', value: 120 }] })
+  });
+  const gridTrackFirst = createNode('rectangle', { name: 'Grid first', gridCell: { row: 1, column: 1 } });
+  const gridTrackSpan = createNode('rectangle', { name: 'Grid span', layoutSizingX: 'fill', gridCell: { row: 1, column: 2, columnSpan: 2 } });
+  const gridTrackLast = createNode('rectangle', { name: 'Grid last', gridCell: { row: 1, column: 4 } });
   const themeFrame = createNode('frame', { name: 'Theme frame', width: 300, height: 210 });
   const nestedThemeFrame = createNode('frame', { name: 'Nested theme', x: 20, y: 20, width: 250, height: 160 });
   const themeModeTrigger = createNode('rectangle', { name: 'Switch to dark', x: 215, y: 150, width: 70, height: 42, fill: '#40444d' });
@@ -1682,6 +1690,10 @@ try {
   const typographyTarget = createNode('text', { name: 'Typography target', x: 12, y: 180, width: 180, height: 32, text: 'First target' });
   const typographyUpdatedTarget = createNode('text', { name: 'Typography updated target', x: 12, y: 215, width: 180, height: 32, text: 'Updated target' });
   addNode(variablesDocument, themeFrame);
+  addNode(variablesDocument, gridTrackFrame);
+  addNode(variablesDocument, gridTrackFirst, { parentId: gridTrackFrame.id });
+  addNode(variablesDocument, gridTrackSpan, { parentId: gridTrackFrame.id });
+  addNode(variablesDocument, gridTrackLast, { parentId: gridTrackFrame.id });
   addNode(variablesDocument, typographyFrame);
   addNode(variablesDocument, layoutFrame);
   addNode(variablesDocument, nestedThemeFrame, { parentId: themeFrame.id });
@@ -1847,6 +1859,40 @@ try {
   savedLayoutFrame = flattenNodes(savedVariables.pages.flatMap(page => page.children)).find(node => node.id === layoutFrame.id);
   assert(getNodePropertyValue(savedVariables, savedLayoutFrame, 'autoLayout.columnGap') === 24 && savedLayoutFrame.children[1].x === 54,
     'changing the frame variable mode did not update its live and persisted Auto Layout');
+
+  dispatchClick(app.querySelector(`[data-layer-id="${gridTrackFrame.id}"]`));
+  const reorderGridTrack = app.querySelector(`#inspector-content [data-action="grid-track-move-menu"][data-frame-id="${gridTrackFrame.id}"][data-axis="columnTracks"][data-track-index="1"]`);
+  assert(reorderGridTrack, 'the grid track inspector did not expose an accessible reorder menu');
+  dispatchClick(reorderGridTrack);
+  const trackMoveMenu = app.querySelector('#context-menu');
+  const moveSpanRight = [...trackMoveMenu.querySelectorAll('[role="menuitem"]')]
+    .find(item => item.textContent.includes('Move columns 2–3 right'));
+  assert(moveSpanRight && !moveSpanRight.disabled, 'the track menu did not expose moving a span block to the right');
+  dispatchClick(moveSpanRight);
+  await waitForSaveCycle(app, 'reorder a grid track span block');
+  let gridTrackRecords = await readStore('documents'); gridTrackRecords.sort((a, b) => b.savedAt - a.savedAt);
+  let savedTrackFrame = flattenNodes(gridTrackRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === gridTrackFrame.id);
+  assert(JSON.stringify(savedTrackFrame.autoLayout.columnTracks.map(track => track.value)) === JSON.stringify([80, 110, 90, 100]),
+    'reordering a spanning track block did not move the fixed track definitions together');
+  assert(savedTrackFrame.children.find(node => node.id === gridTrackSpan.id)?.gridCell.column === 3
+    && savedTrackFrame.children.find(node => node.id === gridTrackSpan.id)?.gridCell.columnSpan === 2
+    && savedTrackFrame.children.find(node => node.id === gridTrackLast.id)?.gridCell.column === 2,
+  'reordering a grid track split a spanning child or misplaced its neighbor');
+  const gridCanvas = app.querySelector('#scene-canvas');
+  const gridCamera = {
+    zoom: Number.parseFloat(app.querySelector('#zoom-readout').textContent) / 100,
+    panX: panCenter.x, panY: panCenter.y
+  };
+  const dividerStart = worldToScreen({ x: gridTrackFrame.x + 84, y: gridTrackFrame.y + gridTrackFrame.height / 2 }, gridCanvas, gridCamera);
+  const dividerEnd = worldToScreen({ x: gridTrackFrame.x + 99, y: gridTrackFrame.y + gridTrackFrame.height / 2 }, gridCanvas, gridCamera);
+  dispatchCanvasPointer(app, gridCanvas, 'pointerdown', dividerStart.x, dividerStart.y, 1801);
+  dispatchCanvasPointer(app, gridCanvas, 'pointermove', dividerEnd.x, dividerEnd.y, 1801);
+  dispatchCanvasPointer(app, gridCanvas, 'pointerup', dividerEnd.x, dividerEnd.y, 1801);
+  await waitForSaveCycle(app, 'drag a grid track divider');
+  gridTrackRecords = await readStore('documents'); gridTrackRecords.sort((a, b) => b.savedAt - a.savedAt);
+  savedTrackFrame = flattenNodes(gridTrackRecords[0]?.document.pages.flatMap(page => page.children)).find(node => node.id === gridTrackFrame.id);
+  assert(JSON.stringify(savedTrackFrame.autoLayout.columnTracks.map(track => track.value)) === JSON.stringify([95, 95, 90, 100]),
+    'dragging a grid divider should resize both adjacent fixed tracks and persist the exact sizes');
 
   dispatchClick(app.querySelector(`[data-layer-id="${nestedThemeFrame.id}"]`));
   frameModeControl = app.querySelector(`[data-frame-variable-mode="${brandColors.id}"]`);

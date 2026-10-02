@@ -224,7 +224,7 @@ function spannedTrackSize(sizes, start, span, gap) {
   return sizes.slice(first, end).reduce((sum, size) => sum + size, 0) + gap * Math.max(0, end - first - 1);
 }
 
-function applyGridAutoLayout(frame, settings) {
+function gridLayoutPlan(frame, settings) {
   const padding = settings.padding;
   const columns = trackCount(settings.columns, 2);
   const columnGap = clamp(settings.columnGap);
@@ -233,7 +233,6 @@ function applyGridAutoLayout(frame, settings) {
   const innerWidth = Math.max(0, frame.width - padding.left - padding.right);
   const innerHeight = Math.max(0, frame.height - padding.top - padding.bottom);
   const flowItems = (frame.children || []).filter(node => node.visible && node.layoutPositioning !== 'absolute');
-  if (!flowItems.length) return;
 
   const occupied = new Set();
   const placements = new Map();
@@ -295,6 +294,31 @@ function applyGridAutoLayout(frame, settings) {
   const rowHeights = gridTrackSizes(settings.rowTracks || [], rowCount, innerHeight, rowGap, flowItems, placements, 'Height', requestedRows ? 'fill' : 'hug');
   const columnOffsets = trackOffsets(columnWidths, columnGap, padding.left);
   const rowOffsets = trackOffsets(rowHeights, rowGap, padding.top);
+
+  return { flowItems, placements, columnWidths, rowHeights, columnOffsets, rowOffsets, columnGap, rowGap, rowCount };
+}
+
+/** Measure grid tracks using the same placement and sizing rules as layout. */
+export function gridTrackLayout(frame) {
+  if (!frame || frame.type !== 'frame' || frame.autoLayout?.axis !== 'grid') return null;
+  const settings = createAutoLayout(frame.autoLayout);
+  const plan = gridLayoutPlan(frame, settings);
+  return {
+    columns: plan.columnWidths.map((size, index) => ({
+      index, start: plan.columnOffsets[index], end: plan.columnOffsets[index] + size, size
+    })),
+    rows: plan.rowHeights.map((size, index) => ({
+      index, start: plan.rowOffsets[index], end: plan.rowOffsets[index] + size, size
+    })),
+    columnGap: plan.columnGap,
+    rowGap: plan.rowGap,
+    rowCount: plan.rowCount
+  };
+}
+
+function applyGridAutoLayout(frame, settings) {
+  const { flowItems, placements, columnWidths, rowHeights, columnOffsets, rowOffsets, columnGap, rowGap } = gridLayoutPlan(frame, settings);
+  if (!flowItems.length) return;
 
   for (const item of flowItems) {
     const cell = placements.get(item.id);

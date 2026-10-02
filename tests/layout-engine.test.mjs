@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addNode, createDocument, createNode, parseDocument, serializeDocument, validateDocument } from '../src/model.js';
-import { applyAutoLayout, createAutoLayout } from '../src/layout-engine.js';
+import { applyAutoLayout, createAutoLayout, gridTrackLayout } from '../src/layout-engine.js';
 
 test('vertical auto layout positions children using padding and gap', () => {
   const frame = createNode('frame', { width: 240, height: 240, autoLayout: createAutoLayout({ gap: 8, padding: 12 }) });
@@ -166,6 +166,25 @@ test('grid fixed, hug, and weighted fill columns reflow when the frame resizes',
   applyAutoLayout(frame);
   assert.deepEqual([fixed.x, fixed.width, hug.x, hug.width], [10, 32, 120, 70], 'fixed and content tracks keep their authored sizes');
   assert.deepEqual([fillOne.x, fillOne.width, fillTwo.x, fillTwo.width], [200, 113.33333333333333, 323.3333333333333, 226.66666666666666]);
+});
+
+test('grid track measurements match the laid out fixed, hug, and fill columns', () => {
+  const frame = createNode('frame', {
+    width: 400, height: 140,
+    autoLayout: createAutoLayout({ axis: 'grid', columns: 3, rows: 1, autoPositioning: false, columnGap: 10, padding: 10,
+      columnTracks: [{ mode: 'fixed', value: 100 }, { mode: 'hug' }, { mode: 'fill', weight: 1 }] })
+  });
+  frame.children.push(createNode('rectangle', { width: 70, height: 20, gridCell: { row: 1, column: 2 } }));
+  applyAutoLayout(frame);
+
+  const layout = gridTrackLayout(frame);
+  assert.deepEqual(layout.columns, [
+    { index: 0, start: 10, end: 110, size: 100 },
+    { index: 1, start: 120, end: 190, size: 70 },
+    { index: 2, start: 200, end: 390, size: 190 }
+  ]);
+  assert.equal(layout.rowCount, 1);
+  assert.equal(layout.rows[0].size, 120);
 });
 
 test('grid row tracks combine fixed, hug, and weighted fill sizing with row spans and child limits', () => {
