@@ -1528,11 +1528,26 @@ try {
     ]
   });
   addNode(compoundDocument, emptyAnchorDeletePath);
+  const inspectorDeleteLayer = createNode('rectangle', {
+    name: 'Inspector delete contract', x: 370, y: 52, width: 64, height: 64, fill: '#328ac4'
+  });
+  addNode(compoundDocument, inspectorDeleteLayer);
   const compoundInput = app.querySelector('#open-file-input'); const compoundTransfer = new DataTransfer();
   compoundTransfer.items.add(new File([buildPackage(compoundDocument, [])], 'compound-contour-smoke.flocal', { type: 'application/octet-stream' }));
   Object.defineProperty(compoundInput, 'files', { configurable: true, value: compoundTransfer.files });
   compoundInput.dispatchEvent(new Event('change', { bubbles: true }));
   await waitFor(() => [...app.querySelectorAll('#toast-region .toast')].some(item => item.textContent.includes('Local design opened')), 'compound contour fixture import');
+  dispatchClick(app.querySelector(`[data-layer-id="${inspectorDeleteLayer.id}"]`));
+  const inspectorDeleteButton = app.querySelector('#inspector-content [data-action="delete-layer"]');
+  assert(inspectorDeleteButton?.dataset.layerId === inspectorDeleteLayer.id,
+    'the Inspector delete action did not capture the selected layer identity');
+  dispatchClick(inspectorDeleteButton);
+  await waitFor(() => !app.querySelector(`[data-layer-id="${inspectorDeleteLayer.id}"]`), 'Inspector Delete layer removes the selected row');
+  await waitFor(() => app.querySelector('#save-state')?.textContent.includes('Saved locally'), 'Inspector Delete layer autosave');
+  const inspectorDeleteRecords = await readStore('documents');
+  const savedInspectorDeleteDocument = inspectorDeleteRecords.find(record => (record.document?.id || record.id) === compoundDocument.id)?.document;
+  assert(!flattenNodes(savedInspectorDeleteDocument?.pages.flatMap(page => page.children)).some(node => node.id === inspectorDeleteLayer.id),
+    'Inspector Delete layer did not persist removal in the document');
   const compoundRow = app.querySelector(`[data-layer-id="${compoundPath.id}"]`);
   assert(compoundRow, 'compound contour fixture was missing after opening its local design');
   dispatchClick(compoundRow);

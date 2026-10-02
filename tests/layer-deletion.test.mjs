@@ -105,6 +105,17 @@ test('layer deletion removes selections from a new valid document', () => {
   assert.deepEqual(result.removedIds, [first.id, second.id]);
 });
 
+test('the editor does not rerun component sync after installing the validated delete candidate', () => {
+  const start = editorSource.indexOf('function deleteSelected(selectionIds = state.selectedIds) {');
+  const end = editorSource.indexOf('\nfunction copySelected()', start);
+  assert.ok(start >= 0 && end > start, 'the shared delete command should have a bounded implementation');
+  assert.match(editorSource.slice(start, end), /removeLayersAtomically\(state\.document, ids, pageId\)/);
+  assert.match(editorSource.slice(start, end), /queueSave\(\{ syncComponents: false \}\)/,
+    'the validated candidate already includes the component projection, so autosave must not restore a removed instance layer');
+  assert.match(editorSource, /function queueSave\(\{ refreshLayerTree = true, syncComponents = true \} = \{\}\)[\s\S]*?if \(syncComponents && syncAllComponentInstances\(state\.document\)\)/,
+    'other edits keep the normal component synchronization behavior');
+});
+
 test('deleting from an auto-layout frame closes the gap and updates hug-content size', () => {
   const document = createDocument();
   const frame = createNode('frame', {

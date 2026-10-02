@@ -989,7 +989,7 @@ function setDocumentEditingBlocked(blocked) {
   $('.topbar').inert = blocked;
   $('.workspace').inert = blocked || state.workspacePermissionNeeded;
 }
-function queueSave({ refreshLayerTree = true } = {}) {
+function queueSave({ refreshLayerTree = true, syncComponents = true } = {}) {
   if (!state.ready) return;
   state.saveRevision += 1;
   const liveGuest = state.liveCollaboration;
@@ -997,7 +997,7 @@ function queueSave({ refreshLayerTree = true } = {}) {
     && ['connected', 'pending'].includes(liveGuest.controller.state)) {
     liveGuest.controller.markLocalEditsPending();
   }
-  if (syncAllComponentInstances(state.document)) {
+  if (syncComponents && syncAllComponentInstances(state.document)) {
     reconcileImagePreviewRuntime();
     if (refreshLayerTree) renderLayers();
     renderer?.invalidate();
@@ -9786,7 +9786,10 @@ function deleteSelected(selectionIds = state.selectedIds) {
     state.document = result.document;
     clearPrototypeConnectPromptIfSourceMissing();
     reconcileImagePreviewRuntime();
-    state.selectedIds = []; clearVectorAnchorSelection(); renderUI(); queueSave();
+    state.selectedIds = []; clearVectorAnchorSelection(); renderUI();
+    // removeLayersAtomically already syncs and validates the candidate. Avoid
+    // running the same component projection again after installing the delete.
+    queueSave({ syncComponents: false });
     showToast(`Deleted ${ids.length} layer${ids.length === 1 ? '' : 's'}.`);
     return true;
   } catch (error) {

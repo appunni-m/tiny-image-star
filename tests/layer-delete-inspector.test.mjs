@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const [source, stylesheet] = await Promise.all([
+const [source, stylesheet, browserSmoke] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
-  readFile(new URL('../styles.css', import.meta.url), 'utf8')
+  readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+  readFile(new URL('./browser-smoke.mjs', import.meta.url), 'utf8')
 ]);
 
 test('the inspector exposes an explicit delete-layer action for a single selected layer', () => {
@@ -39,4 +40,18 @@ test('vector point deletion remains distinct from the explicit layer delete acti
     'the destructive action remains easy to tap on mobile');
   assert.match(stylesheet, /:root\[data-theme="dark"\] \.delete-layer-button \{ color:\s*#ff9b91/,
     'the action remains legible in the dark theme');
+});
+
+test('the deferred browser workflow verifies Inspector deletion in the UI and saved document', () => {
+  const start = browserSmoke.indexOf("const inspectorDeleteLayer = createNode('rectangle'");
+  const end = browserSmoke.indexOf("const compoundRow = app.querySelector", start);
+  assert.ok(start >= 0 && end > start, 'the layer deletion browser fixture should have a bounded workflow');
+  const workflow = browserSmoke.slice(start, end);
+  assert.match(workflow, /data-action="delete-layer"/,
+    'the browser flow should activate the same named Inspector action the user clicks');
+  assert.match(workflow, /waitFor\(\(\) => !app\.querySelector/,
+    'the target must disappear from the live layer tree');
+  assert.match(workflow, /savedInspectorDeleteDocument/);
+  assert.match(workflow, /did not persist removal/,
+    'the test should also check the saved document, not only the rendered row');
 });
